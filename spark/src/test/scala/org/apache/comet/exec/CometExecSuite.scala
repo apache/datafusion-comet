@@ -754,13 +754,14 @@ class CometExecSuite extends CometTestBase {
   }
 
   // ---- AQE DPP tests ----
-  // These mirror the non-AQE DPP tests above but with AQE enabled (the default).
   // CometPlanAdaptiveDynamicPruningFilters converts SubqueryAdaptiveBroadcastExec to
-  // CometSubqueryBroadcastExec wrapping the join's BroadcastQueryStageExec.
+  // CometSubqueryBroadcastExec wrapping the join's BroadcastQueryStageExec (Spark 3.5+).
+  // On 3.4, injectQueryStageOptimizerRule is unavailable, so AQE DPP scans fall back to
+  // Spark where Spark's PlanAdaptiveDynamicPruningFilters handles SABs natively.
 
   // Test #1: Native scan + CometBHJ + CometSubqueryBroadcast (golden path)
   // On 3.5+: AQE DPP runs natively with broadcast reuse.
-  // On 3.4: AQE DPP falls back to Spark (injectQueryStageOptimizerRule unavailable).
+  // On 3.4: scan falls back to Spark (injectQueryStageOptimizerRule unavailable).
   test("AQE DPP with BHJ works with CometNativeScanExec") {
     withTempDir { path =>
       val factPath = s"${path.getAbsolutePath}/fact.parquet"
@@ -788,23 +789,22 @@ class CometExecSuite extends CometTestBase {
         val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
 
         if (isSpark35Plus) {
-          // 3.5+: CometPlanAdaptiveDynamicPruningFilters converts SABs, DPP runs natively
+          // Verify native scan with DPP
           val nativeScans = collect(cometPlan) { case s: CometNativeScanExec => s }
           assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
-
           val dppScans = nativeScans.filter(
             _.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]))
           assert(
             dppScans.nonEmpty,
             "Expected at least one CometNativeScanExec with DynamicPruningExpression")
 
+          // Verify CometSubqueryBroadcastExec with BroadcastQueryStageExec child
           val cometSubqueries = collectWithSubqueries(cometPlan) {
             case s: CometSubqueryBroadcastExec => s
           }
           assert(
             cometSubqueries.nonEmpty,
-            "Expected CometSubqueryBroadcastExec in plan for broadcast reuse")
-
+            "Expected CometSubqueryBroadcastExec for broadcast reuse")
           cometSubqueries.foreach { csb =>
             assert(
               csb.child.isInstanceOf[BroadcastQueryStageExec],
@@ -812,11 +812,38 @@ class CometExecSuite extends CometTestBase {
                 s"${csb.child.getClass.getSimpleName}")
           }
 
+          // Verify broadcast reuse: the subquery's BroadcastQueryStageExec should be the
+          // same instance as the join's broadcast side (reference equality = single execution)
+          val joinBroadcastStages = collect(cometPlan) { case j: CometBroadcastHashJoinExec =>
+            j
+          }.flatMap { j =>
+            val bc = j.buildSide match {
+              case org.apache.spark.sql.catalyst.optimizer.BuildLeft => j.left
+              case org.apache.spark.sql.catalyst.optimizer.BuildRight => j.right
+            }
+            collect(bc) { case b: BroadcastQueryStageExec => b }
+          }
+          cometSubqueries.foreach { csb =>
+            assert(
+              joinBroadcastStages.exists(_ eq csb.child),
+              "DPP subquery's BroadcastQueryStageExec should be the same instance " +
+                "as the join's broadcast (reference equality for reuse)")
+          }
+
+          // Verify no unconverted SABs remain
+          val remainingSABs = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryAdaptiveBroadcastExec => s
+          }
+          assert(
+            remainingSABs.isEmpty,
+            s"Found ${remainingSABs.size} unconverted CometSubqueryAdaptiveBroadcastExec")
+
+          // Verify no fallback
           assert(
             !infos.contains("AQE Dynamic Partition Pruning"),
             s"Should not fall back for AQE DPP:\n$infos")
         } else {
-          // 3.4: injectQueryStageOptimizerRule unavailable, scan falls back to Spark with DPP
+          // 3.4: scan falls back to Spark so Spark handles DPP natively
           assert(
             infos.contains("AQE Dynamic Partition Pruning requires Spark 3.5+"),
             s"Expected 3.4 AQE DPP fallback message but got:\n$infos")
@@ -826,6 +853,11 @@ class CometExecSuite extends CometTestBase {
   }
 
   // Test #2: Native scan + Spark BHJ (Comet BHJ disabled) + SubqueryBroadcast fallback
+  // With Comet BHJ disabled, the join stays as Spark's BroadcastHashJoinExec. Spark's
+  // PlanAdaptiveDynamicPruningFilters finds it and handles DPP directly. Our wrapping
+  // (CometSubqueryAdaptiveBroadcastExec) still happens, but our rule finds
+  // BroadcastHashJoinExec (not CometBroadcastHashJoinExec) and creates
+  // SubqueryBroadcastExec (not CometSubqueryBroadcastExec) for the Spark broadcast.
   test("AQE DPP fallback when broadcast exchange is not Comet") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"
@@ -843,9 +875,6 @@ class CometExecSuite extends CometTestBase {
           .parquet(s"$path/dim")
       }
 
-      // Disable Comet BHJ + broadcast exchange. The join stays as Spark's
-      // BroadcastHashJoinExec, so Spark's PlanAdaptiveDynamicPruningFilters handles DPP
-      // directly (it finds BroadcastHashJoinExec). Query should still produce correct results.
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -858,12 +887,25 @@ class CometExecSuite extends CometTestBase {
             |FROM aqe_fact_fallback f JOIN aqe_dim_fallback d
             |ON f.store_id = d.store_id
             |WHERE d.country = 'DE'""".stripMargin)
-        checkSparkAnswer(df)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        // Verify no CometSubqueryBroadcastExec — Spark handles DPP with its own
+        // SubqueryBroadcastExec since the join is Spark's BroadcastHashJoinExec
+        if (isSpark35Plus) {
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          assert(
+            cometSubqueries.isEmpty,
+            "Should not have CometSubqueryBroadcastExec when Comet BHJ is disabled")
+        }
       }
     }
   }
 
   // Test #3: Native scan + SMJ (no broadcast) + DPP disabled gracefully
+  // With broadcast disabled, the join is SMJ. No broadcast to reuse for DPP.
+  // Our rule finds no matching broadcast join and falls back to Literal.TrueLiteral.
   test("AQE DPP with SMJ disables DPP gracefully") {
     withTempDir { path =>
       val factPath = s"${path.getAbsolutePath}/fact.parquet"
@@ -880,8 +922,6 @@ class CometExecSuite extends CometTestBase {
         dim.write.parquet(dimPath)
       }
 
-      // Disable broadcast → SMJ. No broadcast join to reuse, DPP subquery falls back
-      // to Literal.TrueLiteral. Correct results, no errors.
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -891,12 +931,33 @@ class CometExecSuite extends CometTestBase {
         val df = spark.sql(
           "select * from aqe_dpp_fact_smj join aqe_dpp_dim_smj " +
             "on fact_date = dim_date where dim_id > 7")
-        checkSparkAnswer(df)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        if (isSpark35Plus) {
+          // Verify native scan is used (DPP disabled via TrueLiteral, but scan still native)
+          val nativeScans = collect(cometPlan) { case s: CometNativeScanExec => s }
+          assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
+
+          // No CometSubqueryBroadcastExec — DPP was disabled (no broadcast to reuse)
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          assert(
+            cometSubqueries.isEmpty,
+            "Should not have CometSubqueryBroadcastExec with SMJ (no broadcast)")
+
+          // No unconverted SABs remain
+          val remainingSABs = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryAdaptiveBroadcastExec => s
+          }
+          assert(remainingSABs.isEmpty, "No unconverted SABs should remain")
+        }
       }
     }
   }
 
   // Test #4: Native scan + CometBHJ x2 + two dim tables, buildKeys disambiguation
+  // Each DPP filter should match the correct broadcast join by buildKeys exprId.
   test("AQE DPP with two separate broadcast joins") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"
@@ -939,8 +1000,17 @@ class CometExecSuite extends CometTestBase {
         if (isSpark35Plus) {
           val nativeScans = collect(cometPlan) { case s: CometNativeScanExec => s }
           assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
+
+          val dppScans = nativeScans.filter(
+            _.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]))
+          assert(dppScans.nonEmpty, "Expected DPP filters on native scan")
+
+          // Verify no unconverted SABs
+          val remainingSABs = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryAdaptiveBroadcastExec => s
+          }
+          assert(remainingSABs.isEmpty, "No unconverted SABs should remain")
         }
-        // On 3.4: fact scan falls back (AQE DPP rejection), but correct results via Spark DPP
       }
     }
   }
@@ -981,6 +1051,9 @@ class CometExecSuite extends CometTestBase {
   }
 
   // Test #6: Native scan + CometBHJ + both outer+inner partition filters resolved
+  // CometNativeScanExec.partitionFilters and CometScanExec.partitionFilters are separate
+  // InSubqueryExec instances. Both must be resolved for partition selection to work.
+  // Correct results prove both filter sets were resolved.
   test("AQE DPP resolves both outer and inner partition filters") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"
@@ -1021,13 +1094,22 @@ class CometExecSuite extends CometTestBase {
           val dppScans = nativeScans.filter(
             _.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]))
           assert(dppScans.nonEmpty, "Expected DPP filter on native scan")
+
+          // Verify CometSubqueryBroadcastExec is present (not TrueLiteral fallback)
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          assert(
+            cometSubqueries.nonEmpty,
+            "Expected CometSubqueryBroadcastExec (DPP should be active, not TrueLiteral)")
         }
-        // On 3.4: fact scan falls back (AQE DPP rejection), but correct results via Spark DPP
       }
     }
   }
 
   // Test #7: DPP broadcast exchange reuse + subquery reuse with AQE
+  // Verifies that the DPP subquery reuses the join's broadcast (single broadcast execution)
+  // and that CometReuseSubquery deduplicates subqueries with the same canonical form.
   test("AQE DPP broadcast exchange reuse") {
     withDppTables {
       withSQLConf(
@@ -1041,12 +1123,33 @@ class CometExecSuite extends CometTestBase {
             |ON f.store_id = s.store_id WHERE f.date_id <= 1030""".stripMargin)
         val (_, cometPlan) = checkSparkAnswer(df)
 
-        val cometSubqueries = collectWithSubqueries(cometPlan) {
-          case s: CometSubqueryBroadcastExec => s
+        if (isSpark35Plus) {
+          // scalastyle:off println
+          System.out.flush()
+          println(s"[AQE DPP reuse] Plan:\n${cometPlan.treeString}")
+          val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+          println(s"[AQE DPP reuse] Extended info:\n$infos")
+          System.out.flush()
+          // scalastyle:on println
+
+          // Verify no unconverted SABs remain
+          val remainingSABs = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryAdaptiveBroadcastExec => s
+          }
+          assert(remainingSABs.isEmpty, "No unconverted SABs should remain")
+
+          // If DPP subqueries are present, verify they use CometSubqueryBroadcastExec
+          // with BroadcastQueryStageExec children (broadcast reuse)
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          cometSubqueries.foreach { csb =>
+            assert(
+              csb.child.isInstanceOf[BroadcastQueryStageExec],
+              s"CometSubqueryBroadcastExec child should be BroadcastQueryStageExec, " +
+                s"got ${csb.child.getClass.getSimpleName}")
+          }
         }
-        // DPP subquery should use CometSubqueryBroadcastExec (not SubqueryBroadcastExec)
-        // Note: with AQE, the subquery may be converted or DPP may not apply depending
-        // on the query plan. Just verify correct results.
       }
     }
   }
