@@ -15,17 +15,32 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes levenshtein through the codegen dispatcher so behavior matches Spark exactly.
+statement
+CREATE TABLE test_levenshtein(s1 string, s2 string) USING parquet
 
 statement
-CREATE TABLE test_levenshtein(a string, b string) USING parquet
+INSERT INTO test_levenshtein VALUES ('kitten', 'sitting'), ('frog', 'fog'), ('abc', 'abc'), ('', 'hello'), ('hello', ''), ('', ''), (NULL, 'test'), ('hello', NULL), (NULL, NULL)
 
-statement
-INSERT INTO test_levenshtein VALUES ('kitten', 'sitting'), ('', 'abc'), ('abc', 'abc'), ('flaw', 'lawn'), (NULL, 'x'), ('x', NULL), (NULL, NULL)
-
+-- column arguments
 query
-SELECT a, b, levenshtein(a, b) FROM test_levenshtein
+SELECT levenshtein(s1, s2) FROM test_levenshtein
 
--- literal arguments
+-- column + literal
 query
-SELECT levenshtein('kitten', 'sitting'), levenshtein('', ''), levenshtein(NULL, 'x')
+SELECT levenshtein(s1, 'abc') FROM test_levenshtein
+
+-- literal + column
+query
+SELECT levenshtein('kitten', s2) FROM test_levenshtein
+
+-- literal + literal
+query
+SELECT levenshtein('kitten', 'sitting'), levenshtein('frog', 'fog'), levenshtein('', ''), levenshtein(NULL, 'a')
+
+-- identical strings
+query
+SELECT levenshtein(s1, s1) FROM test_levenshtein
+
+-- unicode characters
+query
+SELECT levenshtein('café', 'cafe'), levenshtein('你好', '你坏')
