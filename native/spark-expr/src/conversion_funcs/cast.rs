@@ -198,7 +198,6 @@ pub fn spark_cast(
     data_type: &DataType,
     cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ColumnarValue> {
-    println!("SPARK_CAST ENTRY: to={:?}", data_type);
     let result = match arg {
         ColumnarValue::Array(array) => {
             let result_array = cast_array(array, data_type, cast_options)?;
@@ -260,8 +259,6 @@ pub(crate) fn cast_array(
     use DataType::*;
     let from_type = array.data_type().clone();
 
-    println!("CAST_ARRAY ENTRY: from={:?} to={:?}", from_type, to_type);
-
     if &from_type == to_type {
         return Ok(Arc::new(array));
     }
@@ -319,18 +316,6 @@ pub(crate) fn cast_array(
     };
 
     let cast_result = match (&from_type, to_type) {
-        // DEBUG: instrument all arms to trace which path is taken
-        _ if {
-            if matches!(&from_type, DataType::Timestamp(_, None))
-                || matches!(to_type, DataType::Utf8View)
-            {
-                println!("CAST DEBUG: from={:?} to={:?}", from_type, to_type);
-            }
-            false
-        } =>
-        {
-            unreachable!()
-        }
         // Null arrays carry no concrete values, so Arrow's native cast can change only the
         // logical type while preserving length and nullness.
         (Null, _) => Ok(cast_with_options(&array, to_type, &native_cast_options)?),
@@ -564,27 +549,16 @@ pub(crate) fn cast_array(
         // NTZ → Utf8View: Arrow doesn't support this directly, so we format using
         // ArrayFormatter which respects our timestamp format options.
         (Timestamp(_, None), Utf8View) => {
-            println!("CAST DEBUG: HIT NTZ->Utf8View arm");
             Ok(timestamp_to_string_view(&array, &native_cast_options)?)
         }
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(&from_type, to_type) =>
         {
-            println!(
-                "CAST DEBUG: fallthrough from={:?} to={:?}",
-                from_type, to_type
-            );
             Ok(cast_with_options(&array, to_type, &native_cast_options)?)
         }
-        _ => {
-            println!(
-                "CAST DEBUG: UNSUPPORTED from={:?} to={:?}",
-                from_type, to_type
-            );
-            Err(SparkError::Internal(format!(
-                "Native cast invoked for unsupported cast from {from_type:?} to {to_type:?}"
-            )))
-        }
+        _ => Err(SparkError::Internal(format!(
+            "Native cast invoked for unsupported cast from {from_type:?} to {to_type:?}"
+        ))),
     };
 
     Ok(spark_cast_postprocess(cast_result?, &from_type, to_type))

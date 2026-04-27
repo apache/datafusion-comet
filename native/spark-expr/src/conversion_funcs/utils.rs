@@ -64,14 +64,6 @@ pub fn spark_cast_postprocess(
     from_type: &DataType,
     to_type: &DataType,
 ) -> ArrayRef {
-    if matches!(from_type, DataType::Timestamp(_, None)) || matches!(to_type, DataType::Utf8View) {
-        println!(
-            "POSTPROCESS DEBUG: from={:?} to={:?} actual_array_type={:?}",
-            from_type,
-            to_type,
-            array.data_type()
-        );
-    }
     match (from_type, to_type) {
         (DataType::Timestamp(_, _), DataType::Int64) => {
             // See Spark's `Cast` expression
