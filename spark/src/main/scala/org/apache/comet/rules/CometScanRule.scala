@@ -713,6 +713,13 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
         // we don't need specific support for collation in scans, but this
         // is a convenient place to force the whole query to fall back to Spark for now
         false
+      case s: StructType if isVariantStruct(s) =>
+        // Spark 4.0's PushVariantIntoScan rewrites a VariantType column into a struct of typed
+        // fields plus per-field VariantMetadata, expecting the scan to honor Parquet variant
+        // shredding semantics. Comet's native scans don't, so fall back to Spark.
+        fallbackReasons +=
+          s"$scanImpl scan does not support shredded Variant reads (column $name)"
+        false
       case s: StructType if s.fields.isEmpty =>
         false
       case _ =>
