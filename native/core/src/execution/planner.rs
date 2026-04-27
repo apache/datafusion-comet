@@ -985,11 +985,21 @@ impl PhysicalPlanner {
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
                 let schema = child.schema();
 
-                let mode = if agg.mode == 0 {
-                    DFAggregateMode::Partial
-                } else {
-                    DFAggregateMode::Final
+                let mode = match agg.mode {
+                    0 => DFAggregateMode::Partial,
+                    1 => DFAggregateMode::Final,
+                    2 => DFAggregateMode::Partial, // PartialMerge: Partial + MergeAsPartial
+                    other => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Unsupported aggregate mode: {other}"
+                        )))
+                    }
                 };
+
+                // Check if any expression uses PartialMerge mode (2). When present,
+                // those expressions are wrapped with MergeAsPartial to get merge
+                // semantics inside a Partial-mode AggregateExec.
+                let has_partial_merge = agg.mode == 2 || agg.expr_modes.contains(&2);
 
                 let agg_exprs: PhyAggResult = agg
                     .agg_exprs
@@ -997,7 +1007,68 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_agg_expr(expr, Arc::clone(&schema)))
                     .collect();
 
-                let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
+                let aggr_expr: Vec<Arc<AggregateFunctionExpr>> = if has_partial_merge {
+                    // Wrap PartialMerge expressions with MergeAsPartial.
+                    // State fields in the child's output start at initial_input_buffer_offset.
+                    let mut state_offset = agg.initial_input_buffer_offset as usize;
+                    let per_expr_modes: Vec<i32> = if !agg.expr_modes.is_empty() {
+                        agg.expr_modes.clone()
+                    } else {
+                        vec![agg.mode; agg.agg_exprs.len()]
+                    };
+
+                    agg_exprs?
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, expr)| {
+                            if per_expr_modes[idx] == 2 {
+                                // PartialMerge: wrap with MergeAsPartial
+                                let state_fields = expr
+                                    .state_fields()
+                                    .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+                                let num_state_fields = state_fields.len();
+
+                                let state_cols: Vec<Arc<dyn PhysicalExpr>> = (0..num_state_fields)
+                                    .map(|i| {
+                                        let col_idx = state_offset + i;
+                                        let field = schema.field(col_idx);
+                                        Arc::new(Column::new(field.name(), col_idx))
+                                            as Arc<dyn PhysicalExpr>
+                                    })
+                                    .collect();
+                                state_offset += num_state_fields;
+
+                                let merge_udf =
+                                    crate::execution::merge_as_partial::MergeAsPartialUDF::new(
+                                        &expr,
+                                    )
+                                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?;
+                                let merge_udf_arc = Arc::new(
+                                    datafusion::logical_expr::AggregateUDF::new_from_impl(
+                                        merge_udf,
+                                    ),
+                                );
+
+                                let merge_expr =
+                                    AggregateExprBuilder::new(merge_udf_arc, state_cols)
+                                        .schema(Arc::clone(&schema))
+                                        .alias(format!("col_{idx}"))
+                                        .with_ignore_nulls(expr.ignore_nulls())
+                                        .with_distinct(expr.is_distinct())
+                                        .build()
+                                        .map_err(|e| {
+                                            ExecutionError::DataFusionError(e.to_string())
+                                        })?;
+
+                                Ok(Arc::new(merge_expr))
+                            } else {
+                                Ok(Arc::new(expr))
+                            }
+                        })
+                        .collect::<Result<Vec<_>, ExecutionError>>()?
+                } else {
+                    agg_exprs?.into_iter().map(Arc::new).collect()
+                };
 
                 // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
                 // Filters are only present in Partial mode; Final/PartialMerge always get None.

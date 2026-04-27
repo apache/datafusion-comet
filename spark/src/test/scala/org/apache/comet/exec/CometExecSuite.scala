@@ -1088,9 +1088,11 @@ class CometExecSuite extends CometTestBase {
         case s: CometHashAggregateExec => s
       }.get
 
-      assert(agg.mode.isDefined && agg.mode.get.isInstanceOf[AggregateMode])
+      assert(agg.modes.nonEmpty && agg.modes.headOption.get.isInstanceOf[AggregateMode])
       val newAgg = agg.cleanBlock().asInstanceOf[CometHashAggregateExec]
-      assert(newAgg.mode.isDefined && newAgg.mode.get.isInstanceOf[AggregateMode])
+      assert(
+        newAgg.modes.nonEmpty &&
+          newAgg.modes.headOption.get.isInstanceOf[AggregateMode])
     }
   }
 

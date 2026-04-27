@@ -214,7 +214,7 @@ impl SumDecimalAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error();
+                let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
             }
             self.sum = None;
@@ -354,7 +354,7 @@ impl Accumulator for SumDecimalAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error();
+                let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
             } else {
                 self.sum = None;
@@ -426,7 +426,7 @@ impl SumDecimalGroupsAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error();
+                let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
             }
             self.sum[group_index] = None;
@@ -595,7 +595,7 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
 
             if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
                 if self.eval_mode == EvalMode::Ansi {
-                    let error = decimal_sum_overflow_error();
+                    let error = decimal_sum_overflow_error("sum");
                     return Err(self.wrap_error_with_context(error));
                 } else {
                     self.sum[group_index] = None;

@@ -270,6 +270,13 @@ message HashAggregate {
   repeated spark.spark_expression.AggExpr agg_exprs = 2;
   repeated spark.spark_expression.Expr result_exprs = 3;
   AggregateMode mode = 5;
+  // Per-expression modes for mixed-mode aggregates (e.g., PartialMerge + Partial).
+  // When set, each entry corresponds to agg_exprs at the same index.
+  // When empty, all expressions use the `mode` field.
+  repeated AggregateMode expr_modes = 6;
+  // Offset in the child's output where aggregate buffer attributes start.
+  // Used by PartialMerge to locate state fields in the input.
+  int32 initial_input_buffer_offset = 7;
 }
 
 message Limit {
@@ -319,6 +326,7 @@ message ParquetWriter {
 enum AggregateMode {
   Partial = 0;
   Final = 1;
+  PartialMerge = 2;
 }
 
 message Expand {

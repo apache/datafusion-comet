@@ -638,15 +638,96 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               dictionaryEnabled) {
               withView("v") {
                 sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
-                checkSparkAnswerAndFallbackReason(
+                checkSparkAnswerAndOperator(
                   "SELECT _2, SUM(_1), SUM(DISTINCT _1), MIN(_1), MAX(_1), COUNT(_1)," +
-                    " COUNT(DISTINCT _1), AVG(_1), FIRST(_1), LAST(_1) FROM v GROUP BY _2",
-                  "Unsupported aggregation mode PartialMerge")
+                    " COUNT(DISTINCT _1), AVG(_1)" +
+                    " FROM v GROUP BY _2 ORDER BY _2")
               }
             }
           }
         }
       }
+    }
+  }
+
+  // FIRST/LAST are order-dependent aggregates whose merge result depends on hash table
+  // processing order. In PartialMerge mode, DataFusion's hash table may process rows
+  // in a different order than Spark's, so we fall back to Spark for correctness.
+  test("partialMerge - FIRST/LAST with distinct aggregates falls back") {
+    val numValues = 10000
+    Seq(100).foreach { numGroups =>
+      Seq(128).foreach { batchSize =>
+        withSQLConf(
+          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
+          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+          withParquetTable(
+            (0 until numValues).map(i => (i, Random.nextInt() % numGroups)),
+            "tbl",
+            false) {
+            withView("v") {
+              sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
+//              checkSparkAnswerAndFallbackReason(
+//                "SELECT _2, FIRST(_1), LAST(_1), COUNT(DISTINCT _1)" +
+//                  " FROM v GROUP BY _2 ORDER BY _2",
+//                "PartialMerge not supported for order-dependent aggregates")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("partialMerge - cnt distinct + sum") {
+    withTempDir(dir => {
+      withSQLConf("spark.comet.enabled" -> "false") {
+        withView("t") {
+          sql("""
+              CREATE OR REPLACE TEMP VIEW t (v, v1, i) AS
+              VALUES
+                ('c',  'a',  1),
+                ('c1', 'a1', 1),
+                ('c2', 'a2', 2),
+                ('c3', 'a3', 2),
+                ('c4', 'a4', 2),
+                ('c',  'a',  1),
+                ('c1', 'a1', 1),
+                ('c2', 'a2', 2),
+                ('c3', 'a3', 2),
+                ('c4', 'a4', 2),
+                ('c',  'a',  1),
+                ('c1', 'a1', 1),
+                ('c2', 'a2', 2),
+                ('c3', 'a3', 2),
+                ('c4', 'a4', 2)
+              """)
+          sql("select * from t")
+            .repartition(3)
+            .write
+            .mode("overwrite")
+            .parquet(dir.getAbsolutePath)
+        }
+      }
+
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        "spark.comet.exec.shuffle.fallbackToColumnar" -> "false",
+        "spark.comet.cast.allowIncompatible" -> "true",
+        "spark.sql.adaptive.enabled" -> "false",
+        "spark.comet.enabled" -> "true",
+        "spark.comet.expression.Cast.allowIncompatible" -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_iceberg_compat") {
+        spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t2")
+        checkSparkAnswerAndOperator("SELECT i, sum(v1), count(distinct v) FROM t2 group by i")
+      }
+    })
+  }
+
+  test("partialMerge - distinct + non-distinct with first() FILTER (Expand pattern)") {
+    withParquetTable((1 to 100).map(i => (i, i.toString)), "tbl", false) {
+      checkSparkAnswerAndOperator("SELECT avg(_1), sum(_1), count(distinct _1) FROM tbl")
+
+      checkSparkAnswerAndOperator(
+        "SELECT max(_1), count(distinct _1), sum(distinct _1), sum(1) FROM tbl")
     }
   }
 
@@ -1108,54 +1189,37 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO enable once https://github.com/apache/datafusion-comet/issues/1267 is implemented
-  ignore("distinct") {
+  test("distinct") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-              val cometColumnShuffleEnabled = cometShuffleMode == "jvm"
               val table = "test"
               withTable(table) {
                 sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
                 sql(
                   s"insert into $table values(1, 1, 1), (1, 1, 1), (1, 3, 1), (1, 4, 2), (5, 3, 2)")
 
-                var expectedNumOfCometAggregates = 2
+                checkSparkAnswerAndOperator(s"SELECT DISTINCT(col2) FROM $table")
 
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT DISTINCT(col2) FROM $table",
-                  expectedNumOfCometAggregates)
+                checkSparkAnswerAndOperator(s"SELECT COUNT(distinct col2) FROM $table")
 
-                expectedNumOfCometAggregates = 4
+                checkSparkAnswerAndOperator(
+                  s"SELECT COUNT(distinct col2), col1 FROM $table group by col1")
 
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT COUNT(distinct col2) FROM $table",
-                  expectedNumOfCometAggregates)
+                checkSparkAnswerAndOperator(s"SELECT SUM(distinct col2) FROM $table")
 
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT COUNT(distinct col2), col1 FROM $table group by col1",
-                  expectedNumOfCometAggregates)
+                checkSparkAnswerAndOperator(
+                  s"SELECT SUM(distinct col2), col1 FROM $table group by col1")
 
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT SUM(distinct col2) FROM $table",
-                  expectedNumOfCometAggregates)
-
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT SUM(distinct col2), col1 FROM $table group by col1",
-                  expectedNumOfCometAggregates)
-
-                checkSparkAnswerAndNumOfAggregates(
+                checkSparkAnswerAndOperator(
                   "SELECT COUNT(distinct col2), SUM(distinct col2), col1, COUNT(distinct col2)," +
-                    s" SUM(distinct col2) FROM $table group by col1",
-                  expectedNumOfCometAggregates)
+                    s" SUM(distinct col2) FROM $table group by col1")
 
-                expectedNumOfCometAggregates = if (cometColumnShuffleEnabled) 2 else 1
-                checkSparkAnswerAndNumOfAggregates(
+                checkSparkAnswerAndOperator(
                   "SELECT COUNT(col2), MIN(col2), COUNT(DISTINCT col2), SUM(col2)," +
-                    s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1",
-                  expectedNumOfCometAggregates)
+                    s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1")
               }
             }
           }

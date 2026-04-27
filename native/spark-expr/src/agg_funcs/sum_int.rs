@@ -173,30 +173,8 @@ impl Accumulator for SumIntegerAccumulatorLegacy {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> DFResult<()> {
-        if states.len() != 1 {
-            return Err(DataFusionError::Internal(format!(
-                "Invalid state while merging batch. Expected 1 element but found {}",
-                states.len()
-            )));
-        }
-
-        let that_sum_array = states[0].as_primitive::<Int64Type>();
-        let that_sum = if that_sum_array.is_null(0) {
-            None
-        } else {
-            Some(that_sum_array.value(0))
-        };
-
-        if that_sum.is_none() {
-            return Ok(());
-        }
-        if self.sum.is_none() {
-            self.sum = that_sum;
-            return Ok(());
-        }
-
-        self.sum = Some(self.sum.unwrap().add_wrapping(that_sum.unwrap()));
-        Ok(())
+        // Merging partial sums is the same as summing values
+        self.update_batch(states)
     }
 }
 
@@ -268,35 +246,8 @@ impl Accumulator for SumIntegerAccumulatorAnsi {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> DFResult<()> {
-        if states.len() != 1 {
-            return Err(DataFusionError::Internal(format!(
-                "Invalid state while merging batch. Expected 1 element but found {}",
-                states.len()
-            )));
-        }
-
-        let that_sum_array = states[0].as_primitive::<Int64Type>();
-        let that_sum = if that_sum_array.is_null(0) {
-            None
-        } else {
-            Some(that_sum_array.value(0))
-        };
-
-        if that_sum.is_none() {
-            return Ok(());
-        }
-        if self.sum.is_none() {
-            self.sum = that_sum;
-            return Ok(());
-        }
-
-        self.sum = Some(
-            self.sum
-                .unwrap()
-                .add_checked(that_sum.unwrap())
-                .map_err(|_| DataFusionError::from(arithmetic_overflow_error("integer")))?,
-        );
-        Ok(())
+        // Merging partial sums is the same as summing values
+        self.update_batch(states)
     }
 }
 
@@ -400,35 +351,43 @@ impl Accumulator for SumIntegerAccumulatorTry {
         }
 
         let that_sum_array = states[0].as_primitive::<Int64Type>();
-        let that_sum = if that_sum_array.is_null(0) {
-            None
-        } else {
-            Some(that_sum_array.value(0))
-        };
-        let that_has_all_nulls = states[1].as_boolean().value(0);
+        let that_has_all_nulls_array = states[1].as_boolean();
 
-        let that_overflowed = !that_has_all_nulls && that_sum.is_none();
-        if that_overflowed || self.overflowed() {
-            self.sum = None;
-            self.has_all_nulls = false;
-            return Ok(());
-        }
+        for row in 0..that_sum_array.len() {
+            if self.overflowed() {
+                return Ok(());
+            }
 
-        if that_has_all_nulls {
-            return Ok(());
-        }
-        if self.has_all_nulls {
-            self.sum = that_sum;
-            self.has_all_nulls = false;
-            return Ok(());
-        }
+            let that_sum = if that_sum_array.is_null(row) {
+                None
+            } else {
+                Some(that_sum_array.value(row))
+            };
+            let that_has_all_nulls = that_has_all_nulls_array.value(row);
 
-        // Both sides have non-null values
-        match self.sum.unwrap().add_checked(that_sum.unwrap()) {
-            Ok(v) => self.sum = Some(v),
-            Err(_) => {
+            let that_overflowed = !that_has_all_nulls && that_sum.is_none();
+            if that_overflowed {
                 self.sum = None;
                 self.has_all_nulls = false;
+                return Ok(());
+            }
+
+            if that_has_all_nulls {
+                continue;
+            }
+
+            if self.has_all_nulls {
+                self.sum = that_sum;
+                self.has_all_nulls = false;
+                continue;
+            }
+
+            match self.sum.unwrap().add_checked(that_sum.unwrap()) {
+                Ok(v) => self.sum = Some(v),
+                Err(_) => {
+                    self.sum = None;
+                    self.has_all_nulls = false;
+                }
             }
         }
         Ok(())

@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, First, Last, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1356,8 +1356,11 @@ trait CometBaseAggregate {
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
 
     val modes = aggregate.aggregateExpressions.map(_.mode).distinct
-    // In distinct aggregates there can be a combination of modes
-    val multiMode = modes.size > 1
+    val modeSet = modes.toSet
+    val hasPartialMerge = modeSet.contains(PartialMerge)
+    // In distinct aggregates there can be a combination of modes.
+    // We support {Partial, PartialMerge} mix; other combinations are rejected.
+    val multiMode = modes.size > 1 && modeSet != Set(Partial, PartialMerge)
     // For a final mode HashAggregate, we only need to transform the HashAggregate
     // if there is Comet partial aggregation.
     val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
@@ -1437,33 +1440,61 @@ trait CometBaseAggregate {
       hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
       Some(builder.setHashAgg(hashAggBuilder).build())
     } else {
-      val modes = aggregateExpressions.map(_.mode).distinct
-
-      if (modes.size != 1) {
-        // This shouldn't happen as all aggregation expressions should share the same mode.
-        // Fallback to Spark nevertheless here.
-        withInfo(aggregate, "All aggregate expressions do not have the same mode")
+      // Validate mode combinations. We support:
+      // - All Partial
+      // - All Final
+      // - All PartialMerge
+      // - Mixed {Partial, PartialMerge} (for distinct aggregate plans)
+      val isMixedPartialMerge = modeSet == Set(Partial, PartialMerge)
+      if (modes.size > 1 && !isMixedPartialMerge) {
+        withInfo(aggregate, s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
         return None
       }
 
-      val mode = modes.head match {
-        case Partial => CometAggregateMode.Partial
-        case Final => CometAggregateMode.Final
-        case _ =>
-          withInfo(aggregate, s"Unsupported aggregation mode ${modes.head}")
-          return None
+      // Determine the proto mode. For uniform modes, use that mode directly.
+      // For mixed {Partial, PartialMerge}, use Partial as the base mode since
+      // PartialMerge expressions are wrapped with MergeAsPartial on the native side.
+      val mode = if (isMixedPartialMerge) {
+        CometAggregateMode.Partial
+      } else {
+        modes.head match {
+          case Partial => CometAggregateMode.Partial
+          case Final => CometAggregateMode.Final
+          case PartialMerge => CometAggregateMode.PartialMerge
+          case _ =>
+            withInfo(aggregate, s"Unsupported aggregation mode ${modes.head}")
+            return None
+        }
       }
 
-      // In final mode, the aggregate expressions are bound to the output of the
-      // child and partial aggregate expressions buffer attributes produced by partial
-      // aggregation. This is done in Spark `HashAggregateExec` internally. In Comet,
-      // we don't have to do this because we don't use the merging expression.
-      val binding = mode != CometAggregateMode.Final
-      // `output` is only used when `binding` is true (i.e., non-Final)
-      val output = child.output
+      // FIRST/LAST are order-dependent aggregates whose merge result depends on
+      // hash table processing order. In PartialMerge mode, DataFusion's hash table
+      // may process rows in a different order than Spark's, producing different results.
+      //
+      // CollectSet (and CollectList if added) use list-typed state. MergeAsPartial
+      // redirects update_batch to merge_batch, but these accumulators expect list
+      // arrays in merge_batch while update_batch receives scalar values.
+      if (hasPartialMerge) {
+        val unsupportedAggs = aggregateExpressions.filter { a =>
+          a.mode == PartialMerge && (a.aggregateFunction.isInstanceOf[First] ||
+            a.aggregateFunction.isInstanceOf[Last])
+        }
+        if (unsupportedAggs.nonEmpty) {
+          withInfo(
+            aggregate,
+            "PartialMerge not supported for aggregates: " +
+              unsupportedAggs.map(_.aggregateFunction.prettyName).mkString(", "))
+          return None
+        }
+      }
 
-      val aggExprs =
-        aggregateExpressions.map(aggExprToProto(_, output, binding, aggregate.conf))
+      // Per-expression binding: Partial expressions bind to child output,
+      // PartialMerge/Final expressions do not (native planner handles their input).
+      val output = child.output
+      val aggExprs = aggregateExpressions.map { a =>
+        val exprBinding = a.mode != PartialMerge && a.mode != Final
+        aggExprToProto(a, output, exprBinding, aggregate.conf)
+      }
 
       if (aggExprs.exists(_.isEmpty)) {
         withInfo(
@@ -1491,6 +1522,23 @@ trait CometBaseAggregate {
           hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
         }
         hashAggBuilder.setModeValue(mode.getNumber)
+
+        // Send per-expression modes and buffer offset for PartialMerge handling
+        if (hasPartialMerge) {
+          val exprModes = aggregateExpressions.map { a =>
+            a.mode match {
+              case Partial => CometAggregateMode.Partial
+              case PartialMerge => CometAggregateMode.PartialMerge
+              case Final => CometAggregateMode.Final
+              case other =>
+                withInfo(aggregate, s"Unsupported aggregation mode $other")
+                return None
+            }
+          }
+          hashAggBuilder.addAllExprModes(exprModes.asJava)
+          hashAggBuilder.setInitialInputBufferOffset(aggregate.initialInputBufferOffset)
+        }
+
         Some(builder.setHashAgg(hashAggBuilder).build())
       } else {
         val allChildren: Seq[Expression] =
@@ -1504,14 +1552,21 @@ trait CometBaseAggregate {
 
   /**
    * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
-   * partial mode, it will return None.
+   * partial or partial-merge mode, it will return None.
    */
   private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
+    def isPartialOrMerge(mode: AggregateMode): Boolean =
+      mode == Partial || mode == PartialMerge
+
     plan.collectFirst {
-      case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+      case agg: CometHashAggregateExec
+          if agg.aggregateExpressions.forall(e => isPartialOrMerge(e.mode)) =>
         Some(agg)
-      case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
-      case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+      case agg: HashAggregateExec
+          if agg.aggregateExpressions.forall(e => isPartialOrMerge(e.mode)) =>
+        None
+      case agg: ObjectHashAggregateExec
+          if agg.aggregateExpressions.forall(e => isPartialOrMerge(e.mode)) =>
         None
       case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
       case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
@@ -1608,7 +1663,7 @@ object CometObjectHashAggregateExec
    * case branch here mapping it to the native state type.
    */
   private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
-    // CometBaseAggregate.doConvert guarantees all expressions share the same mode.
+    // This adjustment only applies to pure-Partial aggregates (checked below).
     val modes = op.aggregateExpressions.map(_.mode).distinct
     if (modes != Seq(Partial)) {
       return op.output
@@ -1650,11 +1705,8 @@ case class CometHashAggregateExec(
 
   // The aggExprs could be empty. For example, if the aggregate functions only have
   // distinct aggregate functions or only have group by, the aggExprs is empty and
-  // modes is empty too. If aggExprs is not empty, we need to verify all the
-  // aggregates have the same mode.
+  // modes is empty too.
   val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
-  assert(modes.length == 1 || modes.isEmpty)
-  val mode = modes.headOption
 
   override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
 
@@ -1671,7 +1723,7 @@ case class CometHashAggregateExec(
   }
 
   override def stringArgs: Iterator[Any] =
-    Iterator(input, mode, groupingExpressions, aggregateExpressions, child)
+    Iterator(input, modes, groupingExpressions, aggregateExpressions, child)
 
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -1680,7 +1732,7 @@ case class CometHashAggregateExec(
         this.groupingExpressions == other.groupingExpressions &&
         this.aggregateExpressions == other.aggregateExpressions &&
         this.input == other.input &&
-        this.mode == other.mode &&
+        this.modes == other.modes &&
         this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -1689,7 +1741,7 @@ case class CometHashAggregateExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, mode, child)
+    Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
 
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
 }
