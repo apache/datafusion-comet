@@ -1965,6 +1965,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("remainder function") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
