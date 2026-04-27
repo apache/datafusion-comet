@@ -26,7 +26,7 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometNativeScanExec, CometSubqueryAdaptiveBroadcastExec, CometSubqueryBroadcastExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
-import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec}
 import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 
 import org.apache.comet.shims.ShimSubqueryBroadcast
@@ -67,10 +67,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
 
     plan.transformUp {
       case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
-        // scalastyle:off println
-        println(s"[CometDPP] Converting AQE DPP for CometNativeScanExec")
-        System.out.flush()
-        // scalastyle:on println
+        logDebug("Converting AQE DPP for CometNativeScanExec")
         convertNativeScanDPP(nativeScan, plan)
     }
   }
@@ -158,13 +155,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
     findMatchingBroadcastJoin(sabKeyIds, fullPlan).map { result =>
       val broadcastChild = result._1
       val isComet = result._2
-      // scalastyle:off println
-      println(
-        s"[CometDPP] Matched '$name' to " +
+      logDebug(
+        s"Matched DPP subquery '$name' to " +
           s"${if (isComet) "Comet" else "Spark"} broadcast: " +
           s"${broadcastChild.getClass.getSimpleName}")
-      System.out.flush()
-      // scalastyle:on println
 
       assert(
         broadcastChild.isInstanceOf[BroadcastQueryStageExec],
@@ -172,13 +166,21 @@ case object CometPlanAdaptiveDynamicPruningFilters
           s"got ${broadcastChild.getClass.getSimpleName}. " +
           "queryStageOptimizerRules should run after broadcast stage materialization.")
 
+      // The stage's plan may be the original exchange or a ReusedExchangeExec (when AQE
+      // reuses exchanges across the main plan and scalar subquery plans via shared context).
+      // Unwrap ReusedExchangeExec to verify the underlying exchange type matches the join.
       val stageExchange = broadcastChild.asInstanceOf[BroadcastQueryStageExec].plan
-      val isCometExchange = stageExchange.isInstanceOf[CometBroadcastExchangeExec]
-      val isSparkExchange = stageExchange.isInstanceOf[BroadcastExchangeExec]
+      val underlyingExchange = stageExchange match {
+        case r: ReusedExchangeExec => r.child
+        case other => other
+      }
+      val isCometExchange = underlyingExchange.isInstanceOf[CometBroadcastExchangeExec]
+      val isSparkExchange = underlyingExchange.isInstanceOf[BroadcastExchangeExec]
       assert(
         (isComet && isCometExchange) || (!isComet && isSparkExchange),
         s"Join/broadcast type mismatch: join isComet=$isComet, " +
-          s"exchange=${stageExchange.getClass.getSimpleName}. " +
+          s"exchange=${underlyingExchange.getClass.getSimpleName} " +
+          s"(via ${stageExchange.getClass.getSimpleName}). " +
           "CometExecRule should convert both or neither.")
 
       val subquery = if (isComet) {

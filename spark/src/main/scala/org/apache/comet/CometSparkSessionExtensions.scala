@@ -43,34 +43,44 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *
  * Non-AQE (QueryExecution.preparations):
  * {{{
- *   1. PlanDynamicPruningFilters    -- Spark creates DPP filters
+ *   1. PlanDynamicPruningFilters    -- Spark creates non-AQE DPP (SubqueryBroadcastExec)
  *   2. PlanSubqueries               -- Spark creates SubqueryExec for scalar subqueries
  *   3. EnsureRequirements            -- Spark inserts shuffles/sorts
  *   4. ApplyColumnarRulesAndInsertTransitions:
- *      a. preColumnarTransitions:   CometScanRule, CometExecRule (replace Spark -> Comet nodes)
+ *      a. preColumnarTransitions:   CometScanRule, CometExecRule
+ *         - CometExecRule.convertSubqueryBroadcasts converts SubqueryBroadcastExec to
+ *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
  *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
  *      c. postColumnarTransitions:  EliminateRedundantTransitions
  *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
  * }}}
  *
- * AQE (AdaptiveSparkPlanExec):
+ * AQE (AdaptiveSparkPlanExec, Spark 3.5+):
  * {{{
  *   Initial plan:
- *     queryStagePreparationRules:   CometScanRule, CometExecRule (replace Spark -> Comet nodes)
+ *     PlanAdaptiveSubqueries:       creates SubqueryAdaptiveBroadcastExec (SAB) for AQE DPP
+ *     queryStagePreparationRules:   CometScanRule, CometExecRule
+ *       - CometExecRule.convertSubqueryBroadcasts wraps SABs in
+ *         CometSubqueryAdaptiveBroadcastExec to prevent Spark's
+ *         PlanAdaptiveDynamicPruningFilters from replacing DPP with Literal.TrueLiteral
  *
  *   Per stage (optimizeQueryStage + postStageCreationRules):
- *     1. queryStageOptimizerRules:  ReuseAdaptiveSubquery, CometReuseSubquery
+ *     1. queryStageOptimizerRules:
+ *        a. PlanAdaptiveDynamicPruningFilters (Spark) -- skips wrapped SABs
+ *        b. ReuseAdaptiveSubquery (Spark)
+ *        c. CometPlanAdaptiveDynamicPruningFilters   -- converts wrapped SABs to
+ *           CometSubqueryBroadcastExec with BroadcastQueryStageExec for broadcast reuse
+ *        d. CometReuseSubquery                       -- deduplicates converted subqueries
  *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
  *        a. preColumnarTransitions: CometScanRule, CometExecRule (no-ops, already converted)
  *        b. insertTransitions
  *        c. postColumnarTransitions: EliminateRedundantTransitions
  * }}}
  *
- * CometReuseSubquery is needed in AQE because Spark's ReuseAdaptiveSubquery may run before
- * Comet's node replacements in the initial plan construction, and the replacements can disrupt
- * subquery reuse that was already applied. The shim-based registration
- * (injectQueryStageOptimizerRuleShim) handles API availability: Spark 3.5+ has
- * injectQueryStageOptimizerRule, Spark 3.4 does not (no-op).
+ * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
+ * and CometPlanAdaptiveDynamicPruningFilters/CometReuseSubquery are not registered. AQE DPP scans
+ * fall back to Spark so that Spark's PlanAdaptiveDynamicPruningFilters handles them natively
+ * (with DPP).
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
