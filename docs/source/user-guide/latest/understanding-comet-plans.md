@@ -145,13 +145,13 @@ by role. Names match what is shown in the plan output.
 
 ### Scans
 
-| Node                     | Description                                                                                     |
-| ------------------------ | ----------------------------------------------------------------------------------------------- |
+| Node                     | Description                                                                                                                                                                                                                                                                 |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CometScan`              | V1 Parquet scan driven by Spark's file-source path through Comet's Parquet reader. Decoding runs in native code; the resulting Arrow batches cross JNI into the native plan. The active scan implementation is shown in brackets, e.g. `CometScan [native_iceberg_compat]`. |
-| `CometBatchScan`         | DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet.   |
-| `CometNativeScan`        | Fully native Parquet scan that runs entirely in DataFusion (no JVM Parquet reader involvement). |
-| `CometIcebergNativeScan` | Fully native Iceberg Parquet scan.                                                              |
-| `CometCsvNativeScan`     | Fully native CSV scan (experimental).                                                           |
+| `CometBatchScan`         | DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet.                                                                                                                                                                               |
+| `CometNativeScan`        | Fully native Parquet scan that runs entirely in DataFusion (no JVM Parquet reader involvement).                                                                                                                                                                             |
+| `CometIcebergNativeScan` | Fully native Iceberg Parquet scan.                                                                                                                                                                                                                                          |
+| `CometCsvNativeScan`     | Fully native CSV scan (experimental).                                                                                                                                                                                                                                       |
 
 ### Native Execution Operators
 
