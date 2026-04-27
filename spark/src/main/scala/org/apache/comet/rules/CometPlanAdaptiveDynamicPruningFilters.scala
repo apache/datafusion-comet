@@ -149,7 +149,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
     val sabKeyIds: Set[Any] = buildKeys.flatMap(_.references.map(_.exprId)).toSet
     assert(
       sabKeyIds.nonEmpty,
-      s"DPP subquery '$name' has empty buildKeys — " +
+      s"DPP subquery '$name' has empty buildKeys - " +
         "PlanAdaptiveSubqueries should always populate buildKeys")
 
     findMatchingBroadcastJoin(sabKeyIds, fullPlan).map { result =>

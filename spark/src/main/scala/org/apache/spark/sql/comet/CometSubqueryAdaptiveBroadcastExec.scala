@@ -42,7 +42,7 @@ import org.apache.spark.sql.execution.{BaseSubqueryExec, SparkPlan, UnaryExecNod
  * and converts it to CometSubqueryBroadcastExec with the join's BroadcastQueryStageExec for true
  * broadcast reuse.
  *
- * Not executable — must be converted before execution.
+ * Not executable - must be converted before execution.
  */
 case class CometSubqueryAdaptiveBroadcastExec(
     name: String,
