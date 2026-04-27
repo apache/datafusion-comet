@@ -1266,6 +1266,36 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Test #11: DPP with REUSE_BROADCAST_ONLY=false and EXCHANGE_REUSE_ENABLED=false.
+  // With onlyInBroadcast=false on the SAB, Spark's PlanAdaptiveDynamicPruningFilters
+  // would create an aggregate SubqueryExec (not TrueLiteral). Our wrapping must still
+  // protect the SAB so our rule can convert it with broadcast reuse.
+  // Reproduces DynamicPartitionPruningSuite "simple inner join triggers DPP with mock-up tables".
+  test("AQE DPP: inner join with broadcast reuse disabled") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
+        val df = sql("""SELECT f.date_id, f.store_id FROM fact_sk f
+            |JOIN dim_store s ON f.store_id = s.store_id AND s.country = 'NL'""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        if (isSpark35Plus) {
+          val nativeScans = collect(cometPlan) { case s: CometNativeScanExec => s }
+          assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
+
+          val remainingSABs = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryAdaptiveBroadcastExec => s
+          }
+          assert(remainingSABs.isEmpty, "No unconverted SABs should remain")
+        }
+      }
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"

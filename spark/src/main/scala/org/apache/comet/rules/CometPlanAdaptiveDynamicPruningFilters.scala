@@ -23,6 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.catalyst.trees.TreePattern.DYNAMIC_PRUNING_EXPRESSION
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometNativeScanExec, CometSubqueryAdaptiveBroadcastExec, CometSubqueryBroadcastExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
@@ -65,11 +66,26 @@ case object CometPlanAdaptiveDynamicPruningFilters
       return plan
     }
 
-    plan.transformUp {
-      case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
-        logDebug("Converting AQE DPP for CometNativeScanExec")
-        convertNativeScanDPP(nativeScan, plan)
-    }
+    plan
+      .transformUp {
+        case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
+          logDebug("Converting AQE DPP for CometNativeScanExec")
+          convertNativeScanDPP(nativeScan, plan)
+      }
+      .transformAllExpressionsWithPruning(_.containsPattern(DYNAMIC_PRUNING_EXPRESSION)) {
+        // Cleanup: convert any remaining CometSubqueryAdaptiveBroadcastExec to TrueLiteral.
+        // These are SABs that were wrapped by CometExecRule in a CometScanExec that did NOT
+        // become a CometNativeScanExec (e.g., native scan disabled, unsupported schema).
+        // Spark's PlanAdaptiveDynamicPruningFilters couldn't process them (different type),
+        // and our transformUp above only handles CometNativeScanExec. Falling back to
+        // TrueLiteral disables DPP for these scans (correct results, no pruning).
+        case DynamicPruningExpression(inSub: InSubqueryExec)
+            if inSub.plan.isInstanceOf[CometSubqueryAdaptiveBroadcastExec] =>
+          logInfo(
+            "Converting remaining CometSubqueryAdaptiveBroadcastExec to TrueLiteral " +
+              s"(scan did not become CometNativeScanExec)")
+          DynamicPruningExpression(Literal.TrueLiteral)
+      }
   }
 
   private def convertNativeScanDPP(

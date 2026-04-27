@@ -426,17 +426,22 @@ case class CometExecRule(session: SparkSession)
               }
             case _ => inSub
           }
-        case sab: SubqueryAdaptiveBroadcastExec if isSpark35Plus =>
+        case sab: SubqueryAdaptiveBroadcastExec
+            if isSpark35Plus && plan.isInstanceOf[CometNativeScanExec] =>
+          // Only wrap SABs in native scans (CometNativeScanExec, converted by convertNode
+          // in the same transformUp pass). Non-native scans (e.g., CSV FileSourceScanExec)
+          // keep the original SAB so Spark's PlanAdaptiveDynamicPruningFilters handles DPP.
+          //
           // SABs are created by PlanAdaptiveSubqueries (AQE preprocessing) and are
           // non-executable placeholders. We wrap them to prevent Spark's
           // PlanAdaptiveDynamicPruningFilters from converting them to Literal.TrueLiteral
-          // (which it does when it can't find BroadcastHashJoinExec — Comet replaced it).
+          // (which it does when it can't find BroadcastHashJoinExec - Comet replaced it).
           // CometPlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule, 3.5+) unwraps
           // and converts them later, after broadcast stages are materialized.
           //
           // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so the conversion
-          // rule can't run. We leave SABs unwrapped and let Spark's rule handle them
-          // (converting to TrueLiteral — DPP disabled but correct results).
+          // rule can't run. The isSpark35Plus guard leaves SABs unwrapped and lets Spark's
+          // rule handle them (converting to TrueLiteral - DPP disabled but correct results).
           assert(
             sab.buildKeys.nonEmpty,
             s"SubqueryAdaptiveBroadcastExec '${sab.name}' has empty buildKeys")
