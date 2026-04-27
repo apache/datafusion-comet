@@ -39,7 +39,10 @@ trait ShimCometSparkSessionExtensions {
     true
   }
 
-  // injectQueryStageOptimizerRule not available on Spark 3.4
+  // injectQueryStageOptimizerRule not available on Spark 3.4.
+  // CometPlanAdaptiveDynamicPruningFilters and CometReuseSubquery are not registered.
+  // On 3.4, Spark's PlanAdaptiveDynamicPruningFilters handles SABs directly (converting to
+  // TrueLiteral when it can't find BroadcastHashJoinExec, disabling DPP).
   def injectQueryStageOptimizerRuleShim(
       extensions: SparkSessionExtensions,
       rule: Rule[SparkPlan]): Unit = {}

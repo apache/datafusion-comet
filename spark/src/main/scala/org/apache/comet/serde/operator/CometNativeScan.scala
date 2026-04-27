@@ -31,7 +31,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
-import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isSpark35Plus, withInfo}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
@@ -56,11 +56,17 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       withInfo(scanExec, s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
     }
 
-    // Native DataFusion doesn't support AQE DPP (SubqueryAdaptiveBroadcastExec).
-    // Non-AQE DPP (SubqueryBroadcastExec/SubqueryExec) is supported through the lazy
+    // AQE DPP (SubqueryAdaptiveBroadcastExec) is converted to CometSubqueryBroadcastExec
+    // by CometPlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule, Spark 3.5+).
+    // Non-AQE DPP (SubqueryBroadcastExec/SubqueryExec) is converted by
+    // CometExecRule.convertSubqueryBroadcasts. Both are resolved through the lazy
     // partition serialization path in CometNativeScanExec.
-    if (scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
-      withInfo(scanExec, "Native DataFusion scan does not support AQE dynamic pruning")
+    //
+    // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so the AQE DPP conversion
+    // rule can't run. CometScanRule.transformV1Scan rejects AQE DPP on 3.4, so this check
+    // is a safety net: if the scan somehow reached here with AQE DPP on 3.4, reject it.
+    if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
+      withInfo(scanExec, "Native DataFusion scan does not support AQE DPP on Spark 3.4")
     }
 
     if (SQLConf.get.ignoreCorruptFiles ||

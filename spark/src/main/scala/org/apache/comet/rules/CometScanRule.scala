@@ -43,7 +43,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
@@ -139,8 +139,15 @@ case class CometScanRule(session: SparkSession)
 
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
 
-    if (scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
-      return withInfo(scanExec, "AQE Dynamic Partition Pruning is not supported")
+    // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so
+    // CometPlanAdaptiveDynamicPruningFilters can't run. AQE DPP SABs would remain
+    // unconverted in both outer (CometNativeScanExec) and inner (CometScanExec)
+    // partitionFilters, causing execution failure. Fall back to Spark on 3.4 so that
+    // Spark's PlanAdaptiveDynamicPruningFilters handles SABs natively (with DPP).
+    // On 3.5+, CometPlanAdaptiveDynamicPruningFilters converts SABs after broadcast
+    // stage materialization, enabling native DPP with broadcast reuse.
+    if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
+      return withInfo(scanExec, "AQE Dynamic Partition Pruning requires Spark 3.5+")
     }
 
     scanExec.relation match {
