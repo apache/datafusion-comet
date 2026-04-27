@@ -192,16 +192,23 @@ Comet has two shuffle implementations and the plan tells you which one is in
 use:
 
 - **`CometExchange`** is the **native shuffle** path. The child must already
-  produce columnar Arrow batches and the partitioning keys must be primitive
-  types. The node calls `executeColumnar()` on its child and the partition,
-  encode, and compress steps run in native code.
+  be a Comet operator producing columnar Arrow batches; the node calls
+  `executeColumnar()` on its child and the partition, encode, and compress
+  steps run in native code. Hash and range partitioning **keys** must be
+  primitive types because native hashing and ordering do not support complex
+  types, but the data columns themselves can include `StructType`,
+  `ArrayType`, and `MapType` since batches are serialized via the Arrow IPC
+  writer.
 - **`CometColumnarExchange`** is the **JVM columnar shuffle** path. It accepts
-  either Spark row-based input or Comet columnar input (Comet children are
-  converted to rows automatically) and supports more partitioning schemes
-  (`HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`,
-  `SinglePartitioning`) and more partitioning key types, including complex
-  types. It is the fallback when native shuffle cannot be used but Comet
-  shuffle is still enabled.
+  either Spark row-based input or Comet columnar input, which makes it the
+  fallback when the child is not a Comet operator or when a hash/range key
+  type is not supported by native shuffle (for example, collated strings). It
+  is still preferred over Spark's native shuffle when Comet shuffle is
+  enabled.
+
+Both paths support the same set of partitioning schemes
+(`HashPartitioning`, `RangePartitioning`, `RoundRobinPartitioning`,
+`SinglePartition`) and both can carry complex types in data columns.
 
 The choice between the two is automatic. See the
 [Tuning Guide shuffle section](tuning.md#shuffle) for how to enable Comet
