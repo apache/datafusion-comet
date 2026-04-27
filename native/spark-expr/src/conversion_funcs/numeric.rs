@@ -42,6 +42,7 @@ pub(crate) fn is_df_cast_from_int_spark_compatible(to_type: &DataType) -> bool {
             | DataType::Float32
             | DataType::Float64
             | DataType::Utf8
+            | DataType::Utf8View
     )
 }
 
@@ -77,6 +78,7 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             // arm in cast_array that applies Java BigDecimal.toString() (scientific notation
             // for values where adjusted_exponent < -6, e.g. "0E-18" for zero with scale=18).
             | DataType::Utf8
+            | DataType::Utf8View
     )
     // Note: Boolean is intentionally absent. Decimal-to-boolean uses a dedicated
     // spark_cast_decimal_to_boolean function (in cast.rs) that checks the raw i128

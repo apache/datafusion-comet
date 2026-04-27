@@ -171,7 +171,7 @@ impl TimeStampInfo {
 }
 
 pub(crate) fn is_df_cast_from_string_spark_compatible(to_type: &DataType) -> bool {
-    matches!(to_type, DataType::Binary)
+    matches!(to_type, DataType::Binary | DataType::BinaryView)
 }
 
 pub(crate) fn cast_string_to_float(
