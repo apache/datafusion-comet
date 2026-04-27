@@ -138,15 +138,15 @@ Location: `native/spark-expr/src/`
 - [ ] No panics. Use `Result` types.
 - [ ] Efficient array operations (avoid row-by-row)
 
-#### Tests - Prefer SQL File-Based Framework
+#### Tests - Prefer Comet SQL Tests
 
-**Expression tests should use the SQL file-based framework (`CometSqlFileTestSuite`) where possible.** This framework automatically runs each query through both Spark and Comet and compares results. No Scala code is needed. Only fall back to Scala tests in `CometExpressionSuite` when the SQL framework cannot express the test. Examples include complex `DataFrame` setup, programmatic data generation, or non-expression tests.
+**Expression tests should use Comet SQL Tests (`CometSqlFileTestSuite`) where possible.** This framework automatically runs each query through both Spark and Comet and compares results. No Scala code is needed. Only fall back to Comet Scala Tests in `CometExpressionSuite` when Comet SQL Tests cannot express the test. Examples include complex `DataFrame` setup, programmatic data generation, or non-expression tests.
 
-**SQL file test location:** `spark/src/test/resources/sql-tests/expressions/<category>/`
+**Comet SQL Test location:** `spark/src/test/resources/sql-tests/expressions/<category>/`
 
 Categories include: `aggregate/`, `array/`, `string/`, `math/`, `struct/`, `map/`, `datetime/`, `hash/`, etc.
 
-**SQL file structure:**
+**Comet SQL Test structure:**
 
 ```sql
 -- Create test data
@@ -181,10 +181,10 @@ query ignore(https://github.com/apache/datafusion-comet/issues/NNNN)
 SELECT known_buggy_expr(v) FROM test_table
 ```
 
-**Running SQL file tests:**
+**Running Comet SQL Tests:**
 
 ```bash
-# All SQL file tests
+# All Comet SQL Tests
 ./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
 
 # Specific test file (substring match)
@@ -199,7 +199,7 @@ SELECT known_buggy_expr(v) FROM test_table
 - [ ] Both literal values and column references tested (they use different code paths)
 - [ ] For timestamp/datetime expressions, timezone handling is tested (e.g., UTC, non-UTC session timezone, timestamps with and without timezone)
 - [ ] One expression per SQL file for easier debugging
-- [ ] If using Scala tests instead, literal tests MUST disable constant folding:
+- [ ] If using Comet Scala Tests instead, literal tests MUST disable constant folding:
   ```scala
   withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
       "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
@@ -256,7 +256,7 @@ If the PR adds a new expression or operator but does not update the relevant doc
 1. **Incomplete type support**: Spark expression supports types not handled in PR
 2. **Missing edge cases**: Null, overflow, empty string, negative values
 3. **Wrong return type**: Return type must match Spark exactly
-4. **Tests in wrong framework**: Expression tests should use the SQL file-based framework (`CometSqlFileTestSuite`) rather than adding to Scala test suites like `CometExpressionSuite`. Suggest migration if the PR adds Scala tests for expressions that could use SQL files instead.
+4. **Tests in wrong framework**: Expression tests should use Comet SQL Tests (`CometSqlFileTestSuite`) rather than adding to Comet Scala Tests like `CometExpressionSuite`. Suggest migration if the PR adds Comet Scala Tests for expressions that could use Comet SQL Tests instead.
 5. **Stale native code**: PR might need `./mvnw install -pl common -DskipTests`
 6. **Missing `getSupportLevel`**: Edge cases should be marked as `Incompatible`
 

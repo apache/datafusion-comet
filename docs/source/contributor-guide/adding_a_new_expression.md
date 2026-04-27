@@ -273,9 +273,9 @@ override def getUnsupportedReasons(): Seq[String] = Seq(
 
 #### Adding Spark-side Tests for the New Expression
 
-It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a SQL test file using the SQL file test framework. This approach is simpler than writing Scala test code and makes it easy to cover many input combinations and edge cases.
+It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a Comet SQL Test. This approach is simpler than writing Comet Scala Tests and makes it easy to cover many input combinations and edge cases.
 
-##### Writing a SQL test file
+##### Writing a Comet SQL Test
 
 Create a `.sql` file under the appropriate subdirectory in `spark/src/test/resources/sql-tests/expressions/` (e.g., `string/`, `math/`, `array/`). The file should create a table with test data, then run queries that exercise the expression. Here is an example for the `unhex` expression:
 
@@ -313,17 +313,17 @@ Run the test with:
 ./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite unhex" -Dtest=none
 ```
 
-For full documentation on the test file format — including directives like `ConfigMatrix`, query modes like `spark_answer_only` and `tolerance`, handling known bugs with `ignore(...)`, and tips for writing thorough tests — see the [SQL File Tests](sql-file-tests.md) guide.
+For full documentation on the test file format, including directives like `ConfigMatrix`, query modes like `spark_answer_only` and `tolerance`, handling known bugs with `ignore(...)`, and tips for writing thorough tests, see the [Comet SQL Tests](sql-file-tests.md) guide.
 
 ##### Tips
 
-- **Cover both column references and literals.** Comet often uses different code paths for each. The SQL file test suite automatically disables constant folding, so all-literal queries are evaluated natively.
+- **Cover both column references and literals.** Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated natively.
 - **Include edge cases** such as `NULL`, empty strings, boundary values, `NaN`, and multibyte UTF-8 characters.
 - **Keep one file per expression** to make failures easy to locate.
 
-##### Scala tests (alternative)
+##### Comet Scala Tests (alternative)
 
-For cases that require programmatic setup or custom assertions beyond what SQL files support, you can also add Scala test cases in `CometExpressionSuite` using the `checkSparkAnswerAndOperator` method:
+For cases that require programmatic setup or custom assertions beyond what SQL files support, you can also add Comet Scala Tests in `CometExpressionSuite` using the `checkSparkAnswerAndOperator` method:
 
 ```scala
 test("unhex") {
@@ -347,7 +347,7 @@ test("unhex") {
 }
 ```
 
-When writing Scala tests with literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:
+When writing Comet Scala Tests with literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:
 
 ```scala
 test("my_func with literals") {
