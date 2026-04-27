@@ -17,15 +17,15 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# SQL File Tests
+# Comet SQL Tests
 
 `CometSqlFileTestSuite` is a test suite that automatically discovers `.sql` test files and
 runs each query through both Spark and Comet, comparing results. This provides a lightweight
-way to add expression and operator test coverage without writing Scala test code.
+way to add expression and operator test coverage without writing Comet Scala Tests.
 
 ## Running the tests
 
-Run all SQL file tests:
+Run all Comet SQL Tests:
 
 ```shell
 ./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none

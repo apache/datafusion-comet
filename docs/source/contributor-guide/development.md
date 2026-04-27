@@ -281,14 +281,14 @@ size limit to 16 MB.
 First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
 After that you can open the project in CLion. The IDE should automatically detect the project structure and import as a Cargo project.
 
-### SQL file tests (recommended for expressions)
+### Comet SQL Tests (recommended for expressions)
 
-For testing expressions and operators, prefer using SQL file tests over writing Scala test
-code. SQL file tests are plain `.sql` files that are automatically discovered and executed --
+For testing expressions and operators, prefer using Comet SQL Tests over writing Comet Scala
+Tests. Comet SQL Tests are plain `.sql` files that are automatically discovered and executed:
 no Scala code to write, and no recompilation needed when tests change. This makes it easy to
 iterate quickly and to get good coverage of edge cases and argument combinations.
 
-See the [SQL File Tests](sql-file-tests) guide for the full documentation on how to write
+See the [Comet SQL Tests](sql-file-tests) guide for the full documentation on how to write
 and run these tests.
 
 ### Running Tests in IDEA
@@ -444,7 +444,7 @@ Comet's CI does not automatically discover test suites. Instead, test suites are
 in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
 jobs. This reduces overall CI time.
 
-If you add a new Scala test suite, you must add it to the `suite` matrix in **both** workflow files:
+If you add a new Comet Scala Test suite, you must add it to the `suite` matrix in **both** workflow files:
 
 - `.github/workflows/pr_build_linux.yml`
 - `.github/workflows/pr_build_macos.yml`
@@ -471,7 +471,7 @@ Choose the group that best matches the area your test covers:
 | `parquet`     | Parquet read/write and native reader tests                 |
 | `csv`         | CSV native read tests                                      |
 | `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\* |
-| `expressions` | Expression evaluation, casts, and SQL file tests           |
+| `expressions` | Expression evaluation, casts, and Comet SQL Tests          |
 | `sql`         | SQL-level behavior tests                                   |
 
 **Important:** The suite lists in both workflow files must stay in sync. A separate CI check
