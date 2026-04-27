@@ -140,6 +140,9 @@ object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from
   val lastWinUnsupportedReason =
     "spark.sql.mapKeyDedupPolicy=LAST_WIN is not yet supported natively for map_from_entries"
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(keyUnsupportedReason, valueUnsupportedReason)
+
   private def containsBinary(dataType: DataType): Boolean = {
     dataType match {
       case BinaryType => true

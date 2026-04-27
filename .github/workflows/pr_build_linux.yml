@@ -30,18 +30,22 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
   pull_request:
     paths-ignore:
       - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -49,6 +53,10 @@ on:
 env:
   RUST_VERSION: stable
   RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
 
 jobs:
 
@@ -166,7 +174,7 @@ jobs:
           # (no LTO, parallel codegen)
           cargo build --profile ci
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Upload native library
         uses: actions/upload-artifact@v7
@@ -240,19 +248,9 @@ jobs:
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
             scan_impl: "auto"
 
-          - name: "Spark 3.5.5, JDK 17, Scala 2.13"
+          - name: "Spark 3.5, JDK 17, Scala 2.13"
             java_version: "17"
-            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.5 -Pscala-2.13"
-            scan_impl: "auto"
-
-          - name: "Spark 3.5.6, JDK 17, Scala 2.13"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.6 -Pscala-2.13"
-            scan_impl: "auto"
-
-          - name: "Spark 3.5, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+            maven_opts: "-Pspark-3.5 -Pscala-2.13"
             scan_impl: "native_iceberg_compat"
 
           - name: "Spark 4.0, JDK 17"
@@ -290,6 +288,7 @@ jobs:
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.iceberg.IcebergReflectionSuite
           - name: "csv"
             value: |
               org.apache.comet.csv.CometCsvNativeReadSuite
@@ -342,6 +341,7 @@ jobs:
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
+              org.apache.spark.sql.CometCollationSuite
       fail-fast: false
     name: ${{ matrix.profile.name }}/${{ matrix.profile.scan_impl }} [${{ matrix.suite.name }}]
     runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
