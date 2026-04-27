@@ -32,7 +32,6 @@ query tolerance=1e-6
 SELECT log(d, 10.0) FROM test_log
 
 -- literal (1-arg form)
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT ln(1.0), ln(2.718281828459045), ln(10.0), ln(NULL)
 

@@ -39,7 +39,6 @@ query
 SELECT cast(100.00 as decimal(10,2)) + b, cast(100.00 as decimal(10,2)) - b, cast(100.00 as decimal(10,2)) * b FROM test_decimal
 
 -- literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT cast(10.50 as decimal(10,2)) + cast(3.20 as decimal(10,2)), cast(10.50 as decimal(10,2)) - cast(3.20 as decimal(10,2)), cast(10.50 as decimal(10,2)) * cast(3.20 as decimal(10,2)), cast(10.50 as decimal(10,2)) / cast(3.20 as decimal(10,2))
 

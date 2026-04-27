@@ -32,6 +32,5 @@ query
 SELECT rpad(s, 5, 'x') FROM test_rpad
 
 -- literal + literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query expect_fallback(Scalar values are not supported for the str argument)
 SELECT rpad('hi', 5, 'x'), rpad('hello', 3, 'x'), rpad('', 3, 'a'), rpad(NULL, 5, 'x')

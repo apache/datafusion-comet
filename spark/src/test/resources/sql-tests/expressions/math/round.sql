@@ -34,6 +34,5 @@ query expect_fallback(BigDecimal rounding)
 SELECT round(d) FROM test_round
 
 -- literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query expect_fallback(BigDecimal rounding)
 SELECT round(123.456, 2), round(2.5, 0), round(3.5, 0), round(-2.5, 0), round(NULL, 0)

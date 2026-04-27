@@ -63,7 +63,6 @@ query
 SELECT 10 + b, 10 - b, 10 * b, 10 / b, 10 % b FROM test_arith
 
 -- literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT 10 + 3, 10 - 3, 10 * 3, 10 / 3, 10 % 3
 

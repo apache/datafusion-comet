@@ -27,6 +27,5 @@ query tolerance=1e-6
 SELECT tan(d) FROM test_tan
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT tan(0.0), tan(-0.0), tan(0.7853981633974483), tan(NULL)

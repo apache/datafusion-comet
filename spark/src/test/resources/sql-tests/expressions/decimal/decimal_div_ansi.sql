@@ -93,7 +93,6 @@ query
 SELECT try_divide(a, b) FROM test_ansi_decimal
 
 -- try_divide NULL inputs
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT try_divide(NULL, cast(3.000000 as decimal(18,6))),
        try_divide(cast(10.000000 as decimal(18,6)), NULL)

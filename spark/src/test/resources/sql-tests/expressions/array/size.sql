@@ -25,6 +25,5 @@ query spark_answer_only
 SELECT size(arr), size(m) FROM test_size
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT size(array(1, 2, 3)), size(array()), size(cast(NULL as array<int>))

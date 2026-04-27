@@ -63,6 +63,5 @@ query
 SELECT bin(i), bin(l), bin(f), bin(d) FROM test_bin
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT bin(-5), bin(-1.5), bin(0), bin(NULL)

@@ -20,7 +20,6 @@
 -- TODO: replace map_from_arrays with map whenever map is supported in Comet
 
 -- Basic integer key tests with map literals
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 select map_contains_key(map_from_arrays(array(1, 2), array('a', 'b')), 5)
 

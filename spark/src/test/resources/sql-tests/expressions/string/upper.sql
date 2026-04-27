@@ -25,6 +25,5 @@ query expect_fallback(case conversion)
 SELECT upper(s) FROM test_upper
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query expect_fallback(case conversion)
 SELECT upper('hello'), upper(''), upper(NULL)

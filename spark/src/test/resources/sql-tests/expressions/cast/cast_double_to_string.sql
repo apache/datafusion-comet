@@ -38,6 +38,5 @@ INSERT INTO test_double_to_string VALUES
 query
 SELECT cast(d as string), id FROM test_double_to_string ORDER BY id
 
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT cast(-0.0 as string), cast(0.0 as string)

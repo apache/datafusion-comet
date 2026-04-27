@@ -31,6 +31,5 @@ query expect_fallback(Non-UTC timezone)
 SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query expect_fallback(Non-UTC timezone)
 SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')

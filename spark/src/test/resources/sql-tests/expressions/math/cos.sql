@@ -25,6 +25,5 @@ query tolerance=1e-6
 SELECT cos(d) FROM test_cos
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT cos(0.0), cos(3.141592653589793), cos(NULL)

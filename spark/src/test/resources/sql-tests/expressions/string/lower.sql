@@ -25,6 +25,5 @@ query expect_fallback(case conversion)
 SELECT lower(s) FROM test_lower
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query expect_fallback(case conversion)
 SELECT lower('HELLO'), lower(''), lower(NULL)

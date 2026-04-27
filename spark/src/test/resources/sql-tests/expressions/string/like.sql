@@ -34,6 +34,5 @@ query
 SELECT s LIKE '' FROM test_like
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT 'hello' LIKE 'h%', 'hello' LIKE 'xyz%', '' LIKE '', NULL LIKE 'a'

@@ -34,6 +34,5 @@ query
 SELECT s RLIKE '' FROM test_rlike_enabled
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^[a-z]+$', '' RLIKE '', NULL RLIKE 'a'

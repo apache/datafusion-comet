@@ -25,6 +25,5 @@ query tolerance=1e-6
 SELECT acos(d) FROM test_acos
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT acos(0.5), acos(1.0), acos(-1.0), acos(NULL)

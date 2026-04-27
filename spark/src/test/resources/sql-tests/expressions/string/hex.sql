@@ -25,6 +25,5 @@ query
 SELECT hex(i), hex(l), hex(s) FROM test_hex
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT hex(255), hex('Spark'), hex(NULL)

@@ -49,7 +49,6 @@ query
 SELECT concat(concat(a, b, c), concat(a, c)) FROM test_concat
 
 -- literal + literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT concat('hello', ' ', 'world'), concat('', '', ''), concat(NULL, 'b', 'c')
 

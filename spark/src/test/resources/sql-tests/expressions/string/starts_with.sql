@@ -33,6 +33,5 @@ query
 SELECT startswith('hello world', prefix) FROM test_starts_with
 
 -- literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT startswith('hello world', 'hello'), startswith('hello', 'xyz'), startswith('', ''), startswith(NULL, 'a')

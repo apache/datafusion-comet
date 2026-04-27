@@ -25,6 +25,5 @@ query
 SELECT octet_length(s) FROM test_octet_length
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT octet_length('hello'), octet_length(''), octet_length(NULL)

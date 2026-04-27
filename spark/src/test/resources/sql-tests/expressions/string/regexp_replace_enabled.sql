@@ -31,6 +31,5 @@ query
 SELECT regexp_replace(s, '(\d+)', 'X', 1) FROM test_regexp_replace_enabled
 
 -- literal + literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT regexp_replace('100-200', '(\d+)', 'X'), regexp_replace('abc', '(\d+)', 'X'), regexp_replace(NULL, '(\d+)', 'X')

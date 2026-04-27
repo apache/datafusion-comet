@@ -25,6 +25,5 @@ query tolerance=1e-6
 SELECT asin(d) FROM test_asin
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT asin(0.5), asin(1.0), asin(-1.0), asin(NULL)

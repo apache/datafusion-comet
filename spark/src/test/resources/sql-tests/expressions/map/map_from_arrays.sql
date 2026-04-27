@@ -51,7 +51,6 @@ query spark_answer_only
 SELECT map_from_arrays(array('a', 'b'), array(1, 2))
 
 -- literal null arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT map_from_arrays(NULL, array(1, 2))
 

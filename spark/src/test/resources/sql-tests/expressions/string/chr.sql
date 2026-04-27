@@ -25,6 +25,5 @@ query
 SELECT chr(i) FROM test_chr
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT chr(65), chr(0), chr(-1), chr(NULL)

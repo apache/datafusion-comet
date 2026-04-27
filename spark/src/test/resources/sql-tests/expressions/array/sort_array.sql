@@ -302,7 +302,6 @@ query expect_fallback(Sort on array element type ArrayType(StructType(StructFiel
 SELECT sort_array(arr, false) FROM test_sort_array_nested_struct
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT
   sort_array(array(3, 1, 4, 1, 5)),

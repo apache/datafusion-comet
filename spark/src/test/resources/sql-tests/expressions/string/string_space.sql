@@ -28,6 +28,5 @@ query
 SELECT concat('[', space(n), ']') FROM test_space WHERE n < 0
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT concat('[', space(5), ']'), concat('[', space(0), ']'), space(-1), space(NULL)

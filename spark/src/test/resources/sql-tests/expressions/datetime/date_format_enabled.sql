@@ -36,6 +36,5 @@ query
 SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format_enabled
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')

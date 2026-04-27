@@ -33,7 +33,6 @@ query
 SELECT get_json_object(json_str, '$.name') FROM test_get_json_object
 
 -- simple field extraction
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT get_json_object('{"name":"John","age":30}', '$.name')
 

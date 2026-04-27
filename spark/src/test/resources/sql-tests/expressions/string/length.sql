@@ -25,6 +25,5 @@ query
 SELECT length(s), char_length(s) FROM test_length
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT length('hello'), length(''), length(NULL)

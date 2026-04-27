@@ -25,6 +25,5 @@ query tolerance=1e-6
 SELECT exp(d) FROM test_exp
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT exp(0.0), exp(1.0), exp(NULL)

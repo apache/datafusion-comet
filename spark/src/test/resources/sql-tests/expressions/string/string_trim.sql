@@ -28,7 +28,6 @@ query
 SELECT trim(BOTH 'h' FROM s) FROM test_trim
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT trim('  hello  '), ltrim('  hello  '), rtrim('  hello  ')
 

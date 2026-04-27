@@ -33,7 +33,6 @@ query expect_error(CAST_INVALID_INPUT)
 SELECT cast('2023-02-29' as timestamp_ntz)
 
 -- TRY_CAST: returns NULL even in ANSI mode
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT try_cast('invalid' as timestamp_ntz), try_cast('T12:34' as timestamp_ntz)
 

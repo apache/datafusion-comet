@@ -25,6 +25,5 @@ query tolerance=1e-6
 SELECT sin(d) FROM test_sin
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT sin(0.0), sin(1.5707963267948966), sin(NULL)

@@ -33,6 +33,5 @@ query
 SELECT date_add(date('2024-01-15'), n) FROM test_date_add
 
 -- literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT date_add(date('2024-01-15'), 5), date_add(date('2024-12-31'), 1), date_add(NULL, 1)

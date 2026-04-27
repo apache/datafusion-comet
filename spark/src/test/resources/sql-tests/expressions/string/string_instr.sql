@@ -33,6 +33,5 @@ query
 SELECT instr('hello world', sub) FROM test_instr
 
 -- literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT instr('hello world', 'world'), instr('hello', 'xyz'), instr('', ''), instr(NULL, 'a')

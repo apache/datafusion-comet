@@ -33,6 +33,5 @@ query
 SELECT endswith('hello world', suffix) FROM test_ends_with
 
 -- literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT endswith('hello world', 'world'), endswith('hello', 'xyz'), endswith('', ''), endswith(NULL, 'a')

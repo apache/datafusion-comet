@@ -28,6 +28,5 @@ query
 SELECT arr[idx] FROM test_get_array_item
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT array(10, 20, 30)[0], array(10, 20, 30)[2], array()[0]

@@ -25,6 +25,5 @@ query tolerance=1e-6
 SELECT sinh(d) FROM test_sinh
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT sinh(0.0), sinh(1.0), sinh(NULL)

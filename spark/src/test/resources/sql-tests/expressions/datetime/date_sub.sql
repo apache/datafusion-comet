@@ -33,6 +33,5 @@ query
 SELECT date_sub(date('2024-01-15'), n) FROM test_date_sub
 
 -- literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT date_sub(date('2024-01-15'), 5), date_sub(date('2024-01-01'), 1), date_sub(NULL, 1)

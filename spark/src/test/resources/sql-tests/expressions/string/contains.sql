@@ -33,6 +33,5 @@ query
 SELECT contains('hello world', sub) FROM test_contains
 
 -- literal + literal
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT contains('hello world', 'world'), contains('hello', 'xyz'), contains('', ''), contains(NULL, 'a')

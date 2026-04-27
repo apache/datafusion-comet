@@ -18,7 +18,6 @@
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 -- Basic usage with arrays of same length
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT arrays_zip(array(1, 2, 3), array(2, 3, 4));
 

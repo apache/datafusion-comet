@@ -45,7 +45,6 @@ SELECT array_insert(arr, pos, val) FROM test_array_insert
 -- ============================================================
 
 -- basic insert at various positions
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT array_insert(array(1, 2, 3), 2, 10)
 

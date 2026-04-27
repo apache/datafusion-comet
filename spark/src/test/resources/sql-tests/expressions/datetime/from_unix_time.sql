@@ -28,7 +28,6 @@ query expect_fallback(not fully compatible with Spark)
 SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query expect_fallback(not fully compatible with Spark)
 SELECT from_unixtime(0)
 

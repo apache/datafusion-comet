@@ -26,6 +26,5 @@ query
 SELECT date_from_unix_date(i) FROM test_date_from_unix_date
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT date_from_unix_date(0), date_from_unix_date(1), date_from_unix_date(-1), date_from_unix_date(18993), date_from_unix_date(NULL)

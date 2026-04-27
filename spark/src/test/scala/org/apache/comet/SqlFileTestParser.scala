@@ -45,14 +45,8 @@ case class SqlStatement(sql: String, line: Int) extends SqlTestRecord
  *   How to validate the query.
  * @param line
  *   1-based line number in the original .sql file where the query starts.
- * @param ignoreFromSparkVersion
- *   Optional `(version, reason)`. When set, the query is skipped on Spark versions >= version.
  */
-case class SqlQuery(
-    sql: String,
-    mode: QueryAssertionMode = CheckCoverageAndAnswer,
-    line: Int,
-    ignoreFromSparkVersion: Option[(String, String)] = None)
+case class SqlQuery(sql: String, mode: QueryAssertionMode = CheckCoverageAndAnswer, line: Int)
     extends SqlTestRecord
 
 sealed trait QueryAssertionMode
@@ -89,8 +83,6 @@ object SqlFileTestParser {
   private val ConfigPattern = """--\s*Config:\s*(.+)=(.+)""".r
   private val ConfigMatrixPattern = """--\s*ConfigMatrix:\s*(.+)=(.+)""".r
   private val MinSparkVersionPattern = """--\s*MinSparkVersion:\s*(.+)""".r
-  private val IgnoreFromSparkVersionPattern =
-    """--\s*IgnoreFromSparkVersion:\s*(\S+)\s+(.+)""".r
   private val CreateTablePattern = """(?i)CREATE\s+TABLE\s+(\w+)""".r.unanchored
 
   def parse(file: File): SqlTestFile = {
@@ -106,7 +98,6 @@ object SqlFileTestParser {
     var configs = Seq.empty[(String, String)]
     var configMatrix = Seq.empty[(String, Seq[String])]
     var minSparkVersion: Option[String] = None
-    var pendingIgnoreFromSparkVersion: Option[(String, String)] = None
     val records = Seq.newBuilder[SqlTestRecord]
     val tables = Seq.newBuilder[String]
 
@@ -127,10 +118,6 @@ object SqlFileTestParser {
           minSparkVersion = Some(version.trim)
           lineIdx += 1
 
-        case IgnoreFromSparkVersionPattern(version, reason) =>
-          pendingIgnoreFromSparkVersion = Some(version.trim -> reason.trim)
-          lineIdx += 1
-
         case "statement" =>
           lineIdx += 1
           val startLine = lineIdx + 1
@@ -145,8 +132,7 @@ object SqlFileTestParser {
           lineIdx += 1
           val startLine = lineIdx + 1
           val (sql, nextIdx) = collectSql(lines, lineIdx)
-          records += SqlQuery(sql, mode, startLine, pendingIgnoreFromSparkVersion)
-          pendingIgnoreFromSparkVersion = None
+          records += SqlQuery(sql, mode, startLine)
           lineIdx = nextIdx
 
         case _ =>

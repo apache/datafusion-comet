@@ -28,6 +28,5 @@ query
 SELECT IF(a > 0, 'positive', 'non-positive') FROM test_if
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT IF(true, 1, 2), IF(false, 1, 2), IF(NULL, 1, 2)

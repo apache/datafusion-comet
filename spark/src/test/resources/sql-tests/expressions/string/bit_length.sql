@@ -25,6 +25,5 @@ query
 SELECT bit_length(s) FROM test_bit_length
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT bit_length('hello'), bit_length(''), bit_length(NULL)

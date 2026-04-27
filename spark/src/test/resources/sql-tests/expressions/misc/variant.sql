@@ -31,7 +31,6 @@ INSERT INTO test_variant VALUES
   (3, parse_json('null')),
   (4, NULL)
 
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query expect_fallback(Unsupported v of type VariantType)
 SELECT id, v FROM test_variant ORDER BY id
 

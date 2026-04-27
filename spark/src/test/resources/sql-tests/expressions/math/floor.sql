@@ -27,6 +27,5 @@ query
 SELECT floor(f), floor(d), floor(dec) FROM test_floor
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT floor(1.9), floor(-1.1), floor(0.0), floor(NULL), floor(cast(1.90 as DECIMAL(5, 2))), floor(cast(-1.10 as DECIMAL(5, 2)))

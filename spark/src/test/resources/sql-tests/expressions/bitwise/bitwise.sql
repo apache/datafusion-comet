@@ -68,7 +68,6 @@ query spark_answer_only
 SELECT bit_get(i, pos) FROM test_bit_get
 
 -- literal arguments
--- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT 1111 & 2, 1111 | 2, 1111 ^ 2
 
