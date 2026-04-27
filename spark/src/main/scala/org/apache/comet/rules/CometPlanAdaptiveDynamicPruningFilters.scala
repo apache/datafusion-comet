@@ -162,7 +162,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
 
       assert(
         broadcastChild.isInstanceOf[BroadcastQueryStageExec],
-        s"Expected BroadcastQueryStageExec as broadcast child for DPP reuse, " +
+        "Expected BroadcastQueryStageExec as broadcast child for DPP reuse, " +
           s"got ${broadcastChild.getClass.getSimpleName}. " +
           "queryStageOptimizerRules should run after broadcast stage materialization.")
 

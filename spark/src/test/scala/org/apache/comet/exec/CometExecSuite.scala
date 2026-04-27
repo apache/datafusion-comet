@@ -808,7 +808,7 @@ class CometExecSuite extends CometTestBase {
           cometSubqueries.foreach { csb =>
             assert(
               csb.child.isInstanceOf[BroadcastQueryStageExec],
-              s"Expected BroadcastQueryStageExec child but got " +
+              "Expected BroadcastQueryStageExec child but got " +
                 s"${csb.child.getClass.getSimpleName}")
           }
 
@@ -1138,7 +1138,7 @@ class CometExecSuite extends CometTestBase {
           cometSubqueries.foreach { csb =>
             assert(
               csb.child.isInstanceOf[BroadcastQueryStageExec],
-              s"CometSubqueryBroadcastExec child should be BroadcastQueryStageExec, " +
+              "CometSubqueryBroadcastExec child should be BroadcastQueryStageExec, " +
                 s"got ${csb.child.getClass.getSimpleName}")
           }
         }
@@ -1254,7 +1254,7 @@ class CometExecSuite extends CometTestBase {
 
           assert(
             countSubqueryBroadcasts + countReusedSubqueryBroadcasts >= 1,
-            s"Expected at least 1 CometSubqueryBroadcastExec (direct or reused):\n" +
+            "Expected at least 1 CometSubqueryBroadcastExec (direct or reused):\n" +
               cometPlan.treeString)
 
           val remainingSABs = collectWithSubqueries(cometPlan) {
