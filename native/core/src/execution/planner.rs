@@ -2744,29 +2744,6 @@ impl PhysicalPlanner {
             Arc::new(ConfigOptions::default()),
         ));
 
-        // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
-        // time (apache/datafusion#20045). Comet does not yet support view types, so
-        // cast the result back to the non-view variant.
-        let scalar_expr = match data_type {
-            DataType::Utf8View => Arc::new(CastExpr::new(
-                scalar_expr,
-                DataType::Utf8,
-                Some(CastOptions {
-                    safe: false,
-                    ..Default::default()
-                }),
-            )) as Arc<dyn PhysicalExpr>,
-            DataType::BinaryView => Arc::new(CastExpr::new(
-                scalar_expr,
-                DataType::Binary,
-                Some(CastOptions {
-                    safe: false,
-                    ..Default::default()
-                }),
-            )) as Arc<dyn PhysicalExpr>,
-            _ => scalar_expr,
-        };
-
         Ok(scalar_expr)
     }
 

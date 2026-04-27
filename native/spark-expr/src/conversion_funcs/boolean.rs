@@ -24,7 +24,7 @@ pub fn is_df_cast_from_bool_spark_compatible(to_type: &DataType) -> bool {
     use DataType::*;
     matches!(
         to_type,
-        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8
+        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 | Utf8View
     )
 }
 

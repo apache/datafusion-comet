@@ -24,7 +24,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 pub(crate) fn is_df_cast_from_date_spark_compatible(to_type: &DataType) -> bool {
-    matches!(to_type, DataType::Int32 | DataType::Utf8 | DataType::Utf8View)
+    matches!(
+        to_type,
+        DataType::Int32 | DataType::Utf8 | DataType::Utf8View
+    )
 }
 
 pub(crate) fn is_df_cast_from_timestamp_spark_compatible(to_type: &DataType) -> bool {

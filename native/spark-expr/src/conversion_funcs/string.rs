@@ -17,13 +17,13 @@
 
 use crate::{timezone, EvalMode, SparkError, SparkResult};
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Decimal128Builder, GenericStringArray,
-    OffsetSizeTrait, PrimitiveArray, PrimitiveBuilder, StringArray,
+    Array, ArrayAccessor, ArrayRef, ArrowPrimitiveType, BooleanArray, Decimal128Builder,
+    PrimitiveArray, PrimitiveBuilder, StringArrayType,
 };
 use arrow::compute::DecimalCast;
 use arrow::datatypes::{
-    i256, is_validate_decimal_precision, DataType, Date32Type, Decimal256Type, Float32Type,
-    Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
+    i256, is_validate_decimal_precision, DataType, Date32Type, Decimal256Type, Int16Type,
+    Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
 };
 use chrono::{DateTime, LocalResult, NaiveDate, NaiveTime, Offset, TimeZone, Timelike};
 use num::traits::CheckedNeg;
@@ -174,46 +174,27 @@ pub(crate) fn is_df_cast_from_string_spark_compatible(to_type: &DataType) -> boo
     matches!(to_type, DataType::Binary | DataType::BinaryView)
 }
 
-pub(crate) fn cast_string_to_float(
-    array: &ArrayRef,
-    to_type: &DataType,
-    eval_mode: EvalMode,
-) -> SparkResult<ArrayRef> {
-    match to_type {
-        DataType::Float32 => cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT"),
-        DataType::Float64 => cast_string_to_float_impl::<Float64Type>(array, eval_mode, "DOUBLE"),
-        _ => Err(SparkError::Internal(format!(
-            "Unsupported cast to float type: {:?}",
-            to_type
-        ))),
-    }
-}
-
-fn cast_string_to_float_impl<T: ArrowPrimitiveType>(
-    array: &ArrayRef,
+pub(crate) fn cast_string_to_float<'a, S, T: ArrowPrimitiveType>(
+    array: &'a S,
     eval_mode: EvalMode,
     type_name: &str,
 ) -> SparkResult<ArrayRef>
 where
+    &'a S: StringArrayType<'a>,
     T::Native: FromStr + num::Float,
 {
-    let arr = array
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
+    let mut builder = PrimitiveBuilder::<T>::with_capacity(array.len());
 
-    let mut builder = PrimitiveBuilder::<T>::with_capacity(arr.len());
-
-    for i in 0..arr.len() {
-        if arr.is_null(i) {
+    for i in 0..array.len() {
+        if array.is_null(i) {
             builder.append_null();
         } else {
-            let str_value = arr.value(i).trim();
+            let str_value = array.value(i).trim();
             match parse_string_to_float(str_value) {
                 Some(v) => builder.append_value(v),
                 None => {
                     if eval_mode == EvalMode::Ansi {
-                        return Err(invalid_value(arr.value(i), "STRING", type_name));
+                        return Err(invalid_value(array.value(i), "STRING", type_name));
                     }
                     builder.append_null();
                 }
@@ -254,18 +235,13 @@ where
     pruned_float_str.parse::<F>().ok()
 }
 
-pub(crate) fn spark_cast_utf8_to_boolean<OffsetSize>(
-    from: &dyn Array,
+pub(crate) fn spark_cast_utf8_to_boolean<'a, S>(
+    array: &'a S,
     eval_mode: EvalMode,
 ) -> SparkResult<ArrayRef>
 where
-    OffsetSize: OffsetSizeTrait,
+    &'a S: StringArrayType<'a>,
 {
-    let array = from
-        .as_any()
-        .downcast_ref::<GenericStringArray<OffsetSize>>()
-        .unwrap();
-
     let output_array = array
         .iter()
         .map(|value| match value {
@@ -286,45 +262,22 @@ where
     Ok(Arc::new(output_array))
 }
 
-pub(crate) fn cast_string_to_decimal(
-    array: &ArrayRef,
-    to_type: &DataType,
-    precision: &u8,
-    scale: &i8,
-    eval_mode: EvalMode,
-) -> SparkResult<ArrayRef> {
-    match to_type {
-        DataType::Decimal128(_, _) => {
-            cast_string_to_decimal128_impl(array, eval_mode, *precision, *scale)
-        }
-        DataType::Decimal256(_, _) => {
-            cast_string_to_decimal256_impl(array, eval_mode, *precision, *scale)
-        }
-        _ => Err(SparkError::Internal(format!(
-            "Unexpected type in cast_string_to_decimal: {:?}",
-            to_type
-        ))),
-    }
-}
-
-fn cast_string_to_decimal128_impl(
-    array: &ArrayRef,
+pub(crate) fn cast_string_to_decimal128<'a, S>(
+    array: &'a S,
     eval_mode: EvalMode,
     precision: u8,
     scale: i8,
-) -> SparkResult<ArrayRef> {
-    let string_array = array
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
+) -> SparkResult<ArrayRef>
+where
+    &'a S: StringArrayType<'a>,
+{
+    let mut decimal_builder = Decimal128Builder::with_capacity(array.len());
 
-    let mut decimal_builder = Decimal128Builder::with_capacity(string_array.len());
-
-    for i in 0..string_array.len() {
-        if string_array.is_null(i) {
+    for i in 0..array.len() {
+        if array.is_null(i) {
             decimal_builder.append_null();
         } else {
-            let str_value = string_array.value(i);
+            let str_value = array.value(i);
             match parse_string_to_decimal(str_value, precision, scale) {
                 Ok(Some(decimal_value)) => {
                     decimal_builder.append_value(decimal_value);
@@ -332,7 +285,7 @@ fn cast_string_to_decimal128_impl(
                 Ok(None) => {
                     if eval_mode == EvalMode::Ansi {
                         return Err(invalid_value(
-                            string_array.value(i),
+                            array.value(i),
                             "STRING",
                             &format!("DECIMAL({},{})", precision, scale),
                         ));
@@ -370,27 +323,24 @@ fn cast_string_to_decimal128_impl(
     ))
 }
 
-fn cast_string_to_decimal256_impl(
-    array: &ArrayRef,
+pub(crate) fn cast_string_to_decimal256<'a, S>(
+    array: &'a S,
     eval_mode: EvalMode,
     precision: u8,
     scale: i8,
-) -> SparkResult<ArrayRef> {
-    let string_array = array
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
+) -> SparkResult<ArrayRef>
+where
+    &'a S: StringArrayType<'a>,
+{
+    let mut decimal_builder = PrimitiveBuilder::<Decimal256Type>::with_capacity(array.len());
 
-    let mut decimal_builder = PrimitiveBuilder::<Decimal256Type>::with_capacity(string_array.len());
-
-    for i in 0..string_array.len() {
-        if string_array.is_null(i) {
+    for i in 0..array.len() {
+        if array.is_null(i) {
             decimal_builder.append_null();
         } else {
-            let str_value = string_array.value(i);
+            let str_value = array.value(i);
             match parse_string_to_decimal(str_value, precision, scale) {
                 Ok(Some(decimal_value)) => {
-                    // Convert i128 to i256
                     let i256_value = i256::from_i128(decimal_value);
                     decimal_builder.append_value(i256_value);
                 }
@@ -421,7 +371,6 @@ fn cast_string_to_decimal256_impl(
                 if matches!(e, arrow::error::ArrowError::InvalidArgumentError(_))
                     && e.to_string().contains("too large to store in a Decimal128")
                 {
-                    // Fallback error handling
                     SparkError::NumericValueOutOfRange {
                         value: "overflow".to_string(),
                         precision,
@@ -692,28 +641,26 @@ fn parse_decimal_str(
     Ok((final_mantissa, final_scale))
 }
 
-pub(crate) fn cast_string_to_date(
-    array: &ArrayRef,
+pub(crate) fn cast_string_to_date<'a, S>(
+    array: &'a S,
     to_type: &DataType,
     eval_mode: EvalMode,
-) -> SparkResult<ArrayRef> {
-    let string_array = array
-        .as_any()
-        .downcast_ref::<GenericStringArray<i32>>()
-        .expect("Expected a string array");
-
+) -> SparkResult<ArrayRef>
+where
+    &'a S: StringArrayType<'a>,
+{
     if to_type != &DataType::Date32 {
         unreachable!("Invalid data type {:?} in cast from string", to_type);
     }
 
-    let len = string_array.len();
+    let len = array.len();
     let mut cast_array = PrimitiveArray::<Date32Type>::builder(len);
 
     for i in 0..len {
-        let value = if string_array.is_null(i) {
+        let value = if array.is_null(i) {
             None
         } else {
-            match date_parser(string_array.value(i), eval_mode) {
+            match date_parser(array.value(i), eval_mode) {
                 Ok(Some(cast_value)) => Some(cast_value),
                 Ok(None) => None,
                 Err(e) => return Err(e),
@@ -729,18 +676,16 @@ pub(crate) fn cast_string_to_date(
     Ok(Arc::new(cast_array.finish()) as ArrayRef)
 }
 
-pub(crate) fn cast_string_to_timestamp(
-    array: &ArrayRef,
+pub(crate) fn cast_string_to_timestamp<'a, S>(
+    array: &'a S,
     to_type: &DataType,
     eval_mode: EvalMode,
     timezone_str: &str,
     is_spark4_plus: bool,
-) -> SparkResult<ArrayRef> {
-    let string_array = array
-        .as_any()
-        .downcast_ref::<GenericStringArray<i32>>()
-        .expect("Expected a string array");
-
+) -> SparkResult<ArrayRef>
+where
+    &'a S: StringArrayType<'a>,
+{
     let tz = &timezone::Tz::from_str(timezone_str)
         .map_err(|_| SparkError::Internal(format!("Invalid timezone string: {timezone_str}")))?;
 
@@ -748,9 +693,9 @@ pub(crate) fn cast_string_to_timestamp(
         DataType::Timestamp(_, tz_opt) => {
             let to_tz = tz_opt.as_deref().unwrap_or("UTC");
             cast_utf8_to_timestamp!(
-                string_array,
+                array,
                 eval_mode,
-                PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len())
+                PrimitiveArray::<TimestampMicrosecondType>::builder(array.len())
                     .with_timezone(to_tz),
                 timestamp_parser,
                 tz,
@@ -762,21 +707,19 @@ pub(crate) fn cast_string_to_timestamp(
     Ok(cast_array)
 }
 
-pub(crate) fn cast_string_to_timestamp_ntz(
-    array: &ArrayRef,
+pub(crate) fn cast_string_to_timestamp_ntz<'a, S>(
+    array: &'a S,
     eval_mode: EvalMode,
     allow_time_zone: bool,
     is_spark4_plus: bool,
-) -> SparkResult<ArrayRef> {
-    let string_array = array
-        .as_any()
-        .downcast_ref::<GenericStringArray<i32>>()
-        .expect("Expected a string array");
-
+) -> SparkResult<ArrayRef>
+where
+    &'a S: StringArrayType<'a>,
+{
     let cast_array: ArrayRef = cast_utf8_to_timestamp!(
-        string_array,
+        array,
         eval_mode,
-        PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len()),
+        PrimitiveArray::<TimestampMicrosecondType>::builder(array.len()),
         timestamp_ntz_parser,
         allow_time_zone,
         is_spark4_plus
@@ -784,80 +727,76 @@ pub(crate) fn cast_string_to_timestamp_ntz(
     Ok(cast_array)
 }
 
-pub(crate) fn cast_string_to_int<OffsetSize: OffsetSizeTrait>(
+pub(crate) fn cast_string_to_int<'a, S>(
     to_type: &DataType,
-    array: &ArrayRef,
+    array: &'a S,
     eval_mode: EvalMode,
-) -> SparkResult<ArrayRef> {
-    let string_array = array
-        .as_any()
-        .downcast_ref::<GenericStringArray<OffsetSize>>()
-        .expect("cast_string_to_int expected a string array");
-
-    // Select parse function once per batch based on eval_mode
-    let cast_array: ArrayRef =
-        match (to_type, eval_mode) {
-            (DataType::Int8, EvalMode::Legacy) => {
-                cast_utf8_to_int!(string_array, Int8Type, parse_string_to_i8_legacy)?
-            }
-            (DataType::Int8, EvalMode::Ansi) => {
-                cast_utf8_to_int!(string_array, Int8Type, parse_string_to_i8_ansi)?
-            }
-            (DataType::Int8, EvalMode::Try) => {
-                cast_utf8_to_int!(string_array, Int8Type, parse_string_to_i8_try)?
-            }
-            (DataType::Int16, EvalMode::Legacy) => {
-                cast_utf8_to_int!(string_array, Int16Type, parse_string_to_i16_legacy)?
-            }
-            (DataType::Int16, EvalMode::Ansi) => {
-                cast_utf8_to_int!(string_array, Int16Type, parse_string_to_i16_ansi)?
-            }
-            (DataType::Int16, EvalMode::Try) => {
-                cast_utf8_to_int!(string_array, Int16Type, parse_string_to_i16_try)?
-            }
-            (DataType::Int32, EvalMode::Legacy) => cast_utf8_to_int!(
-                string_array,
-                Int32Type,
-                |s| do_parse_string_to_int_legacy::<i32>(s, i32::MIN)
-            )?,
-            (DataType::Int32, EvalMode::Ansi) => {
-                cast_utf8_to_int!(string_array, Int32Type, |s| do_parse_string_to_int_ansi::<
-                    i32,
-                >(
-                    s, "INT", i32::MIN
-                ))?
-            }
-            (DataType::Int32, EvalMode::Try) => {
-                cast_utf8_to_int!(
-                    string_array,
-                    Int32Type,
-                    |s| do_parse_string_to_int_try::<i32>(s, i32::MIN)
-                )?
-            }
-            (DataType::Int64, EvalMode::Legacy) => cast_utf8_to_int!(
-                string_array,
-                Int64Type,
-                |s| do_parse_string_to_int_legacy::<i64>(s, i64::MIN)
-            )?,
-            (DataType::Int64, EvalMode::Ansi) => {
-                cast_utf8_to_int!(string_array, Int64Type, |s| do_parse_string_to_int_ansi::<
-                    i64,
-                >(
-                    s, "BIGINT", i64::MIN
-                ))?
-            }
-            (DataType::Int64, EvalMode::Try) => {
-                cast_utf8_to_int!(
-                    string_array,
-                    Int64Type,
-                    |s| do_parse_string_to_int_try::<i64>(s, i64::MIN)
-                )?
-            }
-            (dt, _) => unreachable!(
-                "{}",
-                format!("invalid integer type {dt} in cast from string")
-            ),
-        };
+) -> SparkResult<ArrayRef>
+where
+    &'a S: StringArrayType<'a>,
+{
+    let cast_array: ArrayRef = match (to_type, eval_mode) {
+        (DataType::Int8, EvalMode::Legacy) => {
+            cast_utf8_to_int!(array, Int8Type, parse_string_to_i8_legacy)?
+        }
+        (DataType::Int8, EvalMode::Ansi) => {
+            cast_utf8_to_int!(array, Int8Type, parse_string_to_i8_ansi)?
+        }
+        (DataType::Int8, EvalMode::Try) => {
+            cast_utf8_to_int!(array, Int8Type, parse_string_to_i8_try)?
+        }
+        (DataType::Int16, EvalMode::Legacy) => {
+            cast_utf8_to_int!(array, Int16Type, parse_string_to_i16_legacy)?
+        }
+        (DataType::Int16, EvalMode::Ansi) => {
+            cast_utf8_to_int!(array, Int16Type, parse_string_to_i16_ansi)?
+        }
+        (DataType::Int16, EvalMode::Try) => {
+            cast_utf8_to_int!(array, Int16Type, parse_string_to_i16_try)?
+        }
+        (DataType::Int32, EvalMode::Legacy) => {
+            cast_utf8_to_int!(array, Int32Type, |s| do_parse_string_to_int_legacy::<i32>(
+                s,
+                i32::MIN
+            ))?
+        }
+        (DataType::Int32, EvalMode::Ansi) => {
+            cast_utf8_to_int!(array, Int32Type, |s| do_parse_string_to_int_ansi::<i32>(
+                s,
+                "INT",
+                i32::MIN
+            ))?
+        }
+        (DataType::Int32, EvalMode::Try) => {
+            cast_utf8_to_int!(array, Int32Type, |s| do_parse_string_to_int_try::<i32>(
+                s,
+                i32::MIN
+            ))?
+        }
+        (DataType::Int64, EvalMode::Legacy) => {
+            cast_utf8_to_int!(array, Int64Type, |s| do_parse_string_to_int_legacy::<i64>(
+                s,
+                i64::MIN
+            ))?
+        }
+        (DataType::Int64, EvalMode::Ansi) => {
+            cast_utf8_to_int!(array, Int64Type, |s| do_parse_string_to_int_ansi::<i64>(
+                s,
+                "BIGINT",
+                i64::MIN
+            ))?
+        }
+        (DataType::Int64, EvalMode::Try) => {
+            cast_utf8_to_int!(array, Int64Type, |s| do_parse_string_to_int_try::<i64>(
+                s,
+                i64::MIN
+            ))?
+        }
+        (dt, _) => unreachable!(
+            "{}",
+            format!("invalid integer type {dt} in cast from string")
+        ),
+    };
     Ok(cast_array)
 }
 
@@ -1976,7 +1915,7 @@ mod tests {
     use super::*;
     use crate::cast::cast_array;
     use crate::SparkCastOptions;
-    use arrow::array::{DictionaryArray, Int32Array, StringArray};
+    use arrow::array::{AsArray, DictionaryArray, GenericStringArray, Int32Array, StringArray};
     use arrow::datatypes::TimeUnit;
     use datafusion::common::Result as DataFusionResult;
 
@@ -2003,17 +1942,16 @@ mod tests {
         ]));
         let tz = &timezone::Tz::from_str("UTC").unwrap();
 
-        let string_array = array
+        let array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
             .expect("Expected a string array");
 
         let eval_mode = EvalMode::Legacy;
         let result = cast_utf8_to_timestamp!(
-            &string_array,
+            &array,
             eval_mode,
-            PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len())
-                .with_timezone("UTC"),
+            PrimitiveArray::<TimestampMicrosecondType>::builder(array.len()).with_timezone("UTC"),
             timestamp_parser,
             tz,
             true
@@ -2038,17 +1976,16 @@ mod tests {
             Some("not_a_timestamp"),
         ]));
         let tz = &timezone::Tz::from_str("UTC").unwrap();
-        let string_array = array
+        let array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
             .expect("Expected a string array");
 
         let eval_mode = EvalMode::Ansi;
         let result = cast_utf8_to_timestamp!(
-            &string_array,
+            &array,
             eval_mode,
-            PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len())
-                .with_timezone("UTC"),
+            PrimitiveArray::<TimestampMicrosecondType>::builder(array.len()).with_timezone("UTC"),
             timestamp_parser,
             tz,
             true
@@ -2067,17 +2004,16 @@ mod tests {
             Some("91\n3       "), // trailing spaces after a newline in the middle
         ]));
         let tz = &timezone::Tz::from_str("UTC").unwrap();
-        let string_array = array
+        let array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
             .expect("Expected a string array");
 
         let eval_mode = EvalMode::Ansi;
         let result = cast_utf8_to_timestamp!(
-            &string_array,
+            &array,
             eval_mode,
-            PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len())
-                .with_timezone("UTC"),
+            PrimitiveArray::<TimestampMicrosecondType>::builder(array.len()).with_timezone("UTC"),
             timestamp_parser,
             tz,
             true
@@ -2187,7 +2123,9 @@ mod tests {
             Some("invalid"),
             Some("2020-06-15T12:30:00Z"),
         ]));
-        let result = cast_string_to_timestamp_ntz(&array, EvalMode::Legacy, true, false).unwrap();
+        let result =
+            cast_string_to_timestamp_ntz(array.as_string::<i32>(), EvalMode::Legacy, true, false)
+                .unwrap();
         let ts_array = result
             .as_any()
             .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
@@ -2211,7 +2149,8 @@ mod tests {
     #[test]
     fn test_cast_string_to_timestamp_ntz_ansi_error() {
         let array: ArrayRef = Arc::new(StringArray::from(vec![Some("invalid")]));
-        let result = cast_string_to_timestamp_ntz(&array, EvalMode::Ansi, true, false);
+        let result =
+            cast_string_to_timestamp_ntz(array.as_string::<i32>(), EvalMode::Ansi, true, false);
         assert!(result.is_err());
         match result.unwrap_err() {
             SparkError::InvalidInputInCastToDatetime { to_type, .. } => {
@@ -2777,7 +2716,12 @@ mod tests {
             Some("2020-01-01T"),
         ]));
 
-        let result = cast_string_to_date(&array, &DataType::Date32, EvalMode::Legacy).unwrap();
+        let result = cast_string_to_date(
+            array.as_string::<i32>(),
+            &DataType::Date32,
+            EvalMode::Legacy,
+        )
+        .unwrap();
 
         let date32_array = result
             .as_any()
@@ -2790,7 +2734,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_string_array_with_valid_dates() {
+    fn test_cast_array_with_valid_dates() {
         let array_with_invalid_date: ArrayRef = Arc::new(StringArray::from(vec![
             Some("-262143-12-31"),
             Some("\n -262143-12-31 "),
@@ -2802,9 +2746,12 @@ mod tests {
         ]));
 
         for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-            let result =
-                cast_string_to_date(&array_with_invalid_date, &DataType::Date32, *eval_mode)
-                    .unwrap();
+            let result = cast_string_to_date(
+                array_with_invalid_date.as_string::<i32>(),
+                &DataType::Date32,
+                *eval_mode,
+            )
+            .unwrap();
 
             let date32_array = result
                 .as_any()
@@ -2818,7 +2765,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_string_array_with_invalid_dates() {
+    fn test_cast_array_with_invalid_dates() {
         let array_with_invalid_date: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020"),
             Some("2020-01"),
@@ -2834,9 +2781,12 @@ mod tests {
         ]));
 
         for eval_mode in &[EvalMode::Legacy, EvalMode::Try] {
-            let result =
-                cast_string_to_date(&array_with_invalid_date, &DataType::Date32, *eval_mode)
-                    .unwrap();
+            let result = cast_string_to_date(
+                array_with_invalid_date.as_string::<i32>(),
+                &DataType::Date32,
+                *eval_mode,
+            )
+            .unwrap();
 
             let date32_array = result
                 .as_any()
@@ -2858,8 +2808,11 @@ mod tests {
             );
         }
 
-        let result =
-            cast_string_to_date(&array_with_invalid_date, &DataType::Date32, EvalMode::Ansi);
+        let result = cast_string_to_date(
+            array_with_invalid_date.as_string::<i32>(),
+            &DataType::Date32,
+            EvalMode::Ansi,
+        );
         match result {
             Err(e) => assert!(
                 e.to_string().contains(

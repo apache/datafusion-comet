@@ -19,17 +19,19 @@ use crate::conversion_funcs::boolean::{
     cast_boolean_to_decimal, cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
-    cast_decimal128_to_utf8, cast_decimal_to_timestamp, cast_float32_to_decimal128,
-    cast_float64_to_decimal128, cast_float_to_timestamp, cast_int_to_decimal128,
-    cast_int_to_timestamp, is_df_cast_from_decimal_spark_compatible,
+    cast_decimal128_to_utf8, cast_decimal128_to_utf8view, cast_decimal_to_timestamp,
+    cast_float32_to_decimal128, cast_float64_to_decimal128, cast_float_to_timestamp,
+    cast_int_to_decimal128, cast_int_to_timestamp, is_df_cast_from_decimal_spark_compatible,
     is_df_cast_from_float_spark_compatible, is_df_cast_from_int_spark_compatible,
-    spark_cast_decimal_to_boolean, spark_cast_float32_to_utf8, spark_cast_float64_to_utf8,
-    spark_cast_int_to_int, spark_cast_nonintegral_numeric_to_integral,
+    spark_cast_decimal_to_boolean, spark_cast_float32_to_utf8, spark_cast_float32_to_utf8view,
+    spark_cast_float64_to_utf8, spark_cast_float64_to_utf8view, spark_cast_int_to_int,
+    spark_cast_nonintegral_numeric_to_integral,
 };
 use crate::conversion_funcs::string::{
-    cast_string_to_date, cast_string_to_decimal, cast_string_to_float, cast_string_to_int,
-    cast_string_to_timestamp, cast_string_to_timestamp_ntz,
-    is_df_cast_from_string_spark_compatible, spark_cast_utf8_to_boolean,
+    cast_string_to_date, cast_string_to_decimal128, cast_string_to_decimal256,
+    cast_string_to_float, cast_string_to_int, cast_string_to_timestamp,
+    cast_string_to_timestamp_ntz, is_df_cast_from_string_spark_compatible,
+    spark_cast_utf8_to_boolean,
 };
 use crate::conversion_funcs::temporal::{
     cast_date_to_timestamp, is_df_cast_from_date_spark_compatible,
@@ -38,14 +40,16 @@ use crate::conversion_funcs::temporal::{
 use crate::conversion_funcs::utils::spark_cast_postprocess;
 use crate::utils::{array_with_timezone, cast_timestamp_to_ntz, timestamp_ntz_to_timestamp};
 use crate::EvalMode::Legacy;
-use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
+use crate::{cast_whole_num_to_binary, cast_whole_num_to_binary_view, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
-use arrow::array::builder::StringBuilder;
+use arrow::array::builder::{StringBuilder, StringViewBuilder};
 use arrow::array::{
     new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
     StringArray, StructArray,
 };
-use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Float32Type, Float64Type, Schema,
+};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
@@ -55,7 +59,7 @@ use arrow::{
     },
     compute::{cast_with_options, take, CastOptions},
     record_batch::RecordBatch,
-    util::display::FormatOptions,
+    util::display::{ArrayFormatter, FormatOptions},
 };
 use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
@@ -194,6 +198,7 @@ pub fn spark_cast(
     data_type: &DataType,
     cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ColumnarValue> {
+    println!("SPARK_CAST ENTRY: to={:?}", data_type);
     let result = match arg {
         ColumnarValue::Array(array) => {
             let result_array = cast_array(array, data_type, cast_options)?;
@@ -255,6 +260,8 @@ pub(crate) fn cast_array(
     use DataType::*;
     let from_type = array.data_type().clone();
 
+    println!("CAST_ARRAY ENTRY: from={:?} to={:?}", from_type, to_type);
+
     if &from_type == to_type {
         return Ok(Arc::new(array));
     }
@@ -312,32 +319,82 @@ pub(crate) fn cast_array(
     };
 
     let cast_result = match (&from_type, to_type) {
+        // DEBUG: instrument all arms to trace which path is taken
+        _ if {
+            if matches!(&from_type, DataType::Timestamp(_, None))
+                || matches!(to_type, DataType::Utf8View)
+            {
+                println!("CAST DEBUG: from={:?} to={:?}", from_type, to_type);
+            }
+            false
+        } =>
+        {
+            unreachable!()
+        }
         // Null arrays carry no concrete values, so Arrow's native cast can change only the
         // logical type while preserving length and nullness.
         (Null, _) => Ok(cast_with_options(&array, to_type, &native_cast_options)?),
-        (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
-        (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
-        (Utf8, Timestamp(_, None)) => {
-            cast_string_to_timestamp_ntz(&array, eval_mode, true, cast_options.is_spark4_plus)
-        }
+        // FROM string → Boolean
+        (Utf8, Boolean) => spark_cast_utf8_to_boolean(array.as_string::<i32>(), eval_mode),
+        (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean(array.as_string::<i64>(), eval_mode),
+        (Utf8View, Boolean) => spark_cast_utf8_to_boolean(array.as_string_view(), eval_mode),
+        // FROM string → Timestamp NTZ
+        (Utf8, Timestamp(_, None)) => cast_string_to_timestamp_ntz(
+            array.as_string::<i32>(),
+            eval_mode,
+            true,
+            cast_options.is_spark4_plus,
+        ),
+        (Utf8View, Timestamp(_, None)) => cast_string_to_timestamp_ntz(
+            array.as_string_view(),
+            eval_mode,
+            true,
+            cast_options.is_spark4_plus,
+        ),
+        // FROM string → Timestamp TZ
         (Utf8, Timestamp(_, _)) => cast_string_to_timestamp(
-            &array,
+            array.as_string::<i32>(),
             to_type,
             eval_mode,
             &cast_options.timezone,
             cast_options.is_spark4_plus,
         ),
-        (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
-        (Date32, Int32) => {
-            // Date32 is stored as days since epoch (i32), so this is a simple reinterpret cast
-            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        (Utf8View, Timestamp(_, _)) => cast_string_to_timestamp(
+            array.as_string_view(),
+            to_type,
+            eval_mode,
+            &cast_options.timezone,
+            cast_options.is_spark4_plus,
+        ),
+        // FROM string → Date
+        (Utf8, Date32) => cast_string_to_date(array.as_string::<i32>(), to_type, eval_mode),
+        (Utf8View, Date32) => cast_string_to_date(array.as_string_view(), to_type, eval_mode),
+        (Date32, Int32) => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
+        // FROM string → Float
+        (Utf8, Float32) => {
+            cast_string_to_float::<_, Float32Type>(array.as_string::<i32>(), eval_mode, "FLOAT")
         }
-        (Utf8, Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
+        (Utf8, Float64) => {
+            cast_string_to_float::<_, Float64Type>(array.as_string::<i32>(), eval_mode, "DOUBLE")
+        }
+        (Utf8View, Float32) => {
+            cast_string_to_float::<_, Float32Type>(array.as_string_view(), eval_mode, "FLOAT")
+        }
+        (Utf8View, Float64) => {
+            cast_string_to_float::<_, Float64Type>(array.as_string_view(), eval_mode, "DOUBLE")
+        }
+        // FROM string → Decimal
         (Utf8 | LargeUtf8, Decimal128(precision, scale)) => {
-            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
+            cast_string_to_decimal128(array.as_string::<i32>(), eval_mode, *precision, *scale)
+        }
+        (Utf8View, Decimal128(precision, scale)) => {
+            cast_string_to_decimal128(array.as_string_view(), eval_mode, *precision, *scale)
         }
         (Utf8 | LargeUtf8, Decimal256(precision, scale)) => {
-            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
+            cast_string_to_decimal256(array.as_string::<i32>(), eval_mode, *precision, *scale)
+        }
+        (Utf8View, Decimal256(precision, scale)) => {
+            cast_string_to_decimal256(array.as_string_view(), eval_mode, *precision, *scale)
         }
         (Int64, Int32)
         | (Int64, Int16)
@@ -352,16 +409,23 @@ pub(crate) fn cast_array(
         (Int8 | Int16 | Int32 | Int64, Decimal128(precision, scale)) => {
             cast_int_to_decimal128(&array, eval_mode, &from_type, to_type, *precision, *scale)
         }
+        // FROM string → Int
         (Utf8, Int8 | Int16 | Int32 | Int64) => {
-            cast_string_to_int::<i32>(to_type, &array, eval_mode)
+            cast_string_to_int(to_type, array.as_string::<i32>(), eval_mode)
         }
         (LargeUtf8, Int8 | Int16 | Int32 | Int64) => {
-            cast_string_to_int::<i64>(to_type, &array, eval_mode)
+            cast_string_to_int(to_type, array.as_string::<i64>(), eval_mode)
         }
+        (Utf8View, Int8 | Int16 | Int32 | Int64) => {
+            cast_string_to_int(to_type, array.as_string_view(), eval_mode)
+        }
+        // TO string from Float (Spark-specific formatting)
         (Float64, Utf8) => spark_cast_float64_to_utf8::<i32>(&array, eval_mode),
         (Float64, LargeUtf8) => spark_cast_float64_to_utf8::<i64>(&array, eval_mode),
+        (Float64, Utf8View) => spark_cast_float64_to_utf8view(&array, eval_mode),
         (Float32, Utf8) => spark_cast_float32_to_utf8::<i32>(&array, eval_mode),
         (Float32, LargeUtf8) => spark_cast_float32_to_utf8::<i64>(&array, eval_mode),
+        (Float32, Utf8View) => spark_cast_float32_to_utf8view(&array, eval_mode),
         (Float32, Decimal128(precision, scale)) => {
             cast_float32_to_decimal128(&array, *precision, *scale, eval_mode)
         }
@@ -391,8 +455,15 @@ pub(crate) fn cast_array(
         (Decimal128(_, scale), Utf8) if eval_mode == EvalMode::Legacy => {
             cast_decimal128_to_utf8(&array, *scale)
         }
+        (Decimal128(_, scale), Utf8View) if eval_mode == EvalMode::Legacy => {
+            cast_decimal128_to_utf8view(&array, *scale)
+        }
         (Utf8View, Utf8) => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
         (Struct(_), Utf8) => Ok(casts_struct_to_string(array.as_struct(), cast_options)?),
+        (Struct(_), Utf8View) => Ok(casts_struct_to_string_view(
+            array.as_struct(),
+            cast_options,
+        )?),
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
             array.as_struct(),
             &from_type,
@@ -400,6 +471,7 @@ pub(crate) fn cast_array(
             cast_options,
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
+        (List(_), Utf8View) => Ok(cast_array_to_string_view(array.as_list(), cast_options)?),
         (List(_), List(to)) => {
             // Cast list elements recursively so nested array casts follow Spark semantics
             // instead of relying on Arrow's top-level cast support.
@@ -427,6 +499,23 @@ pub(crate) fn cast_array(
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
+        (Binary, Utf8View) => {
+            let utf8_result = cast_binary_to_string::<i32>(&array, cast_options)?;
+            Ok(cast_with_options(
+                &utf8_result,
+                &DataType::Utf8View,
+                &CAST_OPTIONS,
+            )?)
+        }
+        (BinaryView, Utf8) => Ok(cast_binary_view_to_string(&array, cast_options)?),
+        (BinaryView, Utf8View) => {
+            let utf8_result = cast_binary_view_to_string(&array, cast_options)?;
+            Ok(cast_with_options(
+                &utf8_result,
+                &DataType::Utf8View,
+                &CAST_OPTIONS,
+            )?)
+        }
         (Date32, Timestamp(_, tz)) => Ok(cast_date_to_timestamp(&array, cast_options, tz)?),
         (Int8, Binary) if (eval_mode == Legacy) => cast_whole_num_to_binary!(&array, Int8Array, 1),
         (Int16, Binary) if (eval_mode == Legacy) => {
@@ -437,6 +526,18 @@ pub(crate) fn cast_array(
         }
         (Int64, Binary) if (eval_mode == Legacy) => {
             cast_whole_num_to_binary!(&array, Int64Array, 8)
+        }
+        (Int8, BinaryView) if (eval_mode == Legacy) => {
+            cast_whole_num_to_binary_view!(&array, Int8Array, 1)
+        }
+        (Int16, BinaryView) if (eval_mode == Legacy) => {
+            cast_whole_num_to_binary_view!(&array, Int16Array, 2)
+        }
+        (Int32, BinaryView) if (eval_mode == Legacy) => {
+            cast_whole_num_to_binary_view!(&array, Int32Array, 4)
+        }
+        (Int64, BinaryView) if (eval_mode == Legacy) => {
+            cast_whole_num_to_binary_view!(&array, Int64Array, 8)
         }
         (Boolean, Decimal128(precision, scale)) => {
             cast_boolean_to_decimal(&array, *precision, *scale)
@@ -460,16 +561,26 @@ pub(crate) fn cast_array(
         // NTZ → Date32 and NTZ → Utf8 are handled by the DataFusion fall-through below
         // (is_df_cast_from_timestamp_spark_compatible returns true for Date32 and Utf8).
         // These casts are timezone-independent and DataFusion's implementation matches Spark.
+        // NTZ → Utf8View: Arrow doesn't support this directly, so we format using
+        // ArrayFormatter which respects our timestamp format options.
+        (Timestamp(_, None), Utf8View) => {
+            println!("CAST DEBUG: HIT NTZ->Utf8View arm");
+            Ok(timestamp_to_string_view(&array, &native_cast_options)?)
+        }
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(&from_type, to_type) =>
         {
-            // use DataFusion cast only when we know that it is compatible with Spark
+            println!(
+                "CAST DEBUG: fallthrough from={:?} to={:?}",
+                from_type, to_type
+            );
             Ok(cast_with_options(&array, to_type, &native_cast_options)?)
         }
         _ => {
-            // we should never reach this code because the Scala code should be checking
-            // for supported cast operations and falling back to Spark for anything that
-            // is not yet supported
+            println!(
+                "CAST DEBUG: UNSUPPORTED from={:?} to={:?}",
+                from_type, to_type
+            );
             Err(SparkError::Internal(format!(
                 "Native cast invoked for unsupported cast from {from_type:?} to {to_type:?}"
             )))
@@ -682,6 +793,52 @@ fn cast_array_to_string(
     Ok(Arc::new(builder.finish()))
 }
 
+fn cast_array_to_string_view(
+    array: &ListArray,
+    spark_cast_options: &SparkCastOptions,
+) -> DataFusionResult<ArrayRef> {
+    let mut builder = StringViewBuilder::with_capacity(array.len());
+    let mut str = String::with_capacity(array.len() * 16);
+
+    let casted_values = cast_array(
+        Arc::clone(array.values()),
+        &DataType::Utf8,
+        spark_cast_options,
+    )?;
+    let string_values = casted_values
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("Casted values should be StringArray");
+
+    let offsets = array.offsets();
+    for row_index in 0..array.len() {
+        if array.is_null(row_index) {
+            builder.append_null();
+        } else {
+            str.clear();
+            let start = offsets[row_index] as usize;
+            let end = offsets[row_index + 1] as usize;
+
+            str.push('[');
+            let mut first = true;
+            for idx in start..end {
+                if !first {
+                    str.push_str(", ");
+                }
+                if string_values.is_null(idx) {
+                    str.push_str(&spark_cast_options.null_string);
+                } else {
+                    str.push_str(string_values.value(idx));
+                }
+                first = false;
+            }
+            str.push(']');
+            builder.append_value(&str);
+        }
+    }
+    Ok(Arc::new(builder.finish()))
+}
+
 fn casts_struct_to_string(
     array: &StructArray,
     spark_cast_options: &SparkCastOptions,
@@ -703,6 +860,51 @@ fn casts_struct_to_string(
         string_arrays.iter().map(|arr| arr.as_string()).collect();
     // build the struct string containing entries in the format `"field_name":field_value`
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
+    let mut str = String::with_capacity(array.len() * 16);
+    for row_index in 0..array.len() {
+        if array.is_null(row_index) {
+            builder.append_null();
+        } else {
+            str.clear();
+            let mut any_fields_written = false;
+            str.push('{');
+            for field in &string_arrays {
+                if any_fields_written {
+                    str.push_str(", ");
+                }
+                if field.is_null(row_index) {
+                    str.push_str(&spark_cast_options.null_string);
+                } else {
+                    str.push_str(field.value(row_index));
+                }
+                any_fields_written = true;
+            }
+            str.push('}');
+            builder.append_value(&str);
+        }
+    }
+    Ok(Arc::new(builder.finish()))
+}
+
+fn casts_struct_to_string_view(
+    array: &StructArray,
+    spark_cast_options: &SparkCastOptions,
+) -> DataFusionResult<ArrayRef> {
+    let string_arrays: Vec<ArrayRef> = array
+        .columns()
+        .iter()
+        .map(|arr| {
+            spark_cast(
+                ColumnarValue::Array(Arc::clone(arr)),
+                &DataType::Utf8,
+                spark_cast_options,
+            )
+            .and_then(|cv| cv.into_array(arr.len()))
+        })
+        .collect::<DataFusionResult<Vec<_>>>()?;
+    let string_arrays: Vec<&StringArray> =
+        string_arrays.iter().map(|arr| arr.as_string()).collect();
+    let mut builder = StringViewBuilder::with_capacity(array.len());
     let mut str = String::with_capacity(array.len() * 16);
     for row_index in 0..array.len() {
         if array.is_null(row_index) {
@@ -822,6 +1024,51 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         })
         .collect::<Result<GenericStringArray<O>, ArrowError>>()?;
     Ok(Arc::new(output_array))
+}
+
+fn cast_binary_view_to_string(
+    array: &dyn Array,
+    spark_cast_options: &SparkCastOptions,
+) -> Result<ArrayRef, ArrowError> {
+    let input = array.as_binary_view();
+
+    fn binary_formatter(value: &[u8], spark_cast_options: &SparkCastOptions) -> String {
+        match spark_cast_options.binary_output_style {
+            Some(s) => spark_binary_formatter(value, s),
+            None => cast_binary_formatter(value),
+        }
+    }
+
+    let mut builder = StringBuilder::with_capacity(input.len(), input.len() * 16);
+    for opt_val in input.iter() {
+        match opt_val {
+            Some(value) => builder.append_value(binary_formatter(value, spark_cast_options)),
+            None => builder.append_null(),
+        }
+    }
+    Ok(Arc::new(builder.finish()))
+}
+
+/// Cast any array to Utf8View using ArrayFormatter, which respects format options
+/// (e.g., timestamp format). This mirrors Arrow's internal `value_to_string_view`.
+fn timestamp_to_string_view(
+    array: &dyn Array,
+    cast_options: &CastOptions,
+) -> Result<ArrayRef, ArrowError> {
+    let mut builder = StringViewBuilder::with_capacity(array.len());
+    let formatter = ArrayFormatter::try_new(array, &cast_options.format_options)?;
+    let nulls = array.nulls();
+    let mut buffer = String::new();
+    for i in 0..array.len() {
+        if nulls.map(|x| x.is_null(i)).unwrap_or_default() {
+            builder.append_null();
+        } else {
+            buffer.clear();
+            formatter.value(i).write(&mut buffer)?;
+            builder.append_value(&buffer);
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
 /// This function mimics the [BinaryFormatter]: https://github.com/apache/spark/blob/v4.0.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala#L449-L468
