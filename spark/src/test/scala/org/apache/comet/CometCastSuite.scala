@@ -1568,6 +1568,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to ArrayType") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     val types = Seq(
       BooleanType,
       StringType,
