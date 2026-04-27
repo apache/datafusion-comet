@@ -998,21 +998,26 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("native_datafusion rejects string read as numeric") {
+  test("native_datafusion rejects string read as non-string/binary type") {
     // Regression guard for https://github.com/apache/datafusion-comet/issues/4088.
-    // Spark's vectorized reader rejects reading a Parquet BINARY column as any
-    // numeric type on all versions (see TypeUtil.checkParquetType, BINARY case).
-    // The native_datafusion scan must do the same in its schema adapter rather
-    // than letting DataFusion's cast silently parse the bytes (returning nulls
-    // for non-numeric strings, or raw byte reinterpretation in some paths).
+    // Spark's vectorized reader rejects reading a Parquet BINARY column as
+    // anything except StringType, BinaryType, or a binary-encoded decimal (see
+    // TypeUtil.checkParquetType, BINARY case). The native_datafusion scan
+    // must do the same in its schema adapter rather than letting DataFusion's
+    // cast silently parse the bytes or reinterpret them.
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
       withTempPath { dir =>
         val path = dir.getCanonicalPath
         Seq("a", "b", "c").toDF("c").write.parquet(path)
-        val df = spark.read.schema("c int").parquet(path)
-        assertThrows[SparkException](df.collect())
+        // Cover representative non-string/binary target types: numeric,
+        // boolean, date, and timestamp. Each would silently produce wrong
+        // results without the schema-adapter guard.
+        Seq("int", "bigint", "double", "boolean", "date", "timestamp").foreach { sqlType =>
+          val df = spark.read.schema(s"c $sqlType").parquet(path)
+          assertThrows[SparkException](df.collect())
+        }
       }
     }
   }
