@@ -35,5 +35,6 @@ query
 SELECT array_remove(array(1, 2, 3, 2), val) FROM test_array_remove
 
 -- literal + literal
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT array_remove(array(1, 2, 3, 2), 2), array_remove(array(1, 2, 3), 4), array_remove(array(), 1), array_remove(cast(NULL as array<int>), 1)

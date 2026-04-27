@@ -33,5 +33,6 @@ query
 SELECT datediff(date('2024-01-20'), d2) FROM test_datediff
 
 -- literal + literal
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT datediff(date('2024-01-15'), date('2024-01-10')), datediff(date('2024-01-10'), date('2024-01-15')), datediff(NULL, date('2024-01-15'))

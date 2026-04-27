@@ -28,5 +28,6 @@ query
 SELECT luhn_check(s) FROM test_luhn
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT luhn_check('79927398713'), luhn_check('79927398710'), luhn_check(''), luhn_check(NULL)

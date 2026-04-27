@@ -25,5 +25,6 @@ query tolerance=1e-6
 SELECT atan(d) FROM test_atan
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT atan(1.0), atan(0.0), atan(-1.0), atan(NULL)

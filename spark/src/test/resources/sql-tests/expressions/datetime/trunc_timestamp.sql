@@ -36,5 +36,6 @@ query
 SELECT date_trunc('hour', ts) FROM test_trunc_ts
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT date_trunc('year', timestamp('2024-06-15 10:30:45')), date_trunc('month', timestamp('2024-06-15 10:30:45')), date_trunc('day', timestamp('2024-06-15 10:30:45'))

@@ -27,5 +27,6 @@ query
 SELECT ceil(f), ceil(d), ceil(dec) FROM test_ceil
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT ceil(1.1), ceil(-1.1), ceil(0.0), ceil(NULL), ceil(cast(1.10 as DECIMAL(5, 2))), ceil(cast(-1.10 as DECIMAL(5, 2)))

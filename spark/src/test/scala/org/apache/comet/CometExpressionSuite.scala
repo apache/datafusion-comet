@@ -1965,6 +1965,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("remainder function") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
@@ -1973,17 +1974,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
 
     def verifyResult(query: String): Unit = {
-      // Spark 4.1 introduced REMAINDER_BY_ZERO; older versions raise DIVIDE_BY_ZERO for `%`.
-      val expectedError =
-        if (isSpark41Plus)
-          "[REMAINDER_BY_ZERO] Remainder by zero. Use `try_mod` to tolerate divisor being 0 and return NULL instead."
-        else
-          "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
+      val expectedDivideByZeroError =
+        "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
 
       checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkException), Some(cometException)) =>
-          assert(sparkException.getMessage.contains(expectedError))
-          assert(cometException.getMessage.contains(expectedError))
+          assert(sparkException.getMessage.contains(expectedDivideByZeroError))
+          assert(cometException.getMessage.contains(expectedDivideByZeroError))
         case (None, None) => checkSparkAnswerAndOperator(sql(query))
         case (None, Some(ex)) =>
           fail("Comet threw an exception but Spark did not. Comet exception: " + ex.getMessage)

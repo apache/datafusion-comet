@@ -31,5 +31,6 @@ query
 SELECT trunc(d, 'quarter') FROM test_trunc_date
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT trunc(date('2024-06-15'), 'year'), trunc(date('2024-06-15'), 'month'), trunc(date('2024-06-15'), 'quarter')

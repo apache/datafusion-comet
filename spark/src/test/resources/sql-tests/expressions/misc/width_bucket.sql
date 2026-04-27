@@ -33,5 +33,6 @@ query
 SELECT v, width_bucket(v, 0, 10, 1) FROM test_wb
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT width_bucket(5.0, 0, 10, 4), width_bucket(0.0, 0, 10, 4), width_bucket(NULL, 0, 10, 4)

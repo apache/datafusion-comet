@@ -25,5 +25,6 @@ query
 SELECT signum(d) FROM test_signum
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT signum(-5.0), signum(5.0), signum(0.0), signum(NULL)

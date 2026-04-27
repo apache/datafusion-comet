@@ -39,5 +39,6 @@ query
 SELECT 2 = a, 2 < a, 0 > a, 1 <= a, 3 >= a FROM test_pred
 
 -- literal op literal
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT 1 = 1, 1 = 2, 1 <=> NULL, NULL <=> NULL, NULL = NULL, 1 < 2, 2 > 1

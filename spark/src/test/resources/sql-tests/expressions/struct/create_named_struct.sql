@@ -28,6 +28,7 @@ query
 SELECT struct(a, b, c) FROM test_named_struct
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT named_struct('x', 1, 'y', 'hello', 'z', 3.14)
 

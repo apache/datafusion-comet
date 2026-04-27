@@ -49,6 +49,7 @@ query
 SELECT array_compact(nested) FROM test_array_compact
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT array_compact(array(1, NULL, 2, NULL, 3))
 

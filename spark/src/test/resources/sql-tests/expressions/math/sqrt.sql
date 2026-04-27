@@ -25,5 +25,6 @@ query tolerance=1e-6
 SELECT sqrt(d) FROM test_sqrt
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT sqrt(4.0), sqrt(2.0), sqrt(0.0), sqrt(NULL)

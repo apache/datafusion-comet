@@ -33,6 +33,7 @@ query
 SELECT array_contains(array(1, 2, 3), val) FROM test_array_contains
 
 -- literal + literal
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT array_contains(array(1, 2, 3), 2), array_contains(array(1, 2, 3), 4), array_contains(array(), 1), array_contains(cast(NULL as array<int>), 1)
 

@@ -25,5 +25,6 @@ query
 SELECT last_day(d) FROM test_last_day
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT last_day(date('2024-01-15')), last_day(date('2024-02-15')), last_day(date('2023-02-15')), last_day(NULL)

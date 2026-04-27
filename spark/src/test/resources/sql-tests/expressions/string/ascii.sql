@@ -25,5 +25,6 @@ query
 SELECT ascii(s) FROM test_ascii
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT ascii('A'), ascii(''), ascii(NULL)

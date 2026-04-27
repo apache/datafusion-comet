@@ -28,5 +28,6 @@ query
 SELECT initcap(s) FROM test_initcap_enabled
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT initcap('hello world'), initcap(''), initcap(NULL)

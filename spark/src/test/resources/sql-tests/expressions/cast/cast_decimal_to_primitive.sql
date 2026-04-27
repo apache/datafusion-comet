@@ -149,6 +149,7 @@ query
 SELECT cast(d20_0 as boolean) FROM test_cast_decimal_extra
 
 -- literal casts: decimal(10,2) to float
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT cast(cast(1.50 as decimal(10,2)) as float),
        cast(cast(0.00 as decimal(10,2)) as float),

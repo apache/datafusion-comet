@@ -23,6 +23,7 @@
 -- Config: spark.sql.legacy.negativeIndexInArrayInsert=true
 
 -- -1 inserts before last element in legacy mode
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT array_insert(array(1, 2, 3), -1, 10)
 

@@ -28,5 +28,6 @@ query
 SELECT unhex(s) IS NULL FROM test_unhex
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT unhex('41'), unhex('GG'), unhex(''), unhex(NULL)

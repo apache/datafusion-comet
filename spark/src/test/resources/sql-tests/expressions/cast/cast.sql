@@ -40,6 +40,7 @@ query
 SELECT cast(b as int), cast(b as string), cast(i as boolean) FROM test_cast
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT cast(1 as long), cast(1 as double), cast(1 as string), cast('123' as int), cast('3.14' as double), cast(true as int), cast(NULL as int)
 

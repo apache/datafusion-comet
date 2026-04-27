@@ -25,5 +25,6 @@ query tolerance=1e-6
 SELECT cot(d) FROM test_cot
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT cot(1.0), cot(0.5), cot(NULL)

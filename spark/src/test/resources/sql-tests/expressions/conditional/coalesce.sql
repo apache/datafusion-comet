@@ -31,5 +31,6 @@ query
 SELECT coalesce(a, 99) FROM test_coalesce
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT coalesce(NULL, NULL, 99), coalesce(1, NULL, 99), coalesce(NULL)

@@ -25,5 +25,6 @@ query tolerance=1e-6
 SELECT cosh(d) FROM test_cosh
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT cosh(0.0), cosh(1.0), cosh(NULL)

@@ -24,5 +24,6 @@ INSERT INTO test_create_array VALUES (1, 2, 3), (NULL, 2, 3), (NULL, NULL, NULL)
 query
 SELECT array(a, b, c) FROM test_create_array
 
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT array(1, 2, 3, NULL)

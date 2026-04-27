@@ -83,6 +83,7 @@ query
 SELECT try_divide(a, b) FROM test_decimal_div
 
 -- try_divide literal decimal by zero
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT try_divide(cast(10.5 as decimal(10,2)), cast(0.0 as decimal(10,2)))
 

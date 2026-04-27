@@ -24,6 +24,7 @@ INSERT INTO test_map_from_entries VALUES (array(struct('a', 1), struct('b', 2), 
 query
 SELECT map_from_entries(entries) FROM test_map_from_entries
 
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query expect_fallback(Using BinaryType as Map keys is not allowed in map_from_entries)
 SELECT map_from_entries(array(struct(cast('x' as binary), 10)))
 

@@ -36,5 +36,6 @@ query
 SELECT replace('hello world', search, replace) FROM test_str_replace
 
 -- literal + literal + literal
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT replace('hello world', 'world', 'there'), replace('aaa', 'a', 'bb'), replace('hello', 'xyz', 'abc'), replace(NULL, 'a', 'b')

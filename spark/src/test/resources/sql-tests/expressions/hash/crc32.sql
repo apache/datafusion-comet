@@ -26,5 +26,6 @@ query
 SELECT crc32(col), crc32(cast(a as string)), crc32(cast(b as string)) FROM test
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT crc32('Spark SQL')

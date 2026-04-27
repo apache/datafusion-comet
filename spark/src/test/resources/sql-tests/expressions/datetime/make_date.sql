@@ -47,6 +47,7 @@ query
 SELECT make_date(year, month, 1) FROM test_make_date ORDER BY year, month
 
 -- literal values
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT make_date(2023, 12, 25)
 

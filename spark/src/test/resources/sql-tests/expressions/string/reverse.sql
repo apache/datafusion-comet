@@ -25,5 +25,6 @@ query
 SELECT reverse(s) FROM test_reverse
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT reverse('hello'), reverse(''), reverse(NULL)

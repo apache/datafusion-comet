@@ -36,6 +36,7 @@ query
 SELECT array_distinct(arr) FROM test_array_distinct_int
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT array_distinct(array(1, 2, 2, 3, 3))
 

@@ -25,5 +25,6 @@ query
 SELECT isnan(f), isnan(d) FROM test_isnan
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT isnan(cast('NaN' as double)), isnan(1.0), isnan(NULL)

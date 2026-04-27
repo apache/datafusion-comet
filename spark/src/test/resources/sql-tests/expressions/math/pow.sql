@@ -33,5 +33,6 @@ query tolerance=1e-6
 SELECT pow(2.0, exp) FROM test_pow
 
 -- literal + literal
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT pow(2.0, 3.0), pow(0.0, 0.0), pow(-1.0, 2.0), pow(NULL, 2.0)

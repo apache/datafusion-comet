@@ -33,5 +33,6 @@ query
 SELECT translate('hello', from_str, to_str) FROM test_translate
 
 -- literal + literal + literal
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT translate('hello', 'el', 'ip'), translate('hello', 'aeiou', '12345'), translate('', 'a', 'b'), translate(NULL, 'a', 'b')

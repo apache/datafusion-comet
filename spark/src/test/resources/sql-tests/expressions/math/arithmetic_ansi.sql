@@ -115,6 +115,7 @@ query expect_error(DIVIDE_BY_ZERO)
 SELECT a div b FROM ansi_div_zero
 
 -- column % 0 (remainder) should throw
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query expect_error(DIVIDE_BY_ZERO)
 SELECT a % b FROM ansi_div_zero
 

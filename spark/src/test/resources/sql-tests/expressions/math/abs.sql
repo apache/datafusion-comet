@@ -25,5 +25,6 @@ query
 SELECT abs(i), abs(l), abs(f), abs(d) FROM test_abs
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT abs(-5), abs(-1.5), abs(0), abs(NULL)

@@ -41,6 +41,7 @@ query tolerance=1e-6
 SELECT atan2(1.0, x) FROM test_atan2
 
 -- literal permutations
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query tolerance=1e-6
 SELECT atan2(0.0, 0.0), atan2(0.0, -0.0), atan2(0.0, 1.0), atan2(0.0, -1.0),
   atan2(-0.0, 0.0), atan2(-0.0, -0.0), atan2(-0.0, 1.0), atan2(-0.0, -1.0),

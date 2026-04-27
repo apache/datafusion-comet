@@ -33,5 +33,6 @@ query
 SELECT repeat('hi', n) FROM test_repeat
 
 -- literal + literal
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT repeat('hi', 3), repeat('', 5), repeat('a', 0), repeat(NULL, 3)

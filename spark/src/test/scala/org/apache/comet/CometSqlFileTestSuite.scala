@@ -46,6 +46,14 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     (current(0) == required(0) && current(1) >= required(1))
   }
 
+  /** Check if the current Spark version is at or beyond a given version. */
+  private def atOrAfterSparkVersion(version: String): Boolean = {
+    val current = org.apache.spark.SPARK_VERSION.split("[.-]").take(2).map(_.toInt)
+    val target = version.split("[.-]").take(2).map(_.toInt)
+    (current(0) > target(0)) ||
+    (current(0) == target(0) && current(1) >= target(1))
+  }
+
   private val testResourceDir = {
     val url = getClass.getClassLoader.getResource("sql-tests")
     assert(url != null, "Could not find sql-tests resource directory")
@@ -92,41 +100,49 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case e: Exception =>
                 throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
             }
-          case SqlQuery(sql, mode, line) =>
-            try {
-              val location = if (line > 0) s"$relativePath:$line" else relativePath
-              withClue(s"In SQL file $location, executing query:\n$sql\n") {
-                mode match {
-                  case CheckCoverageAndAnswer =>
-                    checkSparkAnswerAndOperator(sql)
-                  case SparkAnswerOnly =>
-                    checkSparkAnswer(sql)
-                  case WithTolerance(tol) =>
-                    checkSparkAnswerAndOperatorWithTolerance(sql, tol)
-                  case ExpectFallback(reason) =>
-                    checkSparkAnswerAndFallbackReason(sql, reason)
-                  case Ignore(reason) =>
-                    logInfo(s"IGNORED query ($reason): $sql")
-                  case ExpectError(pattern) =>
-                    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(spark.sql(sql))
-                    assert(
-                      sparkError.isDefined,
-                      s"Expected Spark to throw an error matching '$pattern' but query succeeded")
-                    assert(
-                      cometError.isDefined,
-                      s"Expected Comet to throw an error matching '$pattern' but query succeeded")
-                    assert(
-                      sparkError.get.getMessage.contains(pattern),
-                      s"Spark error '${sparkError.get.getMessage}' does not contain '$pattern'")
-                    assert(
-                      cometError.get.getMessage.contains(pattern),
-                      s"Comet error '${cometError.get.getMessage}' does not contain '$pattern'")
+          case SqlQuery(sql, mode, line, ignoreFromSparkVersion) =>
+            val location = if (line > 0) s"$relativePath:$line" else relativePath
+            val skipReason = ignoreFromSparkVersion.collect {
+              case (version, reason) if atOrAfterSparkVersion(version) =>
+                s"Spark >= $version: $reason"
+            }
+            if (skipReason.isDefined) {
+              logInfo(s"IGNORED query at $location (${skipReason.get}): $sql")
+            } else {
+              try {
+                withClue(s"In SQL file $location, executing query:\n$sql\n") {
+                  mode match {
+                    case CheckCoverageAndAnswer =>
+                      checkSparkAnswerAndOperator(sql)
+                    case SparkAnswerOnly =>
+                      checkSparkAnswer(sql)
+                    case WithTolerance(tol) =>
+                      checkSparkAnswerAndOperatorWithTolerance(sql, tol)
+                    case ExpectFallback(reason) =>
+                      checkSparkAnswerAndFallbackReason(sql, reason)
+                    case Ignore(reason) =>
+                      logInfo(s"IGNORED query ($reason): $sql")
+                    case ExpectError(pattern) =>
+                      val (sparkError, cometError) =
+                        checkSparkAnswerMaybeThrows(spark.sql(sql))
+                      assert(
+                        sparkError.isDefined,
+                        s"Expected Spark to throw an error matching '$pattern' but query succeeded")
+                      assert(
+                        cometError.isDefined,
+                        s"Expected Comet to throw an error matching '$pattern' but query succeeded")
+                      assert(
+                        sparkError.get.getMessage.contains(pattern),
+                        s"Spark error '${sparkError.get.getMessage}' does not contain '$pattern'")
+                      assert(
+                        cometError.get.getMessage.contains(pattern),
+                        s"Comet error '${cometError.get.getMessage}' does not contain '$pattern'")
+                  }
                 }
+              } catch {
+                case e: Exception =>
+                  throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
               }
-
-            } catch {
-              case e: Exception =>
-                throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
             }
         }
       }

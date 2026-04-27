@@ -66,6 +66,7 @@ query
 SELECT next_day(d, 'Sat') FROM test_next_day
 
 -- literal arguments
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT next_day(date('2023-01-01'), 'Monday'), next_day(date('2023-01-01'), 'Sunday')
 

@@ -33,5 +33,6 @@ query
 SELECT array_repeat(1, cnt) FROM test_array_repeat
 
 -- literal + literal
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT array_repeat(1, 3), array_repeat(NULL, 3), array_repeat(1, 0), array_repeat(1, -1)

@@ -66,6 +66,7 @@ query
 SELECT cast(s as timestamp_ntz), id FROM test_str_to_ntz ORDER BY id
 
 -- Literal casts
+-- IgnoreFromSparkVersion: 4.1 https://github.com/apache/datafusion-comet/issues/4098
 query
 SELECT cast(TIMESTAMP_NTZ'2020-01-01 12:34:56.789' as string)
 

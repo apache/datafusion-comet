@@ -30,6 +30,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.serde.{CometDateFormat, CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -327,6 +328,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("last_day") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     val r = new Random(42)
     val schema = StructType(Seq(StructField("c0", DataTypes.DateType, true)))
     val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
@@ -353,6 +355,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("datediff") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     val r = new Random(42)
     val schema = StructType(
       Seq(
@@ -449,6 +452,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_format with literal timestamp") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     // Test specific literal timestamp formats
     // Disable constant folding to ensure Comet actually executes the expression
     withSQLConf(
@@ -468,6 +472,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_format with null") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
@@ -520,6 +525,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("unix_date") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     val r = new Random(42)
     val schema = StructType(Seq(StructField("c0", DataTypes.DateType, true)))
     val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
