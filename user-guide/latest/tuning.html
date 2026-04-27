@@ -66,7 +66,7 @@ under the License.
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="Comet Metrics" href="metrics.html" />
-    <link rel="prev" title="Cast" href="compatibility/expressions/cast.html" />
+    <link rel="prev" title="Understanding Comet Plans" href="understanding-comet-plans.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -361,6 +361,7 @@ under the License.
 <li class="toctree-l3"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
 <li class="toctree-l3"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="compatibility/index.html">Compatibility Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Tuning Guide</a></li>
 <li class="toctree-l3"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
 <li class="toctree-l3"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
@@ -595,16 +596,8 @@ certain environments, such as single-node setups with fast NVMe drives, at the e
 </section>
 <section id="explain-plan">
 <h2>Explain Plan<a class="headerlink" href="#explain-plan" title="Link to this heading">#</a></h2>
-<section id="extended-explain">
-<h3>Extended Explain<a class="headerlink" href="#extended-explain" title="Link to this heading">#</a></h3>
-<p>With Spark 4.0.0 and newer, Comet can provide extended explain plan information in the Spark UI. Currently this lists
-reasons why Comet may not have been enabled for specific operations.
-To enable this, in the Spark configuration, set the following:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>-c<span class="w"> </span>spark.sql.extendedExplainProviders<span class="o">=</span>org.apache.comet.ExtendedExplainInfo
-</pre></div>
-</div>
-<p>This will add a section to the detailed plan displayed in the Spark SQL UI page.</p>
-</section>
+<p>For an explanation of Comet plan output, the configs that control it, and how
+fallback to Spark works, see <a class="reference internal" href="understanding-comet-plans.html"><span class="std std-doc">Understanding Comet Plans</span></a>.</p>
 </section>
 </section>
 
@@ -619,12 +612,12 @@ To enable this, in the Spark configuration, set the following:</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="compatibility/expressions/cast.html"
+       href="understanding-comet-plans.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Cast</p>
+        <p class="prev-next-title">Understanding Comet Plans</p>
       </div>
     </a>
     <a class="right-next"
