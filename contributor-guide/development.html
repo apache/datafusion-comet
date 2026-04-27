@@ -367,9 +367,9 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="spark_expressions_support.html">Supported Spark Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
 <li class="toctree-l2"><a class="reference internal" href="profiling.html">Profiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
-<li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">SQL File Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
 <li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
 <li class="toctree-l2"><a class="reference internal" href="release_process.html">Release Process</a></li>
@@ -748,13 +748,13 @@ size limit to 16 MB.</p>
 <p>First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
 After that you can open the project in CLion. The IDE should automatically detect the project structure and import as a Cargo project.</p>
 </section>
-<section id="sql-file-tests-recommended-for-expressions">
-<h3>SQL file tests (recommended for expressions)<a class="headerlink" href="#sql-file-tests-recommended-for-expressions" title="Link to this heading">#</a></h3>
-<p>For testing expressions and operators, prefer using SQL file tests over writing Scala test
-code. SQL file tests are plain <code class="docutils literal notranslate"><span class="pre">.sql</span></code> files that are automatically discovered and executed –
+<section id="comet-sql-tests-recommended-for-expressions">
+<h3>Comet SQL Tests (recommended for expressions)<a class="headerlink" href="#comet-sql-tests-recommended-for-expressions" title="Link to this heading">#</a></h3>
+<p>For testing expressions and operators, prefer using Comet SQL Tests over writing Comet Scala
+Tests. Comet SQL Tests are plain <code class="docutils literal notranslate"><span class="pre">.sql</span></code> files that are automatically discovered and executed:
 no Scala code to write, and no recompilation needed when tests change. This makes it easy to
 iterate quickly and to get good coverage of edge cases and argument combinations.</p>
-<p>See the <a class="reference internal" href="sql-file-tests.html"><span class="doc std std-doc">SQL File Tests</span></a> guide for the full documentation on how to write
+<p>See the <a class="reference internal" href="sql-file-tests.html"><span class="doc std std-doc">Comet SQL Tests</span></a> guide for the full documentation on how to write
 and run these tests.</p>
 </section>
 <section id="running-tests-in-idea">
@@ -888,7 +888,7 @@ make<span class="w"> </span>test-jvm
 <p>Comet’s CI does not automatically discover test suites. Instead, test suites are explicitly listed
 in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
 jobs. This reduces overall CI time.</p>
-<p>If you add a new Scala test suite, you must add it to the <code class="docutils literal notranslate"><span class="pre">suite</span></code> matrix in <strong>both</strong> workflow files:</p>
+<p>If you add a new Comet Scala Test suite, you must add it to the <code class="docutils literal notranslate"><span class="pre">suite</span></code> matrix in <strong>both</strong> workflow files:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_build_linux.yml</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_build_macos.yml</span></code></p></li>
@@ -928,7 +928,7 @@ appropriate group. For example, if you add a new expression test suite, add it t
 <td><p>Execution operators, joins, aggregates, plan rules, TPC-*</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">expressions</span></code></p></td>
-<td><p>Expression evaluation, casts, and SQL file tests</p></td>
+<td><p>Expression evaluation, casts, and Comet SQL Tests</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sql</span></code></p></td>
 <td><p>SQL-level behavior tests</p></td>

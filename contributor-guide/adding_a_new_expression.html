@@ -367,9 +367,9 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="spark_expressions_support.html">Supported Spark Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
 <li class="toctree-l2"><a class="reference internal" href="profiling.html">Profiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
-<li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">SQL File Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
 <li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
 <li class="toctree-l2"><a class="reference internal" href="release_process.html">Release Process</a></li>
@@ -700,9 +700,9 @@ under the License.
 </section>
 <section id="adding-spark-side-tests-for-the-new-expression">
 <h4>Adding Spark-side Tests for the New Expression<a class="headerlink" href="#adding-spark-side-tests-for-the-new-expression" title="Link to this heading">#</a></h4>
-<p>It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a SQL test file using the SQL file test framework. This approach is simpler than writing Scala test code and makes it easy to cover many input combinations and edge cases.</p>
-<section id="writing-a-sql-test-file">
-<h5>Writing a SQL test file<a class="headerlink" href="#writing-a-sql-test-file" title="Link to this heading">#</a></h5>
+<p>It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a Comet SQL Test. This approach is simpler than writing Comet Scala Tests and makes it easy to cover many input combinations and edge cases.</p>
+<section id="writing-a-comet-sql-test">
+<h5>Writing a Comet SQL Test<a class="headerlink" href="#writing-a-comet-sql-test" title="Link to this heading">#</a></h5>
 <p>Create a <code class="docutils literal notranslate"><span class="pre">.sql</span></code> file under the appropriate subdirectory in <code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/sql-tests/expressions/</span></code> (e.g., <code class="docutils literal notranslate"><span class="pre">string/</span></code>, <code class="docutils literal notranslate"><span class="pre">math/</span></code>, <code class="docutils literal notranslate"><span class="pre">array/</span></code>). The file should create a table with test data, then run queries that exercise the expression. Here is an example for the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> expression:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">statement</span>
 <span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">test_unhex</span><span class="p">(</span><span class="n">col</span><span class="w"> </span><span class="n">string</span><span class="p">)</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="n">parquet</span>
@@ -734,19 +734,19 @@ under the License.
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite unhex&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
 </pre></div>
 </div>
-<p>For full documentation on the test file format — including directives like <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code>, query modes like <code class="docutils literal notranslate"><span class="pre">spark_answer_only</span></code> and <code class="docutils literal notranslate"><span class="pre">tolerance</span></code>, handling known bugs with <code class="docutils literal notranslate"><span class="pre">ignore(...)</span></code>, and tips for writing thorough tests — see the <a class="reference internal" href="sql-file-tests.html"><span class="std std-doc">SQL File Tests</span></a> guide.</p>
+<p>For full documentation on the test file format, including directives like <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code>, query modes like <code class="docutils literal notranslate"><span class="pre">spark_answer_only</span></code> and <code class="docutils literal notranslate"><span class="pre">tolerance</span></code>, handling known bugs with <code class="docutils literal notranslate"><span class="pre">ignore(...)</span></code>, and tips for writing thorough tests, see the <a class="reference internal" href="sql-file-tests.html"><span class="std std-doc">Comet SQL Tests</span></a> guide.</p>
 </section>
 <section id="tips">
 <h5>Tips<a class="headerlink" href="#tips" title="Link to this heading">#</a></h5>
 <ul class="simple">
-<li><p><strong>Cover both column references and literals.</strong> Comet often uses different code paths for each. The SQL file test suite automatically disables constant folding, so all-literal queries are evaluated natively.</p></li>
+<li><p><strong>Cover both column references and literals.</strong> Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated natively.</p></li>
 <li><p><strong>Include edge cases</strong> such as <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, empty strings, boundary values, <code class="docutils literal notranslate"><span class="pre">NaN</span></code>, and multibyte UTF-8 characters.</p></li>
 <li><p><strong>Keep one file per expression</strong> to make failures easy to locate.</p></li>
 </ul>
 </section>
-<section id="scala-tests-alternative">
-<h5>Scala tests (alternative)<a class="headerlink" href="#scala-tests-alternative" title="Link to this heading">#</a></h5>
-<p>For cases that require programmatic setup or custom assertions beyond what SQL files support, you can also add Scala test cases in <code class="docutils literal notranslate"><span class="pre">CometExpressionSuite</span></code> using the <code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndOperator</span></code> method:</p>
+<section id="comet-scala-tests-alternative">
+<h5>Comet Scala Tests (alternative)<a class="headerlink" href="#comet-scala-tests-alternative" title="Link to this heading">#</a></h5>
+<p>For cases that require programmatic setup or custom assertions beyond what SQL files support, you can also add Comet Scala Tests in <code class="docutils literal notranslate"><span class="pre">CometExpressionSuite</span></code> using the <code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndOperator</span></code> method:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;unhex&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">table</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;unhex_table&quot;</span>
 <span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="n">table</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
@@ -768,7 +768,7 @@ under the License.
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>When writing Scala tests with literal values (e.g., <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">my_func('literal')</span></code>), Spark’s constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:</p>
+<p>When writing Comet Scala Tests with literal values (e.g., <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">my_func('literal')</span></code>), Spark’s constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;my_func with literals&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="n">withSQLConf</span><span class="p">(</span><span class="nc">SQLConf</span><span class="p">.</span><span class="nc">OPTIMIZER_EXCLUDED_RULES</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span>
 <span class="w">      </span><span class="s">&quot;org.apache.spark.sql.catalyst.optimizer.ConstantFolding&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
