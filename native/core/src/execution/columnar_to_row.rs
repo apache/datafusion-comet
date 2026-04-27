@@ -164,8 +164,10 @@ enum TypedArray<'a> {
     Decimal128(&'a Decimal128Array, u8), // array + precision
     String(&'a StringArray),
     LargeString(&'a LargeStringArray),
+    StringView(&'a StringViewArray),
     Binary(&'a BinaryArray),
     LargeBinary(&'a LargeBinaryArray),
+    BinaryView(&'a BinaryViewArray),
     FixedSizeBinary(&'a FixedSizeBinaryArray),
     Struct(
         &'a StructArray,
@@ -213,6 +215,14 @@ impl<'a> TypedArray<'a> {
             DataType::LargeBinary => Ok(TypedArray::LargeBinary(downcast_array!(
                 array,
                 LargeBinaryArray
+            )?)),
+            DataType::Utf8View => Ok(TypedArray::StringView(downcast_array!(
+                array,
+                StringViewArray
+            )?)),
+            DataType::BinaryView => Ok(TypedArray::BinaryView(downcast_array!(
+                array,
+                BinaryViewArray
             )?)),
             DataType::FixedSizeBinary(_) => Ok(TypedArray::FixedSizeBinary(downcast_array!(
                 array,
@@ -270,8 +280,10 @@ impl<'a> TypedArray<'a> {
                 Decimal128,
                 String,
                 LargeString,
+                StringView,
                 Binary,
                 LargeBinary,
+                BinaryView,
                 FixedSizeBinary,
                 Struct,
                 List,
@@ -332,8 +344,12 @@ impl<'a> TypedArray<'a> {
             TypedArray::LargeString(arr) => {
                 Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes()))
             }
+            TypedArray::StringView(arr) => {
+                Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes()))
+            }
             TypedArray::Binary(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
             TypedArray::LargeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
+            TypedArray::BinaryView(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
             TypedArray::FixedSizeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
             TypedArray::Decimal128(arr, precision) if *precision > MAX_LONG_DIGITS => {
                 let bytes = i128_to_spark_decimal_bytes(arr.value(row_idx));
@@ -383,8 +399,10 @@ enum TypedElements<'a> {
     Decimal128(&'a Decimal128Array, u8),
     String(&'a StringArray),
     LargeString(&'a LargeStringArray),
+    StringView(&'a StringViewArray),
     Binary(&'a BinaryArray),
     LargeBinary(&'a LargeBinaryArray),
+    BinaryView(&'a BinaryViewArray),
     FixedSizeBinary(&'a FixedSizeBinaryArray),
     // For nested types, fall back to ArrayRef
     Other(&'a ArrayRef, DataType),
@@ -409,6 +427,8 @@ impl<'a> TypedElements<'a> {
             (DataType::LargeUtf8, LargeString, LargeStringArray),
             (DataType::Binary, Binary, BinaryArray),
             (DataType::LargeBinary, LargeBinary, LargeBinaryArray),
+            (DataType::Utf8View, StringView, StringViewArray),
+            (DataType::BinaryView, BinaryView, BinaryViewArray),
         );
 
         // Handle special cases that need extra processing
@@ -482,8 +502,10 @@ impl<'a> TypedElements<'a> {
                 Decimal128,
                 String,
                 LargeString,
+                StringView,
                 Binary,
                 LargeBinary,
+                BinaryView,
                 FixedSizeBinary,
                 Other
             ]
@@ -533,8 +555,12 @@ impl<'a> TypedElements<'a> {
             TypedElements::LargeString(arr) => {
                 Ok(write_bytes_padded(buffer, arr.value(idx).as_bytes()))
             }
+            TypedElements::StringView(arr) => {
+                Ok(write_bytes_padded(buffer, arr.value(idx).as_bytes()))
+            }
             TypedElements::Binary(arr) => Ok(write_bytes_padded(buffer, arr.value(idx))),
             TypedElements::LargeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(idx))),
+            TypedElements::BinaryView(arr) => Ok(write_bytes_padded(buffer, arr.value(idx))),
             TypedElements::FixedSizeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(idx))),
             TypedElements::Decimal128(arr, precision) if *precision > MAX_LONG_DIGITS => {
                 let bytes = i128_to_spark_decimal_bytes(arr.value(idx));
