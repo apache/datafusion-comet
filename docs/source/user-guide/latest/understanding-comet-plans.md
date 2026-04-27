@@ -46,7 +46,7 @@ a transition node such as `CometColumnarToRow` or `CometSparkRowToColumnar`.
 
 ## Reading a Plan
 
-You can print a plan with `df.explain(true)` or `EXPLAIN FORMATTED <sql>`, and
+You can print a plan with `df.explain("formatted")` or `EXPLAIN FORMATTED <sql>`, and
 the same plan is shown in the Spark SQL UI. When reading a plan, look for:
 
 - **Node prefix.** `Comet*` nodes are accelerated by Comet. Anything without
