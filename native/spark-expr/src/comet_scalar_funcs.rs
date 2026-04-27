@@ -225,6 +225,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "next_day" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkNextDay::new(
             fail_on_error,
         )))),
+        "levenshtein" => {
+            let func = Arc::new(crate::string_funcs::spark_levenshtein);
+            make_comet_scalar_udf!("levenshtein", func, without data_type)
+        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
