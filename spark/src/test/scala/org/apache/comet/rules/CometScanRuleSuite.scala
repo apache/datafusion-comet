@@ -25,12 +25,9 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
-import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.parquet.CometParquetScan
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -101,60 +98,21 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should replace BatchScanExec, but only when Comet is enabled") {
+  test("CometScanRule should fallback to Spark for ShortType when safety check enabled") {
     withTempPath { path =>
-      createTestDataFrame.write.parquet(path.toString)
-      withTempView("test_data") {
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
-          spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
-
-          val sparkPlan =
-            createSparkPlan(
-              spark,
-              "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
-
-          // Count original Spark operators
-          assert(countOperators(sparkPlan, classOf[BatchScanExec]) == 1)
-
-          for (cometEnabled <- Seq(true, false)) {
-            withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled.toString) {
-
-              val transformedPlan = applyCometScanRule(sparkPlan)
-
-              if (cometEnabled) {
-                assert(countOperators(transformedPlan, classOf[BatchScanExec]) == 0)
-                assert(countOperators(transformedPlan, classOf[CometBatchScanExec]) == 1)
-
-                // CometScanRule should have replaced the underlying scan
-                val scan = transformedPlan.collect { case scan: CometBatchScanExec => scan }.head
-                assert(scan.wrapped.scan.isInstanceOf[CometParquetScan])
-
-              } else {
-                assert(countOperators(transformedPlan, classOf[BatchScanExec]) == 1)
-                assert(countOperators(transformedPlan, classOf[CometBatchScanExec]) == 0)
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  test("CometScanRule should fallback to Spark for unsupported data types in v1 scan") {
-    withTempPath { path =>
-      // Create test data with unsupported types (e.g., BinaryType, CalendarIntervalType)
+      // Create test data with ShortType which may be from unsigned UINT_8
       import org.apache.spark.sql.types._
       val unsupportedSchema = new StructType(
         Array(
           StructField("id", DataTypes.IntegerType, nullable = true),
           StructField(
             "value",
-            DataTypes.ByteType,
+            DataTypes.ShortType,
             nullable = true
-          ), // Unsupported in some scan modes
+          ), // May be from unsigned UINT_8
           StructField("name", DataTypes.StringType, nullable = true)))
 
-      val testData = Seq(Row(1, 1.toByte, "test1"), Row(2, -1.toByte, "test2"))
+      val testData = Seq(Row(1, 1.toShort, "test1"), Row(2, -1.toShort, "test2"))
 
       val df = spark.createDataFrame(spark.sparkContext.parallelize(testData), unsupportedSchema)
       df.write.parquet(path.toString)
@@ -167,10 +125,10 @@ class CometScanRuleSuite extends CometTestBase {
 
         withSQLConf(
           CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+          CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "true") {
           val transformedPlan = applyCometScanRule(sparkPlan)
 
-          // Should fallback to Spark due to unsupported ByteType in schema
+          // Should fallback to Spark due to ShortType (may be from unsigned UINT_8)
           assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
           assert(countOperators(transformedPlan, classOf[CometScanExec]) == 0)
         }

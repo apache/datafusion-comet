@@ -1,3 +1,4 @@
+CLAUDE.md
 target
 .idea
 *.iml
@@ -16,5 +17,13 @@ filtered_rat.txt
 dev/dist
 apache-rat-*.jar
 venv
+.venv
 dev/release/comet-rm/workdir
 spark/benchmarks
+.DS_Store
+comet-event-trace.json
+__pycache__
+output
+docs/comet-*/
+docs/build/
+docs/temp/

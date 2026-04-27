@@ -54,11 +54,6 @@ abstract class CometReaderThreadPool {
 
 }
 
-// A thread pool used for pre-fetching files.
-object CometPrefetchThreadPool extends CometReaderThreadPool {
-  override def threadNamePrefix: String = "prefetch_thread"
-}
-
 // Thread pool used by the Parquet parallel reader
 object CometFileReaderThreadPool extends CometReaderThreadPool {
   override def threadNamePrefix: String = "file_reader_thread"

@@ -148,6 +148,106 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("split string basic") {
+    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+      withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
+        checkSparkAnswerAndOperator("SELECT split('one,two,three', ',') FROM tbl")
+        checkSparkAnswerAndOperator("SELECT split(_1, '-') FROM tbl")
+      }
+    }
+  }
+
+  test("split string with limit") {
+    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+      withParquetTable((0 until 5).map(i => ("a,b,c,d,e", i)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT split(_1, ',', 2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT split(_1, ',', 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT split(_1, ',', -1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT split(_1, ',', 0) FROM tbl")
+      }
+    }
+  }
+
+  test("split string with regex patterns") {
+    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+      withParquetTable((0 until 5).map(i => ("word1 word2  word3", i)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT split(_1, ' ') FROM tbl")
+        checkSparkAnswerAndOperator("SELECT split(_1, '\\\\s+') FROM tbl")
+      }
+
+      withParquetTable((0 until 5).map(i => ("foo123bar456baz", i)), "tbl2") {
+        checkSparkAnswerAndOperator("SELECT split(_1, '\\\\d+') FROM tbl2")
+      }
+    }
+  }
+
+  test("split string edge cases") {
+    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+      withParquetTable(Seq(("", 0), ("single", 1), (null, 2), ("a", 3)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
+      }
+    }
+  }
+
+  test("split string with UTF-8 characters") {
+    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+      // CJK characters
+      withParquetTable(Seq(("你好,世界", 0), ("こんにちは,世界", 1)), "tbl_cjk") {
+        checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_cjk")
+      }
+
+      // Emoji and symbols
+      withParquetTable(Seq(("😀,😃,😄", 0), ("🔥,💧,🌍", 1), ("α,β,γ", 2)), "tbl_emoji") {
+        checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_emoji")
+      }
+
+      // Combining characters / grapheme clusters
+      withParquetTable(
+        Seq(
+          ("café,naïve", 0), // precomposed
+          ("café,naïve", 1), // combining (if your editor supports it)
+          ("मानक,हिन्दी", 2)
+        ), // Devanagari script
+        "tbl_graphemes") {
+        checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_graphemes")
+      }
+
+      // Mixed ASCII and multi-byte with regex patterns
+      withParquetTable(
+        Seq(("hello世界test你好", 0), ("foo😀bar😃baz", 1), ("abc한글def", 2)), // Korean Hangul
+        "tbl_mixed") {
+        // Split on ASCII word boundaries
+        checkSparkAnswerAndOperator("SELECT split(_1, '[a-z]+') FROM tbl_mixed")
+      }
+
+      // RTL (Right-to-Left) characters
+      withParquetTable(Seq(("مرحبا,عالم", 0), ("שלום,עולם", 1)), "tbl_rtl") { // Arabic, Hebrew
+        checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_rtl")
+      }
+
+      // Zero-width characters and special Unicode
+      withParquetTable(
+        Seq(
+          ("test\u200Bword", 0), // Zero-width space
+          ("foo\u00ADbar", 1)
+        ), // Soft hyphen
+        "tbl_special") {
+        checkSparkAnswerAndOperator("SELECT split(_1, '\u200B') FROM tbl_special")
+      }
+
+      // Surrogate pairs (4-byte UTF-8)
+      withParquetTable(
+        Seq(
+          ("𝐇𝐞𝐥𝐥𝐨,𝐖𝐨𝐫𝐥𝐝", 0), // Mathematical bold letters (U+1D400 range)
+          ("𠜎,𠜱,𠝹", 1)
+        ), // CJK Extension B
+        "tbl_surrogate") {
+        checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_surrogate")
+      }
+    }
+  }
+
   test("Various String scalar functions") {
     val table = "names"
     withTable(table) {
@@ -260,19 +360,6 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
-  test("string concat_ws") {
-    val table = "names"
-    withTable(table) {
-      sql(
-        s"create table $table(id int, first_name varchar(20), middle_initial char(1), last_name varchar(20)) using parquet")
-      sql(
-        s"insert into $table values(1, 'James', 'B', 'Taylor'), (2, 'Smith', 'C', 'Davis')," +
-          " (3, NULL, NULL, NULL), (4, 'Smith', 'C', 'Davis')")
-      checkSparkAnswerAndOperator(
-        s"SELECT concat_ws(' ', first_name, middle_initial, last_name) FROM $table")
-    }
-  }
-
   test("string repeat") {
     val table = "names"
     withTable(table) {
@@ -376,7 +463,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("string_space") {
-    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+    withParquetTable((0 until 5).map(i => (-i, i + 1)), "tbl") {
       checkSparkAnswerAndOperator("SELECT space(_1), space(_2) FROM tbl")
     }
   }

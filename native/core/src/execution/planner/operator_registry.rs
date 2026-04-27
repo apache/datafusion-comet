@@ -23,13 +23,10 @@ use std::{
 };
 
 use datafusion_comet_proto::spark_operator::Operator;
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 
-use super::PhysicalPlanner;
-use crate::execution::{
-    operators::{ExecutionError, ScanExec},
-    spark_plan::SparkPlan,
-};
+use super::{PhysicalPlanner, PlanCreationResult};
+use crate::execution::operators::ExecutionError;
 
 /// Trait for building physical operators from Spark protobuf operators
 pub trait OperatorBuilder: Send + Sync {
@@ -37,10 +34,10 @@ pub trait OperatorBuilder: Send + Sync {
     fn build(
         &self,
         spark_plan: &datafusion_comet_proto::spark_operator::Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         partition_count: usize,
         planner: &PhysicalPlanner,
-    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError>;
+    ) -> PlanCreationResult;
 }
 
 /// Enum to identify different operator types for registry dispatch
@@ -60,6 +57,7 @@ pub enum OperatorType {
     SortMergeJoin,
     HashJoin,
     Window,
+    CsvScan,
 }
 
 /// Global registry of operator builders
@@ -96,10 +94,10 @@ impl OperatorRegistry {
     pub fn create_plan(
         &self,
         spark_operator: &Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         partition_count: usize,
         planner: &PhysicalPlanner,
-    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
+    ) -> PlanCreationResult {
         let operator_type = get_operator_type(spark_operator).ok_or_else(|| {
             ExecutionError::GeneralError(format!(
                 "Unsupported operator type: {:?}",
@@ -151,5 +149,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::HashJoin(_) => Some(OperatorType::HashJoin),
         OpStruct::Window(_) => Some(OperatorType::Window),
         OpStruct::Explode(_) => None, // Not yet in OperatorType enum
+        OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
+        OpStruct::ShuffleScan(_) => None, // Not yet in OperatorType enum
     }
 }

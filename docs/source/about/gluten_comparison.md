@@ -64,7 +64,7 @@ Comet relies on the full Spark SQL test suite (consisting of more than 24,000 te
 integration tests to ensure compatibility with Spark. Features that are known to have compatibility differences with
 Spark are disabled by default, but users can opt in. See the [Comet Compatibility Guide] for more information.
 
-[Comet Compatibility Guide]: /user-guide/latest/compatibility.md
+[Comet Compatibility Guide]: /user-guide/latest/compatibility/index.md
 
 Gluten also aims to provide compatibility with Spark, and includes a subset of the Spark SQL tests in its own test
 suite. See the [Gluten Compatibility Guide] for more information.
@@ -86,7 +86,7 @@ on your existing Spark jobs.
 
 ![tpch_allqueries_comet_gluten.png](/_static/images/tpch_allqueries_comet_gluten.png)
 
-The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
+The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/benchmarks/tpc).
 
 ## Ease of Development & Contributing
 

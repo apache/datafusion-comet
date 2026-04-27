@@ -21,8 +21,8 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, EvalMode}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
 
@@ -151,16 +151,8 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
-  override def getSupportLevel(avg: Average): SupportLevel = {
-    avg.evalMode match {
-      case EvalMode.ANSI =>
-        Incompatible(Some("ANSI mode is not supported"))
-      case EvalMode.TRY =>
-        Incompatible(Some("TRY mode is not supported"))
-      case _ =>
-        Compatible()
-    }
-  }
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Falls back to Spark in ANSI mode. Supports all numeric inputs except decimal types.")
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -193,7 +185,7 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
       val builder = ExprOuterClass.Avg.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(avg.evalMode == EvalMode.ANSI)
+      builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(avg.evalMode)))
       builder.setSumDatatype(sumDataType.get)
 
       Some(
@@ -213,16 +205,7 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
-  override def getSupportLevel(sum: Sum): SupportLevel = {
-    sum.evalMode match {
-      case EvalMode.ANSI if !sum.dataType.isInstanceOf[DecimalType] =>
-        Incompatible(Some("ANSI mode for non decimal inputs is not supported"))
-      case EvalMode.TRY if !sum.dataType.isInstanceOf[DecimalType] =>
-        Incompatible(Some("TRY mode for non decimal inputs is not supported"))
-      case _ =>
-        Compatible()
-    }
-  }
+  override def getIncompatibleReasons(): Seq[String] = Seq("Falls back to Spark in ANSI mode.")
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -236,6 +219,8 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       return None
     }
 
+    val evalMode = sum.evalMode
+
     val childExpr = exprToProto(sum.child, inputs, binding)
     val dataType = serializeDataType(sum.dataType)
 
@@ -243,7 +228,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       val builder = ExprOuterClass.Sum.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(sum.evalMode)))
+      builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
 
       Some(
         ExprOuterClass.AggExpr
@@ -262,6 +247,10 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
 }
 
 object CometFirst extends CometAggregateExpressionSerde[First] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "This function is not deterministic. Results may not match Spark.")
+
   override def convert(
       aggExpr: AggregateExpression,
       first: First,
@@ -294,6 +283,10 @@ object CometFirst extends CometAggregateExpressionSerde[First] {
 }
 
 object CometLast extends CometAggregateExpressionSerde[Last] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "This function is not deterministic. Results may not match Spark.")
+
   override def convert(
       aggExpr: AggregateExpression,
       last: Last,
@@ -679,6 +672,58 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
         bloomFilter.child,
         bloomFilter.estimatedNumItemsExpression,
         bloomFilter.numBitsExpression)
+      None
+    }
+  }
+}
+
+object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a" +
+      s" distinct value. When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, `collect_set`" +
+      " on floating-point types falls back to Spark unless" +
+      " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
+
+  override def getSupportLevel(expr: CollectSet): SupportLevel = {
+    if (COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+      SupportLevel.containsFloatingPoint(expr.children.head.dataType)) {
+      Incompatible(
+        Some(
+          "collect_set on floating-point types is not 100% compatible with Spark " +
+            "(Comet deduplicates NaN values while Spark treats each NaN as distinct), " +
+            s"and Comet is running with ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+            s"${CometConf.COMPAT_GUIDE}"))
+    } else {
+      Compatible()
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: CollectSet,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val child = expr.children.head
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(expr.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.CollectSet.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setCollectSet(builder)
+          .build())
+    } else if (dataType.isEmpty) {
+      withInfo(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      None
+    } else {
+      withInfo(aggExpr, child)
       None
     }
   }

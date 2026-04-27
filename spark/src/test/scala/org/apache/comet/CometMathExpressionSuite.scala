@@ -26,6 +26,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -89,5 +90,59 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       schema,
       1000,
       DataGenOptions(generateNegativeZero = generateNegativeZero))
+  }
+
+  test("width_bucket") {
+    assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
+    withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
+      spark
+        .createDataFrame(
+          Seq((5.3, 0.2, 10.6, 5), (8.1, 0.0, 5.7, 4), (-0.9, 5.2, 0.5, 2), (-2.1, 1.3, 3.4, 3)))
+        .toDF("c1", "c2", "c3", "c4")
+        .createOrReplaceTempView("width_bucket_test")
+      checkSparkAnswerAndOperator(
+        "SELECT c1, width_bucket(c1, c2, c3, c4) FROM width_bucket_test")
+    }
+  }
+
+  test("width_bucket - edge cases") {
+    assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
+    withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
+      spark
+        .createDataFrame(Seq(
+          (0.0, 10.0, 0.0, 5), // Value equals max (reversed bounds)
+          (10.0, 0.0, 10.0, 5), // Value equals max (normal bounds)
+          (10.0, 0.0, 0.0, 5), // Min equals max - returns NULL
+          (5.0, 0.0, 10.0, 0) // Zero buckets - returns NULL
+        ))
+        .toDF("c1", "c2", "c3", "c4")
+        .createOrReplaceTempView("width_bucket_edge")
+      checkSparkAnswerAndOperator(
+        "SELECT c1, width_bucket(c1, c2, c3, c4) FROM width_bucket_edge")
+    }
+  }
+
+  test("width_bucket - NaN values") {
+    assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
+    withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
+      spark
+        .createDataFrame(
+          Seq((Double.NaN, 5.0, 0.0), (5.0, Double.NaN, 0.0), (5.0, 0.0, Double.NaN)))
+        .toDF("c1", "c2", "c3")
+        .createOrReplaceTempView("width_bucket_nan")
+      checkSparkAnswerAndOperator("SELECT c1, width_bucket(c1, c2, c3, 5) FROM width_bucket_nan")
+    }
+  }
+
+  test("width_bucket - with range data") {
+    assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
+    withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
+      spark
+        .range(10)
+        .selectExpr("id", "CAST(id AS DOUBLE) as value")
+        .createOrReplaceTempView("width_bucket_range")
+      checkSparkAnswerAndOperator(
+        "SELECT id, width_bucket(value, 0.0, 10.0, 5) FROM width_bucket_range ORDER BY id")
+    }
   }
 }

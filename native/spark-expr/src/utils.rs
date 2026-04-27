@@ -29,13 +29,14 @@ use std::sync::Arc;
 
 use crate::timezone::Tz;
 use arrow::array::types::TimestampMillisecondType;
+use arrow::array::TimestampMicrosecondArray;
 use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use arrow::error::ArrowError;
 use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
     temporal_conversions::as_datetime,
 };
-use chrono::{DateTime, Offset, TimeZone};
+use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeZone};
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.
@@ -71,20 +72,63 @@ pub fn array_with_timezone(
     to_type: Option<&DataType>,
 ) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
+        DataType::Timestamp(TimeUnit::Millisecond, None) => {
+            assert!(!timezone.is_empty());
+            match to_type {
+                Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
+                Some(DataType::Timestamp(_, Some(target_tz))) => {
+                    // Interpret NTZ as local time in session TZ; annotate output with target TZ
+                    // so the result has the exact annotation the caller expects.
+                    timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
+                }
+                Some(DataType::Timestamp(TimeUnit::Microsecond, None)) => {
+                    // Convert from Timestamp(Millisecond, None) to Timestamp(Microsecond, None)
+                    let millis_array = as_primitive_array::<TimestampMillisecondType>(&array);
+                    let micros_array: TimestampMicrosecondArray =
+                        arrow::compute::kernels::arity::unary(millis_array, |v| v * 1000);
+                    Ok(Arc::new(micros_array))
+                }
+                _ => {
+                    // Not supported
+                    Err(ArrowError::CastError(format!(
+                        "Cannot convert from {:?} to {:?}",
+                        array.data_type(),
+                        to_type.unwrap()
+                    )))
+                }
+            }
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, None) => {
+            assert!(!timezone.is_empty());
+            match to_type {
+                Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
+                Some(DataType::Timestamp(_, Some(target_tz))) => {
+                    timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
+                }
+                _ => {
+                    // Not supported
+                    Err(ArrowError::CastError(format!(
+                        "Cannot convert from {:?} to {:?}",
+                        array.data_type(),
+                        to_type.unwrap()
+                    )))
+                }
+            }
+        }
         DataType::Timestamp(_, None) => {
             assert!(!timezone.is_empty());
             match to_type {
                 Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
-                Some(DataType::Timestamp(_, Some(_))) => {
-                    timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(timezone.as_str()))
+                Some(DataType::Timestamp(_, Some(target_tz))) => {
+                    timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
                 }
                 _ => {
                     // Not supported
-                    panic!(
+                    Err(ArrowError::CastError(format!(
                         "Cannot convert from {:?} to {:?}",
                         array.data_type(),
                         to_type.unwrap()
-                    )
+                    )))
                 }
             }
         }
@@ -132,6 +176,34 @@ fn datetime_cast_err(value: i64) -> ArrowError {
     ))
 }
 
+/// Resolves a local datetime in the given timezone to an absolute DateTime,
+/// handling DST ambiguity and spring-forward gaps.
+/// Parameters:
+///     tz - timezone used to interpret local_datetime
+///     local_datetime - a naive local datetime to resolve
+pub(crate) fn resolve_local_datetime(tz: &Tz, local_datetime: NaiveDateTime) -> DateTime<Tz> {
+    match tz.from_local_datetime(&local_datetime) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(dt, _) => dt,
+        LocalResult::None => {
+            // Determine offset before time-change
+            let probe = local_datetime - chrono::Duration::hours(3);
+            let pre_offset = match tz.from_local_datetime(&probe) {
+                LocalResult::Single(dt) => dt.offset().fix(),
+                LocalResult::Ambiguous(dt, _) => dt.offset().fix(),
+                LocalResult::None => {
+                    // Cannot determine offset; fall back to UTC interpretation
+                    return local_datetime.and_utc().with_timezone(tz);
+                }
+            };
+            let offset_secs = pre_offset.local_minus_utc() as i64;
+
+            let utc_naive = local_datetime - chrono::Duration::seconds(offset_secs);
+            utc_naive.and_utc().with_timezone(tz)
+        }
+    }
+}
+
 /// Takes in a Timestamp(Microsecond, None) array and a timezone id, and returns
 /// a Timestamp(Microsecond, Some<_>) array.
 /// The understanding is that the input array has time in the timezone specified in the second
@@ -140,7 +212,7 @@ fn datetime_cast_err(value: i64) -> ArrowError {
 ///     array - input array of timestamp without timezone
 ///     tz - timezone of the values in the input array
 ///     to_timezone - timezone to change the input values to
-fn timestamp_ntz_to_timestamp(
+pub(crate) fn timestamp_ntz_to_timestamp(
     array: ArrayRef,
     tz: &str,
     to_timezone: Option<&str>,
@@ -154,8 +226,8 @@ fn timestamp_ntz_to_timestamp(
                 as_datetime::<TimestampMicrosecondType>(value)
                     .ok_or_else(|| datetime_cast_err(value))
                     .map(|local_datetime| {
-                        let datetime: DateTime<Tz> =
-                            tz.from_local_datetime(&local_datetime).unwrap();
+                        let datetime = resolve_local_datetime(&tz, local_datetime);
+
                         datetime.timestamp_micros()
                     })
             })?;
@@ -173,8 +245,8 @@ fn timestamp_ntz_to_timestamp(
                 as_datetime::<TimestampMillisecondType>(value)
                     .ok_or_else(|| datetime_cast_err(value))
                     .map(|local_datetime| {
-                        let datetime: DateTime<Tz> =
-                            tz.from_local_datetime(&local_datetime).unwrap();
+                        let datetime = resolve_local_datetime(&tz, local_datetime);
+
                         datetime.timestamp_millis()
                     })
             })?;
@@ -186,6 +258,41 @@ fn timestamp_ntz_to_timestamp(
             Ok(Arc::new(array_with_tz))
         }
         _ => Ok(array),
+    }
+}
+
+/// Converts a `Timestamp(Microsecond, Some(_))` array to `Timestamp(Microsecond, None)`
+/// (TIMESTAMP_NTZ) by interpreting the UTC epoch value in the given session timezone and
+/// storing the resulting local datetime as epoch-relative microseconds without a TZ annotation.
+///
+/// Matches Spark: `convertTz(ts, ZoneOffset.UTC, zoneId)`
+pub(crate) fn cast_timestamp_to_ntz(
+    array: ArrayRef,
+    timezone: &str,
+) -> Result<ArrayRef, ArrowError> {
+    assert!(!timezone.is_empty());
+    let tz: Tz = timezone.parse()?;
+    match array.data_type() {
+        DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => {
+            let array = as_primitive_array::<TimestampMicrosecondType>(&array);
+            let result: PrimitiveArray<TimestampMicrosecondType> = array.try_unary(|value| {
+                as_datetime::<TimestampMicrosecondType>(value)
+                    .ok_or_else(|| datetime_cast_err(value))
+                    .map(|utc_naive| {
+                        // Convert UTC naive datetime → local datetime in session TZ
+                        let local_dt = tz.from_utc_datetime(&utc_naive);
+                        // Re-encode as epoch-relative μs treating local time as UTC anchor.
+                        // This produces the NTZ representation (no offset applied).
+                        local_dt.naive_local().and_utc().timestamp_micros()
+                    })
+            })?;
+            // No timezone annotation on output = TIMESTAMP_NTZ
+            Ok(Arc::new(result))
+        }
+        _ => Err(ArrowError::CastError(format!(
+            "cast_timestamp_to_ntz: unexpected input type {:?}",
+            array.data_type()
+        ))),
     }
 }
 
@@ -270,6 +377,19 @@ pub fn unlikely(b: bool) -> bool {
 mod tests {
     use super::*;
 
+    fn array_containing(local_datetime: &str) -> ArrayRef {
+        let dt = NaiveDateTime::parse_from_str(local_datetime, "%Y-%m-%d %H:%M:%S").unwrap();
+        let ts = dt.and_utc().timestamp_micros();
+        Arc::new(TimestampMicrosecondArray::from(vec![ts]))
+    }
+
+    fn micros_for(datetime: &str) -> i64 {
+        NaiveDateTime::parse_from_str(datetime, "%Y-%m-%d %H:%M:%S")
+            .unwrap()
+            .and_utc()
+            .timestamp_micros()
+    }
+
     #[test]
     fn test_build_bool_state() {
         let mut builder = BooleanBufferBuilder::new(0);
@@ -287,5 +407,86 @@ mod tests {
             build_bool_state(&mut builder, &EmitTo::First(9))
         );
         assert_eq!(last, build_bool_state(&mut builder, &EmitTo::All));
+    }
+
+    #[test]
+    fn test_timestamp_ntz_to_timestamp_handles_non_existent_time() {
+        let output = timestamp_ntz_to_timestamp(
+            array_containing("2024-03-31 01:30:00"),
+            "Europe/London",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
+            micros_for("2024-03-31 01:30:00")
+        );
+    }
+
+    #[test]
+    fn test_timestamp_ntz_to_timestamp_handles_ambiguous_time() {
+        let output = timestamp_ntz_to_timestamp(
+            array_containing("2024-10-27 01:30:00"),
+            "Europe/London",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
+            micros_for("2024-10-27 00:30:00")
+        );
+    }
+
+    // Helper: build a Timestamp(Microsecond, Some(tz)) array from a UTC datetime string
+    fn ts_with_tz(utc_datetime: &str, tz: &str) -> ArrayRef {
+        let dt = NaiveDateTime::parse_from_str(utc_datetime, "%Y-%m-%d %H:%M:%S").unwrap();
+        let ts = dt.and_utc().timestamp_micros();
+        Arc::new(TimestampMicrosecondArray::from(vec![ts]).with_timezone(tz.to_string()))
+    }
+
+    #[test]
+    fn test_cast_timestamp_to_ntz_utc() {
+        // In UTC, local time == UTC time, so NTZ value == UTC epoch value
+        let input = ts_with_tz("2024-01-15 10:30:00", "UTC");
+        let result = cast_timestamp_to_ntz(input, "UTC").unwrap();
+        let out = as_primitive_array::<TimestampMicrosecondType>(&result);
+        // Expected NTZ value: epoch μs for "2024-01-15 10:30:00" as if it were UTC
+        let expected = NaiveDateTime::parse_from_str("2024-01-15 10:30:00", "%Y-%m-%d %H:%M:%S")
+            .unwrap()
+            .and_utc()
+            .timestamp_micros();
+        assert_eq!(out.value(0), expected);
+        assert_eq!(out.timezone(), None); // no TZ annotation = NTZ
+    }
+
+    #[test]
+    fn test_cast_timestamp_to_ntz_offset_timezone() {
+        // UTC epoch for "2024-01-15 15:30:00 UTC" cast to NTZ with session TZ = America/New_York (UTC-5)
+        // Local time in NY = 10:30:00 → NTZ should store epoch μs for "2024-01-15 10:30:00"
+        let input = ts_with_tz("2024-01-15 15:30:00", "UTC");
+        let result = cast_timestamp_to_ntz(input, "America/New_York").unwrap();
+        let out = as_primitive_array::<TimestampMicrosecondType>(&result);
+        let expected = NaiveDateTime::parse_from_str("2024-01-15 10:30:00", "%Y-%m-%d %H:%M:%S")
+            .unwrap()
+            .and_utc()
+            .timestamp_micros();
+        assert_eq!(out.value(0), expected);
+        assert_eq!(out.timezone(), None);
+    }
+
+    #[test]
+    fn test_cast_timestamp_to_ntz_dst() {
+        // During DST: UTC epoch for "2024-07-04 16:30:00 UTC", session TZ = America/New_York (UTC-4 in summer)
+        // Local time in NY = 12:30:00 → NTZ stores epoch μs for "2024-07-04 12:30:00"
+        let input = ts_with_tz("2024-07-04 16:30:00", "UTC");
+        let result = cast_timestamp_to_ntz(input, "America/New_York").unwrap();
+        let out = as_primitive_array::<TimestampMicrosecondType>(&result);
+        let expected = NaiveDateTime::parse_from_str("2024-07-04 12:30:00", "%Y-%m-%d %H:%M:%S")
+            .unwrap()
+            .and_utc()
+            .timestamp_micros();
+        assert_eq!(out.value(0), expected);
     }
 }

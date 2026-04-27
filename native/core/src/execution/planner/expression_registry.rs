@@ -94,6 +94,7 @@ pub enum ExpressionType {
     CreateNamedStruct,
     GetStructField,
     ToJson,
+    FromJson,
     ToPrettyString,
     ListExtract,
     GetArrayStructFields,
@@ -102,12 +103,15 @@ pub enum ExpressionType {
     Randn,
     SparkPartitionId,
     MonotonicallyIncreasingId,
+    ArraysZip,
 
     // Time functions
     Hour,
     Minute,
     Second,
     TruncTimestamp,
+    UnixTimestamp,
+    HoursTransform,
 }
 
 /// Registry for expression builders
@@ -180,9 +184,14 @@ impl ExpressionRegistry {
         // Register string expressions
         self.register_string_expressions();
 
-        // TODO: Register other expression categories in future phases
-        // self.register_temporal_expressions();
-        // etc.
+        // Register temporal expressions
+        self.register_temporal_expressions();
+
+        // Register random expressions
+        self.register_random_expressions();
+
+        // Register partition expressions
+        self.register_partition_expressions();
     }
 
     /// Register arithmetic expression builders
@@ -281,6 +290,32 @@ impl ExpressionRegistry {
             .insert(ExpressionType::Like, Box::new(LikeBuilder));
         self.builders
             .insert(ExpressionType::Rlike, Box::new(RlikeBuilder));
+        self.builders
+            .insert(ExpressionType::FromJson, Box::new(FromJsonBuilder));
+    }
+
+    /// Register temporal expression builders
+    fn register_temporal_expressions(&mut self) {
+        use crate::execution::expressions::temporal::*;
+
+        self.builders
+            .insert(ExpressionType::Hour, Box::new(HourBuilder));
+        self.builders
+            .insert(ExpressionType::Minute, Box::new(MinuteBuilder));
+        self.builders
+            .insert(ExpressionType::Second, Box::new(SecondBuilder));
+        self.builders.insert(
+            ExpressionType::UnixTimestamp,
+            Box::new(UnixTimestampBuilder),
+        );
+        self.builders.insert(
+            ExpressionType::TruncTimestamp,
+            Box::new(TruncTimestampBuilder),
+        );
+        self.builders.insert(
+            ExpressionType::HoursTransform,
+            Box::new(HoursTransformBuilder),
+        );
     }
 
     /// Extract expression type from Spark protobuf expression
@@ -336,6 +371,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::CreateNamedStruct(_)) => Ok(ExpressionType::CreateNamedStruct),
             Some(ExprStruct::GetStructField(_)) => Ok(ExpressionType::GetStructField),
             Some(ExprStruct::ToJson(_)) => Ok(ExpressionType::ToJson),
+            Some(ExprStruct::FromJson(_)) => Ok(ExpressionType::FromJson),
             Some(ExprStruct::ToPrettyString(_)) => Ok(ExpressionType::ToPrettyString),
             Some(ExprStruct::ListExtract(_)) => Ok(ExpressionType::ListExtract),
             Some(ExprStruct::GetArrayStructFields(_)) => Ok(ExpressionType::GetArrayStructFields),
@@ -346,11 +382,14 @@ impl ExpressionRegistry {
             Some(ExprStruct::MonotonicallyIncreasingId(_)) => {
                 Ok(ExpressionType::MonotonicallyIncreasingId)
             }
+            Some(ExprStruct::ArraysZip(_)) => Ok(ExpressionType::ArraysZip),
 
             Some(ExprStruct::Hour(_)) => Ok(ExpressionType::Hour),
             Some(ExprStruct::Minute(_)) => Ok(ExpressionType::Minute),
             Some(ExprStruct::Second(_)) => Ok(ExpressionType::Second),
             Some(ExprStruct::TruncTimestamp(_)) => Ok(ExpressionType::TruncTimestamp),
+            Some(ExprStruct::UnixTimestamp(_)) => Ok(ExpressionType::UnixTimestamp),
+            Some(ExprStruct::HoursTransform(_)) => Ok(ExpressionType::HoursTransform),
 
             Some(other) => Err(ExecutionError::GeneralError(format!(
                 "Unsupported expression type: {:?}",
@@ -360,5 +399,29 @@ impl ExpressionRegistry {
                 "Expression struct is None".to_string(),
             )),
         }
+    }
+
+    /// Register random expression builders
+    fn register_random_expressions(&mut self) {
+        use crate::execution::expressions::random::*;
+
+        self.builders
+            .insert(ExpressionType::Rand, Box::new(RandBuilder));
+        self.builders
+            .insert(ExpressionType::Randn, Box::new(RandnBuilder));
+    }
+
+    /// Register partition expression builders
+    fn register_partition_expressions(&mut self) {
+        use crate::execution::expressions::partition::*;
+
+        self.builders.insert(
+            ExpressionType::SparkPartitionId,
+            Box::new(SparkPartitionIdBuilder),
+        );
+        self.builders.insert(
+            ExpressionType::MonotonicallyIncreasingId,
+            Box::new(MonotonicallyIncreasingIdBuilder),
+        );
     }
 }

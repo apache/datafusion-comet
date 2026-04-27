@@ -19,8 +19,10 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.SparkSessionExtensions
+import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
-import org.apache.spark.sql.execution.QueryExecution
+import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 
@@ -30,4 +32,10 @@ trait ShimCometSparkSessionExtensions {
   protected def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = true
 
   protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
+
+  def injectQueryStageOptimizerRuleShim(
+      extensions: SparkSessionExtensions,
+      rule: Rule[SparkPlan]): Unit = {
+    extensions.injectQueryStageOptimizerRule(_ => rule)
+  }
 }

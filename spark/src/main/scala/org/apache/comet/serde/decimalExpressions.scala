@@ -39,6 +39,8 @@ object CometUnscaledValue extends CometExpressionSerde[UnscaledValue] {
 
 object CometMakeDecimal extends CometExpressionSerde[MakeDecimal] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq("Only `LongType` input is supported")
+
   override def getSupportLevel(expr: MakeDecimal): SupportLevel = {
     expr.child.dataType match {
       case LongType => Compatible()

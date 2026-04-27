@@ -29,10 +29,12 @@ import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
-import org.apache.arrow.vector.ipc.ArrowStreamWriter
+import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
 import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
+import org.apache.arrow.vector.util.VectorSchemaRootAppender
 import org.apache.spark.{SparkEnv, SparkException}
+import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
 import org.apache.spark.sql.types._
@@ -43,7 +45,7 @@ import org.apache.comet.Constants.COMET_CONF_DIR_ENV
 import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
-object Utils extends CometTypeShim {
+object Utils extends CometTypeShim with Logging {
   def getConfPath(confFileName: String): String = {
     sys.env
       .get(COMET_CONF_DIR_ENV)
@@ -255,6 +257,108 @@ object Utils extends CometTypeShim {
     new ArrowReaderIterator(Channels.newChannel(ins), source)
   }
 
+  /**
+   * Coalesces many small Arrow IPC batches into a single batch for broadcasting.
+   *
+   * Why this is necessary: The broadcast exchange collects shuffle output by calling
+   * getByteArrayRdd, which serializes each ColumnarBatch independently into its own
+   * ChunkedByteBuffer. The shuffle reader (CometBlockStoreShuffleReader) produces one
+   * ColumnarBatch per shuffle block, and there is one block per writer task per output partition.
+   * So with W writer tasks and P output partitions, the broadcast collects up to W * P tiny
+   * batches. For example, with 400 writer tasks and 500 partitions, 1M rows would arrive as ~200K
+   * batches of ~5 rows each.
+   *
+   * Without coalescing, every consumer task in the broadcast join would independently deserialize
+   * all of these tiny Arrow IPC streams, paying per-stream overhead (schema parsing, buffer
+   * allocation) for each one. With coalescing, we decode and append all batches into one
+   * VectorSchemaRoot on the driver, then re-serialize once. Each consumer task then deserializes
+   * a single Arrow IPC stream.
+   */
+  def coalesceBroadcastBatches(
+      input: Iterator[ChunkedByteBuffer]): (Array[ChunkedByteBuffer], Long, Long) = {
+    val buffers = input.filterNot(_.size == 0).toArray
+    if (buffers.isEmpty) {
+      return (Array.empty, 0L, 0L)
+    }
+
+    val allocator = org.apache.comet.CometArrowAllocator
+      .newChildAllocator("broadcast-coalesce", 0, Long.MaxValue)
+    try {
+      var targetRoot: VectorSchemaRoot = null
+      var totalRows = 0L
+      var batchCount = 0
+
+      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+      try {
+        for (bytes <- buffers) {
+          val compressedInputStream =
+            new DataInputStream(codec.compressedInputStream(bytes.toInputStream()))
+          val reader =
+            new ArrowStreamReader(Channels.newChannel(compressedInputStream), allocator)
+          try {
+            // Comet decodes dictionaries during execution, so this shouldn't happen.
+            // If it does, fall back to the original uncoalesced buffers because each
+            // partition can have a different dictionary, and appending index vectors
+            // would silently mix indices from incompatible dictionaries.
+            if (!reader.getDictionaryVectors.isEmpty) {
+              logWarning(
+                "Unexpected dictionary-encoded column during BroadcastExchange coalescing; " +
+                  "skipping coalesce")
+              reader.close()
+              if (targetRoot != null) {
+                targetRoot.close()
+                targetRoot = null
+              }
+              return (buffers, 0L, 0L)
+            }
+            while (reader.loadNextBatch()) {
+              val sourceRoot = reader.getVectorSchemaRoot
+              if (targetRoot == null) {
+                targetRoot = VectorSchemaRoot.create(sourceRoot.getSchema, allocator)
+                targetRoot.allocateNew()
+              }
+              VectorSchemaRootAppender.append(targetRoot, sourceRoot)
+              totalRows += sourceRoot.getRowCount
+              batchCount += 1
+            }
+          } finally {
+            reader.close()
+          }
+        }
+
+        if (targetRoot == null) {
+          return (Array.empty, 0L, 0L)
+        }
+
+        assert(
+          targetRoot.getRowCount.toLong == totalRows,
+          s"Row count mismatch after coalesce: ${targetRoot.getRowCount} != $totalRows")
+
+        logInfo(s"Coalesced $batchCount broadcast batches into 1 ($totalRows rows)")
+
+        val outputStream = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+        val compressedOutputStream =
+          new DataOutputStream(codec.compressedOutputStream(outputStream))
+        val writer =
+          new ArrowStreamWriter(targetRoot, null, Channels.newChannel(compressedOutputStream))
+        try {
+          writer.start()
+          writer.writeBatch()
+        } finally {
+          writer.close()
+        }
+
+        (Array(outputStream.toChunkedByteBuffer), batchCount.toLong, totalRows)
+      } finally {
+        if (targetRoot != null) {
+          targetRoot.close()
+        }
+      }
+    } finally {
+      allocator.close()
+    }
+  }
+
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
     var provider: Option[DictionaryProvider] = None
@@ -272,8 +376,14 @@ object Utils extends CometTypeShim {
 
         case c =>
           throw new SparkException(
-            "Comet execution only takes Arrow Arrays, but got " +
-              s"${c.getClass}")
+            s"Comet execution only takes Arrow Arrays, but got ${c.getClass}. " +
+              "This typically happens when a Comet scan falls back to Spark due to unsupported " +
+              "data types (e.g., complex types like structs, arrays, or maps). " +
+              "To resolve this, you can: " +
+              "(1) enable spark.comet.scan.allowIncompatible=true to use a compatible native " +
+              "scan variant, or " +
+              "(2) enable spark.comet.convert.parquet.enabled=true to convert Spark Parquet " +
+              "data to Arrow format automatically.")
       }
     }
     (fieldVectors, provider)
@@ -285,7 +395,7 @@ object Utils extends CometTypeShim {
           _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
           _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
           _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: StructVector | _: ListVector |
-          _: MapVector | _: ViewVarCharVector | _: ViewVarBinaryVector) =>
+          _: MapVector | _: ViewVarCharVector | _: ViewVarBinaryVector | _: NullVector) =>
         v.asInstanceOf[FieldVector]
       case _ =>
         throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")

@@ -26,13 +26,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use fs_hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
+use fs_hdfs::walkdir::HdfsWalkDir;
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
-use hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
-use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
     path::{self, Path},
-    Error, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
-    ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
+    CopyMode, CopyOptions, Error, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
+    MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload,
+    PutResult, Result,
 };
 
 /// scheme for HDFS File System
@@ -144,62 +145,6 @@ impl ObjectStore for HadoopFileSystem {
         unimplemented!()
     }
 
-    async fn get(&self, location: &Path) -> Result<GetResult> {
-        let hdfs = self.hdfs.clone();
-        let hdfs_root = self.hdfs.url().to_owned();
-        let location = HadoopFileSystem::path_to_filesystem(location);
-
-        let (blob, object_metadata, range) = maybe_spawn_blocking(move || {
-            let file = hdfs.open(&location).map_err(to_error)?;
-
-            let file_status = file.get_file_status().map_err(to_error)?;
-
-            let to_read = file_status.len();
-            let mut total_read = 0;
-            let mut buf = vec![0; to_read];
-            while total_read < to_read {
-                let read = file.read(buf.as_mut_slice()).map_err(to_error)?;
-                if read <= 0 {
-                    break;
-                }
-                total_read += read as usize;
-            }
-
-            if total_read != to_read {
-                return Err(Error::Generic {
-                    store: "HadoopFileSystem",
-                    source: Box::new(HdfsErr::Generic(format!(
-                        "Error reading path {} with expected size {} and actual size {}",
-                        file.path(),
-                        to_read,
-                        total_read
-                    ))),
-                });
-            }
-
-            file.close().map_err(to_error)?;
-
-            let object_metadata = convert_metadata(file_status.clone(), &hdfs_root);
-
-            let range = Range {
-                start: 0,
-                end: file_status.len() as u64,
-            };
-
-            Ok((buf.into(), object_metadata, range))
-        })
-        .await?;
-
-        Ok(GetResult {
-            payload: GetResultPayload::Stream(
-                futures::stream::once(async move { Ok(blob) }).boxed(),
-            ),
-            meta: object_metadata,
-            range,
-            attributes: Default::default(),
-        })
-    }
-
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         if options.if_match.is_some() || options.if_none_match.is_some() {
             return Err(Error::Generic {
@@ -249,51 +194,40 @@ impl ObjectStore for HadoopFileSystem {
         })
     }
 
-    async fn get_range(&self, location: &Path, range: Range<u64>) -> Result<Bytes> {
+    async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> Result<Vec<Bytes>> {
         let hdfs = self.hdfs.clone();
         let location = HadoopFileSystem::path_to_filesystem(location);
+        let ranges = ranges.to_vec();
 
         maybe_spawn_blocking(move || {
             let file = hdfs.open(&location).map_err(to_error)?;
-            let buf = Self::read_range(&range, &file)?;
+            let result = ranges
+                .iter()
+                .map(|range| Self::read_range(range, &file))
+                .collect::<Result<Vec<_>>>()?;
             file.close().map_err(to_error)?;
-
-            Ok(buf)
+            Ok(result)
         })
         .await
     }
 
-    async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> Result<Vec<Bytes>> {
-        coalesce_ranges(
-            ranges,
-            |range| self.get_range(location, range),
-            HDFS_COALESCE_DEFAULT,
-        )
-        .await
-    }
-
-    async fn head(&self, location: &Path) -> Result<ObjectMeta> {
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, Result<Path>>,
+    ) -> BoxStream<'static, Result<Path>> {
         let hdfs = self.hdfs.clone();
-        let hdfs_root = self.hdfs.url().to_owned();
-        let location = HadoopFileSystem::path_to_filesystem(location);
-
-        maybe_spawn_blocking(move || {
-            let file_status = hdfs.get_file_status(&location).map_err(to_error)?;
-            Ok(convert_metadata(file_status, &hdfs_root))
-        })
-        .await
-    }
-
-    async fn delete(&self, location: &Path) -> Result<()> {
-        let hdfs = self.hdfs.clone();
-        let location = HadoopFileSystem::path_to_filesystem(location);
-
-        maybe_spawn_blocking(move || {
-            hdfs.delete(&location, false).map_err(to_error)?;
-
-            Ok(())
-        })
-        .await
+        locations
+            .map(move |location| {
+                let hdfs = hdfs.clone();
+                maybe_spawn_blocking(move || {
+                    let location = location?;
+                    let fs_path = HadoopFileSystem::path_to_filesystem(&location);
+                    hdfs.delete(&fs_path, false).map_err(to_error)?;
+                    Ok(location)
+                })
+            })
+            .buffered(10)
+            .boxed()
     }
 
     /// List all of the leaf files under the prefix path.
@@ -387,7 +321,7 @@ impl ObjectStore for HadoopFileSystem {
                     drop(parts);
 
                     if is_directory {
-                        common_prefixes.insert(prefix.child(common_prefix));
+                        common_prefixes.insert(prefix.clone().join(common_prefix));
                     } else {
                         objects.push(convert_metadata(entry, &hdfs_root));
                     }
@@ -402,64 +336,36 @@ impl ObjectStore for HadoopFileSystem {
         .await
     }
 
-    /// Copy an object from one path to another.
-    /// If there exists an object at the destination, it will be overwritten.
-    async fn copy(&self, from: &Path, to: &Path) -> Result<()> {
+    async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
         let hdfs = self.hdfs.clone();
         let from = HadoopFileSystem::path_to_filesystem(from);
         let to = HadoopFileSystem::path_to_filesystem(to);
 
         maybe_spawn_blocking(move || {
-            // We need to make sure the source exist
             if !hdfs.exist(&from) {
                 return Err(Error::NotFound {
                     path: from.clone(),
                     source: Box::new(HdfsErr::FileNotFound(from)),
                 });
             }
-            // Delete destination if exists
-            if hdfs.exist(&to) {
-                hdfs.delete(&to, false).map_err(to_error)?;
+
+            match options.mode {
+                CopyMode::Overwrite => {
+                    if hdfs.exist(&to) {
+                        hdfs.delete(&to, false).map_err(to_error)?;
+                    }
+                }
+                CopyMode::Create => {
+                    if hdfs.exist(&to) {
+                        return Err(Error::AlreadyExists {
+                            path: from,
+                            source: Box::new(HdfsErr::FileAlreadyExists(to)),
+                        });
+                    }
+                }
             }
 
-            hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
-                .map_err(to_error)?;
-
-            Ok(())
-        })
-        .await
-    }
-
-    /// It's only allowed for the same HDFS
-    async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        let hdfs = self.hdfs.clone();
-        let from = HadoopFileSystem::path_to_filesystem(from);
-        let to = HadoopFileSystem::path_to_filesystem(to);
-
-        maybe_spawn_blocking(move || {
-            hdfs.rename(&from, &to).map_err(to_error)?;
-
-            Ok(())
-        })
-        .await
-    }
-
-    /// Copy an object from one path to another, only if destination is empty.
-    /// Will return an error if the destination already has an object.
-    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
-        let hdfs = self.hdfs.clone();
-        let from = HadoopFileSystem::path_to_filesystem(from);
-        let to = HadoopFileSystem::path_to_filesystem(to);
-
-        maybe_spawn_blocking(move || {
-            if hdfs.exist(&to) {
-                return Err(Error::AlreadyExists {
-                    path: from,
-                    source: Box::new(HdfsErr::FileAlreadyExists(to)),
-                });
-            }
-
-            hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
+            fs_hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
                 .map_err(to_error)?;
 
             Ok(())

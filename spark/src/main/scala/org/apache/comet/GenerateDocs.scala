@@ -21,13 +21,14 @@ package org.apache.comet
 
 import java.io.{BufferedOutputStream, BufferedReader, FileOutputStream, FileReader}
 
+import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.catalyst.expressions.Cast
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde}
+import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, Unsupported}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -38,10 +39,97 @@ object GenerateDocs {
 
   private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
 
+  /**
+   * (expression class simple name, compatible notes, incompatible reasons, unsupported reasons)
+   */
+  private type CategoryNotes = Seq[(String, Seq[String], Seq[String], Seq[String])]
+
+  /**
+   * Mapping from expression category to the compatibility guide page where that category's
+   * auto-generated notes should be written, along with a function that produces the notes for
+   * that category from the serde maps in `QueryPlanSerde`.
+   */
+  private def categoryPages: Map[String, (String, () => CategoryNotes)] = Map(
+    "array" -> ("compatibility/expressions/array.md",
+    () =>
+      QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "datetime" -> ("compatibility/expressions/datetime.md",
+    () =>
+      QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "math" -> ("compatibility/expressions/math.md",
+    () =>
+      QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "struct" -> ("compatibility/expressions/struct.md",
+    () =>
+      QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "aggregate" -> ("compatibility/expressions/aggregate.md",
+    () =>
+      QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "string" -> ("compatibility/expressions/string.md",
+    () =>
+      QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "map" -> ("compatibility/expressions/map.md",
+    () =>
+      QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "misc" -> ("compatibility/expressions/misc.md",
+    () =>
+      QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }))
+
   def main(args: Array[String]): Unit = {
     val userGuideLocation = args(0)
     generateConfigReference(s"$userGuideLocation/configs.md")
-    generateCompatibilityGuide(s"$userGuideLocation/compatibility.md")
+    generateCompatibilityGuide(s"$userGuideLocation/compatibility/expressions/cast.md")
+    for ((category, (page, notesFn)) <- categoryPages) {
+      generateExpressionCompatNotes(s"$userGuideLocation/$page", category, notesFn())
+    }
   }
 
   private def generateConfigReference(filename: String): Unit = {
@@ -109,48 +197,127 @@ object GenerateDocs {
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
       w.write(s"${line.stripTrailing()}\n".getBytes)
-      if (line.trim == "<!--BEGIN:COMPAT_CAST_TABLE-->") {
-        w.write("<!-- prettier-ignore-start -->\n".getBytes)
-        w.write("| From Type | To Type | Notes |\n".getBytes)
-        w.write("|-|-|-|\n".getBytes)
-        for (fromType <- CometCast.supportedTypes) {
-          for (toType <- CometCast.supportedTypes) {
-            if (Cast.canCast(fromType, toType) && (fromType != toType || fromType.typeName
-                .contains("decimal"))) {
-              val fromTypeName = fromType.typeName.replace("(10,2)", "")
-              val toTypeName = toType.typeName.replace("(10,2)", "")
-              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
-                case Compatible(notes) =>
-                  val notesStr = notes.getOrElse("").trim
-                  w.write(s"| $fromTypeName | $toTypeName | $notesStr |\n".getBytes)
-                case _ =>
-              }
-            }
-          }
-        }
-        w.write("<!-- prettier-ignore-end -->\n".getBytes)
-      } else if (line.trim == "<!--BEGIN:INCOMPAT_CAST_TABLE-->") {
-        w.write("<!-- prettier-ignore-start -->\n".getBytes)
-        w.write("| From Type | To Type | Notes |\n".getBytes)
-        w.write("|-|-|-|\n".getBytes)
-        for (fromType <- CometCast.supportedTypes) {
-          for (toType <- CometCast.supportedTypes) {
-            if (Cast.canCast(fromType, toType) && fromType != toType) {
-              val fromTypeName = fromType.typeName.replace("(10,2)", "")
-              val toTypeName = toType.typeName.replace("(10,2)", "")
-              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
-                case Incompatible(notes) =>
-                  val notesStr = notes.getOrElse("").trim
-                  w.write(s"| $fromTypeName | $toTypeName  | $notesStr |\n".getBytes)
-                case _ =>
-              }
-            }
-          }
-        }
-        w.write("<!-- prettier-ignore-end -->\n".getBytes)
+      if (line.trim == "<!--BEGIN:CAST_LEGACY_TABLE-->") {
+        writeCastMatrixForMode(w, CometEvalMode.LEGACY)
+      } else if (line.trim == "<!--BEGIN:CAST_TRY_TABLE-->") {
+        writeCastMatrixForMode(w, CometEvalMode.TRY)
+      } else if (line.trim == "<!--BEGIN:CAST_ANSI_TABLE-->") {
+        writeCastMatrixForMode(w, CometEvalMode.ANSI)
       }
     }
     w.close()
+  }
+
+  private def generateExpressionCompatNotes(
+      filename: String,
+      category: String,
+      notes: CategoryNotes): Unit = {
+    val beginTag = s"<!--BEGIN:EXPR_COMPAT[$category]-->"
+    val lines = readFile(filename)
+    val w = new BufferedOutputStream(new FileOutputStream(filename))
+    for (line <- lines) {
+      w.write(s"${line.stripTrailing()}\n".getBytes)
+      if (line.trim == beginTag) {
+        writeExpressionCompatNotes(w, notes)
+      }
+    }
+    w.close()
+  }
+
+  private def writeExpressionCompatNotes(w: BufferedOutputStream, notes: CategoryNotes): Unit = {
+    val sorted = notes.sortBy(_._1).filter { case (_, compat, incompat, unsupported) =>
+      compat.nonEmpty || incompat.nonEmpty || unsupported.nonEmpty
+    }
+    for ((name, compat, incompat, unsupported) <- sorted) {
+      w.write(s"\n### $name\n".getBytes)
+      if (compat.nonEmpty) {
+        w.write(
+          ("\nThe following differences from Spark are always present and do not require" +
+            " any additional configuration:\n\n").getBytes)
+        for (note <- compat) {
+          w.write(s"- $note\n".getBytes)
+        }
+      }
+      if (incompat.nonEmpty) {
+        w.write(
+          (s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
+            s" Set `spark.comet.expression.$name.allowIncompatible=true` to enable Comet" +
+            " acceleration despite these differences.\n\n").getBytes)
+        for (reason <- incompat) {
+          w.write(s"- $reason\n".getBytes)
+        }
+      }
+      if (unsupported.nonEmpty) {
+        w.write("\nThe following cases are not supported by Comet:\n\n".getBytes)
+        for (reason <- unsupported) {
+          w.write(s"- $reason\n".getBytes)
+        }
+      }
+    }
+  }
+
+  private def writeCastMatrixForMode(w: BufferedOutputStream, mode: CometEvalMode.Value): Unit = {
+    val sortedTypes = CometCast.supportedTypes.sortBy(_.typeName)
+    val typeNames = sortedTypes.map(_.typeName.replace("(10,2)", ""))
+
+    // Collect annotations for meaningful notes
+    val annotations = mutable.ListBuffer[(String, String, String)]()
+
+    w.write("<!-- prettier-ignore-start -->\n".getBytes)
+
+    // Write header row
+    w.write("| |".getBytes)
+    for (toTypeName <- typeNames) {
+      w.write(s" $toTypeName |".getBytes)
+    }
+    w.write("\n".getBytes)
+
+    // Write separator row
+    w.write("|---|".getBytes)
+    for (_ <- typeNames) {
+      w.write("---|".getBytes)
+    }
+    w.write("\n".getBytes)
+
+    // Write data rows
+    for ((fromType, fromTypeName) <- sortedTypes.zip(typeNames)) {
+      w.write(s"| $fromTypeName |".getBytes)
+      for ((toType, toTypeName) <- sortedTypes.zip(typeNames)) {
+        val cell = if (fromType == toType) {
+          "-"
+        } else if (!Cast.canCast(fromType, toType)) {
+          "N/A"
+        } else {
+          val supportLevel = CometCast.isSupported(fromType, toType, None, mode)
+          supportLevel match {
+            case Compatible(notes) =>
+              notes.filter(_.trim.nonEmpty).foreach { note =>
+                annotations += ((fromTypeName, toTypeName, note.trim.replace("(10,2)", "")))
+              }
+              "C"
+            case Incompatible(notes) =>
+              notes.filter(_.trim.nonEmpty).foreach { note =>
+                annotations += ((fromTypeName, toTypeName, note.trim.replace("(10,2)", "")))
+              }
+              "I"
+            case Unsupported(_) =>
+              "U"
+          }
+        }
+        w.write(s" $cell |".getBytes)
+      }
+      w.write("\n".getBytes)
+    }
+
+    // Write annotations if any
+    if (annotations.nonEmpty) {
+      w.write("\n**Notes:**\n".getBytes)
+      for ((from, to, note) <- annotations.distinct) {
+        w.write(s"- **$from -> $to**: $note\n".getBytes)
+      }
+    }
+
+    w.write("<!-- prettier-ignore-end -->\n".getBytes)
   }
 
   /** Read file into memory */

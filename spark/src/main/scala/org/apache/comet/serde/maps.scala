@@ -20,9 +20,9 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{ArrayType, MapType}
+import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -84,8 +84,78 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
-    val mapFromArraysExpr =
-      scalarFunctionExprToProtoWithReturnType("map", returnType, false, keysExpr, valuesExpr)
-    optExprWithInfo(mapFromArraysExpr, expr, expr.children: _*)
+    for {
+      andBinaryExprProto <- createAndBinaryExpr(expr, inputs, binding)
+      mapFromArraysExprProto <- scalarFunctionExprToProto("map", keysExpr, valuesExpr)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
+    } yield {
+      val caseWhenExprProto = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(andBinaryExprProto)
+        .addThen(mapFromArraysExprProto)
+        .setElseExpr(nullLiteralExprProto)
+        .build()
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setCaseWhen(caseWhenExprProto)
+        .build()
+    }
+  }
+
+  private def createAndBinaryExpr(
+      expr: MapFromArrays,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      IsNotNull(expr.left),
+      IsNotNull(expr.right),
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setAnd(binaryExpr))
+  }
+}
+
+object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
+
+  override def convert(
+      expr: MapContainsKey,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Replace with array_has(map_keys(map), key)
+    val mapExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val keyExpr = exprToProtoInternal(expr.right, inputs, binding)
+
+    val mapKeysExpr = scalarFunctionExprToProto("map_keys", mapExpr)
+
+    val mapContainsKeyExpr = scalarFunctionExprToProto("array_has", mapKeysExpr, keyExpr)
+    optExprWithInfo(mapContainsKeyExpr, expr, expr.children: _*)
+  }
+}
+
+object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from_entries") {
+  val keyUnsupportedReason = "Using BinaryType as Map keys is not allowed in map_from_entries"
+  val valueUnsupportedReason = "Using BinaryType as Map values is not allowed in map_from_entries"
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(keyUnsupportedReason, valueUnsupportedReason)
+
+  private def containsBinary(dataType: DataType): Boolean = {
+    dataType match {
+      case BinaryType => true
+      case StructType(fields) => fields.exists(field => containsBinary(field.dataType))
+      case ArrayType(elementType, _) => containsBinary(elementType)
+      case _ => false
+    }
+  }
+
+  override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
+    if (containsBinary(expr.dataType.keyType)) {
+      return Incompatible(Some(keyUnsupportedReason))
+    }
+    if (containsBinary(expr.dataType.valueType)) {
+      return Incompatible(Some(valueUnsupportedReason))
+    }
+    Compatible(None)
   }
 }

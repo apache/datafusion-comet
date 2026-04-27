@@ -22,11 +22,16 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.Files
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{StringType, TimestampType}
 
 import org.apache.comet.iceberg.RESTCatalogHelper
+import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
  * Test suite for native Iceberg scan using FileScanTasks and iceberg-rust.
@@ -1440,10 +1445,6 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
         assert(metrics("output_rows").value == 10000)
         assert(metrics("num_splits").value > 0)
-        assert(metrics("time_elapsed_opening").value > 0)
-        assert(metrics("time_elapsed_scanning_until_data").value > 0)
-        assert(metrics("time_elapsed_scanning_total").value > 0)
-        assert(metrics("time_elapsed_processing").value > 0)
         // ImmutableSQLMetric prevents these from being reset to 0 after execution
         assert(
           metrics("totalDataManifest").value > 0,
@@ -2244,6 +2245,162 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     }
   }
 
+  // Regression test for https://github.com/apache/datafusion-comet/issues/3856
+  // Fixed in https://github.com/apache/iceberg-rust/pull/2301
+  test("migration - INT96 timestamp") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
+        import org.apache.spark.sql.functions.monotonically_increasing_id
+        import org.apache.spark.sql.types._
+
+        val dataPath = s"${warehouseDir.getAbsolutePath}/int96_data"
+        val numRows = 50
+        val r = new scala.util.Random(42)
+
+        // Exercise INT96 coercion in flat columns, structs, arrays, and maps
+        val fuzzSchema = StructType(
+          Seq(
+            StructField("ts", TimestampType, nullable = true),
+            StructField("value", DoubleType, nullable = true),
+            StructField(
+              "ts_struct",
+              StructType(
+                Seq(
+                  StructField("inner_ts", TimestampType, nullable = true),
+                  StructField("inner_val", DoubleType, nullable = true))),
+              nullable = true),
+            StructField(
+              "ts_array",
+              ArrayType(TimestampType, containsNull = true),
+              nullable = true),
+            StructField("ts_map", MapType(IntegerType, TimestampType), nullable = true)))
+
+        // Default FuzzDataGenerator baseDate is year 3333, outside the i64 nanosecond
+        // range (~1677-2262). This triggers the INT96 overflow bug if coercion is missing.
+        val dataGenOptions = DataGenOptions(allowNull = false)
+        val fuzzDf =
+          FuzzDataGenerator.generateDataFrame(r, spark, fuzzSchema, numRows, dataGenOptions)
+
+        val df = fuzzDf.withColumn("id", monotonically_increasing_id())
+
+        // Write Parquet with INT96 timestamps
+        withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          df.write.mode("overwrite").parquet(dataPath)
+        }
+
+        // Verify all timestamp columns in the Parquet file use INT96
+        val parquetFiles = new java.io.File(dataPath)
+          .listFiles()
+          .filter(f => f.getName.endsWith(".parquet"))
+        assert(parquetFiles.nonEmpty, "Expected at least one Parquet file")
+
+        val parquetFile = parquetFiles.head
+        val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
+            new org.apache.hadoop.fs.Path(parquetFile.getAbsolutePath),
+            spark.sessionState.newHadoopConf()))
+        try {
+          val parquetSchema = reader.getFooter.getFileMetaData.getSchema
+          val int96Columns = parquetSchema.getColumns.asScala
+            .filter(_.getPrimitiveType.getPrimitiveTypeName ==
+              org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT96)
+            .map(_.getPath.mkString("."))
+          // Expect INT96 for: ts, ts_struct.inner_ts, ts_array.list.element, ts_map.value
+          assert(
+            int96Columns.size >= 4,
+            s"Expected at least 4 INT96 columns but found ${int96Columns.size}: ${int96Columns.mkString(", ")}")
+        } finally {
+          reader.close()
+        }
+
+        // Create an unpartitioned Iceberg table and import the Parquet files
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+        spark.sql("""
+          CREATE TABLE test_cat.db.int96_test (
+            ts TIMESTAMP,
+            value DOUBLE,
+            ts_struct STRUCT<inner_ts: TIMESTAMP, inner_val: DOUBLE>,
+            ts_array ARRAY<TIMESTAMP>,
+            ts_map MAP<INT, TIMESTAMP>,
+            id BIGINT
+          ) USING iceberg
+        """)
+
+        try {
+          val tableUtilClass = Class.forName("org.apache.iceberg.spark.SparkTableUtil")
+          val sparkCatalog = spark.sessionState.catalogManager
+            .catalog("test_cat")
+            .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+          val ident =
+            org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "int96_test")
+          val sparkTable = sparkCatalog
+            .loadTable(ident)
+            .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+          val table = sparkTable.table()
+
+          val stagingDir = s"${warehouseDir.getAbsolutePath}/staging"
+
+          spark.sql(s"""CREATE TABLE parquet_temp USING parquet LOCATION '$dataPath'""")
+          val sourceIdent = new org.apache.spark.sql.catalyst.TableIdentifier("parquet_temp")
+
+          val importMethod = tableUtilClass.getMethod(
+            "importSparkTable",
+            classOf[org.apache.spark.sql.SparkSession],
+            classOf[org.apache.spark.sql.catalyst.TableIdentifier],
+            classOf[org.apache.iceberg.Table],
+            classOf[String])
+          importMethod.invoke(null, spark, sourceIdent, table, stagingDir)
+
+          val distinctCount = spark
+            .sql("SELECT COUNT(DISTINCT id) FROM test_cat.db.int96_test")
+            .collect()(0)
+            .getLong(0)
+          assert(
+            distinctCount == numRows,
+            s"Expected $numRows distinct IDs but got $distinctCount")
+
+          // Spark's Iceberg reader returns null for INT96 timestamps inside structs,
+          // so we can't use checkIcebergNativeScan (which compares against Spark) for
+          // ts_struct. Instead, compare Comet's read against the raw Parquet source.
+          checkIcebergNativeScan(
+            "SELECT id, ts, value, ts_array, ts_map FROM test_cat.db.int96_test ORDER BY id")
+          checkIcebergNativeScan("SELECT id, ts FROM test_cat.db.int96_test ORDER BY id")
+          checkIcebergNativeScan("SELECT id, ts_array FROM test_cat.db.int96_test ORDER BY id")
+          checkIcebergNativeScan("SELECT id, ts_map FROM test_cat.db.int96_test ORDER BY id")
+
+          // Validate ts_struct against raw Parquet since Spark's Iceberg reader can't read it
+          val icebergStructDf = spark
+            .sql("SELECT id, ts_struct FROM test_cat.db.int96_test ORDER BY id")
+            .collect()
+          val parquetStructDf = spark.read
+            .parquet(dataPath)
+            .select("id", "ts_struct")
+            .orderBy("id")
+            .collect()
+          assert(
+            icebergStructDf.sameElements(parquetStructDf),
+            "ts_struct mismatch between Comet Iceberg read and raw Parquet")
+
+          spark.sql("DROP TABLE test_cat.db.int96_test")
+          spark.sql("DROP TABLE parquet_temp")
+        } catch {
+          case _: ClassNotFoundException =>
+            cancel("SparkTableUtil not available")
+        }
+      }
+    }
+  }
+
   test("REST catalog with native Iceberg scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -2295,7 +2452,316 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         }
         file.delete()
       }
+
       deleteRecursively(dir)
+    }
+  }
+
+  test("runtime filtering - multiple DPP filters on two partition columns") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.runtime_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.runtime_cat.type" -> "hadoop",
+        "spark.sql.catalog.runtime_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by TWO columns: (data, bucket(8, id))
+        // This mimics Iceberg's testMultipleRuntimeFilters
+        spark.sql("""
+          CREATE TABLE runtime_cat.db.multi_dpp_fact (
+            id BIGINT,
+            data STRING,
+            date DATE,
+            ts TIMESTAMP
+          ) USING iceberg
+          PARTITIONED BY (data, bucket(8, id))
+        """)
+
+        // Insert data - 99 rows with varying data and id values
+        val df = spark
+          .range(1, 100)
+          .selectExpr(
+            "id",
+            "CAST(DATE_ADD(DATE '1970-01-01', CAST(id % 4 AS INT)) AS STRING) as data",
+            "DATE_ADD(DATE '1970-01-01', CAST(id % 4 AS INT)) as date",
+            "CAST(DATE_ADD(DATE '1970-01-01', CAST(id % 4 AS INT)) AS TIMESTAMP) as ts")
+        df.coalesce(1)
+          .write
+          .format("iceberg")
+          .option("fanout-enabled", "true")
+          .mode("append")
+          .saveAsTable("runtime_cat.db.multi_dpp_fact")
+
+        // Create dimension table with specific id=1, data='1970-01-02'
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"), "1970-01-02")))
+          .toDF("id", "date", "data")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("dim")
+
+        // Join on BOTH partition columns - this creates TWO DPP filters
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.*
+            |FROM runtime_cat.db.multi_dpp_fact f
+            |JOIN dim d ON f.id = d.id AND f.data = d.data
+            |WHERE d.date = DATE '1970-01-02'""".stripMargin
+
+        // Verify plan has 2 dynamic pruning expressions
+        val df2 = spark.sql(query)
+        val planStr = df2.queryExecution.executedPlan.toString
+        // Count "dynamicpruningexpression(" to avoid matching "dynamicpruning#N" references
+        val dppCount = "dynamicpruningexpression\\(".r.findAllIn(planStr).length
+        assert(dppCount == 2, s"Expected 2 DPP expressions but found $dppCount in:\n$planStr")
+
+        // Verify native Iceberg scan is used and DPP actually pruned partitions
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(
+          icebergScans.nonEmpty,
+          s"Expected CometIcebergNativeScanExec but found none. Plan:\n$cometPlan")
+        // With 4 data values x 8 buckets = up to 32 partitions total
+        // DPP on (data='1970-01-02', bucket(id=1)) should prune to 1
+        val numPartitions = icebergScans.head.numPartitions
+        assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
+
+        spark.sql("DROP TABLE runtime_cat.db.multi_dpp_fact")
+      }
+    }
+  }
+
+  test("runtime filtering - join with dynamic partition pruning") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.runtime_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.runtime_cat.type" -> "hadoop",
+        "spark.sql.catalog.runtime_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        // Prevent fact table from being broadcast (force dimension to be broadcast)
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create partitioned Iceberg table (fact table) with 3 partitions
+        // Add enough data to prevent broadcast
+        spark.sql("""
+          CREATE TABLE runtime_cat.db.fact_table (
+            id BIGINT,
+            data STRING,
+            date DATE
+          ) USING iceberg
+          PARTITIONED BY (date)
+        """)
+
+        // Insert data across multiple partitions
+        spark.sql("""
+          INSERT INTO runtime_cat.db.fact_table VALUES
+          (1, 'a', DATE '1970-01-01'),
+          (2, 'b', DATE '1970-01-02'),
+          (3, 'c', DATE '1970-01-02'),
+          (4, 'd', DATE '1970-01-03'),
+          (5, 'e', DATE '1970-01-01'),
+          (6, 'f', DATE '1970-01-02'),
+          (7, 'g', DATE '1970-01-03'),
+          (8, 'h', DATE '1970-01-01')
+        """)
+
+        // Create dimension table (Parquet) in temp directory
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"))))
+          .toDF("id", "date")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("dim")
+
+        // This join should trigger dynamic partition pruning
+        // Use BROADCAST hint to force dimension table to be broadcast
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.* FROM runtime_cat.db.fact_table f
+            |JOIN dim d ON f.date = d.date AND d.id = 1
+            |ORDER BY f.id""".stripMargin
+
+        // Verify the initial plan contains dynamic pruning expression
+        val df = spark.sql(query)
+        val initialPlan = df.queryExecution.executedPlan
+        val planStr = initialPlan.toString
+        assert(
+          planStr.contains("dynamicpruning"),
+          s"Expected dynamic pruning in plan but got:\n$planStr")
+
+        // Should now use native Iceberg scan with DPP
+        checkIcebergNativeScan(query)
+
+        // Verify DPP actually pruned partitions (should only scan 1 of 3 partitions)
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(
+          icebergScans.nonEmpty,
+          s"Expected CometIcebergNativeScanExec but found none. Plan:\n$cometPlan")
+        val numPartitions = icebergScans.head.numPartitions
+        assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
+
+        spark.sql("DROP TABLE runtime_cat.db.fact_table")
+      }
+    }
+  }
+
+  // Regression test for a user reported issue
+  test("double partitioning with range filter on top-level partition") {
+    assume(icebergAvailable, "Iceberg not available")
+
+    // Generate Iceberg table without Comet enabled
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.files.maxRecordsPerFile" -> "50") {
+
+        // timestamp + geohash with multi-column partitioning
+        spark.sql("""
+          CREATE TABLE test_cat.db.geolocation_trips (
+            outputTimestamp TIMESTAMP,
+            geohash7 STRING,
+            tripId STRING
+          ) USING iceberg
+          PARTITIONED BY (hours(outputTimestamp), truncate(3, geohash7))
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.distribution-mode' = 'range',
+            'write.target-file-size-bytes' = '1073741824'
+          )
+        """)
+        val schema = FuzzDataGenerator.generateSchema(
+          SchemaGenOptions(primitiveTypes = Seq(TimestampType, StringType, StringType)))
+
+        val random = new scala.util.Random(42)
+        // Set baseDate to match our filter range (around 2024-01-01)
+        val options = testing.DataGenOptions(
+          allowNull = false,
+          baseDate = 1704067200000L
+        ) // 2024-01-01 00:00:00
+
+        val df = FuzzDataGenerator
+          .generateDataFrame(random, spark, schema, 1000, options)
+          .toDF("outputTimestamp", "geohash7", "tripId")
+
+        df.writeTo("test_cat.db.geolocation_trips").append()
+      }
+
+      // Query using Comet native Iceberg scan
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Filter for a range that does not align with hour boundaries
+        // Partitioning is hours(outputTimestamp), so filter in middle of hours forces residual filter
+        val startMs = 1704067200000L + 30 * 60 * 1000L // 2024-01-01 01:30:00 (30 min into hour)
+        val endMs = 1704078000000L - 15 * 60 * 1000L // 2024-01-01 03:45:00 (15 min before hour)
+
+        checkIcebergNativeScan(s"""
+          SELECT COUNT(DISTINCT(tripId)) FROM test_cat.db.geolocation_trips
+          WHERE timestamp_millis($startMs) <= outputTimestamp
+            AND outputTimestamp < timestamp_millis($endMs)
+        """)
+
+        spark.sql("DROP TABLE test_cat.db.geolocation_trips")
+      }
+    }
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/3860
+  // Fixed in https://github.com/apache/iceberg-rust/pull/2307
+  test("filter with nested types in migrated table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val dataPath = s"${warehouseDir.getAbsolutePath}/nested_data"
+
+        // Write Parquet WITHOUT Iceberg (simulates pre-migration data)
+        // id is last so its leaf index is after all nested type leaves
+        spark
+          .sql("""
+          SELECT
+            named_struct('age', id * 10, 'score', id * 1.5) AS info,
+            array(id, id + 1) AS tags,
+            map('key', id) AS props,
+            id
+          FROM range(10)
+        """)
+          .write
+          .parquet(dataPath)
+
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+        spark.sql("""
+          CREATE TABLE test_cat.db.nested_migrate (
+            info STRUCT<age: BIGINT, score: DOUBLE>,
+            tags ARRAY<BIGINT>,
+            props MAP<STRING, BIGINT>,
+            id BIGINT
+          ) USING iceberg
+        """)
+
+        try {
+          val tableUtilClass = Class.forName("org.apache.iceberg.spark.SparkTableUtil")
+          val sparkCatalog = spark.sessionState.catalogManager
+            .catalog("test_cat")
+            .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+          val ident =
+            org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "nested_migrate")
+          val sparkTable = sparkCatalog
+            .loadTable(ident)
+            .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+          val table = sparkTable.table()
+
+          val stagingDir = s"${warehouseDir.getAbsolutePath}/staging"
+          spark.sql(s"""CREATE TABLE parquet_temp USING parquet LOCATION '$dataPath'""")
+          val sourceIdent = new org.apache.spark.sql.catalyst.TableIdentifier("parquet_temp")
+
+          val importMethod = tableUtilClass.getMethod(
+            "importSparkTable",
+            classOf[org.apache.spark.sql.SparkSession],
+            classOf[org.apache.spark.sql.catalyst.TableIdentifier],
+            classOf[org.apache.iceberg.Table],
+            classOf[String])
+          importMethod.invoke(null, spark, sourceIdent, table, stagingDir)
+
+          // Select only flat columns to avoid Spark's Iceberg reader returning
+          // null for struct fields in migrated tables (separate Spark bug)
+          checkIcebergNativeScan("SELECT id FROM test_cat.db.nested_migrate ORDER BY id")
+
+          // Filter on root column with nested types in migrated table:
+          // Parquet files lack Iceberg field IDs, so iceberg-rust falls back to
+          // name mapping where column_map resolution was broken for nested types
+          checkIcebergNativeScan(
+            "SELECT id FROM test_cat.db.nested_migrate WHERE id > 5 ORDER BY id")
+
+          spark.sql("DROP TABLE test_cat.db.nested_migrate")
+          spark.sql("DROP TABLE parquet_temp")
+        } catch {
+          case _: ClassNotFoundException =>
+            cancel("SparkTableUtil not available")
+        }
+      }
     }
   }
 }

@@ -37,15 +37,13 @@ import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetOptions}
-import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, MetricsSupport}
-import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
+import org.apache.comet.parquet.CometParquetFileFormat
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
@@ -53,7 +51,7 @@ import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionRe
  *
  * This is a hybrid scan where the native plan will contain a `ScanExec` that reads batches of
  * data from the JVM via JNI. The ultimate source of data may be a JVM implementation such as
- * Spark readers, or could be the `native_comet` or `native_iceberg_compat` native scans.
+ * Spark readers, or could be the `native_iceberg_compat` native scan.
  *
  * Note that scanImpl can only be `native_datafusion` after CometScanRule runs and before
  * CometExecRule runs. It will never be set to `native_datafusion` at execution time
@@ -92,7 +90,7 @@ case class CometScanExec(
    * initialized. See SPARK-26327 for more details.
    */
   private def sendDriverMetrics(): Unit = {
-    driverMetrics.foreach(e => metrics(e._1).add(e._2))
+    driverMetrics.foreach(e => metrics(e._1).set(e._2))
     val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
     SQLMetrics.postDriverMetricUpdates(
       sparkContext,
@@ -157,14 +155,45 @@ case class CometScanExec(
 
   /**
    * Returns the data filters that are supported for this scan implementation. For
-   * native_datafusion scans, this excludes dynamic pruning filters (subqueries)
+   * native_datafusion scans, this excludes dynamic pruning filters (subqueries) and null checks
+   * on array columns (see [[isNullCheckOnArrayColumn]]).
    */
   lazy val supportedDataFilters: Seq[Expression] = {
     if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
-      dataFilters.filterNot(isDynamicPruningFilter)
+      dataFilters
+        .filterNot(isDynamicPruningFilter)
+        .filterNot(isNullCheckOnArrayColumn)
     } else {
       dataFilters
     }
+  }
+
+  /**
+   * Returns true for IsNotNull/IsNull predicates on ArrayType columns.
+   *
+   * These must be excluded from native scan data filters because:
+   *
+   *   1. Parquet does not support predicate pushdown on repeated columns. The Parquet library's
+   *      SchemaCompatibilityValidator rejects filter predicates on repeated fields entirely
+   *      (SPARK-39393, PARQUET-34). Spark's own ParquetFilters excludes REPEATED columns from
+   *      pushdown for the same reason.
+   *
+   * 2. When Comet attaches these filters via ParquetSource.with_predicate(), DataFusion's list
+   * predicate pushdown (PR #19545) considers IsNotNull on List columns a supported predicate and
+   * pushes it into the Parquet reader as a RowFilter. This triggers an arrow-rs bug where
+   * ListArrayReader crashes on bare repeated primitives ("item_reader def levels are None").
+   *
+   * 3. Even without the arrow-rs bug, the filter is redundant: a bare repeated field is never
+   * null (an empty repeated field means zero elements, not null), and DataFusion's optimizer
+   * would eliminate the filter if it went through the normal planning path.
+   *
+   * Filtering these out is safe -- the predicate is still evaluated after reading, so correctness
+   * is preserved.
+   */
+  private def isNullCheckOnArrayColumn(expr: Expression): Boolean = expr match {
+    case IsNotNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case IsNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case _ => false
   }
 
   @transient
@@ -476,43 +505,13 @@ case class CometScanExec(
       fsRelation: HadoopFsRelation,
       readFile: (PartitionedFile) => Iterator[InternalRow],
       partitions: Seq[FilePartition]): RDD[InternalRow] = {
-    val hadoopConf = relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options)
-    val usingDataFusionReader: Boolean = scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-
-    val prefetchEnabled = hadoopConf.getBoolean(
-      CometConf.COMET_SCAN_PREFETCH_ENABLED.key,
-      CometConf.COMET_SCAN_PREFETCH_ENABLED.defaultValue.get) &&
-      !usingDataFusionReader
-
     val sqlConf = fsRelation.sparkSession.sessionState.conf
-    if (prefetchEnabled) {
-      CometParquetFileFormat.populateConf(sqlConf, hadoopConf)
-      val broadcastedConf =
-        fsRelation.sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
-      val partitionReaderFactory = CometParquetPartitionReaderFactory(
-        scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-        sqlConf,
-        broadcastedConf,
-        requiredSchema,
-        relation.partitionSchema,
-        pushedDownFilters.toArray,
-        new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf),
-        metrics)
-
-      new DataSourceRDD(
-        fsRelation.sparkSession.sparkContext,
-        partitions.map(Seq(_)),
-        partitionReaderFactory,
-        true,
-        Map.empty)
-    } else {
-      newFileScanRDD(
-        fsRelation,
-        readFile,
-        partitions,
-        new StructType(requiredSchema.fields ++ fsRelation.partitionSchema.fields),
-        new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf))
-    }
+    newFileScanRDD(
+      fsRelation,
+      readFile,
+      partitions,
+      new StructType(requiredSchema.fields ++ fsRelation.partitionSchema.fields),
+      new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf))
   }
 
   override def doCanonicalize(): CometScanExec = {
@@ -556,8 +555,7 @@ object CometScanExec {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session, scanImpl))(
-          session)
+        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session))(session)
       case other: AnyRef => other
       case null => null
     }

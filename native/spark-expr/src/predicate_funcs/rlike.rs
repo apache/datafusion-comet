@@ -21,7 +21,7 @@ use arrow::array::types::Int32Type;
 use arrow::array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArray};
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Schema};
-use datafusion::common::{internal_err, Result};
+use datafusion::common::{internal_err, Result, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use regex::Regex;
@@ -140,8 +140,24 @@ impl PhysicalExpr for RLike {
                 let array = self.is_match(inputs);
                 Ok(ColumnarValue::Array(Arc::new(array)))
             }
-            ColumnarValue::Scalar(_) => {
-                internal_err!("non scalar regexp patterns are not supported")
+            ColumnarValue::Scalar(scalar) => {
+                if scalar.is_null() {
+                    return Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)));
+                }
+
+                let is_match = match scalar {
+                    ScalarValue::Utf8(Some(s))
+                    | ScalarValue::LargeUtf8(Some(s))
+                    | ScalarValue::Utf8View(Some(s)) => self.pattern.is_match(&s),
+                    _ => {
+                        return internal_err!(
+                            "RLike requires string type for input, got {:?}",
+                            scalar.data_type()
+                        );
+                    }
+                };
+
+                Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(is_match))))
             }
         }
     }
@@ -161,7 +177,57 @@ impl PhysicalExpr for RLike {
         )?))
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+    fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::physical_expr::expressions::Literal;
+
+    #[test]
+    fn test_rlike_scalar_string_variants() {
+        let pattern = "R[a-z]+";
+        let scalars = [
+            ScalarValue::Utf8(Some("Rose".to_string())),
+            ScalarValue::LargeUtf8(Some("Rose".to_string())),
+            ScalarValue::Utf8View(Some("Rose".to_string())),
+        ];
+
+        for scalar in scalars {
+            let expr = RLike::try_new(Arc::new(Literal::new(scalar.clone())), pattern).unwrap();
+            let result = expr
+                .evaluate(&RecordBatch::new_empty(Arc::new(Schema::empty())))
+                .unwrap();
+            let ColumnarValue::Scalar(result) = result else {
+                panic!("expected scalar result");
+            };
+            assert_eq!(result, ScalarValue::Boolean(Some(true)));
+        }
+
+        // Null input should produce a null boolean result
+        let expr =
+            RLike::try_new(Arc::new(Literal::new(ScalarValue::Utf8(None))), pattern).unwrap();
+        let result = expr
+            .evaluate(&RecordBatch::new_empty(Arc::new(Schema::empty())))
+            .unwrap();
+        let ColumnarValue::Scalar(result) = result else {
+            panic!("expected scalar result");
+        };
+        assert_eq!(result, ScalarValue::Boolean(None));
+    }
+
+    #[test]
+    fn test_rlike_scalar_non_string_error() {
+        let expr = RLike::try_new(
+            Arc::new(Literal::new(ScalarValue::Boolean(Some(true)))),
+            "R[a-z]+",
+        )
+        .unwrap();
+
+        let result = expr.evaluate(&RecordBatch::new_empty(Arc::new(Schema::empty())));
+        assert!(result.is_err());
     }
 }

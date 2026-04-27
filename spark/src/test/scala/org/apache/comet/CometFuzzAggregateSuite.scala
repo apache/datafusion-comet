@@ -29,9 +29,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     for (col <- df.schema.fields.filterNot(f => isComplexType(f.dataType)).map(_.name)) {
       val sql = s"SELECT count(distinct $col) FROM t1"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
+      assert(1 == collectNativeScans(cometPlan).length)
 
       checkSparkAnswerAndOperator(sql)
     }
@@ -45,9 +43,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     for (col <- df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)) {
       val sql = s"SELECT count(distinct $col) FROM t1"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
+      assert(1 == collectNativeScans(cometPlan).length)
     }
   }
 
@@ -57,9 +53,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     for (col <- df.schema.fields.filterNot(f => isComplexType(f.dataType)).map(_.name)) {
       val sql = s"SELECT c1, c2, c3, count(distinct $col) FROM t1 group by c1, c2, c3"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
+      assert(1 == collectNativeScans(cometPlan).length)
 
       checkSparkAnswerAndOperator(sql)
     }
@@ -73,9 +67,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     for (col <- df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)) {
       val sql = s"SELECT c1, c2, c3, count(distinct $col) FROM t1 group by c1, c2, c3"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
+      assert(1 == collectNativeScans(cometPlan).length)
     }
   }
 
@@ -87,9 +79,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     for (col <- df.columns) {
       val sql = s"SELECT c1, c2, c3, count(distinct $col, c4, c5) FROM t1 group by c1, c2, c3"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
+      assert(1 == collectNativeScans(cometPlan).length)
     }
   }
 
@@ -99,9 +89,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     for (col <- df.columns) {
       val sql = s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
+      assert(1 == collectNativeScans(cometPlan).length)
     }
   }
 
@@ -112,9 +100,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     for (col <- df.columns.drop(1)) {
       val sql = s"SELECT $groupCol, count($col) FROM t1 GROUP BY $groupCol ORDER BY $groupCol"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
+      assert(1 == collectNativeScans(cometPlan).length)
     }
   }
 
@@ -126,9 +112,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     val sql = s"SELECT $groupCol, count(${otherCol.mkString(", ")}) FROM t1 " +
       s"GROUP BY $groupCol ORDER BY $groupCol"
     val (_, cometPlan) = checkSparkAnswer(sql)
-    if (usingDataSourceExec) {
-      assert(1 == collectNativeScans(cometPlan).length)
-    }
+    assert(1 == collectNativeScans(cometPlan).length)
   }
 
   test("min/max aggregate") {
@@ -138,9 +122,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       // cannot run fully native due to HashAggregate
       val sql = s"SELECT min($col), max($col) FROM t1"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
+      assert(1 == collectNativeScans(cometPlan).length)
     }
   }
 }

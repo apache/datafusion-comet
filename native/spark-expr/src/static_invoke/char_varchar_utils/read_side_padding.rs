@@ -194,6 +194,10 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     is_left_pad: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     let string_array = as_generic_string_array::<T>(array)?;
+
+    // Pre-compute pad characters once to avoid repeated iteration
+    let pad_chars: Vec<char> = pad_string.chars().collect();
+
     match pad_type {
         ColumnarValue::Array(array_int) => {
             let int_pad_array = array_int.as_primitive::<Int32Type>();
@@ -203,18 +207,24 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                 string_array.len() * int_pad_array.len(),
             );
 
+            // Reusable buffer to avoid per-element allocations
+            let mut buffer = String::with_capacity(pad_chars.len());
+
             for (string, length) in string_array.iter().zip(int_pad_array) {
                 let length = length.unwrap();
                 match string {
                     Some(string) => {
                         if length >= 0 {
-                            builder.append_value(add_padding_string(
-                                string.parse().unwrap(),
+                            buffer.clear();
+                            write_padded_string(
+                                &mut buffer,
+                                string,
                                 length as usize,
                                 truncate,
-                                pad_string,
+                                &pad_chars,
                                 is_left_pad,
-                            )?)
+                            );
+                            builder.append_value(&buffer);
                         } else {
                             builder.append_value("");
                         }
@@ -232,15 +242,23 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                 string_array.len() * length,
             );
 
+            // Reusable buffer to avoid per-element allocations
+            let mut buffer = String::with_capacity(length);
+
             for string in string_array.iter() {
                 match string {
-                    Some(string) => builder.append_value(add_padding_string(
-                        string.parse().unwrap(),
-                        length,
-                        truncate,
-                        pad_string,
-                        is_left_pad,
-                    )?),
+                    Some(string) => {
+                        buffer.clear();
+                        write_padded_string(
+                            &mut buffer,
+                            string,
+                            length,
+                            truncate,
+                            &pad_chars,
+                            is_left_pad,
+                        );
+                        builder.append_value(&buffer);
+                    }
                     _ => builder.append_null(),
                 }
             }
@@ -249,44 +267,74 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     }
 }
 
-fn add_padding_string(
-    string: String,
+/// Writes a padded string to the provided buffer, avoiding allocations.
+///
+/// The buffer is assumed to be cleared before calling this function.
+/// Padding characters are written directly to the buffer without intermediate allocations.
+#[inline]
+fn write_padded_string(
+    buffer: &mut String,
+    string: &str,
     length: usize,
     truncate: bool,
-    pad_string: &str,
+    pad_chars: &[char],
     is_left_pad: bool,
-) -> Result<String, DataFusionError> {
-    // It looks Spark's UTF8String is closer to chars rather than graphemes
+) {
+    // Spark's UTF8String uses char count, not grapheme count
     // https://stackoverflow.com/a/46290728
     let char_len = string.chars().count();
+
     if length <= char_len {
         if truncate {
+            // Find byte index for the truncation point
             let idx = string
                 .char_indices()
                 .nth(length)
                 .map(|(i, _)| i)
                 .unwrap_or(string.len());
-            match string[..idx].parse() {
-                Ok(string) => Ok(string),
-                Err(err) => Err(DataFusionError::Internal(format!(
-                    "Failed adding padding string {} error {:}",
-                    string, err
-                ))),
-            }
+            buffer.push_str(&string[..idx]);
         } else {
-            Ok(string)
+            buffer.push_str(string);
         }
     } else {
         let pad_needed = length - char_len;
-        let pad: String = pad_string.chars().cycle().take(pad_needed).collect();
-        let mut result = String::with_capacity(string.len() + pad.len());
+
         if is_left_pad {
-            result.push_str(&pad);
-            result.push_str(&string);
+            // Write padding first, then string
+            write_padding_chars(buffer, pad_chars, pad_needed);
+            buffer.push_str(string);
         } else {
-            result.push_str(&string);
-            result.push_str(&pad);
+            // Write string first, then padding
+            buffer.push_str(string);
+            write_padding_chars(buffer, pad_chars, pad_needed);
         }
-        Ok(result)
+    }
+}
+
+/// Writes `count` characters from the cycling pad pattern directly to the buffer.
+#[inline]
+fn write_padding_chars(buffer: &mut String, pad_chars: &[char], count: usize) {
+    if pad_chars.is_empty() {
+        return;
+    }
+
+    // Optimize for the common single-character padding case
+    if pad_chars.len() == 1 {
+        let ch = pad_chars[0];
+        for _ in 0..count {
+            buffer.push(ch);
+        }
+    } else {
+        // Multi-character padding: cycle through pad_chars
+        let mut remaining = count;
+        while remaining > 0 {
+            for &ch in pad_chars {
+                if remaining == 0 {
+                    break;
+                }
+                buffer.push(ch);
+                remaining -= 1;
+            }
+        }
     }
 }

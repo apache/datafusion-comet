@@ -50,6 +50,19 @@ case class Function(name: String, signatures: Seq[FunctionSignature])
 
 object Meta {
 
+  val primitiveSparkTypes: Seq[SparkType] = Seq(
+    SparkBooleanType,
+    SparkBinaryType,
+    SparkStringType,
+    SparkByteType,
+    SparkShortType,
+    SparkIntType,
+    SparkLongType,
+    SparkFloatType,
+    SparkDoubleType,
+    SparkDateType,
+    SparkTimestampType)
+
   val dataTypes: Seq[(DataType, Double)] = Seq(
     (DataTypes.BooleanType, 0.1),
     (DataTypes.ByteType, 0.2),
@@ -187,6 +200,11 @@ object Meta {
         FunctionSignature(Seq(SparkStringType, SparkIntegralType)),
         FunctionSignature(Seq(SparkStringType, SparkIntegralType, SparkStringType)))),
     createUnaryStringFunction("rtrim"),
+    createFunctions(
+      "split",
+      Seq(
+        FunctionSignature(Seq(SparkStringType, SparkStringType)),
+        FunctionSignature(Seq(SparkStringType, SparkStringType, SparkIntType)))),
     createFunctionWithInputTypes("starts_with", Seq(SparkStringType, SparkStringType)),
     createFunctionWithInputTypes("string_space", Seq(SparkIntType)),
     createFunctionWithInputTypes("substring", Seq(SparkStringType, SparkIntType, SparkIntType)),
@@ -212,7 +230,14 @@ object Meta {
     createFunctionWithInputTypes("map_values", Seq(SparkMapType(SparkAnyType, SparkAnyType))),
     createFunctionWithInputTypes(
       "map_from_arrays",
-      Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))))
+      Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))),
+    createFunctionWithInputTypes(
+      "map_from_entries",
+      Seq(
+        SparkArrayType(
+          SparkStructType(Seq(
+            SparkTypeOneOf(primitiveSparkTypes.filterNot(_ == SparkBinaryType)),
+            SparkTypeOneOf(primitiveSparkTypes.filterNot(_ == SparkBinaryType))))))))
 
   // Predicate expressions (corresponds to predicateExpressions in QueryPlanSerde)
   val predicateScalarFunc: Seq[Function] = Seq(

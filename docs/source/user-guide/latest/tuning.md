@@ -61,7 +61,12 @@ The valid pool types are:
 - `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
 
-The `fair_unified` pool types prevents operators from using more than an even fraction of the available memory
+Both pool types are shared across all native execution contexts within the same Spark task. When
+Comet executes a shuffle, it runs two native execution contexts concurrently (e.g. one for
+pre-shuffle operators and one for the shuffle writer). The shared pool ensures that the combined
+memory usage stays within the per-task limit.
+
+The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
 (i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
@@ -148,6 +153,24 @@ partitioning keys. Columns that are not partitioning keys may contain complex ty
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
 `SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
+
+#### Automatic Revert to Spark Shuffle
+
+When a Comet columnar shuffle ends up between two non-Comet operators (for example, a partial/final hash aggregate
+pair that Comet could not convert), Comet reverts it to Spark's built-in shuffle. Keeping columnar shuffle between
+two row-based operators would add `row -> Arrow -> shuffle -> Arrow -> row` conversions with no Comet consumer on
+either side to benefit from columnar output.
+
+This shifts the affected shuffles from Comet's off-heap memory pool back to the JVM execution memory pool. Clusters
+tuned for a small JVM heap may see `ExternalSorter` spills on queries where this revert fires. Shuffle I/O may also
+grow marginally because Spark's row-based serializer generally compresses less well than Comet's Arrow IPC format.
+
+Each revert is logged at `INFO` level on the driver as `Reverting Comet columnar shuffle to Spark shuffle between
+<parent> and <child>`, which lets you correlate any unexpected behavior with this optimization.
+
+This optimization is enabled by default and can be disabled by setting
+`spark.comet.exec.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
+even when both its parent and child are non-Comet operators.
 
 ### Shuffle Compression
 

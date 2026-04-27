@@ -31,7 +31,7 @@ import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -79,7 +79,6 @@ class CometNativeShuffleWriter[K, V](
       "elapsed_compute",
       "encode_time",
       "repart_time",
-      "mempool_time",
       "input_batches",
       "spill_count",
       "spilled_bytes")
@@ -133,6 +132,14 @@ class CometNativeShuffleWriter[K, V](
     metricsReporter.incRecordsWritten(metricsOutputRows.value)
     metricsReporter.incWriteTime(metricsWriteTime.value)
 
+    // Report spill metrics to Spark's task metrics so they appear in
+    // Spark UI task summaries (not just SQL metrics)
+    val spilledBytes = nativeSQLMetrics.get("spilled_bytes").map(_.value).getOrElse(0L)
+    if (spilledBytes > 0) {
+      context.taskMetrics().incMemoryBytesSpilled(spilledBytes)
+      context.taskMetrics().incDiskBytesSpilled(spilledBytes)
+    }
+
     // commit
     shuffleBlockResolver.writeMetadataFileAndCommit(
       shuffleId,
@@ -184,7 +191,7 @@ class CometNativeShuffleWriter[K, V](
       shuffleWriterBuilder.setCompressionLevel(
         CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
       shuffleWriterBuilder.setWriteBufferSize(
-        CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().max(Int.MaxValue).toInt)
+        CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
 
       outputPartitioning match {
         case p if isSinglePartitioning(p) =>
@@ -285,10 +292,22 @@ class CometNativeShuffleWriter[K, V](
           shuffleWriterBuilder.setPartitioning(
             partitioningBuilder.setRangePartition(partitioning).build())
 
+        case _: RoundRobinPartitioning =>
+          val partitioning = PartitioningOuterClass.RoundRobinPartition.newBuilder()
+          partitioning.setNumPartitions(outputPartitioning.numPartitions)
+          partitioning.setMaxHashColumns(
+            CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
+
+          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+          shuffleWriterBuilder.setPartitioning(
+            partitioningBuilder.setRoundRobinPartition(partitioning).build())
+
         case _ =>
           throw new UnsupportedOperationException(
             s"Partitioning $outputPartitioning is not supported.")
       }
+
+      shuffleWriterBuilder.setTracingEnabled(CometConf.COMET_TRACING_ENABLED.get())
 
       val shuffleWriterOpBuilder = OperatorOuterClass.Operator.newBuilder()
       shuffleWriterOpBuilder
