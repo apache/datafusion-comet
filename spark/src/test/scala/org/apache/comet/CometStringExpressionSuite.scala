@@ -708,12 +708,8 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("levenshtein") {
-    val data = Seq(
-      ("kitten", "sitting"),
-      ("frog", "fog"),
-      ("abc", "abc"),
-      ("", "hello"),
-      ("hello", ""))
+    val data =
+      Seq(("kitten", "sitting"), ("frog", "fog"), ("abc", "abc"), ("", "hello"), ("hello", ""))
 
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2) FROM tbl")
@@ -724,7 +720,9 @@ class CometStringExpressionSuite extends CometTestBase {
     val table = "levenshtein_null_test"
     withTable(table) {
       sql(s"CREATE TABLE $table(s1 STRING, s2 STRING) USING parquet")
-      sql(s"INSERT INTO $table VALUES ('abc', 'adc'), (NULL, 'test'), ('hello', NULL), (NULL, NULL)")
+      sql(
+        s"INSERT INTO $table VALUES " +
+          s"('abc', 'adc'), (NULL, 'test'), ('hello', NULL), (NULL, NULL)")
       checkSparkAnswerAndOperator(s"SELECT levenshtein(s1, s2) FROM $table")
     }
   }
