@@ -54,8 +54,8 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
     let mut curr = vec![0i32; m + 1];
 
     // Initialize base case: distance from empty string
-    for i in 0..=m {
-        prev[i] = i as i32;
+    for (i, val) in prev.iter_mut().enumerate() {
+        *val = i as i32;
     }
 
     for j in 1..=n {
