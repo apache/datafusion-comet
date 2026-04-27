@@ -20,12 +20,13 @@
 package org.apache.comet.rules
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Alias, DynamicPruningExpression, Expression, Literal}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometNativeScanExec, CometSubqueryAdaptiveBroadcastExec, CometSubqueryBroadcastExec}
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec}
 import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 
@@ -97,11 +98,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
   private def convertFilter(filter: Expression, fullPlan: SparkPlan): Expression = {
     filter.transformUp { case dpe @ DynamicPruningExpression(inSub: InSubqueryExec) =>
       extractSABData(inSub) match {
-        case Some((name, indices, buildKeys)) =>
-          convertSAB(inSub, name, indices, buildKeys, fullPlan).getOrElse {
-            logInfo(s"No matching broadcast join for DPP subquery '$name', disabling DPP")
-            DynamicPruningExpression(Literal.TrueLiteral)
-          }
+        case Some(sabData) =>
+          convertSAB(inSub, sabData, fullPlan)
         case None => dpe
       }
     }
@@ -113,16 +111,37 @@ case object CometPlanAdaptiveDynamicPruningFilters
    *   - SubqueryAdaptiveBroadcastExec (inner CometScanExec.partitionFilters, never wrapped
    *     because CometScanExec is @transient and not part of the plan expression tree)
    *
-   * Returns (name, indices, buildKeys) if the plan is an SAB variant, None otherwise.
+   * Returns SAB metadata if the plan is an SAB variant, None otherwise.
    */
-  private def extractSABData(
-      inSub: InSubqueryExec): Option[(String, Seq[Int], Seq[Expression])] = {
-    def extract(plan: BaseSubqueryExec): Option[(String, Seq[Int], Seq[Expression])] = {
+  private case class SABData(
+      name: String,
+      indices: Seq[Int],
+      onlyInBroadcast: Boolean,
+      buildPlan: LogicalPlan,
+      buildKeys: Seq[Expression],
+      adaptivePlan: SparkPlan)
+
+  private def extractSABData(inSub: InSubqueryExec): Option[SABData] = {
+    def extract(plan: BaseSubqueryExec): Option[SABData] = {
       plan match {
         case csab: CometSubqueryAdaptiveBroadcastExec =>
-          Some((csab.name, csab.indices, csab.buildKeys))
+          Some(
+            SABData(
+              csab.name,
+              csab.indices,
+              csab.onlyInBroadcast,
+              csab.buildPlan,
+              csab.buildKeys,
+              csab.child))
         case sab: SubqueryAdaptiveBroadcastExec =>
-          Some((sab.name, getSubqueryBroadcastIndices(sab), sab.buildKeys))
+          Some(
+            SABData(
+              sab.name,
+              getSubqueryBroadcastIndices(sab),
+              sab.onlyInBroadcast,
+              sab.buildPlan,
+              sab.buildKeys,
+              sab.child))
         case _ => None
       }
     }
@@ -134,29 +153,44 @@ case object CometPlanAdaptiveDynamicPruningFilters
   }
 
   /**
-   * Converts an SAB (wrapped or unwrapped) by finding the matching broadcast join and wiring the
-   * subquery to reuse its already-materialized broadcast exchange.
+   * Converts an SAB following the same decision tree as Spark's
+   * PlanAdaptiveDynamicPruningFilters:
    *
-   * Returns None when no matching broadcast join exists (e.g., SortMergeJoin). Caller should fall
-   * back to Literal.TrueLiteral (disabling DPP).
+   *   1. exchangeReuseEnabled + matching broadcast join found: Create CometSubqueryBroadcastExec
+   *      (or SubqueryBroadcastExec for Spark fallback) wired to the join's
+   *      BroadcastQueryStageExec. DPP uses broadcast reuse.
+   *
+   * 2. No reusable broadcast + onlyInBroadcast=true: Literal.TrueLiteral. DPP is disabled
+   * (correct results, scans all partitions). Spark does the same: the optimizer decided DPP only
+   * makes sense if broadcast reuse is possible, and it isn't.
+   *
+   * 3. No reusable broadcast + onlyInBroadcast=false: Aggregate SubqueryExec on the build side
+   * (DPP via separate execution, matching Spark's PlanAdaptiveDynamicPruningFilters lines 73-83).
    */
   private def convertSAB(
       inSub: InSubqueryExec,
-      name: String,
-      indices: Seq[Int],
-      buildKeys: Seq[Expression],
-      fullPlan: SparkPlan): Option[DynamicPruningExpression] = {
-    val sabKeyIds: Set[Any] = buildKeys.flatMap(_.references.map(_.exprId)).toSet
+      sab: SABData,
+      fullPlan: SparkPlan): DynamicPruningExpression = {
+    val sabKeyIds: Set[Any] = sab.buildKeys.flatMap(_.references.map(_.exprId)).toSet
     assert(
       sabKeyIds.nonEmpty,
-      s"DPP subquery '$name' has empty buildKeys - " +
+      s"DPP subquery '${sab.name}' has empty buildKeys - " +
         "PlanAdaptiveSubqueries should always populate buildKeys")
 
-    findMatchingBroadcastJoin(sabKeyIds, fullPlan).map { result =>
+    val matchingJoin = findMatchingBroadcastJoin(sabKeyIds, fullPlan)
+    // Match Spark's canReuseExchange check: exchange reuse must be enabled AND a matching
+    // broadcast join must exist. Without exchange reuse, the broadcast subquery would execute
+    // independently (defeating the purpose of reuse).
+    val canReuse = conf.exchangeReuseEnabled && matchingJoin.isDefined
+
+    if (canReuse) {
+      // Case 1: broadcast reuse. Wire CometSubqueryBroadcastExec to the join's
+      // BroadcastQueryStageExec so the broadcast executes once for both join and DPP.
+      val result = matchingJoin.get
       val broadcastChild = result._1
       val isComet = result._2
       logDebug(
-        s"Matched DPP subquery '$name' to " +
+        s"Matched DPP subquery '${sab.name}' to " +
           s"${if (isComet) "Comet" else "Spark"} broadcast: " +
           s"${broadcastChild.getClass.getSimpleName}")
 
@@ -168,7 +202,6 @@ case object CometPlanAdaptiveDynamicPruningFilters
 
       // The stage's plan may be the original exchange or a ReusedExchangeExec (when AQE
       // reuses exchanges across the main plan and scalar subquery plans via shared context).
-      // Unwrap ReusedExchangeExec to verify the underlying exchange type matches the join.
       val stageExchange = broadcastChild.asInstanceOf[BroadcastQueryStageExec].plan
       val underlyingExchange = stageExchange match {
         case r: ReusedExchangeExec => r.child
@@ -184,11 +217,41 @@ case object CometPlanAdaptiveDynamicPruningFilters
           "CometExecRule should convert both or neither.")
 
       val subquery = if (isComet) {
-        CometSubqueryBroadcastExec(name, indices, buildKeys, broadcastChild)
+        CometSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, broadcastChild)
       } else {
-        createSubqueryBroadcastExec(name, indices, buildKeys, broadcastChild)
+        createSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, broadcastChild)
       }
       DynamicPruningExpression(inSub.withNewPlan(subquery))
+    } else if (sab.onlyInBroadcast) {
+      // Case 2: no reusable broadcast, and the optimizer says DPP only makes sense with
+      // broadcast reuse. Disable DPP. Spark does the same (Literal.TrueLiteral).
+      logInfo(
+        s"No reusable broadcast for DPP subquery '${sab.name}' " +
+          "(onlyInBroadcast=true), disabling DPP")
+      DynamicPruningExpression(Literal.TrueLiteral)
+    } else {
+      // Case 3: no reusable broadcast, but the optimizer says DPP is worthwhile even
+      // without broadcast reuse. Create an aggregate SubqueryExec on the build side to
+      // get distinct partition key values for pruning.
+      //
+      // Matches Spark's PlanAdaptiveDynamicPruningFilters lines 73-83:
+      //   val aliases = indices.map(idx => Alias(buildKeys(idx), ...))
+      //   val aggregate = Aggregate(aliases, aliases, buildPlan)
+      //   val sparkPlan = QueryExecution.prepareExecutedPlan(session, aggregate, context)
+      //   val values = SubqueryExec(name, newAdaptivePlan)
+      val adaptivePlan = sab.adaptivePlan.asInstanceOf[AdaptiveSparkPlanExec]
+      val aliases =
+        sab.indices.map(idx => Alias(sab.buildKeys(idx), sab.buildKeys(idx).toString)())
+      val aggregate = Aggregate(aliases, aliases, sab.buildPlan)
+      val session = adaptivePlan.context.session
+      val sparkPlan = QueryExecution.prepareExecutedPlan(session, aggregate, adaptivePlan.context)
+      assert(
+        sparkPlan.isInstanceOf[AdaptiveSparkPlanExec],
+        "Expected AdaptiveSparkPlanExec from prepareExecutedPlan, " +
+          s"got ${sparkPlan.getClass.getSimpleName}")
+      val newAdaptivePlan = sparkPlan.asInstanceOf[AdaptiveSparkPlanExec]
+      val values = SubqueryExec(sab.name, newAdaptivePlan)
+      DynamicPruningExpression(InSubqueryExec(inSub.child, values, inSub.exprId))
     }
   }
 
