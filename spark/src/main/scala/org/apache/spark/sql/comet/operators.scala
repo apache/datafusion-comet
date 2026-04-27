@@ -54,8 +54,10 @@ import com.google.protobuf.CodedOutputStream
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
@@ -1359,10 +1361,24 @@ trait CometBaseAggregate {
     // In distinct aggregates there can be a combination of modes
     val multiMode = modes.size > 1
     // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation.
+    // if there is Comet partial aggregation, unless all aggregates have compatible
+    // intermediate buffer formats (safe for mixed Spark/Comet execution).
     val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
 
-    if (multiMode || sparkFinalMode) {
+    if (multiMode) {
+      return None
+    }
+
+    if (sparkFinalMode &&
+      !QueryPlanSerde.allAggsSupportMixedExecution(aggregate.aggregateExpressions)) {
+      return None
+    }
+
+    // Check if this aggregate has been tagged as unsafe for mixed execution
+    // (Comet partial + Spark final with incompatible intermediate buffers)
+    val unsafeReason = aggregate.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL)
+    if (unsafeReason.isDefined) {
+      withInfo(aggregate, unsafeReason.get)
       return None
     }
 
@@ -1377,11 +1393,7 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (groupingExpressions.exists(expr =>
-        expr.dataType match {
-          case _: MapType => true
-          case _ => false
-        })) {
+    if (groupingExpressions.exists(expr => QueryPlanSerde.containsMapType(expr.dataType))) {
       withInfo(aggregate, "Grouping on map types is not supported")
       return None
     }
