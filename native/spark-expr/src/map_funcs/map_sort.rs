@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, MapArray, StructArray};
-use arrow::compute::{concat, sort_to_indices, take, SortOptions};
+use arrow::array::{Array, ArrayRef, MapArray, StructArray, UInt32Array};
+use arrow::compute::{sort_to_indices, take, SortOptions};
 use arrow::datatypes::DataType;
 use datafusion::common::{exec_err, DataFusionError};
 use datafusion::physical_plan::ColumnarValue;
@@ -31,59 +31,62 @@ pub fn spark_map_sort(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     }
 
     let arr_arg: ArrayRef = match &args[0] {
-        ColumnarValue::Array(array) => Arc::<dyn Array>::clone(array),
+        ColumnarValue::Array(array) => Arc::clone(array),
         ColumnarValue::Scalar(scalar) => scalar.to_array_of_size(1)?,
     };
 
     let (maps_arg, map_field, is_sorted) = match arr_arg.data_type() {
         DataType::Map(map_field, is_sorted) => {
-            let maps_arg = arr_arg.as_any().downcast_ref::<MapArray>().unwrap();
+            let maps_arg = arr_arg
+                .as_any()
+                .downcast_ref::<MapArray>()
+                .expect("invariant: array data type is Map but downcast to MapArray failed");
             (maps_arg, map_field, is_sorted)
         }
         _ => return exec_err!("spark_map_sort expects Map type as argument"),
     };
 
+    // Fast paths: nothing to sort, all maps null, or input already declared sorted.
+    if maps_arg.is_empty() || maps_arg.null_count() == maps_arg.len() || *is_sorted {
+        return Ok(ColumnarValue::Array(arr_arg));
+    }
+
     let maps_arg_entries = maps_arg.entries();
     let maps_arg_offsets = maps_arg.offsets();
 
-    let mut sorted_map_entries_vec: Vec<ArrayRef> = Vec::with_capacity(maps_arg.len());
+    let sort_options = SortOptions {
+        descending: false,
+        nulls_first: true,
+    };
+
+    // Build one global permutation over the full entries struct, respecting per-map boundaries,
+    // then issue a single `take`. This avoids per-map struct copies and a final `concat`.
+    let mut global_indices: Vec<u32> = Vec::with_capacity(maps_arg_entries.len());
 
     for idx in 0..maps_arg.len() {
         let map_start = maps_arg_offsets[idx] as usize;
         let map_end = maps_arg_offsets[idx + 1] as usize;
-        let map_len = map_end - map_start;
-
-        let map_entries = maps_arg_entries.slice(map_start, map_len);
-
-        if map_len == 0 {
-            sorted_map_entries_vec.push(Arc::new(map_entries));
+        if map_end == map_start {
             continue;
         }
 
-        let map_keys = map_entries.column(0);
-        let sort_options = SortOptions {
-            descending: false,
-            nulls_first: true,
-        };
-        let sorted_indices = sort_to_indices(&map_keys, Some(sort_options), None)?;
-
-        let sorted_map_entries = take(&map_entries, &sorted_indices, None)?;
-        sorted_map_entries_vec.push(sorted_map_entries);
+        let map_keys = maps_arg_entries
+            .column(0)
+            .slice(map_start, map_end - map_start);
+        let local_indices = sort_to_indices(&map_keys, Some(sort_options), None)?;
+        global_indices.extend(local_indices.values().iter().map(|i| map_start as u32 + *i));
     }
 
-    let sorted_map_entries_arr: Vec<&dyn Array> = sorted_map_entries_vec
-        .iter()
-        .map(|arr| arr.as_ref())
-        .collect();
-    let combined_sorted_map_entries = concat(&sorted_map_entries_arr)?;
-    let sorted_map_struct = combined_sorted_map_entries
+    let indices = UInt32Array::from(global_indices);
+    let sorted_entries = take(maps_arg_entries, &indices, None)?;
+    let sorted_map_struct = sorted_entries
         .as_any()
         .downcast_ref::<StructArray>()
-        .unwrap();
+        .expect("invariant: take on StructArray must return StructArray");
 
     // Preserve the original is_sorted flag to keep schema consistent
     let sorted_map_arr = Arc::new(MapArray::try_new(
-        Arc::<arrow::datatypes::Field>::clone(map_field),
+        Arc::clone(map_field),
         maps_arg.offsets().clone(),
         sorted_map_struct.clone(),
         maps_arg.nulls().cloned(),
