@@ -24,8 +24,7 @@ import org.apache.spark.sql.types.DataTypes
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.ExprOuterClass.BinaryOutputStyle
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+import org.apache.comet.serde.QueryPlanSerde.{binaryOutputStyle, exprToProtoInternal}
 
 object CometToPrettyString extends CometExpressionSerde[ToPrettyString] {
 
@@ -51,7 +50,7 @@ object CometToPrettyString extends CometExpressionSerde[ToPrettyString] {
           .newBuilder()
           .setChild(p)
           .setTimezone(expr.timeZoneId.getOrElse("UTC"))
-          .setBinaryOutputStyle(BinaryOutputStyle.HEX_DISCRETE)
+          .setBinaryOutputStyle(binaryOutputStyle)
           .build()
         Some(ExprOuterClass.Expr.newBuilder().setToPrettyString(tps).build())
       case _ =>
