@@ -97,9 +97,10 @@ jobs:
           - name: "Spark 4.0, JDK 21"
             java_version: "21"
             maven_opts: "-Pspark-4.0"
-          # Spark 4.1 is intentionally absent: the lint job invokes -Psemanticdb,
-          # but semanticdb-scalac_2.13.17 is not yet published, so we cannot
-          # currently run scalafix against the spark-4.1 profile.
+          # Spark 4.1 and 4.2 are intentionally absent: the lint job invokes -Psemanticdb,
+          # but semanticdb-scalac for those Scala patch versions (2.13.17 / 2.13.18) is not
+          # yet published, so we cannot currently run scalafix against the spark-4.1 or
+          # spark-4.2 profiles.
       fail-fast: false
     steps:
       - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
@@ -304,6 +305,11 @@ jobs:
           - name: "Spark 4.1, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.1"
+            scan_impl: "auto"
+
+          - name: "Spark 4.2, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.2"
             scan_impl: "auto"
         suite:
           - name: "fuzz"
