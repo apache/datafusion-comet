@@ -90,6 +90,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Or] -> CometOr)
 
   private[comet] val mathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = {
+    // Explicit type ascription on `base`: Scala 2.13 cannot infer the existential key type
+    // when `++` is applied directly to a `Map(...)` literal.
     val base: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
       classOf[Acos] -> CometScalarFunction("acos"),
       classOf[Add] -> CometAdd,
@@ -158,6 +160,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Sha1] -> CometSha1)
 
   private[comet] val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = {
+    // Explicit type ascription on `base`: Scala 2.13 cannot infer the existential key type
+    // when `++` is applied directly to a `Map(...)` literal.
     val base: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
       classOf[Ascii] -> CometScalarFunction("ascii"),
       classOf[BitLength] -> CometScalarFunction("bit_length"),
@@ -239,6 +243,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private[comet] val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = {
     // TODO PromotePrecision
+    // Explicit type ascription on `base`: Scala 2.13 cannot infer the existential key type
+    // when `++` is applied directly to a `Map(...)` literal.
     val base: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
       classOf[Alias] -> CometAlias,
       classOf[AttributeReference] -> CometAttributeReference,
