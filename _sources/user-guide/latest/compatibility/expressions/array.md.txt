@@ -37,7 +37,11 @@ The following cases are not supported by Comet:
 
 The following incompatibilities cause `ArrayIntersect` to fall back to Spark by default. Set `spark.comet.expression.ArrayIntersect.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
-- Null handling and ordering may differ from Spark
+- Result array element order may differ from Spark when the right array is longer than the left (DataFusion probes the longer side).
+
+The following cases are not supported by Comet:
+
+- array_intersect on collated strings is not supported.
 
 ### ArrayJoin
 

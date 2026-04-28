@@ -493,7 +493,11 @@ under the License.
 <h2>ArrayIntersect<a class="headerlink" href="#arrayintersect" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayIntersect</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayIntersect.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
-<li><p>Null handling and ordering may differ from Spark</p></li>
+<li><p>Result array element order may differ from Spark when the right array is longer than the left (DataFusion probes the longer side).</p></li>
+</ul>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>array_intersect on collated strings is not supported.</p></li>
 </ul>
 </section>
 <section id="arrayjoin">
