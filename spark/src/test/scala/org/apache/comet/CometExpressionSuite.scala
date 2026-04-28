@@ -2854,10 +2854,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Byte.MinValue,
         Byte.MaxValue,
         Short.MinValue,
-        Short.MaxValue)).foreach { value =>
+        Short.MaxValue,
+        Float.MinPositiveValue,
+        Float.MaxValue,
+        Float.NaN,
+        Float.MinValue,
+        Float.NegativeInfinity,
+        Float.PositiveInfinity,
+        Double.MinPositiveValue,
+        Double.MaxValue,
+        Double.NaN,
+        Double.MinValue,
+        Double.NegativeInfinity,
+        Double.PositiveInfinity,
+        -5.81855622136895e8,
+        6.1317116247283497e18)).foreach { value =>
       val data = Seq(value)
       withParquetTable(data, "tbl") {
-        Seq(-1000, -100, -10, -1, 0, 1, 10, 100, 1000).foreach { scale =>
+        Seq(-1000, -100, -10, -5, -1, 0, 1, 5, 10, 100, 1000).foreach { scale =>
           Seq(true, false).foreach { ansi =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
               val res = spark.sql(s"SELECT round(_1, $scale) from tbl")
@@ -2876,6 +2890,54 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
       }
+    }
+  }
+
+  test("round") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(
+          path,
+          dictionaryEnabled = dictionaryEnabled,
+          -128,
+          128,
+          randomSize = 100)
+        withParquetTable(path.toString, "tbl") {
+          for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16, null)) {
+            // array tests
+            // TODO: enable test for unsigned ints (_9, _10, _11, _12)
+            for (c <- Seq(2, 3, 4, 5, 6, 7, 8, 13, 15, 16, 17)) {
+              checkSparkAnswerAndOperator(s"select _${c}, round(_${c}, ${s}) FROM tbl")
+            }
+            // scalar tests
+            // Exclude the constant folding optimizer in order to actually execute the native round
+            // operations for scalar (literal) values.
+            withSQLConf(
+              "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+              for (n <- Seq("0.0", "-0.0", "0.5", "-0.5", "1.2", "-1.2")) {
+                checkSparkAnswerAndOperator(s"select round(cast(${n} as tinyint), ${s}) FROM tbl")
+                checkSparkAnswerAndOperator(s"select round(cast(${n} as float), ${s}) FROM tbl")
+                checkSparkAnswerAndOperator(
+                  s"select round(cast(${n} as decimal(38, 18)), ${s}) FROM tbl")
+                checkSparkAnswerAndOperator(
+                  s"select round(cast(${n} as decimal(20, 0)), ${s}) FROM tbl")
+              }
+              checkSparkAnswerAndOperator(s"select round(double('infinity'), ${s}) FROM tbl")
+              checkSparkAnswerAndOperator(s"select round(double('-infinity'), ${s}) FROM tbl")
+              checkSparkAnswerAndOperator(s"select round(double('NaN'), ${s}) FROM tbl")
+              checkSparkAnswerAndOperator(
+                s"select round(double('0.000000000000000000000000000000000001'), ${s}) FROM tbl")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("round double from large integer string") {
+    withParquetTable(Seq(Tuple1("-8316362075006449156")), "tbl") {
+      checkSparkAnswerAndOperator("SELECT round(cast(_1 as double), -5) FROM tbl")
     }
   }
 

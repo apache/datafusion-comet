@@ -2111,6 +2111,7 @@ version = "0.16.0"
 dependencies = [
  "arrow",
  "base64",
+ "bigdecimal",
  "chrono",
  "chrono-tz",
  "criterion",
