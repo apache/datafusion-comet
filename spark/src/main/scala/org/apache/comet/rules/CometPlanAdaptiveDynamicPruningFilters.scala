@@ -70,6 +70,9 @@ case object CometPlanAdaptiveDynamicPruningFilters
       case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
         logDebug("Converting AQE DPP for CometNativeScanExec")
         convertNativeScanDPP(nativeScan, plan)
+      case p: SparkPlan if !p.isInstanceOf[CometNativeScanExec] && hasWrappedSAB(p) =>
+        logDebug(s"Converting AQE DPP for non-Comet node: ${p.nodeName}")
+        convertNonCometNodeDPP(p, plan)
     }
   }
 
@@ -351,6 +354,23 @@ case object CometPlanAdaptiveDynamicPruningFilters
       None
     }
   }
+
+  private def convertNonCometNodeDPP(node: SparkPlan, stagePlan: SparkPlan): SparkPlan = {
+    node.transformExpressions { case expr if hasCometSAB(expr) =>
+      convertFilter(expr, stagePlan)
+    }
+  }
+
+  /**
+   * Checks if a SparkPlan's expressions contain a wrapped CometSubqueryAdaptiveBroadcastExec.
+   * Unlike hasCometSAB, this only checks for the wrapped variant — unwrapped SABs on non-Comet
+   * nodes are handled by Spark's own PlanAdaptiveDynamicPruningFilters.
+   */
+  private def hasWrappedSAB(p: SparkPlan): Boolean =
+    p.expressions.exists(_.exists {
+      case DynamicPruningExpression(InSubqueryExec(_, _: CometSubqueryAdaptiveBroadcastExec, _, _, _, _)) => true
+      case _ => false
+    })
 
   /**
    * Checks if an expression contains an SAB variant (wrapped or unwrapped). The outer

@@ -426,18 +426,13 @@ case class CometExecRule(session: SparkSession)
               }
             case _ => inSub
           }
-        case sab: SubqueryAdaptiveBroadcastExec
-            if isSpark35Plus && plan.isInstanceOf[CometNativeScanExec] =>
-          // Only wrap SABs in native scans (CometNativeScanExec, converted by convertNode
-          // in the same transformUp pass). Non-native scans (e.g., CSV FileSourceScanExec)
-          // keep the original SAB so Spark's PlanAdaptiveDynamicPruningFilters handles DPP.
-          //
-          // SABs are created by PlanAdaptiveSubqueries (AQE preprocessing) and are
-          // non-executable placeholders. We wrap them to prevent Spark's
-          // PlanAdaptiveDynamicPruningFilters from converting them to Literal.TrueLiteral
-          // (which it does when it can't find BroadcastHashJoinExec - Comet replaced it).
-          // CometPlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule, 3.5+) unwraps
-          // and converts them later, after broadcast stages are materialized.
+        case sab: SubqueryAdaptiveBroadcastExec if isSpark35Plus =>
+          // Wrap SABs to prevent Spark's PlanAdaptiveDynamicPruningFilters from
+          // converting them to Literal.TrueLiteral. Spark's rule pattern-matches for
+          // BroadcastHashJoinExec, which Comet replaced with CometBroadcastHashJoinExec.
+          // Without wrapping, DPP is disabled for both Comet native scans and non-Comet
+          // scans (e.g., V2 BatchScan). CometPlanAdaptiveDynamicPruningFilters
+          // (queryStageOptimizerRule, 3.5+) unwraps and converts them later.
           //
           // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so the conversion
           // rule can't run. The isSpark35Plus guard leaves SABs unwrapped and lets Spark's
