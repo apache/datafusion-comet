@@ -25,9 +25,9 @@ import org.apache.spark.sql.types.DataTypes
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode, CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode, CometWidthBucket, CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -41,7 +41,7 @@ trait CometExprShim extends CommonStringExprs {
   def versionSpecificStringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[StringDecode] -> CometStringDecode)
   def versionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map.empty
+    Map(classOf[WidthBucket] -> CometWidthBucket)
   def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map.empty
 
@@ -84,11 +84,6 @@ trait CometExprShim extends CommonStringExprs {
         } else {
           None
         }
-
-      case wb: WidthBucket =>
-        val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
-        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
-        optExprWithInfo(optExpr, wb, wb.children: _*)
 
       case _ => None
     }
