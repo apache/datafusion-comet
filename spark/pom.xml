@@ -299,6 +299,10 @@ under the License.
       </dependencies>
     </profile>
     <profile>
+      <id>spark-4.2</id>
+      <!-- 4.2 preview profile is build-only; no Iceberg or Jetty test dependencies are wired up. -->
+    </profile>
+    <profile>
       <id>generate-docs</id>
       <build>
         <plugins>
