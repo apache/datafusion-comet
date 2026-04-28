@@ -104,6 +104,10 @@ Once Comet has support for a new Spark version, we need to create a diff file th
 of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can
 vary depending on the changes in the new version of Spark, but here is a general guide to the process.
 
+If you are bringing up a brand new Spark major or minor version, this work is one stage of a larger sequence
+covered in [Adding Support for a New Spark Version](adding_a_new_spark_version.md). Start there for the
+overall plan; the steps below cover only the diff-file mechanics.
+
 We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests
 for Spark version 3.5.6 we may start by applying the existing diff for 3.5.5 first.
 
