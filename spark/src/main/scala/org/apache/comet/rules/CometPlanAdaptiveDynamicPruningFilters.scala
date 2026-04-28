@@ -304,13 +304,20 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * Finds a broadcast hash join whose build-side keys match the given exprIds. Searches for both
    * CometBroadcastHashJoinExec and BroadcastHashJoinExec to handle cases where the join fell back
    * to Spark.
+   *
+   * Spark's PlanAdaptiveDynamicPruningFilters uses sameResult() to match a constructed
+   * BroadcastExchangeExec against the join's build side. We can't do the same because
+   * sameResult() checks getClass equality first, so a BroadcastExchangeExec would never match a
+   * CometBroadcastExchangeExec. Matching on buildKey exprIds is semantically equivalent because
+   * SAB buildKeys originate from the same logical plan.
    */
   private def findMatchingBroadcastJoin(
       sabKeyIds: Set[Any],
       plan: SparkPlan): Option[(SparkPlan, Boolean)] = {
     var result: Option[(SparkPlan, Boolean)] = None
     find(plan) {
-      case join: CometBroadcastHashJoinExec if result.isEmpty =>
+      case join: CometBroadcastHashJoinExec =>
+        assert(result.isEmpty, "find() should stop after first match")
         result = extractBroadcastChild(
           join.buildSide,
           join.left,
@@ -320,7 +327,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
           isCometJoin = true,
           sabKeyIds)
         result.isDefined
-      case join: BroadcastHashJoinExec if result.isEmpty =>
+      case join: BroadcastHashJoinExec =>
+        assert(result.isEmpty, "find() should stop after first match")
         result = extractBroadcastChild(
           join.buildSide,
           join.left,
