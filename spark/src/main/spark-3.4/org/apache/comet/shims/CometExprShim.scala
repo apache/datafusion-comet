@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometExpressionSerde, CommonStringExprs}
+import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode, CommonStringExprs}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 
 /**
@@ -36,7 +36,7 @@ trait CometExprShim extends CommonStringExprs {
   def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
 
   def versionSpecificStringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map.empty
+    Map(classOf[StringDecode] -> CometStringDecode)
   def versionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map.empty
   def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
@@ -45,15 +45,7 @@ trait CometExprShim extends CommonStringExprs {
   def versionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr match {
-      case s: StringDecode =>
-        // Right child is the encoding expression.
-        stringDecode(expr, s.charset, s.bin, inputs, binding)
-
-      case _ => None
-    }
-  }
+      binding: Boolean): Option[Expr] = None
 }
 
 object CometEvalModeUtil {

@@ -25,7 +25,7 @@ import org.apache.spark.sql.types.DataTypes
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CometExpressionSerde, CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode, CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
@@ -39,7 +39,7 @@ trait CometExprShim extends CommonStringExprs {
   def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
 
   def versionSpecificStringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map.empty
+    Map(classOf[StringDecode] -> CometStringDecode)
   def versionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map.empty
   def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
@@ -50,10 +50,6 @@ trait CometExprShim extends CommonStringExprs {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
-      case s: StringDecode =>
-        // Right child is the encoding expression.
-        stringDecode(expr, s.charset, s.bin, inputs, binding)
-
       case expr @ ToPrettyString(child, timeZoneId) =>
         val castSupported = CometCast.isSupported(
           child.dataType,
