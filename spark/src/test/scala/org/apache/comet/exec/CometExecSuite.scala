@@ -753,15 +753,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // ---- AQE DPP tests ----
-  // CometPlanAdaptiveDynamicPruningFilters converts SubqueryAdaptiveBroadcastExec to
-  // CometSubqueryBroadcastExec wrapping the join's BroadcastQueryStageExec (Spark 3.5+).
-  // On 3.4, injectQueryStageOptimizerRule is unavailable, so AQE DPP scans fall back to
-  // Spark where Spark's PlanAdaptiveDynamicPruningFilters handles SABs natively.
-
-  // Test #1: Native scan + CometBHJ + CometSubqueryBroadcast (golden path)
-  // On 3.5+: AQE DPP runs natively with broadcast reuse.
-  // On 3.4: scan falls back to Spark (injectQueryStageOptimizerRule unavailable).
+  // On 3.5+, CometPlanAdaptiveDynamicPruningFilters converts SABs to
+  // CometSubqueryBroadcastExec with broadcast reuse. On 3.4, AQE DPP falls back to Spark.
   test("AQE DPP: BHJ works with CometNativeScanExec") {
     withTempDir { path =>
       val factPath = s"${path.getAbsolutePath}/fact.parquet"
@@ -852,12 +845,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Test #2: Native scan + Spark BHJ (Comet BHJ disabled) + SubqueryBroadcast fallback
-  // With Comet BHJ disabled, the join stays as Spark's BroadcastHashJoinExec. Spark's
-  // PlanAdaptiveDynamicPruningFilters finds it and handles DPP directly. Our wrapping
-  // (CometSubqueryAdaptiveBroadcastExec) still happens, but our rule finds
-  // BroadcastHashJoinExec (not CometBroadcastHashJoinExec) and creates
-  // SubqueryBroadcastExec (not CometSubqueryBroadcastExec) for the Spark broadcast.
+  // With Comet BHJ disabled, the join stays as BroadcastHashJoinExec. Our rule finds
+  // it and creates SubqueryBroadcastExec (not CometSubqueryBroadcastExec).
   test("AQE DPP: fallback when broadcast exchange is not Comet") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"
@@ -903,9 +892,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Test #3: Native scan + SMJ (no broadcast) + DPP disabled gracefully
-  // With broadcast disabled, the join is SMJ. No broadcast to reuse for DPP.
-  // Our rule finds no matching broadcast join and falls back to Literal.TrueLiteral.
+  // No broadcast to reuse, so DPP falls back to Literal.TrueLiteral.
   test("AQE DPP: SMJ disables DPP gracefully") {
     withTempDir { path =>
       val factPath = s"${path.getAbsolutePath}/fact.parquet"
@@ -956,7 +943,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Test #4: Native scan + CometBHJ x2 + two dim tables, buildKeys disambiguation
   // Each DPP filter should match the correct broadcast join by buildKeys exprId.
   test("AQE DPP: two separate broadcast joins") {
     withTempDir { dir =>
@@ -1015,7 +1001,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Test #5: Native scan + CometBHJ + empty dim filter prunes all partitions
   test("AQE DPP: empty broadcast result") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"
@@ -1050,10 +1035,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Test #6: Native scan + CometBHJ + both outer+inner partition filters resolved
-  // CometNativeScanExec.partitionFilters and CometScanExec.partitionFilters are separate
-  // InSubqueryExec instances. Both must be resolved for partition selection to work.
-  // Correct results prove both filter sets were resolved.
+  // Both outer (CometNativeScanExec) and inner (CometScanExec) partition filters must
+  // be resolved. Correct results prove both filter sets were converted.
   test("AQE DPP: resolves both outer and inner partition filters") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"
@@ -1107,9 +1090,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Test #7: DPP broadcast exchange reuse + subquery reuse with AQE
-  // Verifies that the DPP subquery reuses the join's broadcast (single broadcast execution)
-  // and that CometReuseSubquery deduplicates subqueries with the same canonical form.
+  // DPP subquery reuses the join's broadcast via AQE stageCache.
   test("AQE DPP: broadcast exchange reuse") {
     withDppTables {
       withSQLConf(
@@ -1146,7 +1127,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Test #8: AQE counterpart of non-AQE non-atomic type (struct/array) join key
   test("AQE DPP: non-atomic type (struct/array) join key") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"
@@ -1183,7 +1163,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Test #9: AQE counterpart of non-AQE non-atomic type uses CometSubqueryBroadcastExec
   test("AQE DPP: non-atomic type uses CometSubqueryBroadcastExec") {
     withDppTables {
       withSQLConf(
@@ -1219,57 +1198,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Test #10: AQE DPP inside a scalar subquery with cross-plan broadcast reuse.
-  // The main query and scalar subquery each have a BHJ with DPP on the same dim table.
-  // AQE shares AdaptiveExecutionContext across both plans, so the scalar subquery's
-  // broadcast stage is a ReusedExchangeExec wrapping the main plan's CometBroadcastExchange.
-  // Our rule must handle ReusedExchangeExec inside BroadcastQueryStageExec when verifying
-  // the exchange type matches the join type.
-  test("AQE DPP: subquery reuse with uncorrelated scalar subquery") {
-    withDppTables {
-      withSQLConf(
-        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-
-        val df = sql("""SELECT d.store_id, SUM(f.units_sold),
-            |       (SELECT SUM(f.units_sold)
-            |        FROM fact_stats f JOIN dim_stats d ON d.store_id = f.store_id
-            |        WHERE d.country = 'US') AS total_prod
-            |FROM fact_stats f JOIN dim_stats d ON d.store_id = f.store_id
-            |WHERE d.country = 'US'
-            |GROUP BY 1""".stripMargin)
-        val (_, cometPlan) = checkSparkAnswer(df)
-
-        if (isSpark35Plus) {
-          // DPP subquery should use CometSubqueryBroadcastExec
-          val countSubqueryBroadcasts = collectWithSubqueries(cometPlan)({
-            case _: CometSubqueryBroadcastExec => 1
-          }).sum
-
-          // Subquery reuse: CometReuseSubquery deduplicates after our DPP conversion
-          val countReusedSubqueryBroadcasts = collectWithSubqueries(cometPlan)({
-            case ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => 1
-          }).sum
-
-          assert(
-            countSubqueryBroadcasts + countReusedSubqueryBroadcasts >= 1,
-            "Expected at least 1 CometSubqueryBroadcastExec (direct or reused):\n" +
-              cometPlan.treeString)
-
-          val remainingSABs = collectWithSubqueries(cometPlan) {
-            case s: CometSubqueryAdaptiveBroadcastExec => s
-          }
-          assert(remainingSABs.isEmpty, "No unconverted SABs should remain")
-        }
-      }
-    }
-  }
-
-  // Test #11: DPP with REUSE_BROADCAST_ONLY=false and EXCHANGE_REUSE_ENABLED=false.
-  // With onlyInBroadcast=false on the SAB, Spark's PlanAdaptiveDynamicPruningFilters
-  // would create an aggregate SubqueryExec (not TrueLiteral). Our wrapping must still
-  // protect the SAB so our rule can convert it with broadcast reuse.
+  // With onlyInBroadcast=false and exchange reuse disabled, our rule falls through to
+  // Case 3 (aggregate SubqueryExec) instead of broadcast reuse or TrueLiteral.
   // Reproduces DynamicPartitionPruningSuite "simple inner join triggers DPP with mock-up tables".
   test("AQE DPP: inner join with broadcast reuse disabled") {
     withDppTables {
@@ -1296,9 +1226,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Ported from DynamicPartitionPruningSuite: "avoid reordering broadcast join keys".
-  // The scan is in a shuffle stage separated from the broadcast join. Verifies that
-  // the cross-stage broadcast search (via context.qe.executedPlan) finds the join.
+  // Scan is in a shuffle stage separated from the broadcast join. Cross-stage
+  // broadcast search (via context.qe.executedPlan) must find the join.
   test("AQE DPP: avoid reordering broadcast join keys") {
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
@@ -1367,9 +1296,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Ported from DynamicPartitionPruningSuite: "Make sure dynamic pruning works on
-  // uncorrelated queries". Verifies cross-plan subquery deduplication via the shared
-  // AdaptiveExecutionContext.subqueryCache.
+  // Cross-plan subquery deduplication via the shared AdaptiveExecutionContext.subqueryCache.
   test("AQE DPP: uncorrelated scalar subquery with broadcast reuse") {
     withDppTables {
       withSQLConf(
@@ -1406,9 +1333,9 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Ported from RemoveRedundantProjectsSuite: "join with ordering requirement".
-  // Verifies DPP subquery uses ReusedExchangeExec (not direct stage reference),
-  // so collectWithSubqueries doesn't double-count project nodes.
+  // From RemoveRedundantProjectsSuite "join with ordering requirement".
+  // DPP subquery uses ReusedExchangeExec so collectWithSubqueries doesn't
+  // double-count project nodes.
   test("AQE DPP: join with ordering requirement project count") {
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
@@ -1451,9 +1378,9 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Ported from DynamicPartitionPruningSuite: SPARK-39447. SHUFFLE_MERGE hint forces SMJ,
-  // empty CTE means the DPP subquery's ASPE re-optimizes to LocalTableScan.
-  // CometBroadcastExchangeExec must handle the resulting non-Comet child gracefully.
+  // SPARK-39447: SHUFFLE_MERGE hint forces SMJ, empty CTE means the DPP subquery's
+  // ASPE re-optimizes to LocalTableScan. CometBroadcastExchangeExec must handle the
+  // resulting non-Comet child gracefully.
   test("AQE DPP: SPARK-39447 avoid assertion in doExecuteBroadcast") {
     withDppTables {
       withSQLConf(
