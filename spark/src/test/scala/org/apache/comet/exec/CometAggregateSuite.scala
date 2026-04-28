@@ -666,6 +666,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "tbl",
             false) {
             withView("v") {
+              sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
               checkSparkAnswerAndFallbackReason(
                 "SELECT _2, FIRST(_1), LAST(_1), COUNT(DISTINCT _1)" +
                   " FROM v GROUP BY _2 ORDER BY _2",
