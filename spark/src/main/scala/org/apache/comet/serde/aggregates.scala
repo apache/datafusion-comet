@@ -219,7 +219,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       return None
     }
 
-    val evalMode = sum.evalMode
+    val evalMode = CometEvalModeUtil.sumEvalMode(sum)
 
     val childExpr = exprToProto(sum.child, inputs, binding)
     val dataType = serializeDataType(sum.dataType)

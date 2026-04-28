@@ -309,6 +309,7 @@ object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
 }
 
 object CometArrayCompact extends CometExpressionSerde[Expression] {
+
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],

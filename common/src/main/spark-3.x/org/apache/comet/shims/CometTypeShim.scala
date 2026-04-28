@@ -21,7 +21,7 @@ package org.apache.comet.shims
 
 import scala.annotation.nowarn
 
-import org.apache.spark.sql.types.DataType
+import org.apache.spark.sql.types.{DataType, StructType}
 
 trait CometTypeShim {
   @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
@@ -29,4 +29,7 @@ trait CometTypeShim {
 
   @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
   def hasNonDefaultStringCollation(dt: DataType): Boolean = false
+
+  @nowarn // Spark 4 feature; Variant shredding doesn't exist in Spark 3.x.
+  def isVariantStruct(s: StructType): Boolean = false
 }

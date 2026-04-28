@@ -427,6 +427,20 @@ object CometConf extends ShimCometConf {
         "The maximum number of columns to hash for round robin partitioning must be non-negative.")
       .createWithDefault(0)
 
+  val COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.revertRedundantColumnar.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` " +
+          "back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet " +
+          "hash aggregate operators. This avoids a redundant " +
+          "row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either " +
+          "side can consume columnar output. Disable to keep Comet columnar shuffle even in " +
+          "that case, which preserves Comet's off-heap shuffle memory accounting at the cost of " +
+          "the extra conversion.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
       .category(CATEGORY_SHUFFLE)
@@ -748,7 +762,7 @@ object CometConf extends ShimCometConf {
         s"format when `${COMET_SPARK_TO_ARROW_ENABLED.key}` is true.")
       .stringConf
       .toSequence
-      .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan"))
+      .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan,OneRowRelation"))
 
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
