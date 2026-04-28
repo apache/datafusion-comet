@@ -167,6 +167,18 @@ index 13bbd9d81b7..541cdfb1e04 100644
  CREATE TEMPORARY VIEW t AS SELECT 1.0 as a, 0.0 as b;
  
  -- division, remainder and pmod by 0 return NULL
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/except-all.sql b/sql/core/src/test/resources/sql-tests/inputs/except-all.sql
+index e28f0721a64..788b43c242a 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/except-all.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/except-all.sql
+@@ -1,3 +1,7 @@
++-- TODO(https://github.com/apache/datafusion-comet/issues/4122)
++-- EXCEPT ALL with GROUP BY returns incorrect results on Spark 4.1
++--SET spark.comet.enabled = false
++
+ CREATE TEMPORARY VIEW tab1 AS SELECT * FROM VALUES
+     (0), (1), (2), (2), (2), (2), (3), (null), (null) AS tab1(c1);
+ CREATE TEMPORARY VIEW tab2 AS SELECT * FROM VALUES
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql b/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
 index 7aef901da4f..f3d6e18926d 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
@@ -199,6 +211,46 @@ index 96dddafd82a..efedbbb3c0e 100644
  
  -- Test tables
  CREATE table  explain_temp1 (key int, val int) USING PARQUET;
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql b/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
+index 1f53ca359fe..0f572f7c6ce 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
+@@ -1,3 +1,7 @@
++-- TODO(https://github.com/apache/datafusion-comet/issues/4123)
++-- Comet native sort lacks row-format support for Struct(Map(...)) sort keys
++--SET spark.comet.enabled = false
++
+ -- This test file contains queries that test recursive types name resolution in ORDER BY and HAVING clauses.
+ 
+ -- Alias type: String, Table column type: Struct
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/hll.sql b/sql/core/src/test/resources/sql-tests/inputs/hll.sql
+index 35128da97fd..25b873ae859 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/hll.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/hll.sql
+@@ -1,3 +1,8 @@
++-- TODO(https://github.com/apache/datafusion-comet/issues/4121)
++-- Comet's native scan rejects invalid UTF-8 byte sequences inserted into the
++-- string test table, which Spark allows.
++--SET spark.comet.enabled = false
++
+ -- Positive test cases
+ -- Create a table with some testing data.
+ DROP TABLE IF EXISTS t1;
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/intersect-all.sql b/sql/core/src/test/resources/sql-tests/inputs/intersect-all.sql
+index 077caa5dd44..ff009779775 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/intersect-all.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/intersect-all.sql
+@@ -1,5 +1,9 @@
++-- TODO(https://github.com/apache/datafusion-comet/issues/4122)
++-- INTERSECT ALL with GROUP BY returns incorrect results on Spark 4.1
++--SET spark.comet.enabled = false
++
+ CREATE TEMPORARY VIEW tab1 AS SELECT * FROM VALUES
+-    (1, 2), 
++    (1, 2),
+     (1, 2),
+     (1, 3),
+     (1, 3),
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/aggregates_part3.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/aggregates_part3.sql
 index 41fd4de2a09..162d5a817b6 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/aggregates_part3.sql
@@ -1338,18 +1390,19 @@ index fee375db10a..8c2c24e2c5f 100644
      val v = VariantBuilder.parseJson(s, false)
      new VariantVal(v.getValue, v.getMetadata)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
-index 6cdf681d65c..ca7135371a5 100644
+index 6cdf681d65c..34a0e3714bd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
-@@ -26,6 +26,7 @@ import org.apache.spark.sql.{AnalysisException, Row}
+@@ -26,6 +26,8 @@ import org.apache.spark.sql.{AnalysisException, Row}
  import org.apache.spark.sql.catalyst.ExtendedAnalysisException
  import org.apache.spark.sql.catalyst.expressions._
  import org.apache.spark.sql.catalyst.util.CollationFactory
 +import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashJoinExec, CometSortMergeJoinExec}
++import org.apache.spark.sql.comet.CometHashAggregateExec
  import org.apache.spark.sql.connector.{DatasourceV2SQLBase, FakeV2ProviderWithCustomSchema}
  import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Identifier, InMemoryTable}
  import org.apache.spark.sql.connector.catalog.CatalogV2Implicits.CatalogHelper
-@@ -57,7 +58,9 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+@@ -57,7 +59,9 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
      assert(
        collectFirst(queryPlan) {
          case _: SortMergeJoinExec => assert(isSortMergeForced)
@@ -1359,7 +1412,15 @@ index 6cdf681d65c..ca7135371a5 100644
        }.nonEmpty
      )
    }
-@@ -1550,10 +1553,14 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+@@ -465,6 +469,7 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+         val dfBinary = sql(s"SELECT COUNT(*), c FROM $tableNameBinary GROUP BY c")
+         assert(collectFirst(dfBinary.queryExecution.executedPlan) {
+           case _: HashAggregateExec | _: ObjectHashAggregateExec => ()
++          case _: CometHashAggregateExec => ()
+         }.nonEmpty)
+       }
+     }
+@@ -1550,10 +1555,14 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
              if (!CollationFactory.fetchCollation(t.collation).supportsBinaryEquality) {
                assert(collectFirst(queryPlan) {
                  case b: HashJoin => b.leftKeys.head
@@ -1374,7 +1435,7 @@ index 6cdf681d65c..ca7135371a5 100644
                }.head.isInstanceOf[CollationKey])
              }
            }
-@@ -1609,11 +1616,13 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+@@ -1609,11 +1618,13 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
              if (!CollationFactory.fetchCollation(t.collation).supportsBinaryEquality) {
                assert(collectFirst(queryPlan) {
                  case b: BroadcastHashJoinExec => b.leftKeys.head
@@ -1388,7 +1449,7 @@ index 6cdf681d65c..ca7135371a5 100644
                }.head.isInstanceOf[ArrayTransform])
              }
            }
-@@ -1679,6 +1688,7 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+@@ -1679,6 +1690,7 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
              } else {
                assert(!collectFirst(queryPlan) {
                  case b: BroadcastHashJoinExec => b.leftKeys.head
@@ -1807,7 +1868,7 @@ index 47679ed7865..9ffbaecb98e 100644
      assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
-index 050a004a935..5a578c6fc36 100644
+index 050a004a935..96d982f2829 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
 @@ -1054,7 +1054,8 @@ abstract class SQLViewSuite extends QueryTest with SQLTestUtils {
@@ -1820,6 +1881,16 @@ index 050a004a935..5a578c6fc36 100644
      withTable("t") {
        Seq(2, 3, 1).toDF("c1").write.format("parquet").saveAsTable("t")
        withView("v1") {
+@@ -1334,7 +1335,8 @@ abstract class SQLViewSuite extends QueryTest with SQLTestUtils {
+     }
+   }
+ 
+-  test("SPARK-53968 reading the view after allowPrecisionLoss is changed") {
++  test("SPARK-53968 reading the view after allowPrecisionLoss is changed",
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/4124")) {
+     import org.apache.spark.sql.internal.SQLConf
+     val partsTableName = "parts_tbl"
+     val ordersTableName = "orders_tbl"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 index aed11badb71..1a365b5aacf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
@@ -3492,6 +3563,25 @@ index 4c06a0109e3..0b0e4990c0a 100644
        }.headOption.getOrElse {
          fail(s"No FileScan in query\n${df.queryExecution}")
        }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamRealTimeModeAllowlistSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamRealTimeModeAllowlistSuite.scala
+index 4306e5a8601..ee80e65ec26 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamRealTimeModeAllowlistSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamRealTimeModeAllowlistSuite.scala
+@@ -20,11 +20,13 @@ package org.apache.spark.sql.streaming
+ import scala.concurrent.duration._
+ 
+ import org.apache.spark.SparkIllegalArgumentException
++import org.apache.spark.sql.IgnoreCometSuite
+ import org.apache.spark.sql.execution.streaming.LowLatencyMemoryStream
+ import org.apache.spark.sql.functions._
+ import org.apache.spark.sql.internal.SQLConf
+ 
+-class StreamRealTimeModeAllowlistSuite extends StreamRealTimeModeE2ESuiteBase {
++class StreamRealTimeModeAllowlistSuite extends StreamRealTimeModeE2ESuiteBase
++  with IgnoreCometSuite {
+   import testImplicits._
+ 
+   test("rtm source allowlist") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala
 index 11b761f1e4a..e54bf2a996a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala
