@@ -151,16 +151,15 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * Converts an SAB following the same decision tree as Spark's
    * PlanAdaptiveDynamicPruningFilters:
    *
-   *   1. exchangeReuseEnabled + matching broadcast join found: Create
-   *      CometSubqueryBroadcastExec (or SubqueryBroadcastExec for Spark fallback)
-   *      wired to the join's broadcast. DPP uses broadcast reuse via AQE's stageCache.
+   *   1. exchangeReuseEnabled + matching broadcast join found: Create CometSubqueryBroadcastExec
+   *      (or SubqueryBroadcastExec for Spark fallback) wired to the join's broadcast. DPP uses
+   *      broadcast reuse via AQE's stageCache.
    *
-   * 2. No reusable broadcast + onlyInBroadcast=true: Literal.TrueLiteral. DPP is
-   * disabled (correct results, scans all partitions).
+   * 2. No reusable broadcast + onlyInBroadcast=true: Literal.TrueLiteral. DPP is disabled
+   * (correct results, scans all partitions).
    *
-   * 3. No reusable broadcast + onlyInBroadcast=false: Aggregate SubqueryExec on the
-   * build side (DPP via separate execution, matching Spark's
-   * PlanAdaptiveDynamicPruningFilters lines 68-79).
+   * 3. No reusable broadcast + onlyInBroadcast=false: Aggregate SubqueryExec on the build side
+   * (DPP via separate execution, matching Spark's PlanAdaptiveDynamicPruningFilters lines 68-79).
    */
   private def convertSAB(
       inSub: InSubqueryExec,
@@ -215,7 +214,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // mismatch when CometSubqueryBroadcastExec projects keys by exprId.
       val newExchange = if (isComet) {
         val packedKeys = BindReferences.bindReferences(
-          HashJoin.rewriteKeyExpr(sab.buildKeys), buildSidePlan.output)
+          HashJoin.rewriteKeyExpr(sab.buildKeys),
+          buildSidePlan.output)
         val mode = HashedRelationBroadcastMode(packedKeys)
         val newCbe =
           CometBroadcastExchangeExec(buildSidePlan, buildSidePlan.output, mode, buildSidePlan)
@@ -223,7 +223,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
         newCbe
       } else {
         val packedKeys = BindReferences.bindReferences(
-          HashJoin.rewriteKeyExpr(sab.buildKeys), buildSidePlan.output)
+          HashJoin.rewriteKeyExpr(sab.buildKeys),
+          buildSidePlan.output)
         val mode = HashedRelationBroadcastMode(packedKeys)
         val newBe = BroadcastExchangeExec(mode, buildSidePlan)
         buildSidePlan.logicalLink.foreach(newBe.setLogicalLink)
@@ -247,8 +248,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
       } else {
         createSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, newAdaptivePlan)
       }
-      DynamicPruningExpression(
-        inSub.withNewPlan(reuseOrRegisterSubquery(subquery, adaptivePlan)))
+      DynamicPruningExpression(inSub.withNewPlan(reuseOrRegisterSubquery(subquery, adaptivePlan)))
     } else if (sab.onlyInBroadcast) {
       // Case 2: no reusable broadcast, and the optimizer says DPP only makes sense
       // with broadcast reuse. Disable DPP (Literal.TrueLiteral).
@@ -277,14 +277,13 @@ case object CometPlanAdaptiveDynamicPruningFilters
   }
 
   /**
-   * Registers a DPP subquery in the shared AdaptiveExecutionContext.subqueryCache
-   * for cross-plan deduplication, matching ReuseAdaptiveSubquery's behavior.
+   * Registers a DPP subquery in the shared AdaptiveExecutionContext.subqueryCache for cross-plan
+   * deduplication, matching ReuseAdaptiveSubquery's behavior.
    *
-   * Our rule runs after Spark's ReuseAdaptiveSubquery (which can't see our
-   * subqueries because they don't exist yet when it runs). CometReuseSubquery
-   * uses a per-invocation local cache that doesn't span across the main query
-   * and scalar subquery plans. Using the shared context cache ensures that
-   * identical DPP subqueries across plans are deduplicated.
+   * Our rule runs after Spark's ReuseAdaptiveSubquery (which can't see our subqueries because
+   * they don't exist yet when it runs). CometReuseSubquery uses a per-invocation local cache that
+   * doesn't span across the main query and scalar subquery plans. Using the shared context cache
+   * ensures that identical DPP subqueries across plans are deduplicated.
    */
   private def reuseOrRegisterSubquery(
       subquery: BaseSubqueryExec,
@@ -301,9 +300,9 @@ case object CometPlanAdaptiveDynamicPruningFilters
   }
 
   /**
-   * Finds a broadcast hash join whose build-side keys match the given exprIds.
-   * Searches for both CometBroadcastHashJoinExec and BroadcastHashJoinExec to
-   * handle cases where the join fell back to Spark.
+   * Finds a broadcast hash join whose build-side keys match the given exprIds. Searches for both
+   * CometBroadcastHashJoinExec and BroadcastHashJoinExec to handle cases where the join fell back
+   * to Spark.
    */
   private def findMatchingBroadcastJoin(
       sabKeyIds: Set[Any],
@@ -360,10 +359,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
   }
 
   /**
-   * Checks if an expression contains an SAB variant (wrapped or unwrapped). The
-   * outer CometNativeScanExec.partitionFilters has CometSubqueryAdaptiveBroadcastExec
-   * (wrapped by CometExecRule). The inner CometScanExec.partitionFilters may have the
-   * original SubqueryAdaptiveBroadcastExec (unwrapped, because CometScanExec is
+   * Checks if an expression contains an SAB variant (wrapped or unwrapped). The outer
+   * CometNativeScanExec.partitionFilters has CometSubqueryAdaptiveBroadcastExec (wrapped by
+   * CometExecRule). The inner CometScanExec.partitionFilters may have the original
+   * SubqueryAdaptiveBroadcastExec (unwrapped, because CometScanExec is
    * @transient).
    */
   private def hasCometSAB(e: Expression): Boolean =

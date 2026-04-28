@@ -819,12 +819,13 @@ class CometExecSuite extends CometTestBase {
           import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
           cometSubqueries.foreach { csb =>
             val aspe = csb.child.asInstanceOf[AdaptiveSparkPlanExec]
-            val hasReusedExchange = collect(aspe) {
-              case r: ReusedExchangeExec => r
-            }.nonEmpty || collect(aspe) {
-              case b: BroadcastQueryStageExec => b
+            val hasReusedExchange = collect(aspe) { case r: ReusedExchangeExec =>
+              r
+            }.nonEmpty || collect(aspe) { case b: BroadcastQueryStageExec =>
+              b
             }.nonEmpty
-            assert(hasReusedExchange,
+            assert(
+              hasReusedExchange,
               "DPP subquery's ASPE should contain ReusedExchangeExec or " +
                 "BroadcastQueryStageExec for broadcast reuse")
           }
