@@ -399,8 +399,11 @@ case class CometScanRule(session: SparkSession)
         // Check if table uses a FileIO implementation compatible with iceberg-rust
 
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
+          case Some(fileIO)
+              if fileIO.getClass.getName == "org.apache.iceberg.inmemory.InMemoryFileIO" =>
+            fallbackReasons += "InMemoryFileIO is not supported by Comet's native reader"
+            false
           case Some(_) =>
-            // InMemoryFileIO is now supported with table location fallback for REST catalogs
             true
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
@@ -709,6 +712,13 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
       case dt if isStringCollationType(dt) =>
         // we don't need specific support for collation in scans, but this
         // is a convenient place to force the whole query to fall back to Spark for now
+        false
+      case s: StructType if isVariantStruct(s) =>
+        // Spark 4.0's PushVariantIntoScan rewrites a VariantType column into a struct of typed
+        // fields plus per-field VariantMetadata, expecting the scan to honor Parquet variant
+        // shredding semantics. Comet's native scans don't, so fall back to Spark.
+        fallbackReasons +=
+          s"$scanImpl scan does not support shredded Variant reads (column $name)"
         false
       case s: StructType if s.fields.isEmpty =>
         false

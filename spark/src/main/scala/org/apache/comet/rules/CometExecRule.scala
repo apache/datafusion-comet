@@ -89,6 +89,13 @@ object CometExecRule {
 
   val allExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = nativeExecs ++ sinks
 
+  /**
+   * Tag set on a `ShuffleExchangeExec` that should be left as a plain Spark shuffle rather than
+   * wrapped in `CometShuffleExchangeExec`. See `tagRedundantColumnarShuffle`.
+   */
+  val SKIP_COMET_SHUFFLE_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
+    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometShuffle")
+
 }
 
 /**
@@ -100,19 +107,78 @@ case class CometExecRule(session: SparkSession)
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
+  /**
+   * Revert any `CometShuffleExchangeExec` with `CometColumnarShuffle` whose parent and child are
+   * both non-Comet `HashAggregateExec` / `ObjectHashAggregateExec` operators back to the original
+   * Spark `ShuffleExchangeExec`. This is the partial-final-aggregate pattern where Comet couldn't
+   * convert either aggregate; keeping a columnar shuffle between them only adds
+   * row->arrow->shuffle->arrow->row conversion overhead with no Comet consumer on either side.
+   * See https://github.com/apache/datafusion-comet/issues/4004.
+   *
+   * The match is intentionally narrow (both sides must be row-based aggregates that remained JVM
+   * after the main transform pass). Running the revert post-transform means we only fire when the
+   * main conversion already decided to keep both aggregates JVM - we never create the dangerous
+   * mixed mode where a Comet partial feeds a JVM final (see issue #1389).
+   *
+   * Correctness depends on running as part of `preColumnarTransitions`: if the revert ran after
+   * Spark inserted `ColumnarToRowExec` between the aggregate and the columnar shuffle, the
+   * pattern would no longer match (the shuffle would be separated from the aggregate by the
+   * transition) and the unnecessary conversion could not be eliminated.
+   *
+   * The reverted shuffle is tagged with `SKIP_COMET_SHUFFLE_TAG` so both the AQE
+   * `QueryStagePrepRule` pass and the `ColumnarRule` `preColumnarTransitions` pass leave it alone
+   * on re-entry - AQE in particular re-runs the rule on each stage in isolation, where the outer
+   * aggregate context is no longer visible and the shuffle would otherwise be re-wrapped as a
+   * Comet columnar shuffle.
+   */
+  private def revertRedundantColumnarShuffle(plan: SparkPlan): SparkPlan = {
+    def isAggregate(p: SparkPlan): Boolean =
+      p.isInstanceOf[HashAggregateExec] || p.isInstanceOf[ObjectHashAggregateExec]
+
+    def isRedundantShuffle(child: SparkPlan): Boolean = child match {
+      case s: CometShuffleExchangeExec =>
+        s.shuffleType == CometColumnarShuffle && isAggregate(s.child)
+      case _ => false
+    }
+
+    plan.transform {
+      case op if isAggregate(op) && op.children.exists(isRedundantShuffle) =>
+        val newChildren = op.children.map {
+          case s: CometShuffleExchangeExec
+              if s.shuffleType == CometColumnarShuffle && isAggregate(s.child) =>
+            val reverted =
+              s.originalPlan.withNewChildren(Seq(s.child)).asInstanceOf[ShuffleExchangeExec]
+            reverted.setTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG, ())
+            logInfo(
+              "Reverting Comet columnar shuffle to Spark shuffle between " +
+                s"${op.getClass.getSimpleName} and ${s.child.getClass.getSimpleName} " +
+                "(no Comet operator on either side to consume columnar output)")
+            reverted
+          case other => other
+        }
+        op.withNewChildren(newChildren)
+    }
+  }
+
+  private def shouldSkipCometShuffle(s: ShuffleExchangeExec): Boolean =
+    s.getTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG).isDefined
+
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
-    plan.transformUp { case s: ShuffleExchangeExec =>
-      CometShuffleExchangeExec.shuffleSupported(s) match {
-        case Some(CometNativeShuffle) =>
-          // Switch to use Decimal128 regardless of precision, since Arrow native execution
-          // doesn't support Decimal32 and Decimal64 yet.
-          conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-          CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-        case Some(CometColumnarShuffle) =>
-          CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
-        case None =>
-          s
-      }
+    plan.transformUp {
+      case s: ShuffleExchangeExec if shouldSkipCometShuffle(s) =>
+        s
+      case s: ShuffleExchangeExec =>
+        CometShuffleExchangeExec.shuffleSupported(s) match {
+          case Some(CometNativeShuffle) =>
+            // Switch to use Decimal128 regardless of precision, since Arrow native execution
+            // doesn't support Decimal32 and Decimal64 yet.
+            conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+            CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+          case Some(CometColumnarShuffle) =>
+            CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+          case None =>
+            s
+        }
     }
   }
 
@@ -260,6 +326,9 @@ case class CometExecRule(session: SparkSession)
       // the query plan won't be re-optimized/planned in non-AQE mode.
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
         convertToComet(s, CometExchangeSink).getOrElse(s)
+
+      case s: ShuffleExchangeExec if shouldSkipCometShuffle(s) =>
+        s
 
       case s: ShuffleExchangeExec =>
         convertToComet(s, CometShuffleExchangeExec).getOrElse(s)
@@ -462,6 +531,13 @@ case class CometExecRule(session: SparkSession)
       newPlan = newPlan.transform {
         case CometSinkPlaceHolder(_, _, s) => s
         case CometScanWrapper(_, s) => s
+      }
+
+      // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when both its parent and child
+      // are non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main
+      // transform pass. See https://github.com/apache/datafusion-comet/issues/4004.
+      if (CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.get()) {
+        newPlan = revertRedundantColumnarShuffle(newPlan)
       }
 
       // Set up logical links

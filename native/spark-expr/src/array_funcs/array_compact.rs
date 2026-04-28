@@ -132,6 +132,11 @@ fn compact_list<OffsetSize: OffsetSizeTrait>(
     );
     let mut valid = NullBufferBuilder::new(list_array.len());
 
+    // Use logical_nulls() instead of is_null() to correctly handle NullArray.
+    // NullArray::nulls() returns None (which makes is_null() return false),
+    // but logical_nulls() correctly reports all elements as null.
+    let value_nulls = values.logical_nulls();
+
     for (row_index, offset_window) in list_array.offsets().windows(2).enumerate() {
         if list_array.is_null(row_index) {
             offsets.push(offsets[row_index]);
@@ -144,7 +149,8 @@ fn compact_list<OffsetSize: OffsetSizeTrait>(
         let mut copied = 0usize;
 
         for i in start..end {
-            if !values.is_null(i) {
+            let is_null = value_nulls.as_ref().map(|n| n.is_null(i)).unwrap_or(false);
+            if !is_null {
                 mutable.extend(0, i, i + 1);
                 copied += 1;
             }

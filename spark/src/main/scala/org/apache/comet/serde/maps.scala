@@ -137,6 +137,9 @@ object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from
   val keyUnsupportedReason = "Using BinaryType as Map keys is not allowed in map_from_entries"
   val valueUnsupportedReason = "Using BinaryType as Map values is not allowed in map_from_entries"
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(keyUnsupportedReason, valueUnsupportedReason)
+
   private def containsBinary(dataType: DataType): Boolean = {
     dataType match {
       case BinaryType => true

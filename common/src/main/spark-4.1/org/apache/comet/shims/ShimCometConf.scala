@@ -19,28 +19,6 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
-
-trait ShimCometSparkSessionExtensions {
-
-  /**
-   * TODO: delete after dropping Spark 3.x support and directly call
-   * SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
-   */
-  protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
-
-  // Extended info is available only since Spark 4.0.0
-  // (https://issues.apache.org/jira/browse/SPARK-47289)
-  def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = {
-    try {
-      // Look for QueryExecution.extendedExplainInfo(scala.Function1[String, Unit], SparkPlan)
-      qe.getClass.getDeclaredMethod(
-        "extendedExplainInfo",
-        classOf[String => Unit],
-        classOf[SparkPlan])
-    } catch {
-      case _: NoSuchMethodException | _: SecurityException => return false
-    }
-    true
-  }
+trait ShimCometConf {
+  protected val COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT = true
 }

@@ -29,6 +29,11 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithIn
 // https://github.com/apache/datafusion/issues/16594
 object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`." +
+      " DataFusion's valid timestamp range differs from Spark" +
+      " (https://github.com/apache/datafusion/issues/16594)")
+
   override def getSupportLevel(expr: FromUnixTime): SupportLevel = Incompatible(None)
 
   override def convert(
