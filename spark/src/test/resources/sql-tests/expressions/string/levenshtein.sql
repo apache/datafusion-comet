@@ -44,3 +44,19 @@ SELECT levenshtein(s1, s1) FROM test_levenshtein
 -- unicode characters
 query
 SELECT levenshtein('café', 'cafe'), levenshtein('你好', '你坏')
+
+-- three argument version with threshold
+query
+SELECT levenshtein('kitten', 'sitting', 2), levenshtein('kitten', 'sitting', 3), levenshtein('kitten', 'sitting', 4)
+
+-- threshold with column arguments
+query
+SELECT levenshtein(s1, s2, 2) FROM test_levenshtein
+
+-- threshold edge cases
+query
+SELECT levenshtein('abc', 'abc', 0), levenshtein('abc', 'adc', 0), levenshtein('', '', 0)
+
+-- threshold with NULL
+query
+SELECT levenshtein('abc', 'adc', NULL), levenshtein(NULL, 'test', 2)
