@@ -17,18 +17,15 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql.comet.execution.shuffle
 
-import org.apache.spark.sql.types.{DataType, StringType}
+import org.apache.spark.scheduler.MapStatus
+import org.apache.spark.storage.BlockManagerId
 
-trait CometTypeShim {
-  // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
-  // collations have semantics Comet's byte-level hashing/sorting/equality cannot honor. The
-  // default `StringType` object is `StringType(UTF8_BINARY_COLLATION_ID)`, so comparing
-  // `collationId` against that instance's id picks out non-default collations without needing
-  // `private[sql]` helpers on `StringType`.
-  def isStringCollationType(dt: DataType): Boolean = dt match {
-    case st: StringType => st.collationId != StringType.collationId
-    case _ => false
-  }
+// Spark 4.1 added a `checksumVal` parameter (with a default of 0) to MapStatus.apply.
+// Java callers can't use Scala default parameters, so we wrap the call here. The Scala
+// compiler fills in the default per Spark version.
+object MapStatusHelper {
+  def apply(loc: BlockManagerId, uncompressedSizes: Array[Long], mapTaskId: Long): MapStatus =
+    MapStatus(loc, uncompressedSizes, mapTaskId)
 }
