@@ -751,12 +751,9 @@ class CometStringExpressionSuite extends CometTestBase {
       ("hello", "world"))
 
     withParquetTable(data, "tbl") {
-      checkSparkAnswerAndOperator(
-        "SELECT levenshtein(_1, _2, 2) FROM tbl")
-      checkSparkAnswerAndOperator(
-        "SELECT levenshtein(_1, _2, 0) FROM tbl")
-      checkSparkAnswerAndOperator(
-        "SELECT levenshtein(_1, _2, 10) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2, 0) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2, 10) FROM tbl")
     }
   }
 
