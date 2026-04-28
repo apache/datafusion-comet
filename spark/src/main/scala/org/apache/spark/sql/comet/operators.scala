@@ -1470,10 +1470,6 @@ trait CometBaseAggregate {
       // FIRST/LAST are order-dependent aggregates whose merge result depends on
       // hash table processing order. In PartialMerge mode, DataFusion's hash table
       // may process rows in a different order than Spark's, producing different results.
-      //
-      // CollectSet (and CollectList if added) use list-typed state. MergeAsPartial
-      // redirects update_batch to merge_batch, but these accumulators expect list
-      // arrays in merge_batch while update_batch receives scalar values.
       if (hasPartialMerge) {
         val unsupportedAggs = aggregateExpressions.filter { a =>
           a.mode == PartialMerge && (a.aggregateFunction.isInstanceOf[First] ||
