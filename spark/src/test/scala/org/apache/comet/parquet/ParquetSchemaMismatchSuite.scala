@@ -50,9 +50,9 @@ import org.apache.comet.CometSparkSessionExtensions
 //   1. BINARY -> TIMESTAMP                 throw      throw  throw  throw                    throw
 //   2. INT32 -> INT64                      throw      throw  OK     OK (widened values)      throw on 3.x / OK on 4.0 (COMET_SCHEMA_EVOLUTION_ENABLED defaults true)
 //   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  OK (silent, possible wall-clock diff)  throw on 3.x / OK on 4.0 (isSpark40Plus guard in TypeUtil)
-//   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  OK (reads, values unverified)  throw
+//   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  throw                    throw
 //   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     OK (1 row, no overflow)  throw on 3.x / OK on 4.0 (COMET_SCHEMA_EVOLUTION_ENABLED defaults true)
-//   6. STRING -> INT                       throw      throw  throw  OK (garbage values)      throw
+//   6. STRING -> INT                       throw      throw  throw  throw                    throw
 //   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  throw                    throw
 //   C1. INT8 -> INT32                      OK         OK     OK     OK (widened values)      OK (widened values)
 //   C2. FLOAT -> DOUBLE                    OK         OK     OK     OK (widened values)      throw on 3.x / OK on 4.0 (COMET_SCHEMA_EVOLUTION_ENABLED defaults true)
@@ -204,6 +204,8 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
   // Case 4: Decimal(10,2) read as Decimal(5,0). Reading from a higher-precision
   // decimal as a lower-precision decimal can lose data (123.45 cannot fit in
   // decimal(5,0)). Spark throws on all versions (SPARK-34212).
+  // native_datafusion rejects this lossy scale-narrowing in the schema adapter
+  // (issue #4089) and throws CometNativeException, surfacing as SparkException.
   test(s"decimal(10,2) read as decimal(5,0): ${CometConf.SCAN_NATIVE_DATAFUSION}") {
     withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
       Seq(BigDecimal("123.45"), BigDecimal("67.89"))
@@ -213,9 +215,9 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
         .parquet(path)
       spark.read.schema("d decimal(5,0)").parquet(path)
     } { df =>
-      // Pattern 3 (structural mismatch). Capture observed outcome.
-      val outcome = Try(df.collect())
-      assert(outcome.isSuccess, s"unexpected failure: $outcome")
+      intercept[SparkException] {
+        df.collect()
+      }
     }
   }
 
@@ -279,20 +281,17 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
   // Case 6: STRING column read as INT. Spark's vectorized reader throws on all
   // versions because BINARY (string) cannot be converted to INT32 at the
   // physical Parquet level.
-  // native_datafusion: silently succeeds; reinterprets the BINARY bytes of each
-  // string as raw INT32 bytes (garbage values). Does NOT throw.
+  // native_datafusion rejects string/binary read as numeric in the schema adapter
+  // (PR #4091) and throws CometNativeException, surfacing as SparkException.
   // native_iceberg_compat: throws SparkException (aligns with Spark).
   test(s"string read as int: ${CometConf.SCAN_NATIVE_DATAFUSION}") {
     withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
       Seq("a", "b", "c").toDF("c").write.parquet(path)
       spark.read.schema("c int").parquet(path)
     } { df =>
-      // Pattern 2 (silent garbage): native_datafusion reinterprets string BINARY
-      // bytes as INT32 without throwing. Values are meaningless but the read
-      // succeeds with the expected row count.
-      val outcome = Try(df.collect())
-      assert(outcome.isSuccess, s"unexpected failure: $outcome")
-      assert(outcome.get.length == 3)
+      intercept[SparkException] {
+        df.collect()
+      }
     }
   }
 
