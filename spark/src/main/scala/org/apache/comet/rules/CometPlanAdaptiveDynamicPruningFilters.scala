@@ -190,9 +190,20 @@ case object CometPlanAdaptiveDynamicPruningFilters
     //      where a shuffle separates the scan from the broadcast join.
     val rootPlan = adaptivePlan.context.qe.executedPlan
 
+    // scalastyle:off println
+    println(s"[CometDPP] convertSAB: name=${sab.name}, onlyInBroadcast=${sab.onlyInBroadcast}")
+    println(s"[CometDPP]   sabKeyIds=$sabKeyIds")
+    println(s"[CometDPP]   stagePlan root: ${stagePlan.getClass.getSimpleName}")
+    // scalastyle:on println
+
     val matchingJoin = findMatchingBroadcastJoin(sabKeyIds, stagePlan)
       .orElse(findMatchingBroadcastJoin(sabKeyIds, rootPlan))
     val canReuse = conf.exchangeReuseEnabled && matchingJoin.isDefined
+
+    // scalastyle:off println
+    println(s"[CometDPP]   matchingJoin=${matchingJoin.map(r => (r._1.getClass.getSimpleName, r._2))}")
+    println(s"[CometDPP]   canReuse=$canReuse -> ${if (canReuse) "case 1" else if (sab.onlyInBroadcast) "case 2" else "case 3"}")
+    // scalastyle:on println
 
     if (canReuse) {
       // Case 1: broadcast reuse. Matches Spark's PlanAdaptiveDynamicPruningFilters
@@ -236,6 +247,13 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // which clears the logicalLink tag as a side effect. Re-set it so
       // getFinalPhysicalPlan (line 276) can read inputPlan.logicalLink.
       buildSidePlan.logicalLink.foreach(newAdaptivePlan.inputPlan.setLogicalLink)
+
+      // scalastyle:off println
+      println(s"[CometDPP]   case 1: isComet=$isComet")
+      println(s"[CometDPP]   buildSidePlan: ${buildSidePlan.getClass.getSimpleName}")
+      println(s"[CometDPP]   newExchange: ${newExchange.getClass.getSimpleName}")
+      println(s"[CometDPP]   newASPE.initialPlan: ${newAdaptivePlan.initialPlan.treeString}")
+      // scalastyle:on println
 
       val subquery = if (isComet) {
         CometSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, newAdaptivePlan)

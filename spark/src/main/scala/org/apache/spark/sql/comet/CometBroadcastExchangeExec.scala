@@ -138,14 +138,17 @@ case class CometBroadcastExchangeExec(
           case ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _)
               if plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _) =>
-            throw new CometRuntimeException(
-              "Child of CometBroadcastExchangeExec should be CometExec, " +
-                s"but got: ${s.plan.getClass}")
           case _ =>
-            throw new CometRuntimeException(
-              "Child of CometBroadcastExchangeExec should be CometExec, " +
-                s"but got: ${child.getClass}")
+            // Non-Comet child (e.g., RowToColumnar -> LocalTableScan). This happens
+            // when AQE re-optimizes inside a DPP subquery's AdaptiveSparkPlanExec
+            // and replaces the Comet scan with a Spark node (e.g., empty result
+            // optimization to LocalTableScan). Convert back to Comet columnar via
+            // ColumnarToRowExec -> CometSparkToColumnarExec to reuse the Arrow path.
+            logWarning(
+              s"CometBroadcastExchangeExec child is not CometPlan: " +
+                s"${child.getClass.getSimpleName}. Falling back to row-based broadcast.")
+            val cometChild = CometSparkToColumnarExec(ColumnarToRowExec(child))
+            CometExec.getByteArrayRdd(cometChild).collect()
         }
 
         val numRows = countsAndBytes.map(_._1).sum
