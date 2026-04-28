@@ -1479,6 +1479,7 @@ trait CometBaseAggregate {
           a.mode == PartialMerge && (a.aggregateFunction.isInstanceOf[First] ||
             a.aggregateFunction.isInstanceOf[Last])
         }
+        // https://github.com/apache/datafusion-comet/issues/4131
         if (unsupportedAggs.nonEmpty) {
           withInfo(
             aggregate,
