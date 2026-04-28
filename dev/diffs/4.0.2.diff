@@ -3774,7 +3774,7 @@ index 4b27082e188..057b2430872 100644
 -class HiveUDFDynamicLoadSuite extends QueryTest with SQLTestUtils with TestHiveSingleton {
 +// Comet: mix in IgnoreCometSuite so these tests are reported as ignored when Comet is enabled
 +// (ENABLE_COMET=true). The jar these tests depend on (`hive-test-udfs.jar`) is stripped from the
-+// Spark 4.0.1 release source tag per the ASF binary-artifact policy, so the tests cannot run in
++// Spark 4.0.2 release source tag per the ASF binary-artifact policy, so the tests cannot run in
 +// Comet's CI. Ignoring keeps the suite passing without masking real regressions; the upstream
 +// tests still run in non-Comet Spark builds that ship the jar on branch-4.0.
 +class HiveUDFDynamicLoadSuite extends QueryTest with SQLTestUtils with TestHiveSingleton
@@ -3788,7 +3788,7 @@ index 4b27082e188..057b2430872 100644
      val jarPath = "src/test/noclasspath/hive-test-udfs.jar"
 -    assume(new java.io.File(jarPath).exists)
 +    // Comet: the upstream `assume(...)` runs here in the suite constructor (inside this foreach,
-+    // before `test(...)` registers a case). When the jar is missing - as it is on the v4.0.1
++    // before `test(...)` registers a case). When the jar is missing - as it is on the v4.0.2
 +    // release tag - `assume` throws TestCanceledException out of `<init>`, which ScalaTest
 +    // reports as a suite abort (not a per-test cancel) and fails the whole job. The
 +    // IgnoreCometSuite mixin above already reroutes these tests to `ignore` under Comet, so
