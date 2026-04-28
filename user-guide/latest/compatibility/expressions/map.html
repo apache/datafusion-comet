@@ -474,15 +474,25 @@ under the License.
 -->
 <section id="map-expressions">
 <h1>Map Expressions<a class="headerlink" href="#map-expressions" title="Link to this heading">#</a></h1>
+<section id="mapsort-spark-4-0">
+<h2>MapSort (Spark 4.0+)<a class="headerlink" href="#mapsort-spark-4-0" title="Link to this heading">#</a></h2>
+<p>Spark 4.0 inserts <code class="docutils literal notranslate"><span class="pre">MapSort</span></code> to normalize map values when they appear in shuffle hash partitioning
+keys, in <code class="docutils literal notranslate"><span class="pre">try_element_at</span></code>, and in other contexts where map ordering must be deterministic. Comet
+runs <code class="docutils literal notranslate"><span class="pre">MapSort</span></code> natively, so map shuffle and group-by-on-map stay on Comet under Spark 4.0.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, <code class="docutils literal notranslate"><span class="pre">MapSort</span></code> falls back to Spark for maps whose
+keys contain <code class="docutils literal notranslate"><span class="pre">Float</span></code> or <code class="docutils literal notranslate"><span class="pre">Double</span></code> (consistent with <code class="docutils literal notranslate"><span class="pre">SortOrder</span></code> and <code class="docutils literal notranslate"><span class="pre">SortArray</span></code>). Arrow’s sort uses
+IEEE total ordering for floating-point, which differs from Spark’s <code class="docutils literal notranslate"><span class="pre">Double.compare</span></code> semantics for
+<code class="docutils literal notranslate"><span class="pre">NaN</span></code> and <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>.</p>
 <!--BEGIN:EXPR_COMPAT[map]-->
 <section id="mapfromentries">
-<h2>MapFromEntries<a class="headerlink" href="#mapfromentries" title="Link to this heading">#</a></h2>
+<h3>MapFromEntries<a class="headerlink" href="#mapfromentries" title="Link to this heading">#</a></h3>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">MapFromEntries</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromEntries.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Using BinaryType as Map keys is not allowed in map_from_entries</p></li>
 <li><p>Using BinaryType as Map values is not allowed in map_from_entries</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
+</section>
 </section>
 </section>
 
