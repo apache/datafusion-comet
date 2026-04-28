@@ -20,6 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.types.DataTypes
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -97,4 +98,6 @@ object CometEvalModeUtil {
     case EvalMode.TRY => CometEvalMode.TRY
     case EvalMode.ANSI => CometEvalMode.ANSI
   }
+
+  def sumEvalMode(s: Sum): EvalMode.Value = s.evalMode
 }

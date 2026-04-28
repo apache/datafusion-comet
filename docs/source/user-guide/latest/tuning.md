@@ -180,14 +180,5 @@ certain environments, such as single-node setups with fast NVMe drives, at the e
 
 ## Explain Plan
 
-### Extended Explain
-
-With Spark 4.0.0 and newer, Comet can provide extended explain plan information in the Spark UI. Currently this lists
-reasons why Comet may not have been enabled for specific operations.
-To enable this, in the Spark configuration, set the following:
-
-```shell
--c spark.sql.extendedExplainProviders=org.apache.comet.ExtendedExplainInfo
-```
-
-This will add a section to the detailed plan displayed in the Spark SQL UI page.
+For an explanation of Comet plan output, the configs that control it, and how
+fallback to Spark works, see [Understanding Comet Plans](understanding-comet-plans.md).
