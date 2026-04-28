@@ -27,7 +27,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Floating-point Number Comparison &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Spark Version Compatibility &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -61,12 +61,12 @@ under the License.
     <script src="../../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/compatibility/floating-point';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/compatibility/spark-versions';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../../../genindex.html" />
     <link rel="search" title="Search" href="../../../search.html" />
-    <link rel="next" title="Regular Expressions" href="regex.html" />
-    <link rel="prev" title="Parquet Compatibility" href="scans.html" />
+    <link rel="next" title="Understanding Comet Plans" href="../understanding-comet-plans.html" />
+    <link rel="prev" title="Cast" href="expressions/cast.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -362,11 +362,11 @@ under the License.
 <li class="toctree-l3"><a class="reference internal" href="../configs.html">Configuration Settings</a></li>
 <li class="toctree-l3 current"><a class="reference internal" href="index.html">Compatibility Guide</a><ul class="current">
 <li class="toctree-l4"><a class="reference internal" href="scans.html">Parquet Compatibility</a></li>
-<li class="toctree-l4 current"><a class="current reference internal" href="#">Floating-point Number Comparison</a></li>
+<li class="toctree-l4"><a class="reference internal" href="floating-point.html">Floating-point Number Comparison</a></li>
 <li class="toctree-l4"><a class="reference internal" href="regex.html">Regular Expressions</a></li>
 <li class="toctree-l4"><a class="reference internal" href="operators.html">Operator Compatibility</a></li>
 <li class="toctree-l4"><a class="reference internal" href="expressions/index.html">Expression Compatibility</a></li>
-<li class="toctree-l4"><a class="reference internal" href="spark-versions.html">Spark Version Compatibility</a></li>
+<li class="toctree-l4 current"><a class="current reference internal" href="#">Spark Version Compatibility</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../understanding-comet-plans.html">Understanding Comet Plans</a></li>
@@ -435,7 +435,7 @@ under the License.
     
     <li class="breadcrumb-item"><a href="index.html" class="nav-link">Compatibility Guide</a></li>
     
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Floating-point Number Comparison</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Spark Version Compatibility</span></li>
   </ul>
 </nav>
 </div>
@@ -470,16 +470,49 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<section id="floating-point-number-comparison">
-<h1>Floating-point Number Comparison<a class="headerlink" href="#floating-point-number-comparison" title="Link to this heading">#</a></h1>
-<p>Spark normalizes NaN and zero for floating point numbers for several cases. See <code class="docutils literal notranslate"><span class="pre">NormalizeFloatingNumbers</span></code> optimization rule in Spark.
-However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
-because they are handled well in Spark (e.g., <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil.compareFloats</span></code>). But the comparison
-functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., <a class="reference external" href="https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#">arrow::compute::kernels::cmp::eq</a>).
-So Comet adds additional normalization expression of NaN and zero for comparisons, and may still have differences
-to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
-case that is not of concern for many users. If it is a concern, setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>
-will make relevant operations fall back to Spark.</p>
+<section id="spark-version-compatibility">
+<h1>Spark Version Compatibility<a class="headerlink" href="#spark-version-compatibility" title="Link to this heading">#</a></h1>
+<p>This page documents known issues and limitations specific to each supported Apache Spark version.</p>
+<p>For general compatibility information that applies across all Spark versions, see the other pages in this
+compatibility guide.</p>
+<section id="spark-3-4">
+<h2>Spark 3.4<a class="headerlink" href="#spark-3-4" title="Link to this heading">#</a></h2>
+<p>Spark 3.4.3 is supported with Java 11/17 and Scala 2.12/2.13.</p>
+</section>
+<section id="spark-3-5">
+<h2>Spark 3.5<a class="headerlink" href="#spark-3-5" title="Link to this heading">#</a></h2>
+<p>Spark 3.5.8 is supported with Java 11/17 and Scala 2.12/2.13.</p>
+</section>
+<section id="spark-4-0">
+<h2>Spark 4.0<a class="headerlink" href="#spark-4-0" title="Link to this heading">#</a></h2>
+<p>Spark 4.0.2 is supported with Java 17 and Scala 2.13.</p>
+<section id="known-limitations">
+<h3>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Collation support</strong> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1947">#1947</a>,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4051">#4051</a>): Spark 4.0 introduced collation
+support. Non-default collated strings are not yet supported by Comet and will fall back to Spark.</p></li>
+</ul>
+</section>
+</section>
+<section id="spark-4-1-experimental">
+<h2>Spark 4.1 (Experimental)<a class="headerlink" href="#spark-4-1-experimental" title="Link to this heading">#</a></h2>
+<p>Spark 4.1.1 is provided as experimental support with Java 17 and Scala 2.13.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Spark 4.1 support is experimental and intended for development and testing only. It should not be used
+in production.</p>
+</div>
+</section>
+<section id="spark-4-2-experimental">
+<h2>Spark 4.2 (Experimental)<a class="headerlink" href="#spark-4-2-experimental" title="Link to this heading">#</a></h2>
+<p>Spark 4.2.0-preview4 is provided as experimental support with Java 17 and Scala 2.13.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Spark 4.2 support is experimental and targets a preview release of Spark. It is intended for early
+evaluation only and should not be used in production.</p>
+</div>
+</section>
 </section>
 
 
@@ -493,20 +526,20 @@ will make relevant operations fall back to Spark.</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="scans.html"
+       href="expressions/cast.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Parquet Compatibility</p>
+        <p class="prev-next-title">Cast</p>
       </div>
     </a>
     <a class="right-next"
-       href="regex.html"
+       href="../understanding-comet-plans.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Regular Expressions</p>
+        <p class="prev-next-title">Understanding Comet Plans</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
