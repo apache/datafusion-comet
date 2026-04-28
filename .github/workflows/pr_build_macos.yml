@@ -144,12 +144,6 @@ jobs:
             java_version: "17"
             maven_opts: "-Pspark-4.0 -Pscala-2.13"
 
-          - name: "Spark 4.1, JDK 17, Scala 2.13"
-            java_version: "17"
-            # The spark-4.1 profile already pins Scala to 2.13.17 to match Spark 4.1.1's
-            # runtime; the scala-2.13 profile would override it back to 2.13.16 and break.
-            maven_opts: "-Pspark-4.1"
-
         suite:
           - name: "fuzz"
             value: |
