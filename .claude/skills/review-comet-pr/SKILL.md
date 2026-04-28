@@ -68,6 +68,7 @@ For expression PRs, check how similar expressions are implemented in the codebas
    ```
 
 3. **Read the Spark implementation carefully.** Pay attention to:
+
    - The `eval` and `doGenEval`/`nullSafeEval` methods. These define the exact behavior.
    - The `inputTypes` and `dataType` fields. These define which types Spark accepts and what it returns.
    - Null handling. Does it use `nullable = true`? Does `nullSafeEval` handle nulls implicitly?
@@ -82,6 +83,7 @@ For expression PRs, check how similar expressions are implemented in the codebas
    ```
 
 5. **Compare the Spark behavior against the Comet implementation in the PR.** Identify:
+
    - Edge cases tested in Spark but not in the PR
    - Data types supported in Spark but not handled in the PR
    - Behavioral differences that should be marked `Incompatible`
@@ -95,12 +97,14 @@ For expression PRs, check how similar expressions are implemented in the codebas
 For expression PRs, verify against the Spark source you read in step 2:
 
 1. **Check edge cases**
+
    - Null handling
    - Overflow behavior
    - Empty input behavior
    - Type-specific behavior
 
 2. **Verify all data types are handled**
+
    - Does Spark support this type? (Check `inputTypes` in Spark source)
    - Does the PR handle all Spark-supported types?
 
@@ -216,11 +220,13 @@ SELECT known_buggy_expr(v) FROM test_table
 2. **Look for a microbenchmark implementation.** Expression benchmarks live in `spark/src/test/scala/org/apache/spark/sql/benchmark/`. Check whether the PR adds a benchmark for the new expression.
 
 3. **Review the benchmark results if provided:**
+
    - Is Comet actually faster than Spark for this expression?
    - Are the benchmarks representative? They should test with realistic data sizes, not just trivial inputs.
    - Are different data types benchmarked if the expression supports multiple types?
 
 4. **Review the Rust implementation for performance concerns:**
+
    - Unnecessary allocations or copies
    - Row-by-row processing where batch/array operations are possible
    - Redundant type conversions
@@ -250,7 +256,7 @@ Some user-facing docs are auto-generated from the serde. Others are hand-edited.
 - Compatibility guide pages under `docs/source/user-guide/latest/compatibility/expressions/` (`math.md`, `datetime.md`, `array.md`, `string.md`, `aggregate.md`, `struct.md`, `map.md`, `misc.md`, `cast.md`)
 - Configuration reference at `docs/source/user-guide/latest/configs.md`
 
-For these, check the *source* instead. Does the new or modified `CometExpressionSerde` provide accurate `getIncompatibleReasons()` and `getUnsupportedReasons()` strings? Each returned string is rendered as a bullet on the corresponding compat page. Common gaps to flag:
+For these, check the _source_ instead. Does the new or modified `CometExpressionSerde` provide accurate `getIncompatibleReasons()` and `getUnsupportedReasons()` strings? Each returned string is rendered as a bullet on the corresponding compat page. Common gaps to flag:
 
 - Expression marked `Incompatible(Some("..."))` in `getSupportLevel` but `getIncompatibleReasons()` is empty, so the compat page shows it as supported with no caveats.
 - `Unsupported(Some("..."))` for specific data types or argument shapes but no `getUnsupportedReasons()` to surface the limitation to users.
@@ -275,7 +281,7 @@ If the PR adds a new expression but does not update `expressions.md`, flag that.
 4. **Tests in wrong framework**: Expression tests should use the SQL file-based framework (`CometSqlFileTestSuite`) rather than adding to Scala test suites like `CometExpressionSuite`. Suggest migration if the PR adds Scala tests for expressions that could use SQL files instead.
 5. **Stale native code**: PR might need `./mvnw install -pl common -DskipTests`
 6. **Missing `getSupportLevel`**: Edge cases should be marked as `Incompatible`
-7. **Scalar function name collides with a DataFusion built-in**: If the PR registers a Spark function whose name is also defined by `datafusion-functions` (e.g. `levenshtein`, `concat`, `coalesce`, `sha2`, `regexp_replace`), check that the serde sets the return type explicitly via `scalarFunctionExprToProtoWithReturnType` rather than `scalarFunctionExprToProto` or the bare `CometScalarFunction(name)` shortcut. Without an explicit return type, the native planner consults DataFusion's UDF registry first for type resolution, and any arity or input-type difference between the Spark and DataFusion versions will fail native execution with `Error from DataFusion: Function 'X' expects N arguments but received M`. The Comet UDF is only swapped in *after* DF's signature validation passes. See the "When to set the return type explicitly" section in `docs/source/contributor-guide/adding_a_new_expression.md`.
+7. **Scalar function name collides with a DataFusion built-in**: If the PR registers a Spark function whose name is also defined by `datafusion-functions` (e.g. `levenshtein`, `concat`, `coalesce`, `sha2`, `regexp_replace`), check that the serde sets the return type explicitly via `scalarFunctionExprToProtoWithReturnType` rather than `scalarFunctionExprToProto` or the bare `CometScalarFunction(name)` shortcut. Without an explicit return type, the native planner consults DataFusion's UDF registry first for type resolution, and any arity or input-type difference between the Spark and DataFusion versions will fail native execution with `Error from DataFusion: Function 'X' expects N arguments but received M`. The Comet UDF is only swapped in _after_ DF's signature validation passes. See the "When to set the return type explicitly" section in `docs/source/contributor-guide/adding_a_new_expression.md`.
 
 ---
 
