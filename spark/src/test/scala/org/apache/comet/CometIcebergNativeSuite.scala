@@ -25,6 +25,7 @@ import java.nio.file.Files
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
@@ -2824,8 +2825,8 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
           df.collect()
 
-          // listenerBus.waitUntilEmpty() is package-private to org.apache.spark
-          Thread.sleep(1000)
+          // Drain listener events so onTaskEnd has fired before we assert
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
 
           val totalBytes = bytesReadValues.sum
           val totalRecords = recordsReadValues.sum

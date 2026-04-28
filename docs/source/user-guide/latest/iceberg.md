@@ -141,3 +141,7 @@ The following scenarios will fall back to Spark's native Iceberg reader:
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+
+### Task input metrics
+
+The native Iceberg reader populates Spark's task-level `inputMetrics.bytesRead` (visible in the Spark UI Stages tab) using the `bytes_read` counter from iceberg-rust's `ScanMetrics`. This counter includes bytes read from both data files and delete files. Iceberg Java's equivalent metric reports data-file bytes only, so `bytesRead` will diverge from the Iceberg Java path for Merge-On-Read tables with position or equality deletes.
