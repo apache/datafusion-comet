@@ -139,11 +139,16 @@ case class CometBroadcastExchangeExec(
               if plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
           case _ =>
-            // Non-Comet child (e.g., RowToColumnar -> LocalTableScan). This happens
-            // when AQE re-optimizes inside a DPP subquery's AdaptiveSparkPlanExec
-            // and replaces the Comet scan with a Spark node (e.g., empty result
-            // optimization to LocalTableScan). Convert back to Comet columnar via
-            // ColumnarToRowExec -> CometSparkToColumnarExec to reuse the Arrow path.
+            // Non-Comet child (e.g., RowToColumnar -> LocalTableScan). This can
+            // happen when AQE re-optimizes inside an AdaptiveSparkPlanExec and
+            // replaces the original Comet scan with a Spark-native node. For
+            // example, AQE DPP subqueries wrap a new CometBroadcastExchangeExec in
+            // an ASPE (matching Spark's PlanAdaptiveDynamicPruningFilters). After
+            // the initial broadcast stage materializes with 0 rows, AQE's logical
+            // re-optimization replaces the scan with LocalTableScan and creates a
+            // second exchange whose child is RowToColumnar -> LocalTableScan (not
+            // CometPlan). Convert back to Comet columnar via ColumnarToRowExec ->
+            // CometSparkToColumnarExec to reuse the Arrow serialization path.
             logWarning(
               s"CometBroadcastExchangeExec child is not CometPlan: " +
                 s"${child.getClass.getSimpleName}. Falling back to row-based broadcast.")
