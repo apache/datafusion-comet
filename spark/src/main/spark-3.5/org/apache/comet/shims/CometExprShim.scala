@@ -21,13 +21,10 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
-import org.apache.spark.sql.types.DataTypes
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode, CometWidthBucket, CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode, CometToPrettyString, CometWidthBucket, CommonStringExprs}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -43,51 +40,12 @@ trait CometExprShim extends CommonStringExprs {
   def versionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[WidthBucket] -> CometWidthBucket)
   def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map.empty
+    Map(classOf[ToPrettyString] -> CometToPrettyString)
 
   def versionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr match {
-      case expr @ ToPrettyString(child, timeZoneId) =>
-        val castSupported = CometCast.isSupported(
-          child.dataType,
-          DataTypes.StringType,
-          timeZoneId,
-          CometEvalMode.TRY)
-
-        val isCastSupported = castSupported match {
-          case Compatible(_) => true
-          case Incompatible(_) => true
-          case _ => false
-        }
-
-        if (isCastSupported) {
-          exprToProtoInternal(child, inputs, binding) match {
-            case Some(p) =>
-              val toPrettyString = ExprOuterClass.ToPrettyString
-                .newBuilder()
-                .setChild(p)
-                .setTimezone(timeZoneId.getOrElse("UTC"))
-                .setBinaryOutputStyle(binaryOutputStyle)
-                .build()
-              Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setToPrettyString(toPrettyString)
-                  .build())
-            case _ =>
-              withInfo(expr, child)
-              None
-          }
-        } else {
-          None
-        }
-
-      case _ => None
-    }
-  }
+      binding: Boolean): Option[Expr] = None
 }
 
 object CometEvalModeUtil {
