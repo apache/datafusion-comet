@@ -22,7 +22,7 @@
 # Usage: ./dev/regenerate-golden-files.sh [--spark-version <version>]
 #
 # Options:
-#   --spark-version <version>  Only regenerate for specified Spark version (3.4, 3.5, or 4.0)
+#   --spark-version <version>  Only regenerate for specified Spark version (3.4, 3.5, 4.0, or 4.1)
 #                              If not specified, regenerates for all versions.
 #
 # Examples:
@@ -74,7 +74,11 @@ build_native() {
     cd native && cargo build && cd ..
 }
 
-# Regenerate golden files for a specific Spark version
+# Regenerate golden files for a specific Spark version. CometPlanStabilitySuite's
+# afterAll() prunes any query directory whose contents match what its fallback
+# chain resolves to, so each version-suffixed directory ends up with only the
+# queries whose plans diverge from the previous tier. The base (3.4) profile has
+# no fallback chain, so the prune is a no-op there.
 regenerate_golden_files() {
     local spark_version=$1
 
@@ -109,7 +113,7 @@ main() {
                 echo "Usage: $0 [--spark-version <version>]"
                 echo ""
                 echo "Options:"
-                echo "  --spark-version <version>  Only regenerate for specified Spark version (3.4, 3.5, or 4.0)"
+                echo "  --spark-version <version>  Only regenerate for specified Spark version (3.4, 3.5, 4.0, or 4.1)"
                 echo "                             If not specified, regenerates for all versions."
                 exit 0
                 ;;
@@ -123,9 +127,9 @@ main() {
 
     # Validate target version if specified
     if [ -n "$target_version" ]; then
-        if [[ ! "$target_version" =~ ^(3\.4|3\.5|4\.0)$ ]]; then
+        if [[ ! "$target_version" =~ ^(3\.4|3\.5|4\.0|4\.1)$ ]]; then
             echo "[ERROR] Invalid Spark version: $target_version"
-            echo "[ERROR] Supported versions: 3.4, 3.5, 4.0"
+            echo "[ERROR] Supported versions: 3.4, 3.5, 4.0, 4.1"
             exit 1
         fi
     fi
@@ -145,7 +149,7 @@ main() {
     if [ -n "$target_version" ]; then
         versions=("$target_version")
     else
-        versions=("3.4" "3.5" "4.0")
+        versions=("3.4" "3.5" "4.0" "4.1")
     fi
 
     # Regenerate for each version
