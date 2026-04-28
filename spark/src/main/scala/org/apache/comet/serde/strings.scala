@@ -33,7 +33,7 @@ import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInter
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
-  override def getCompatibleNotes(): Seq[String] = Seq(
+  override def getIncompatibleReasons(): Seq[String] = Seq(
     "A negative argument for the number of times to repeat throws an exception" +
       " instead of returning an empty string as Spark does")
 
@@ -42,12 +42,26 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val children = expr.children
+
+    children(1) match {
+      case Literal(count, _) if isNegativeNumber(count) =>
+        withInfo(expr, "Negative repeat count is not supported")
+        return None
+      case _ =>
+    }
+
     val leftCast = Cast(children(0), StringType)
     val rightCast = Cast(children(1), LongType)
     val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
     val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
     val optExpr = scalarFunctionExprToProto("repeat", leftExpr, rightExpr)
     optExprWithInfo(optExpr, expr, leftCast, rightCast)
+  }
+
+  private def isNegativeNumber(value: Any): Boolean = value match {
+    case i: Int => i < 0
+    case l: Long => l < 0
+    case _ => false
   }
 }
 

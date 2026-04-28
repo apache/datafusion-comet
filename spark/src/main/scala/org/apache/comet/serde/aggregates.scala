@@ -204,7 +204,7 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 }
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
-  
+
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
