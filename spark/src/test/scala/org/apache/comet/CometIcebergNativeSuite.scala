@@ -551,6 +551,69 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     }
   }
 
+  test("bytes_scanned includes delete file I/O") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.delete_bytes_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark
+          .range(1000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .coalesce(1)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.delete_bytes_test")
+
+        // Scan before deletes: data files only
+        val dfBefore = spark.sql("SELECT * FROM test_cat.db.delete_bytes_test")
+        val scanBefore = dfBefore.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+          .head
+        dfBefore.collect()
+        val bytesBefore = scanBefore.metrics("bytes_scanned").value
+        assert(bytesBefore > 0, s"bytes_scanned before deletes should be > 0, got $bytesBefore")
+
+        // Create position delete files
+        spark.sql("DELETE FROM test_cat.db.delete_bytes_test WHERE id < 100")
+
+        // Scan after deletes: data files + delete files
+        val dfAfter = spark.sql("SELECT * FROM test_cat.db.delete_bytes_test")
+        val scanAfter = dfAfter.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+          .head
+        dfAfter.collect()
+        val bytesAfter = scanAfter.metrics("bytes_scanned").value
+
+        assert(
+          bytesAfter > bytesBefore,
+          s"bytes_scanned should increase after deletes: before=$bytesBefore, after=$bytesAfter")
+
+        spark.sql("DROP TABLE test_cat.db.delete_bytes_test")
+      }
+    }
+  }
+
   test("MOR table with EQUALITY deletes - verify deletes are applied") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
