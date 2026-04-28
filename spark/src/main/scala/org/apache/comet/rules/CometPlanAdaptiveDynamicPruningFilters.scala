@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveS
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashedRelationBroadcastMode, HashJoin}
 
-import org.apache.comet.shims.ShimSubqueryBroadcast
+upimport org.apache.comet.shims.{ShimPrepareExecutedPlan, ShimSubqueryBroadcast}
 
 /**
  * Converts CometSubqueryAdaptiveBroadcastExec (wrapped AQE DPP) to CometSubqueryBroadcastExec
@@ -58,6 +58,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
     extends Rule[SparkPlan]
     with AdaptiveSparkPlanHelper
     with ShimSubqueryBroadcast
+    with ShimPrepareExecutedPlan
     with Logging {
 
   override def apply(plan: SparkPlan): SparkPlan = {
@@ -258,8 +259,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
       val aliases =
         sab.indices.map(idx => Alias(sab.buildKeys(idx), sab.buildKeys(idx).toString)())
       val aggregate = Aggregate(aliases, aliases, sab.buildPlan)
-      val session = adaptivePlan.context.session
-      val sparkPlan = QueryExecution.prepareExecutedPlan(session, aggregate, adaptivePlan.context)
+      val sparkPlan = shimPrepareExecutedPlan(adaptivePlan, aggregate)
       assert(
         sparkPlan.isInstanceOf[AdaptiveSparkPlanExec],
         "Expected AdaptiveSparkPlanExec from prepareExecutedPlan, " +
