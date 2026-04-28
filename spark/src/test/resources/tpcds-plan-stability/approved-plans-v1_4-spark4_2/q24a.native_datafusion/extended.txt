@@ -1,0 +1,92 @@
+Filter
+:  +- Subquery
+:     +- HashAggregate
+:        +- Exchange
+:           +- HashAggregate
+:              +- HashAggregate
+:                 +- Exchange
+:                    +- HashAggregate
+:                       +- Project
+:                          +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
+:                             :- CometNativeColumnarToRow
+:                             :  +- CometProject
+:                             :     +- CometBroadcastHashJoin
+:                             :        :- CometProject
+:                             :        :  +- CometBroadcastHashJoin
+:                             :        :     :- CometProject
+:                             :        :     :  +- CometBroadcastHashJoin
+:                             :        :     :     :- CometProject
+:                             :        :     :     :  +- CometSortMergeJoin
+:                             :        :     :     :     :- CometSort
+:                             :        :     :     :     :  +- CometExchange
+:                             :        :     :     :     :     +- CometProject
+:                             :        :     :     :     :        +- CometFilter
+:                             :        :     :     :     :           +- CometNativeScan parquet spark_catalog.default.store_sales
+:                             :        :     :     :     +- CometSort
+:                             :        :     :     :        +- CometExchange
+:                             :        :     :     :           +- CometProject
+:                             :        :     :     :              +- CometFilter
+:                             :        :     :     :                 +- CometNativeScan parquet spark_catalog.default.store_returns
+:                             :        :     :     +- CometBroadcastExchange
+:                             :        :     :        +- CometProject
+:                             :        :     :           +- CometFilter
+:                             :        :     :              +- CometNativeScan parquet spark_catalog.default.store
+:                             :        :     +- CometBroadcastExchange
+:                             :        :        +- CometProject
+:                             :        :           +- CometFilter
+:                             :        :              +- CometNativeScan parquet spark_catalog.default.item
+:                             :        +- CometBroadcastExchange
+:                             :           +- CometProject
+:                             :              +- CometFilter
+:                             :                 +- CometNativeScan parquet spark_catalog.default.customer
+:                             +- BroadcastExchange
+:                                +- CometNativeColumnarToRow
+:                                   +- CometProject
+:                                      +- CometFilter
+:                                         +- CometNativeScan parquet spark_catalog.default.customer_address
++- HashAggregate
+   +- Exchange
+      +- HashAggregate
+         +- HashAggregate
+            +- Exchange
+               +- HashAggregate
+                  +- Project
+                     +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
+                        :- CometNativeColumnarToRow
+                        :  +- CometProject
+                        :     +- CometBroadcastHashJoin
+                        :        :- CometProject
+                        :        :  +- CometBroadcastHashJoin
+                        :        :     :- CometProject
+                        :        :     :  +- CometBroadcastHashJoin
+                        :        :     :     :- CometProject
+                        :        :     :     :  +- CometSortMergeJoin
+                        :        :     :     :     :- CometSort
+                        :        :     :     :     :  +- CometExchange
+                        :        :     :     :     :     +- CometProject
+                        :        :     :     :     :        +- CometFilter
+                        :        :     :     :     :           +- CometNativeScan parquet spark_catalog.default.store_sales
+                        :        :     :     :     +- CometSort
+                        :        :     :     :        +- CometExchange
+                        :        :     :     :           +- CometProject
+                        :        :     :     :              +- CometFilter
+                        :        :     :     :                 +- CometNativeScan parquet spark_catalog.default.store_returns
+                        :        :     :     +- CometBroadcastExchange
+                        :        :     :        +- CometProject
+                        :        :     :           +- CometFilter
+                        :        :     :              +- CometNativeScan parquet spark_catalog.default.store
+                        :        :     +- CometBroadcastExchange
+                        :        :        +- CometProject
+                        :        :           +- CometFilter
+                        :        :              +- CometNativeScan parquet spark_catalog.default.item
+                        :        +- CometBroadcastExchange
+                        :           +- CometProject
+                        :              +- CometFilter
+                        :                 +- CometNativeScan parquet spark_catalog.default.customer
+                        +- BroadcastExchange
+                           +- CometNativeColumnarToRow
+                              +- CometProject
+                                 +- CometFilter
+                                    +- CometNativeScan parquet spark_catalog.default.customer_address
+
+Comet accelerated 66 out of 86 eligible operators (76%). Final plan contains 4 transitions between Spark and Comet.
