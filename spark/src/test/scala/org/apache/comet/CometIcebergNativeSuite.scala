@@ -22,8 +22,10 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.Files
 
+import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
@@ -2763,6 +2765,84 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         } catch {
           case _: ClassNotFoundException =>
             cancel("SparkTableUtil not available")
+        }
+      }
+    }
+  }
+
+  test("task-level inputMetrics.bytesRead is populated for Iceberg native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.task_metrics_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark
+          .range(10000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .coalesce(1)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.task_metrics_test")
+
+        val bytesReadValues = mutable.ArrayBuffer.empty[Long]
+        val recordsReadValues = mutable.ArrayBuffer.empty[Long]
+
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val im = taskEnd.taskMetrics.inputMetrics
+            if (im.bytesRead > 0) {
+              bytesReadValues.synchronized {
+                bytesReadValues += im.bytesRead
+                recordsReadValues += im.recordsRead
+              }
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        try {
+          val df = spark.sql("SELECT * FROM test_cat.db.task_metrics_test")
+
+          val scanNodes = df.queryExecution.executedPlan
+            .collectLeaves()
+            .collect { case s: CometIcebergNativeScanExec => s }
+          assert(scanNodes.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+
+          df.collect()
+
+          // listenerBus.waitUntilEmpty() is package-private to org.apache.spark
+          Thread.sleep(1000)
+
+          val totalBytes = bytesReadValues.sum
+          val totalRecords = recordsReadValues.sum
+
+          assert(totalBytes > 0, s"task inputMetrics.bytesRead should be > 0, got $totalBytes")
+          assert(
+            totalRecords == 10000,
+            s"task inputMetrics.recordsRead should be 10000, got $totalRecords")
+
+          // SQL-level metric should match task-level metric
+          val sqlBytes = scanNodes.head.metrics("bytes_scanned").value
+          assert(
+            sqlBytes == totalBytes,
+            s"SQL bytes_scanned ($sqlBytes) should match task bytesRead ($totalBytes)")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+          spark.sql("DROP TABLE test_cat.db.task_metrics_test")
         }
       }
     }
