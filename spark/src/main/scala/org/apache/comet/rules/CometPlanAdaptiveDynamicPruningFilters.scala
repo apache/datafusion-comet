@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveS
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashedRelationBroadcastMode, HashJoin}
 
-upimport org.apache.comet.shims.{ShimPrepareExecutedPlan, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{ShimPrepareExecutedPlan, ShimSubqueryBroadcast}
 
 /**
  * Converts CometSubqueryAdaptiveBroadcastExec (wrapped AQE DPP) to CometSubqueryBroadcastExec
