@@ -21,7 +21,7 @@
 //! matching Apache Spark's `levenshtein(str1, str2)` semantics.
 
 use arrow::array::{as_string_array, Array, ArrayRef, Int32Array};
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{DataFusionError, Result, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
@@ -78,19 +78,40 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
 
 /// Spark-compatible levenshtein scalar function.
 ///
-/// Accepts two string arguments and returns an Int32 array of edit distances.
-/// NULL inputs produce NULL outputs.
+/// Accepts two or three arguments:
+/// - `levenshtein(str1, str2)` → edit distance
+/// - `levenshtein(str1, str2, threshold)` → edit distance if <= threshold, else -1
+///
+/// NULL inputs produce NULL outputs. NULL threshold produces NULL output.
 pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
-    if args.len() != 2 {
+    if args.len() < 2 || args.len() > 3 {
         return Err(DataFusionError::Internal(format!(
-            "levenshtein requires exactly 2 arguments, got {}",
+            "levenshtein requires 2 or 3 arguments, got {}",
             args.len()
         )));
     }
 
+    // Extract optional threshold (3rd argument must be a scalar Int32)
+    let threshold: Option<i32> = if args.len() == 3 {
+        match &args[2] {
+            ColumnarValue::Scalar(ScalarValue::Int32(t)) => match t {
+                Some(val) => Some(*val),
+                None => return Ok(ColumnarValue::Scalar(ScalarValue::Int32(None))),
+            },
+            _ => {
+                return Err(DataFusionError::Internal(
+                    "levenshtein threshold must be an Int32 scalar".to_string(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
     // Expand scalars to arrays for uniform processing
     let len = args
         .iter()
+        .take(2)
         .find_map(|arg| match arg {
             ColumnarValue::Array(a) => Some(a.len()),
             _ => None,
@@ -107,7 +128,13 @@ pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
         .iter()
         .zip(right_arr.iter())
         .map(|(l, r)| match (l, r) {
-            (Some(l), Some(r)) => Some(levenshtein_distance(l, r)),
+            (Some(l), Some(r)) => {
+                let dist = levenshtein_distance(l, r);
+                match threshold {
+                    Some(t) if dist > t => Some(-1),
+                    _ => Some(dist),
+                }
+            }
             _ => None, // NULL propagation
         })
         .collect();
@@ -159,6 +186,45 @@ mod tests {
                 assert!(int_arr.is_null(2)); // hello -> NULL = NULL
             }
             _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_spark_levenshtein_with_threshold() {
+        let left = ColumnarValue::Array(Arc::new(StringArray::from(vec![
+            Some("kitten"),
+            Some("abc"),
+            Some("frog"),
+        ])));
+        let right = ColumnarValue::Array(Arc::new(StringArray::from(vec![
+            Some("sitting"),
+            Some("adc"),
+            Some("fog"),
+        ])));
+        let threshold = ColumnarValue::Scalar(ScalarValue::Int32(Some(2)));
+
+        let result = spark_levenshtein(&[left, right, threshold]).unwrap();
+        match result {
+            ColumnarValue::Array(arr) => {
+                let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
+                assert_eq!(int_arr.value(0), -1); // kitten->sitting=3 > 2, return -1
+                assert_eq!(int_arr.value(1), 1); // abc->adc=1 <= 2, return 1
+                assert_eq!(int_arr.value(2), 1); // frog->fog=1 <= 2, return 1
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_spark_levenshtein_null_threshold() {
+        let left = ColumnarValue::Array(Arc::new(StringArray::from(vec![Some("abc")])));
+        let right = ColumnarValue::Array(Arc::new(StringArray::from(vec![Some("adc")])));
+        let threshold = ColumnarValue::Scalar(ScalarValue::Int32(None));
+
+        let result = spark_levenshtein(&[left, right, threshold]).unwrap();
+        match result {
+            ColumnarValue::Scalar(ScalarValue::Int32(None)) => {} // NULL threshold -> NULL
+            _ => panic!("Expected NULL scalar result for NULL threshold"),
         }
     }
 }
