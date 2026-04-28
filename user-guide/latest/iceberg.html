@@ -579,6 +579,11 @@ transform functions (partition pruning still works, but row-level filtering of t
 transforms falls back)</p></li>
 </ul>
 </section>
+<section id="task-input-metrics">
+<h3>Task input metrics<a class="headerlink" href="#task-input-metrics" title="Link to this heading">#</a></h3>
+<p>The native Iceberg reader populates Spark’s task-level <code class="docutils literal notranslate"><span class="pre">inputMetrics.bytesRead</span></code> (visible in the Spark UI Stages tab) using the <code class="docutils literal notranslate"><span class="pre">bytes_read</span></code> counter from iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">ScanMetrics</span></code>. This counter includes bytes read from both data files and delete files.</p>
+<p>Iceberg Java does not explicitly report <code class="docutils literal notranslate"><span class="pre">bytesRead</span></code> to Spark’s task input metrics. On the iceberg Java path, any <code class="docutils literal notranslate"><span class="pre">bytesRead</span></code> value comes from Hadoop’s filesystem-level I/O counters, not from Iceberg itself. Because Comet’s native reader and the Hadoop filesystem use different counting mechanisms, the exact byte counts will differ between the two paths.</p>
+</section>
 </section>
 </section>
 
