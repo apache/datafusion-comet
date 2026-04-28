@@ -368,7 +368,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
 
   /**
    * Checks if a SparkPlan's expressions contain a wrapped CometSubqueryAdaptiveBroadcastExec.
-   * Unlike hasCometSAB, this only checks for the wrapped variant — unwrapped SABs on non-Comet
+   * Unlike hasCometSAB, this only checks for the wrapped variant. Unwrapped SABs on non-Comet
    * nodes are handled by Spark's own PlanAdaptiveDynamicPruningFilters.
    */
   private def hasWrappedSAB(p: SparkPlan): Boolean =
