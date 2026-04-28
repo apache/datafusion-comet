@@ -38,6 +38,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
+use iceberg::arrow::ScanMetrics;
 use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg_storage_opendal::OpenDalStorageFactory;
 
@@ -171,9 +172,12 @@ impl IcebergScanExec {
 
         // Pass all tasks to iceberg-rust at once to utilize its flatten_unordered
         // parallelization, avoiding overhead of single-task streams
-        let stream = reader.read(task_stream).map_err(|e| {
+        let scan_result = reader.read(task_stream).map_err(|e| {
             DataFusionError::Execution(format!("Failed to read Iceberg tasks: {}", e))
         })?;
+
+        let scan_metrics = scan_result.metrics().clone();
+        let stream = scan_result.stream();
 
         let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
@@ -187,6 +191,9 @@ impl IcebergScanExec {
             adapter_factory,
             cached: None,
             baseline_metrics: metrics.baseline,
+            scan_metrics,
+            bytes_scanned: metrics.bytes_scanned,
+            last_reported_bytes: 0,
         };
 
         Ok(Box::pin(wrapped_stream))
@@ -201,7 +208,6 @@ impl IcebergScanExec {
         match scheme {
             "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
             "s3" | "s3a" => Ok(Arc::new(OpenDalStorageFactory::S3 {
-                configured_scheme: scheme.to_string(),
                 customized_credential_load: None,
             })),
             "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
@@ -233,6 +239,8 @@ struct IcebergScanMetrics {
     baseline: BaselineMetrics,
     /// Count of file splits (FileScanTasks) processed
     num_splits: Count,
+    /// Total bytes read from storage
+    bytes_scanned: Count,
 }
 
 impl IcebergScanMetrics {
@@ -240,6 +248,7 @@ impl IcebergScanMetrics {
         Self {
             baseline: BaselineMetrics::new(metrics, 0),
             num_splits: MetricBuilder::new(metrics).counter("num_splits", 0),
+            bytes_scanned: MetricBuilder::new(metrics).counter("bytes_scanned", 0),
         }
     }
 }
@@ -257,6 +266,12 @@ struct IcebergStreamWrapper<S> {
     cached: Option<CachedProjection>,
     /// Metrics for output tracking
     baseline_metrics: BaselineMetrics,
+    /// Iceberg scan metrics for bytes read tracking
+    scan_metrics: ScanMetrics,
+    /// DF metric counter bridging iceberg-rust's bytes_read to the metric tree
+    bytes_scanned: Count,
+    /// Last reported bytes_read value for delta computation
+    last_reported_bytes: u64,
 }
 
 /// Cached projection state: file schema, adapter, and pre-built projection expressions.
@@ -313,6 +328,14 @@ where
             }
             other => other,
         };
+
+        // Bridge iceberg-rust's live AtomicU64 counter into the DF metric tree
+        let current = self.scan_metrics.bytes_read();
+        let delta = current - self.last_reported_bytes;
+        if delta > 0 {
+            self.bytes_scanned.add(delta as usize);
+            self.last_reported_bytes = current;
+        }
 
         self.baseline_metrics.record_poll(result)
     }

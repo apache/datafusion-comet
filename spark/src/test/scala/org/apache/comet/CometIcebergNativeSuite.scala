@@ -1445,6 +1445,9 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
         assert(metrics("output_rows").value == 10000)
         assert(metrics("num_splits").value > 0)
+        assert(
+          metrics("bytes_scanned").value > 0,
+          "bytes_scanned should be > 0 after reading data files")
         // ImmutableSQLMetric prevents these from being reset to 0 after execution
         assert(
           metrics("totalDataManifest").value > 0,
