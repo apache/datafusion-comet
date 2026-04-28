@@ -144,7 +144,8 @@ case class CometBroadcastExchangeExec(
             // with a Spark-native node (e.g., empty broadcast triggers LocalTableScan).
             logWarning(
               "CometBroadcastExchangeExec child is not CometPlan: " +
-                s"${child.getClass.getSimpleName}. Falling back to row-based broadcast.")
+                s"${child.getClass.getSimpleName}. " +
+                "Wrapping in CometSparkToColumnarExec for Arrow serialization.")
             val cometChild = CometSparkToColumnarExec(ColumnarToRowExec(child))
             CometExec.getByteArrayRdd(cometChild).collect()
         }
