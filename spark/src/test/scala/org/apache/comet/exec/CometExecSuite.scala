@@ -1452,14 +1452,15 @@ class CometExecSuite extends CometTestBase {
   }
 
   // Ported from DynamicPartitionPruningSuite: SPARK-39447. SHUFFLE_MERGE hint forces SMJ,
-  // empty CTE produces no broadcast. DPP should be disabled (TrueLiteral).
+  // empty CTE means the DPP subquery's ASPE re-optimizes to LocalTableScan.
+  // CometBroadcastExchangeExec must handle the resulting non-Comet child gracefully.
   test("AQE DPP: SPARK-39447 avoid assertion in doExecuteBroadcast") {
     withDppTables {
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
-        val query = """
+        val df = sql("""
             |WITH empty_result AS (
             |  SELECT * FROM fact_stats WHERE product_id < 0
             |)
@@ -1470,39 +1471,16 @@ class CometExecSuite extends CometTestBase {
             |                 ON fact_sk.product_id = empty_result.product_id) t2
             |       JOIN empty_result
             |         ON t2.store_id = empty_result.store_id
-          """.stripMargin
+          """.stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+        checkAnswer(df, Nil)
 
-        // scalastyle:off println
-        // Run Spark first to see its plan
-        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          val sparkDf = sql(query)
-          sparkDf.collect()
-          println(s"[SPARK-39447] Spark plan:\n${sparkDf.queryExecution.executedPlan}")
+        if (isSpark35Plus) {
+          val remainingSABs = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryAdaptiveBroadcastExec => s
+          }
+          assert(remainingSABs.isEmpty, "No unconverted SABs should remain")
         }
-
-        // Now run Comet
-        try {
-          val df = sql(query)
-          println(s"[SPARK-39447] Comet plan (before collect):\n${df.queryExecution.executedPlan}")
-          df.collect()
-          println(s"[SPARK-39447] Comet plan (after collect):\n${df.queryExecution.executedPlan}")
-        } catch {
-          case e: Exception =>
-            // Re-run with Comet disabled to see the plan
-            val df2 = sql(query)
-            println(s"[SPARK-39447] Comet plan (failed, re-query):\n${df2.queryExecution.executedPlan}")
-            println(s"[SPARK-39447] Exception chain:")
-            var cause: Throwable = e
-            while (cause != null) {
-              println(s"  ${cause.getClass.getSimpleName}: ${cause.getMessage.take(200)}")
-              if (cause.getCause == null) {
-                cause.getStackTrace.take(15).foreach(s => println(s"    $s"))
-              }
-              cause = cause.getCause
-            }
-            throw e
-        }
-        // scalastyle:on println
       }
     }
   }

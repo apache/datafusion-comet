@@ -45,7 +45,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometRuntimeException, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
@@ -150,7 +150,7 @@ case class CometBroadcastExchangeExec(
             // CometPlan). Convert back to Comet columnar via ColumnarToRowExec ->
             // CometSparkToColumnarExec to reuse the Arrow serialization path.
             logWarning(
-              s"CometBroadcastExchangeExec child is not CometPlan: " +
+              "CometBroadcastExchangeExec child is not CometPlan: " +
                 s"${child.getClass.getSimpleName}. Falling back to row-based broadcast.")
             val cometChild = CometSparkToColumnarExec(ColumnarToRowExec(child))
             CometExec.getByteArrayRdd(cometChild).collect()
