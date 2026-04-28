@@ -35,6 +35,7 @@ use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValu
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::{
     execution::disk_manager::DiskManagerBuilder,
@@ -53,6 +54,7 @@ use datafusion_spark::function::datetime::next_day::SparkNextDay;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
+use datafusion_spark::function::lambda::array_exists_higher_order_function;
 use datafusion_spark::function::map::map_from_entries::MapFromEntries;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::hex::SparkHex;
@@ -532,6 +534,7 @@ fn prepare_datafusion_session_context(
 
     datafusion::functions_nested::register_all(&mut session_ctx)?;
     register_datafusion_spark_function(&session_ctx);
+    session_ctx.register_higher_order_function(array_exists_higher_order_function())?;
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
 

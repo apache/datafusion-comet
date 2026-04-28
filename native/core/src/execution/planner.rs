@@ -50,10 +50,10 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr,
-            Literal as DataFusionLiteral,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, LambdaExpr,
+            LambdaVariable, Literal as DataFusionLiteral,
         },
-        PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
+        HigherOrderFunctionExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
@@ -78,6 +78,7 @@ use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
+use datafusion::common::datatype::FieldExt;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -87,8 +88,9 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
-    WindowFrameUnits, WindowFunctionDefinition,
+    AggregateUDF, HigherOrderUDF, LambdaParametersProgress, ReturnFieldArgs, ScalarUDF,
+    TypeSignature, ValueOrLambda, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
@@ -696,8 +698,140 @@ impl PhysicalPlanner {
                     expr.names.clone(),
                 )))
             }
+            ExprStruct::HigherOrderFunc(hof) => {
+                self.create_higher_order_func_expr(hof, input_schema)
+            }
+            ExprStruct::LambdaFunc(_) => Err(GeneralError(
+                "LambdaFunc must appear inside a HigherOrderFunc arg list".to_string(),
+            )),
+            ExprStruct::LambdaVar(var) => {
+                let idx = input_schema.index_of(&var.name).map_err(|_| {
+                    GeneralError(format!(
+                        "LambdaVar '{}' not found in enclosing lambda schema",
+                        var.name
+                    ))
+                })?;
+                let field = Arc::clone(&input_schema.fields()[idx]);
+                Ok(Arc::new(LambdaVariable::new(idx, field)))
+            }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
+    }
+
+    /// Plan a higher-order function call. The enum `Slot` holds either an
+    /// already-planned value arg or the still-unplanned lambda proto so we can
+    /// delay lambda body planning until we know the parameter types from the
+    /// UDF.
+    fn create_higher_order_func_expr(
+        &self,
+        hof: &spark_expression::HigherOrderFunc,
+        input_schema: SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        enum Slot<'a> {
+            Value(Arc<dyn PhysicalExpr>),
+            Lambda(&'a spark_expression::LambdaFunc),
+        }
+
+        let udf: Arc<dyn HigherOrderUDF> = self
+            .session_ctx
+            .state()
+            .higher_order_function(&hof.func)
+            .map_err(|e| GeneralError(format!("higher-order function '{}': {e}", hof.func)))?;
+
+        let mut slots: Vec<Slot<'_>> = Vec::with_capacity(hof.args.len());
+        let mut arg_fields: Vec<ValueOrLambda<FieldRef, Option<FieldRef>>> =
+            Vec::with_capacity(hof.args.len());
+
+        for arg in &hof.args {
+            match arg.expr_struct.as_ref() {
+                Some(ExprStruct::LambdaFunc(lambda_proto)) => {
+                    slots.push(Slot::Lambda(lambda_proto));
+                    arg_fields.push(ValueOrLambda::Lambda(None));
+                }
+                _ => {
+                    let phys = self.create_expr(arg, Arc::clone(&input_schema))?;
+                    let field = phys
+                        .return_field(input_schema.as_ref())
+                        .map_err(|e| GeneralError(e.to_string()))?;
+                    arg_fields.push(ValueOrLambda::Value(field));
+                    slots.push(Slot::Value(phys));
+                }
+            }
+        }
+
+        let lambda_param_fields: Vec<Vec<FieldRef>> = match udf
+            .lambda_parameters(0, &arg_fields)
+            .map_err(|e| GeneralError(e.to_string()))?
+        {
+            LambdaParametersProgress::Complete(items) => items,
+            LambdaParametersProgress::Partial(_) => {
+                return Err(GeneralError(format!(
+                    "{}: lambda_parameters returned Partial progress; HOFs that depend on lambda return types are not supported yet",
+                    hof.func,
+                )));
+            }
+        };
+
+        let mut lambda_fields_iter = lambda_param_fields.into_iter();
+        let physical_args: Vec<Arc<dyn PhysicalExpr>> = slots
+            .into_iter()
+            .map(|slot| -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+                match slot {
+                    Slot::Value(expr) => Ok(expr),
+                    Slot::Lambda(lambda_proto) => {
+                        let fields = lambda_fields_iter.next().ok_or_else(|| {
+                            GeneralError(format!(
+                                "{}: lambda_parameters did not provide fields for all lambdas",
+                                hof.func,
+                            ))
+                        })?;
+
+                        if lambda_proto.param_names.len() > fields.len() {
+                            return Err(GeneralError(format!(
+                                "{}: lambda defines {} params but HOF supports only {}",
+                                hof.func,
+                                lambda_proto.param_names.len(),
+                                fields.len(),
+                            )));
+                        }
+
+                        let renamed: Vec<FieldRef> = fields
+                            .into_iter()
+                            .zip(lambda_proto.param_names.iter())
+                            .map(|(f, name)| f.renamed(name.as_str()))
+                            .collect();
+
+                        let lambda_schema: SchemaRef = Arc::new(Schema::new(
+                            renamed
+                                .iter()
+                                .map(|f| f.as_ref().clone())
+                                .collect::<Vec<Field>>(),
+                        ));
+
+                        let body_proto = lambda_proto
+                            .body
+                            .as_ref()
+                            .ok_or_else(|| GeneralError("LambdaFunc body missing".to_string()))?;
+                        let body_expr = self.create_expr(body_proto, lambda_schema)?;
+
+                        let lambda =
+                            LambdaExpr::try_new(lambda_proto.param_names.clone(), body_expr)
+                                .map_err(|e| GeneralError(e.to_string()))?;
+                        Ok(Arc::new(lambda))
+                    }
+                }
+            })
+            .collect::<Result<_, _>>()?;
+
+        let config_options = Arc::new(ConfigOptions::default());
+        let hof_expr = HigherOrderFunctionExpr::try_new_with_schema(
+            udf,
+            physical_args,
+            input_schema.as_ref(),
+            config_options,
+        )
+        .map_err(|e| GeneralError(e.to_string()))?;
+        Ok(Arc::new(hof_expr))
     }
 
     /// Create a DataFusion physical sort expression from Spark physical expression

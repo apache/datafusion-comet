@@ -90,6 +90,9 @@ message Expr {
     ToCsv to_csv = 67;
     HoursTransform hours_transform = 68;
     ArraysZip arrays_zip = 69;
+    HigherOrderFunc higher_order_func = 70;
+    LambdaFunc lambda_func = 71;
+    LambdaVar lambda_var = 72;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -502,4 +505,30 @@ message Rand {
 message ArraysZip {
   repeated Expr values = 1;
   repeated string names = 2;
+}
+
+// Invocation of a higher-order function registered on the DataFusion session
+// (e.g. array_exists). `args` are interleaved value and lambda arguments in
+// the order the UDF expects. `return_type` is optional; when absent, the
+// native planner infers it from the UDF.
+message HigherOrderFunc {
+  string func = 1;
+  repeated Expr args = 2;
+  DataType return_type = 3;
+}
+
+// A lambda function literal. Only valid as an argument of a HigherOrderFunc.
+// Parameter types come from HigherOrderUDF::lambda_parameters at planning
+// time; only the names are carried here.
+message LambdaFunc {
+  Expr body = 1;
+  repeated string param_names = 2;
+}
+
+// A reference to a lambda parameter by name. Resolved against the synthetic
+// lambda schema when the enclosing LambdaFunc body is planned.
+message LambdaVar {
+  string name = 1;
+  DataType datatype = 2;
+  bool nullable = 3;
 }
