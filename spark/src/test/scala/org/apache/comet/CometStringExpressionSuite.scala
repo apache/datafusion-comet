@@ -739,11 +739,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("levenshtein with threshold") {
-    val data = Seq(
-      ("kitten", "sitting"),
-      ("frog", "fog"),
-      ("abc", "abc"),
-      ("hello", "world"))
+    val data = Seq(("kitten", "sitting"), ("frog", "fog"), ("abc", "abc"), ("hello", "world"))
 
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2, 2) FROM tbl")

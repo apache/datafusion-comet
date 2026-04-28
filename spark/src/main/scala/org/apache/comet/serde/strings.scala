@@ -92,8 +92,7 @@ object CometLevenshtein extends CometScalarFunction[Levenshtein]("levenshtein") 
   override def getSupportLevel(expr: Levenshtein): SupportLevel = {
     expr.children.headOption match {
       case Some(child) if QueryPlanSerde.isStringCollationType(child.dataType) =>
-        Unsupported(Some(
-          "Levenshtein with non-default collation is not supported"))
+        Unsupported(Some("Levenshtein with non-default collation is not supported"))
       case _ => Compatible()
     }
   }
