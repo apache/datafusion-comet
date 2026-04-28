@@ -122,6 +122,16 @@ Read the serde implementation and check:
 - Whether `getSupportLevel` is implemented and accurate
 - Whether all input types are handled
 - Whether any types are explicitly marked `Unsupported`
+- Whether `getIncompatibleReasons()` and `getUnsupportedReasons()` are overridden.
+  `getSupportLevel` controls runtime fallback, but `GenerateDocs` reads these two
+  methods to build the Compatibility Guide. If `getSupportLevel` returns
+  `Incompatible(Some(...))` or `Unsupported(Some(...))` but the corresponding
+  `get*Reasons()` method is not overridden, the reason will not appear in the
+  published docs. Expect both to return a `Seq[String]` containing the same
+  reason text used in `getSupportLevel`. Follow the pattern in
+  `spark/src/main/scala/org/apache/comet/serde/structs.scala::CometStructsToJson`
+  or `spark/src/main/scala/org/apache/comet/serde/datetime.scala::CometHour`:
+  extract the reason as a `private val` and reference it from both places.
 
 ### Shims
 
@@ -227,6 +237,7 @@ Also review the Comet implementation (Step 3) against the Spark behavior (Step 1
 - Are there behavioral differences that are NOT marked `Incompatible` but should be?
 - Are there behavioral differences between Spark versions that the Comet implementation does not account for (missing shim)?
 - Does the Rust implementation match the Spark behavior for all edge cases?
+- If `getSupportLevel` returns `Incompatible` or `Unsupported` with a reason, are `getIncompatibleReasons()` / `getUnsupportedReasons()` also overridden so the reason is picked up by `GenerateDocs` and appears in the Compatibility Guide?
 
 ---
 
