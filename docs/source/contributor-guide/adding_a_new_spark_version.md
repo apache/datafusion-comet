@@ -34,15 +34,17 @@ produces a diff that is hard to review and almost impossible to bisect. A
 staged approach instead introduces one capability at a time, with CI proving
 each stage green before the next one lands.
 
-A typical bring-up uses three core PRs followed by an open-ended series of
-follow-up fixes:
+A typical bring-up uses several focused PRs:
 
 1. **PR 1: Maven profile, shims, and a compile-only CI job.**
 2. **PR 2: Enable Comet's own JVM test suite under the new profile.**
 3. **PR 3: Enable Spark's SQL tests under the new profile, skipping the
    failing ones with linked issues.**
-4. **Follow-up PRs: Fix one skipped test (or one related cluster of tests)
+4. **PR 4: Add the version to the experimental tier in the user guide.**
+5. **Follow-up PRs: Fix one skipped test (or one related cluster of tests)
    per PR, removing the skip as part of the fix.**
+6. **Eventual promotion PR: Move the version from experimental to
+   supported in the user guide once the criteria in stage 5 are met.**
 
 The sections below describe each stage in detail.
 
@@ -267,6 +269,69 @@ template.
 - Run `make format` to apply scalafix and spotless.
 - Run clippy (`cd native && cargo clippy --all-targets --workspace -- -D warnings`).
 - Confirm that every skip introduced in this PR has a linked GitHub issue.
+
+## Stage 4: Announce the Version in the User Guide
+
+Once stage 3 is merged and CI is green, advertise the version to users.
+
+The single source of truth for which Spark versions Comet works with is the
+`### Supported Spark Versions` section in
+`docs/source/user-guide/latest/installation.md`. It contains two tables and a
+list of per-version jar download links. Update each:
+
+- Add a row to the **experimental** table (the one introduced by the
+  sentence "Experimental support is provided for the following versions
+  ..."). Include the Java version, Scala version, and the `Yes`/`No`
+  values for "Comet Tests in CI" and "Spark SQL Tests in CI" that match
+  what stage 2 and stage 3 actually enabled.
+- Add a `(Experimental)` jar download link below the existing entries.
+
+Do not add the new version to the main "Supported Spark Versions" table
+yet. That table is reserved for versions that have completed the promotion
+criteria described in the next section.
+
+Other user-guide pages (`operators.md`, `datatypes.md`,
+`understanding-comet-plans.md`, etc.) generally do not mention specific
+Spark versions and do not need editing for a new bring-up. The exception is
+text that calls out a specific version's behavior, for example
+`understanding-comet-plans.md` mentions `Spark 4.0 and newer`. Search the
+user guide for the previous version string when adding a new one and
+extend any such phrases that should now apply.
+
+`docs/generate-versions.py` is about Comet release branches, not Spark
+versions, and does not need editing.
+
+## Stage 5 (Eventually): Promote from Experimental to Supported
+
+The user guide currently uses two tiers, "Supported" and "Experimental".
+"Experimental" is the term already established in `installation.md`,
+`operators.md`, and `datasources.md`, and is broadly understood, so keep
+using it rather than inventing a new label. It is intentionally distinct
+from Spark's own "preview" terminology, which refers to upstream Spark
+release qualifiers like `4.2.0-preview4` rather than to Comet's confidence
+in its integration.
+
+A version starts experimental and is promoted later. Promotion is its own
+small PR, gated by these criteria:
+
+- The Spark version is a final upstream release, not a preview, snapshot,
+  or release candidate.
+- Both "Comet Tests in CI" and "Spark SQL Tests in CI" are `Yes` for the
+  version, and have been `Yes` continuously for at least one Comet release
+  cycle.
+- No `assume(!isSparkXYPlus, ...)` skip remains for a known correctness
+  issue. Skips for unrelated, infrastructural, or environment-specific
+  reasons are acceptable; correctness skips are not.
+- Plan stability output for the version is approved (either a clean
+  fallback chain or explicit per-version golden files).
+- No open `Critical` or `Blocker`-tagged issue references the version.
+
+When the criteria are met, the promotion PR moves the version's row from
+the experimental table into the main "Supported Spark Versions" table and
+removes the `(Experimental)` qualifier from the jar download link. No
+shim, code, or test changes should be bundled with this promotion. Keeping
+it as a doc-only PR makes it easy to revert if a problem shows up after
+the promotion.
 
 ## Follow-Up PRs: Fix the Skipped Tests
 
