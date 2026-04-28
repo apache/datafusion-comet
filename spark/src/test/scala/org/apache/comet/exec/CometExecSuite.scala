@@ -1296,6 +1296,186 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Ported from DynamicPartitionPruningSuite: "avoid reordering broadcast join keys"
+  // Failure: hasSubquery=true when expected false (SubqueryExec appeared in DPP filters)
+  test("AQE DPP: avoid reordering broadcast join keys") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withTable("large", "dimTwo", "dimThree") {
+        spark
+          .range(100)
+          .select($"id", ($"id" + 1).as("A"), ($"id" + 2).as("B"))
+          .write
+          .partitionBy("A")
+          .format("parquet")
+          .mode("overwrite")
+          .saveAsTable("large")
+
+        spark
+          .range(10)
+          .select($"id", ($"id" + 1).as("C"), ($"id" + 2).as("D"))
+          .write
+          .format("parquet")
+          .mode("overwrite")
+          .saveAsTable("dimTwo")
+
+        spark
+          .range(10)
+          .select($"id", ($"id" + 1).as("E"), ($"id" + 2).as("F"), ($"id" + 3).as("G"))
+          .write
+          .format("parquet")
+          .mode("overwrite")
+          .saveAsTable("dimThree")
+
+        val fact = sql("SELECT * from large")
+        val dim = sql("SELECT * from dimTwo")
+        val prod = sql("SELECT * from dimThree")
+
+        val df = fact
+          .join(dim, fact.col("A") === dim.col("C") && fact.col("B") === dim.col("D"), "LEFT")
+          .join(
+            broadcast(prod),
+            fact.col("B") === prod.col("F") && fact.col("A") === prod.col("E"))
+          .where(prod.col("G") > 5)
+
+        // Collect directly to see the raw exception before checkSparkAnswer wraps it
+        try {
+          df.collect()
+        } catch {
+          case e: Exception =>
+            // scalastyle:off println
+            println(s"[DPP-REORDER] Raw exception chain:")
+            var cause: Throwable = e
+            while (cause != null) {
+              println(s"  ${cause.getClass.getName}: ${cause.getMessage}")
+              if (cause.getCause == null) {
+                println(s"  ROOT CAUSE stack trace:")
+                cause.getStackTrace.take(30).foreach(s => println(s"    $s"))
+              }
+              cause = cause.getCause
+            }
+            // scalastyle:on println
+            throw e
+        }
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        // scalastyle:off println
+        println(s"[DPP-REORDER] Plan:\n${cometPlan}")
+
+        // Check what DPP expressions exist
+        val dpExprs = flatMap(cometPlan) {
+          case s: CometNativeScanExec =>
+            s.partitionFilters.collect { case d: DynamicPruningExpression =>
+              d.child
+            }
+          case _ => Nil
+        }
+        dpExprs.foreach { expr =>
+          println(s"[DPP-REORDER] DPP expr: ${expr.getClass.getSimpleName} -> $expr")
+          expr match {
+            case InSubqueryExec(_, sub, _, _, _, _) =>
+              println(s"[DPP-REORDER]   subquery plan: ${sub.getClass.getSimpleName}")
+              sub match {
+                case s: SubqueryExec =>
+                  println(
+                    s"[DPP-REORDER]   SubqueryExec child: ${s.child.getClass.getSimpleName}")
+                case s: SubqueryBroadcastExec =>
+                  println(
+                    s"[DPP-REORDER]   SubqueryBroadcastExec child: ${s.child.getClass.getSimpleName}")
+                case s: CometSubqueryBroadcastExec =>
+                  println(
+                    s"[DPP-REORDER]   CometSubqueryBroadcastExec child: ${s.child.getClass.getSimpleName}")
+                case other =>
+                  println(s"[DPP-REORDER]   other: ${other.getClass.getSimpleName}")
+              }
+            case _ =>
+          }
+        }
+
+        val hasSubquery = dpExprs.exists {
+          case InSubqueryExec(_, _: SubqueryExec, _, _, _, _) => true
+          case _ => false
+        }
+        val hasBroadcast = dpExprs.exists {
+          case InSubqueryExec(_, _: SubqueryBroadcastExec, _, _, _, _) => true
+          case InSubqueryExec(_, _: CometSubqueryBroadcastExec, _, _, _, _) => true
+          case _ => false
+        }
+        println(s"[DPP-REORDER] hasSubquery=$hasSubquery, hasBroadcast=$hasBroadcast")
+        // scalastyle:on println
+
+        // The Spark test expects: withSubquery=false, withBroadcast=true
+        // i.e. only broadcast DPP, no SubqueryExec
+        if (isSpark35Plus) {
+          assert(!hasSubquery, "Should not have SubqueryExec DPP")
+          assert(hasBroadcast, "Should have broadcast DPP")
+        }
+      }
+    }
+  }
+
+  // Ported from DynamicPartitionPruningSuite: "Make sure dynamic pruning works on uncorrelated"
+  // Failure: countSubqueryBroadcasts=2 when expected 1 (reuse not working)
+  test("AQE DPP: uncorrelated scalar subquery with broadcast reuse") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+        val df = sql("""
+            |SELECT d.store_id,
+            |       SUM(f.units_sold),
+            |       (SELECT SUM(f.units_sold)
+            |        FROM fact_stats f JOIN dim_stats d ON d.store_id = f.store_id
+            |        WHERE d.country = 'US') AS total_prod
+            |FROM fact_stats f JOIN dim_stats d ON d.store_id = f.store_id
+            |WHERE d.country = 'US'
+            |GROUP BY 1
+          """.stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        // scalastyle:off println
+        println(s"[DPP-UNCORR] Plan:\n${cometPlan}")
+
+        val subqueryBroadcasts = collectWithSubqueries(cometPlan) {
+          case s: SubqueryBroadcastExec => s"SubqueryBroadcastExec(${s.name})"
+          case s: CometSubqueryBroadcastExec => s"CometSubqueryBroadcastExec(${s.name})"
+        }
+        println(s"[DPP-UNCORR] subqueryBroadcasts: $subqueryBroadcasts")
+
+        val reusedSubqueries = collectWithSubqueries(cometPlan) {
+          case r @ ReusedSubqueryExec(_: SubqueryBroadcastExec) =>
+            s"ReusedSubqueryExec(SubqueryBroadcastExec)"
+          case r @ ReusedSubqueryExec(_: CometSubqueryBroadcastExec) =>
+            s"ReusedSubqueryExec(CometSubqueryBroadcastExec)"
+        }
+        println(s"[DPP-UNCORR] reusedSubqueries: $reusedSubqueries")
+        // scalastyle:on println
+
+        if (isSpark35Plus) {
+          val countBroadcasts = collectWithSubqueries(cometPlan) {
+            case _: SubqueryBroadcastExec => 1
+            case _: CometSubqueryBroadcastExec => 1
+          }.sum
+          val countReused = collectWithSubqueries(cometPlan) {
+            case ReusedSubqueryExec(_: SubqueryBroadcastExec) => 1
+            case ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => 1
+          }.sum
+
+          // Spark test expects: 1 broadcast + 1 reused
+          println(s"[DPP-UNCORR] countBroadcasts=$countBroadcasts, countReused=$countReused")
+          assert(countBroadcasts == 1, s"Expected 1 SubqueryBroadcast, got $countBroadcasts")
+          assert(countReused == 1, s"Expected 1 ReusedSubquery, got $countReused")
+        }
+      }
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"

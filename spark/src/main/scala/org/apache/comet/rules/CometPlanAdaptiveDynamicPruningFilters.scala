@@ -69,14 +69,12 @@ case object CometPlanAdaptiveDynamicPruningFilters
     plan.transformUp {
       case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
         logDebug("Converting AQE DPP for CometNativeScanExec")
-        convertNativeScanDPP(nativeScan, plan)
+        convertNativeScanDPP(nativeScan)
     }
   }
 
-  private def convertNativeScanDPP(
-      nativeScan: CometNativeScanExec,
-      fullPlan: SparkPlan): CometNativeScanExec = {
-    val newOuterFilters = nativeScan.partitionFilters.map(f => convertFilter(f, fullPlan))
+  private def convertNativeScanDPP(nativeScan: CometNativeScanExec): CometNativeScanExec = {
+    val newOuterFilters = nativeScan.partitionFilters.map(f => convertFilter(f))
 
     // If no filters changed, the scan had no convertible SABs (all fell back to TrueLiteral
     // or were already converted). Return unchanged.
@@ -89,17 +87,17 @@ case object CometPlanAdaptiveDynamicPruningFilters
     assert(
       nativeScan.scan != null,
       "CometNativeScanExec with DPP filters must have a non-null CometScanExec")
-    val newInnerFilters = nativeScan.scan.partitionFilters.map(f => convertFilter(f, fullPlan))
+    val newInnerFilters = nativeScan.scan.partitionFilters.map(f => convertFilter(f))
     val newInnerScan = nativeScan.scan.copy(partitionFilters = newInnerFilters)
 
     nativeScan.copy(partitionFilters = newOuterFilters, scan = newInnerScan)
   }
 
-  private def convertFilter(filter: Expression, fullPlan: SparkPlan): Expression = {
+  private def convertFilter(filter: Expression): Expression = {
     filter.transformUp { case dpe @ DynamicPruningExpression(inSub: InSubqueryExec) =>
       extractSABData(inSub) match {
         case Some(sabData) =>
-          convertSAB(inSub, sabData, fullPlan)
+          convertSAB(inSub, sabData)
         case None => dpe
       }
     }
@@ -157,8 +155,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * PlanAdaptiveDynamicPruningFilters:
    *
    *   1. exchangeReuseEnabled + matching broadcast join found: Create CometSubqueryBroadcastExec
-   *      (or SubqueryBroadcastExec for Spark fallback) wired to the join's
-   *      BroadcastQueryStageExec. DPP uses broadcast reuse.
+   *      (or SubqueryBroadcastExec for Spark fallback) wired to the join's broadcast. DPP uses
+   *      broadcast reuse via AQE's stageCache.
    *
    * 2. No reusable broadcast + onlyInBroadcast=true: Literal.TrueLiteral. DPP is disabled
    * (correct results, scans all partitions). Spark does the same: the optimizer decided DPP only
@@ -167,61 +165,125 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * 3. No reusable broadcast + onlyInBroadcast=false: Aggregate SubqueryExec on the build side
    * (DPP via separate execution, matching Spark's PlanAdaptiveDynamicPruningFilters lines 73-83).
    */
-  private def convertSAB(
-      inSub: InSubqueryExec,
-      sab: SABData,
-      fullPlan: SparkPlan): DynamicPruningExpression = {
+  private def convertSAB(inSub: InSubqueryExec, sab: SABData): DynamicPruningExpression = {
+    val adaptivePlan = sab.adaptivePlan.asInstanceOf[AdaptiveSparkPlanExec]
+
     val sabKeyIds: Set[Any] = sab.buildKeys.flatMap(_.references.map(_.exprId)).toSet
     assert(
       sabKeyIds.nonEmpty,
       s"DPP subquery '${sab.name}' has empty buildKeys - " +
         "PlanAdaptiveSubqueries should always populate buildKeys")
 
-    val matchingJoin = findMatchingBroadcastJoin(sabKeyIds, fullPlan)
-    // Match Spark's canReuseExchange check: exchange reuse must be enabled AND a matching
-    // broadcast join must exist. Without exchange reuse, the broadcast subquery would execute
-    // independently (defeating the purpose of reuse).
+    // queryStageOptimizerRules only see the current stage's child plan, but the
+    // broadcast join may be in a parent stage (e.g., when a shuffle separates the
+    // scan from the join). Matches PlanAdaptiveDynamicPruningFilters(rootPlan)
+    // which receives rootPlan as a constructor arg. We get the equivalent via the
+    // shared AdaptiveExecutionContext's QueryExecution.executedPlan.
+    val rootPlan = adaptivePlan.context.qe.executedPlan
+
+    // scalastyle:off println
+    println(s"[CometDPP] convertSAB: name=${sab.name}, onlyInBroadcast=${sab.onlyInBroadcast}")
+    println(s"[CometDPP]   sabKeyIds=$sabKeyIds")
+    println(s"[CometDPP]   rootPlan class: ${rootPlan.getClass.getSimpleName}")
+    // scalastyle:on println
+
+    val matchingJoin = findMatchingBroadcastJoin(sabKeyIds, rootPlan)
     val canReuse = conf.exchangeReuseEnabled && matchingJoin.isDefined
 
+    // scalastyle:off println
+    println(
+      s"[CometDPP]   matchingJoin=${matchingJoin.map(r => (r._1.getClass.getSimpleName, r._2))}")
+    println(s"[CometDPP]   canReuse=$canReuse -> ${if (canReuse) "case 1"
+      else if (sab.onlyInBroadcast) "case 2"
+      else "case 3"}")
+    // scalastyle:on println
+
     if (canReuse) {
-      // Case 1: broadcast reuse. Wire CometSubqueryBroadcastExec to the join's
-      // BroadcastQueryStageExec so the broadcast executes once for both join and DPP.
-      val result = matchingJoin.get
-      val broadcastChild = result._1
-      val isComet = result._2
+      // Case 1: broadcast reuse.
+      val (broadcastChild, isComet) = matchingJoin.get
       logDebug(
         s"Matched DPP subquery '${sab.name}' to " +
           s"${if (isComet) "Comet" else "Spark"} broadcast: " +
           s"${broadcastChild.getClass.getSimpleName}")
 
-      assert(
-        broadcastChild.isInstanceOf[BroadcastQueryStageExec],
-        "Expected BroadcastQueryStageExec as broadcast child for DPP reuse, " +
-          s"got ${broadcastChild.getClass.getSimpleName}. " +
-          "queryStageOptimizerRules should run after broadcast stage materialization.")
+      broadcastChild match {
+        case stage: BroadcastQueryStageExec =>
+          // Broadcast already materialized as a stage (scan and join share a stage,
+          // or the broadcast stage was created before this stage). Wire directly.
+          val subquery = if (isComet) {
+            CometSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, stage)
+          } else {
+            createSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, stage)
+          }
+          DynamicPruningExpression(inSub.withNewPlan(subquery))
 
-      // The stage's plan may be the original exchange or a ReusedExchangeExec (when AQE
-      // reuses exchanges across the main plan and scalar subquery plans via shared context).
-      val stageExchange = broadcastChild.asInstanceOf[BroadcastQueryStageExec].plan
-      val underlyingExchange = stageExchange match {
-        case r: ReusedExchangeExec => r.child
-        case other => other
+        case _ =>
+          // Broadcast not yet materialized (scan is in a shuffle stage processed
+          // before the broadcast stage). Matches Spark's
+          // PlanAdaptiveDynamicPruningFilters lines 44-64: construct a NEW exchange
+          // wrapping adaptivePlan.executedPlan, then wrap in a new ASPE. AQE's
+          // stageCache canonicalization ensures the broadcast runs once (same
+          // canonical form as the join's exchange).
+          val buildSidePlan = adaptivePlan.executedPlan
+          // scalastyle:off println
+          println(s"[CometDPP]   broadcast not yet materialized, constructing new exchange")
+          println(s"[CometDPP]   buildSidePlan: ${buildSidePlan.getClass.getSimpleName}")
+          println(s"[CometDPP]   buildSidePlan.logicalLink: ${buildSidePlan.logicalLink.map(_.getClass.getSimpleName)}")
+          // scalastyle:on println
+          val newExchange = if (isComet) {
+            val cbe = broadcastChild.asInstanceOf[CometBroadcastExchangeExec]
+            val newCbe = CometBroadcastExchangeExec(
+              cbe.originalPlan, cbe.output, cbe.mode, buildSidePlan)
+            buildSidePlan.logicalLink.foreach(newCbe.setLogicalLink)
+            newCbe
+          } else {
+            import org.apache.spark.sql.catalyst.expressions.BindReferences
+            import org.apache.spark.sql.execution.joins.{HashedRelationBroadcastMode, HashJoin}
+            val packedKeys = BindReferences.bindReferences(
+              HashJoin.rewriteKeyExpr(sab.buildKeys), buildSidePlan.output)
+            val mode = HashedRelationBroadcastMode(packedKeys)
+            val newBe = BroadcastExchangeExec(mode, buildSidePlan)
+            buildSidePlan.logicalLink.foreach(newBe.setLogicalLink)
+            newBe
+          }
+          // scalastyle:off println
+          println(s"[CometDPP]   newExchange class: ${newExchange.getClass.getSimpleName}")
+          println(s"[CometDPP]   newExchange.logicalLink: ${newExchange.logicalLink.map(_.getClass.getSimpleName)}")
+          // scalastyle:on println
+          // supportsColumnar must match the exchange: ASPE.getFinalPhysicalPlan
+          // (line 370-373) applies postStageCreationRules(supportsColumnar) to the
+          // final plan. With supportsColumnar=false (the SAB ASPE's default),
+          // ApplyColumnarRulesAndInsertTransitions wraps the BroadcastQueryStageExec
+          // in ColumnarToRowExec, which fails the assertion at
+          // ASPE.doExecuteBroadcast (line 413) that expects BroadcastQueryStageExec.
+          val newAdaptivePlan = adaptivePlan.copy(
+            inputPlan = newExchange,
+            supportsColumnar = newExchange.supportsColumnar)
+          // ASPE constructor applies queryStagePreparationRules to inputPlan,
+          // which may clear the logicalLink tag as a side effect. Re-set it.
+          buildSidePlan.logicalLink.foreach(newAdaptivePlan.inputPlan.setLogicalLink)
+          // scalastyle:off println
+          println(s"[CometDPP]   newASPE.inputPlan.logicalLink (after re-set): ${newAdaptivePlan.inputPlan.logicalLink.map(_.getClass.getSimpleName)}")
+          println(s"[CometDPP]   newASPE.initialPlan class: ${newAdaptivePlan.initialPlan.getClass.getSimpleName}")
+          println(s"[CometDPP]   newASPE.initialPlan: ${newAdaptivePlan.initialPlan.treeString}")
+          println(s"[CometDPP]   newASPE.executedPlan class: ${newAdaptivePlan.executedPlan.getClass.getSimpleName}")
+          println(s"[CometDPP]   newASPE.isSubquery: ${newAdaptivePlan.isSubquery}")
+          println(s"[CometDPP]   newASPE.isFinalPlan: ${newAdaptivePlan.isFinalPlan}")
+          println(s"[CometDPP]   newASPE.context eq adaptivePlan.context: ${newAdaptivePlan.context eq adaptivePlan.context}")
+          val sc = adaptivePlan.context.stageCache
+          println(s"[CometDPP]   stageCache size at construction: ${sc.size}")
+          sc.foreach { case (key, stage) =>
+            println(s"[CometDPP]     cached: ${stage.getClass.getSimpleName}(id=${stage.id}) plan=${stage.plan.getClass.getSimpleName}")
+          }
+          println(s"[CometDPP]   preprocessingRules: ${newAdaptivePlan.preprocessingRules.map(_.getClass.getSimpleName)}")
+          // scalastyle:on println
+          val subquery = if (isComet) {
+            CometSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, newAdaptivePlan)
+          } else {
+            createSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, newAdaptivePlan)
+          }
+          DynamicPruningExpression(inSub.withNewPlan(subquery))
       }
-      val isCometExchange = underlyingExchange.isInstanceOf[CometBroadcastExchangeExec]
-      val isSparkExchange = underlyingExchange.isInstanceOf[BroadcastExchangeExec]
-      assert(
-        (isComet && isCometExchange) || (!isComet && isSparkExchange),
-        s"Join/broadcast type mismatch: join isComet=$isComet, " +
-          s"exchange=${underlyingExchange.getClass.getSimpleName} " +
-          s"(via ${stageExchange.getClass.getSimpleName}). " +
-          "CometExecRule should convert both or neither.")
-
-      val subquery = if (isComet) {
-        CometSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, broadcastChild)
-      } else {
-        createSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, broadcastChild)
-      }
-      DynamicPruningExpression(inSub.withNewPlan(subquery))
     } else if (sab.onlyInBroadcast) {
       // Case 2: no reusable broadcast, and the optimizer says DPP only makes sense with
       // broadcast reuse. Disable DPP. Spark does the same (Literal.TrueLiteral).
@@ -277,6 +339,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
           join.rightKeys,
           isCometJoin = true,
           sabKeyIds)
+        // scalastyle:off println
+        if (result.isDefined)
+          println(s"[CometDPP]   matched CometBHJ, child=${result.get._1.getClass.getSimpleName}")
+        // scalastyle:on println
         result.isDefined
       case join: BroadcastHashJoinExec if result.isEmpty =>
         result = extractBroadcastChild(
@@ -287,6 +353,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
           join.rightKeys,
           isCometJoin = false,
           sabKeyIds)
+        // scalastyle:off println
+        if (result.isDefined)
+          println(s"[CometDPP]   matched SparkBHJ, child=${result.get._1.getClass.getSimpleName}")
+        // scalastyle:on println
         result.isDefined
       case _ => false
     }
