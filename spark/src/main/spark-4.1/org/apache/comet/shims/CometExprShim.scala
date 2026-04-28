@@ -29,7 +29,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{CometExpressionSerde, CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
@@ -40,7 +40,7 @@ trait CometExprShim extends CommonStringExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
-  protected def binaryOutputStyle: BinaryOutputStyle = {
+  def binaryOutputStyle: BinaryOutputStyle = {
     // In Spark 4.1, BINARY_OUTPUT_STYLE is an enumConf so getConf already returns the enum value.
     SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE) match {
       case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
@@ -50,6 +50,13 @@ trait CometExprShim extends CommonStringExprs {
       case _ => BinaryOutputStyle.HEX_DISCRETE
     }
   }
+
+  def versionSpecificStringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map.empty
+  def versionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map.empty
+  def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map.empty
 
   def versionSpecificExprToProtoInternal(
       expr: Expression,
