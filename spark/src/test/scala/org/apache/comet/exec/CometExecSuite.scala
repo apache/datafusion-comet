@@ -35,9 +35,9 @@ import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expr
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
-import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
@@ -1474,17 +1474,38 @@ class CometExecSuite extends CometTestBase {
   test("AQE DPP: V2 BatchScan broadcast query stage creation order (SPARK-34637)") {
     assume(isSpark35Plus)
     val factData = Seq(
-      (1000, 1, 1, 10), (1010, 2, 1, 10), (1020, 2, 1, 10),
-      (1030, 3, 2, 10), (1040, 3, 2, 50), (1050, 3, 2, 50),
-      (1060, 3, 2, 50), (1070, 4, 2, 10), (1080, 4, 3, 20),
-      (1090, 4, 3, 10), (1100, 4, 3, 10), (1110, 5, 3, 10),
-      (1120, 6, 4, 10), (1130, 7, 4, 50), (1140, 8, 4, 50),
-      (1150, 9, 1, 20), (1160, 10, 1, 20), (1170, 11, 1, 30),
-      (1180, 12, 2, 20), (1190, 13, 2, 20), (1200, 14, 3, 40),
-      (1200, 15, 3, 70), (1210, 16, 4, 10), (1220, 17, 4, 20),
-      (1230, 18, 4, 20), (1240, 19, 5, 40), (1250, 20, 5, 40),
-      (1260, 21, 5, 40), (1270, 22, 5, 50), (1280, 23, 1, 50),
-      (1290, 24, 1, 50), (1300, 25, 1, 50))
+      (1000, 1, 1, 10),
+      (1010, 2, 1, 10),
+      (1020, 2, 1, 10),
+      (1030, 3, 2, 10),
+      (1040, 3, 2, 50),
+      (1050, 3, 2, 50),
+      (1060, 3, 2, 50),
+      (1070, 4, 2, 10),
+      (1080, 4, 3, 20),
+      (1090, 4, 3, 10),
+      (1100, 4, 3, 10),
+      (1110, 5, 3, 10),
+      (1120, 6, 4, 10),
+      (1130, 7, 4, 50),
+      (1140, 8, 4, 50),
+      (1150, 9, 1, 20),
+      (1160, 10, 1, 20),
+      (1170, 11, 1, 30),
+      (1180, 12, 2, 20),
+      (1190, 13, 2, 20),
+      (1200, 14, 3, 40),
+      (1200, 15, 3, 70),
+      (1210, 16, 4, 10),
+      (1220, 17, 4, 20),
+      (1230, 18, 4, 20),
+      (1240, 19, 5, 40),
+      (1250, 20, 5, 40),
+      (1260, 21, 5, 40),
+      (1270, 22, 5, 50),
+      (1280, 23, 1, 50),
+      (1290, 24, 1, 50),
+      (1300, 25, 1, 50))
 
     import testImplicits._
     withSQLConf(
@@ -1513,7 +1534,8 @@ class CometExecSuite extends CometTestBase {
         val cometSubqueries = collectWithSubqueries(cometPlan) {
           case s: CometSubqueryBroadcastExec => s
         }
-        assert(cometSubqueries.nonEmpty,
+        assert(
+          cometSubqueries.nonEmpty,
           s"V2 scan should have CometSubqueryBroadcastExec for DPP:\n$cometPlan")
       } finally {
         sql("DROP TABLE IF EXISTS testcat.fact_stats_v2")

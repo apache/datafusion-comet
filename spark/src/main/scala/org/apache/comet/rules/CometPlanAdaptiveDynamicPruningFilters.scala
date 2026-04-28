@@ -66,6 +66,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
       return plan
     }
 
+    // TODO(#3510): CometNativeScanExec needs special handling because its makeCopy
+    // loses @transient scan and expression transformations. Once makeCopy is fixed
+    // (or CometScanExec wrapping is removed), replace both cases with a single
+    // plan.transformAllExpressions call matching Spark's PlanAdaptiveDynamicPruningFilters.
     plan.transformUp {
       case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
         logDebug("Converting AQE DPP for CometNativeScanExec")
@@ -356,8 +360,9 @@ case object CometPlanAdaptiveDynamicPruningFilters
   }
 
   private def convertNonCometNodeDPP(node: SparkPlan, stagePlan: SparkPlan): SparkPlan = {
-    node.transformExpressions { case expr if hasCometSAB(expr) =>
-      convertFilter(expr, stagePlan)
+    node.transformExpressions {
+      case expr if hasCometSAB(expr) =>
+        convertFilter(expr, stagePlan)
     }
   }
 
@@ -368,7 +373,9 @@ case object CometPlanAdaptiveDynamicPruningFilters
    */
   private def hasWrappedSAB(p: SparkPlan): Boolean =
     p.expressions.exists(_.exists {
-      case DynamicPruningExpression(InSubqueryExec(_, _: CometSubqueryAdaptiveBroadcastExec, _, _, _, _)) => true
+      case DynamicPruningExpression(
+            InSubqueryExec(_, _: CometSubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
+        true
       case _ => false
     })
 
