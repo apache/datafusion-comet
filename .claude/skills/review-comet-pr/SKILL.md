@@ -259,6 +259,7 @@ If the PR adds a new expression or operator but does not update the relevant doc
 4. **Tests in wrong framework**: Expression tests should use the SQL file-based framework (`CometSqlFileTestSuite`) rather than adding to Scala test suites like `CometExpressionSuite`. Suggest migration if the PR adds Scala tests for expressions that could use SQL files instead.
 5. **Stale native code**: PR might need `./mvnw install -pl common -DskipTests`
 6. **Missing `getSupportLevel`**: Edge cases should be marked as `Incompatible`
+7. **Scalar function name collides with a DataFusion built-in**: If the PR registers a Spark function whose name is also defined by `datafusion-functions` (e.g. `levenshtein`, `concat`, `coalesce`, `sha2`, `regexp_replace`), check that the serde sets the return type explicitly via `scalarFunctionExprToProtoWithReturnType` rather than `scalarFunctionExprToProto` or the bare `CometScalarFunction(name)` shortcut. Without an explicit return type, the native planner consults DataFusion's UDF registry first for type resolution, and any arity or input-type difference between the Spark and DataFusion versions will fail native execution with `Error from DataFusion: Function 'X' expects N arguments but received M`. The Comet UDF is only swapped in *after* DF's signature validation passes. See the "When to set the return type explicitly" section in `docs/source/contributor-guide/adding_a_new_expression.md`.
 
 ---
 
