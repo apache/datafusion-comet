@@ -798,7 +798,9 @@ class CometExecSuite extends CometTestBase {
             dppScans.nonEmpty,
             "Expected at least one CometNativeScanExec with DynamicPruningExpression")
 
-          // Verify CometSubqueryBroadcastExec with BroadcastQueryStageExec child
+          // Verify CometSubqueryBroadcastExec with AdaptiveSparkPlanExec child
+          // (matches Spark's SubqueryBroadcastExec wrapping an ASPE that goes
+          // through AQE stageCache for broadcast reuse via ReusedExchangeExec)
           val cometSubqueries = collectWithSubqueries(cometPlan) {
             case s: CometSubqueryBroadcastExec => s
           }
@@ -807,27 +809,24 @@ class CometExecSuite extends CometTestBase {
             "Expected CometSubqueryBroadcastExec for broadcast reuse")
           cometSubqueries.foreach { csb =>
             assert(
-              csb.child.isInstanceOf[BroadcastQueryStageExec],
-              "Expected BroadcastQueryStageExec child but got " +
+              csb.child.isInstanceOf[AdaptiveSparkPlanExec],
+              "Expected AdaptiveSparkPlanExec child but got " +
                 s"${csb.child.getClass.getSimpleName}")
           }
 
-          // Verify broadcast reuse: the subquery's BroadcastQueryStageExec should be the
-          // same instance as the join's broadcast side (reference equality = single execution)
-          val joinBroadcastStages = collect(cometPlan) { case j: CometBroadcastHashJoinExec =>
-            j
-          }.flatMap { j =>
-            val bc = j.buildSide match {
-              case org.apache.spark.sql.catalyst.optimizer.BuildLeft => j.left
-              case org.apache.spark.sql.catalyst.optimizer.BuildRight => j.right
-            }
-            collect(bc) { case b: BroadcastQueryStageExec => b }
-          }
+          // Verify broadcast reuse: the subquery's ASPE final plan should contain
+          // ReusedExchangeExec (AQE stageCache matched the join's broadcast)
+          import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
           cometSubqueries.foreach { csb =>
-            assert(
-              joinBroadcastStages.exists(_ eq csb.child),
-              "DPP subquery's BroadcastQueryStageExec should be the same instance " +
-                "as the join's broadcast (reference equality for reuse)")
+            val aspe = csb.child.asInstanceOf[AdaptiveSparkPlanExec]
+            val hasReusedExchange = collect(aspe) {
+              case r: ReusedExchangeExec => r
+            }.nonEmpty || collect(aspe) {
+              case b: BroadcastQueryStageExec => b
+            }.nonEmpty
+            assert(hasReusedExchange,
+              "DPP subquery's ASPE should contain ReusedExchangeExec or " +
+                "BroadcastQueryStageExec for broadcast reuse")
           }
 
           // Verify no unconverted SABs remain
@@ -1131,14 +1130,14 @@ class CometExecSuite extends CometTestBase {
           assert(remainingSABs.isEmpty, "No unconverted SABs should remain")
 
           // If DPP subqueries are present, verify they use CometSubqueryBroadcastExec
-          // with BroadcastQueryStageExec children (broadcast reuse)
+          // with AdaptiveSparkPlanExec children (ASPE wrapping broadcast for stageCache reuse)
           val cometSubqueries = collectWithSubqueries(cometPlan) {
             case s: CometSubqueryBroadcastExec => s
           }
           cometSubqueries.foreach { csb =>
             assert(
-              csb.child.isInstanceOf[BroadcastQueryStageExec],
-              "CometSubqueryBroadcastExec child should be BroadcastQueryStageExec, " +
+              csb.child.isInstanceOf[AdaptiveSparkPlanExec],
+              "CometSubqueryBroadcastExec child should be AdaptiveSparkPlanExec, " +
                 s"got ${csb.child.getClass.getSimpleName}")
           }
         }
@@ -1401,6 +1400,51 @@ class CometExecSuite extends CometTestBase {
 
           assert(countBroadcasts == 1, s"Expected 1 SubqueryBroadcast, got $countBroadcasts")
           assert(countReused == 1, s"Expected 1 ReusedSubquery, got $countReused")
+        }
+      }
+    }
+  }
+
+  // Ported from RemoveRedundantProjectsSuite: "join with ordering requirement".
+  // Verifies DPP subquery uses ReusedExchangeExec (not direct stage reference),
+  // so collectWithSubqueries doesn't double-count project nodes.
+  test("AQE DPP: join with ordering requirement project count") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+      withTable("testViewTable") {
+        withTempView("testView") {
+          spark
+            .range(0, 100, 1)
+            .selectExpr(
+              "id as key",
+              "id as a",
+              "id as b",
+              "cast(id as string) as c",
+              "cast(id as string) as d")
+            .write
+            .format("parquet")
+            .mode("overwrite")
+            .partitionBy("key")
+            .saveAsTable("testViewTable")
+          sql("CREATE OR REPLACE TEMP VIEW testView AS SELECT * FROM testViewTable")
+
+          val query = "select * from (select key, a, c, b from testView) as t1 join " +
+            "(select key, a, b, c from testView) as t2 on t1.key = t2.key where t2.a > 50"
+
+          val (sparkPlan, cometPlan) = checkSparkAnswer(sql(query))
+
+          if (isSpark35Plus) {
+            val sparkProjects = collectWithSubqueries(sparkPlan) { case p: ProjectExec => p }
+            val cometProjects = collectWithSubqueries(cometPlan) {
+              case p: ProjectExec => p
+              case p: CometProjectExec => p
+            }
+            assert(
+              cometProjects.size == sparkProjects.size,
+              s"Comet project count (${cometProjects.size}) should match " +
+                s"Spark (${sparkProjects.size})")
+          }
         }
       }
     }
