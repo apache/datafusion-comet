@@ -2793,7 +2793,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         spark
           .range(10000)
           .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
-          .coalesce(1)
+          .repartition(5)
           .write
           .format("iceberg")
           .mode("append")
@@ -2816,7 +2816,25 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         spark.sparkContext.addSparkListener(listener)
 
         try {
-          val df = spark.sql("SELECT * FROM test_cat.db.task_metrics_test")
+          val query = "SELECT * FROM test_cat.db.task_metrics_test"
+
+          // Same drain-run-drain pattern as CometTaskMetricsSuite's shuffle test
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+          // Baseline: iceberg-Java scan (Comet native disabled)
+          withSQLConf(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "false") {
+            bytesReadValues.clear()
+            recordsReadValues.clear()
+            spark.sql(query).collect()
+            CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+          }
+          val sparkBytes = bytesReadValues.sum
+          val sparkRecords = recordsReadValues.sum
+
+          // Comet native Iceberg scan
+          bytesReadValues.clear()
+          recordsReadValues.clear()
+          val df = spark.sql(query)
 
           val scanNodes = df.queryExecution.executedPlan
             .collectLeaves()
@@ -2824,23 +2842,26 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           assert(scanNodes.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
 
           df.collect()
-
-          // Drain listener events so onTaskEnd has fired before we assert
           CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
 
-          val totalBytes = bytesReadValues.sum
-          val totalRecords = recordsReadValues.sum
+          val cometBytes = bytesReadValues.sum
+          val cometRecords = recordsReadValues.sum
 
-          assert(totalBytes > 0, s"task inputMetrics.bytesRead should be > 0, got $totalBytes")
+          // Both paths should report metrics
+          assert(sparkBytes > 0, s"Spark bytesRead should be > 0, got $sparkBytes")
+          assert(sparkRecords > 0, s"Spark recordsRead should be > 0, got $sparkRecords")
+          assert(cometBytes > 0, s"Comet bytesRead should be > 0, got $cometBytes")
+          assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
+
           assert(
-            totalRecords == 10000,
-            s"task inputMetrics.recordsRead should be 10000, got $totalRecords")
+            cometRecords == sparkRecords,
+            s"recordsRead mismatch: comet=$cometRecords, spark=$sparkRecords")
 
           // SQL-level metric should match task-level metric
           val sqlBytes = scanNodes.head.metrics("bytes_scanned").value
           assert(
-            sqlBytes == totalBytes,
-            s"SQL bytes_scanned ($sqlBytes) should match task bytesRead ($totalBytes)")
+            sqlBytes == cometBytes,
+            s"SQL bytes_scanned ($sqlBytes) should match task bytesRead ($cometBytes)")
         } finally {
           spark.sparkContext.removeSparkListener(listener)
           spark.sql("DROP TABLE test_cat.db.task_metrics_test")
