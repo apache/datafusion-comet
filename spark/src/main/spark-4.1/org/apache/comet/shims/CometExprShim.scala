@@ -41,9 +41,8 @@ trait CometExprShim extends CommonStringExprs {
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
   protected def binaryOutputStyle: BinaryOutputStyle = {
-    SQLConf.get
-      .getConf(SQLConf.BINARY_OUTPUT_STYLE)
-      .map(SQLConf.BinaryOutputStyle.withName) match {
+    // In Spark 4.1, BINARY_OUTPUT_STYLE is an enumConf so getConf already returns the enum value.
+    SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE) match {
       case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
       case Some(SQLConf.BinaryOutputStyle.BASIC) => BinaryOutputStyle.BASIC
       case Some(SQLConf.BinaryOutputStyle.BASE64) => BinaryOutputStyle.BASE64
@@ -157,5 +156,6 @@ object CometEvalModeUtil {
     case EvalMode.ANSI => CometEvalMode.ANSI
   }
 
-  def sumEvalMode(s: Sum): EvalMode.Value = s.evalMode
+  // In Spark 4.1, Sum carries a NumericEvalContext rather than a direct EvalMode.
+  def sumEvalMode(s: Sum): EvalMode.Value = s.evalContext.evalMode
 }
