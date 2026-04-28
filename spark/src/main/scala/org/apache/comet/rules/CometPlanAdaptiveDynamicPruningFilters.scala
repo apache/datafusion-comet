@@ -212,24 +212,17 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // different attribute IDs than the current SAB's build side (e.g., a scalar
       // subquery). Using the existing exchange's output/mode would cause schema
       // mismatch when CometSubqueryBroadcastExec projects keys by exprId.
+      val packedKeys = BindReferences.bindReferences(
+        HashJoin.rewriteKeyExpr(sab.buildKeys),
+        buildSidePlan.output)
+      val mode = HashedRelationBroadcastMode(packedKeys)
       val newExchange = if (isComet) {
-        val packedKeys = BindReferences.bindReferences(
-          HashJoin.rewriteKeyExpr(sab.buildKeys),
-          buildSidePlan.output)
-        val mode = HashedRelationBroadcastMode(packedKeys)
-        val newCbe =
-          CometBroadcastExchangeExec(buildSidePlan, buildSidePlan.output, mode, buildSidePlan)
-        buildSidePlan.logicalLink.foreach(newCbe.setLogicalLink)
-        newCbe
+        CometBroadcastExchangeExec(buildSidePlan, buildSidePlan.output, mode, buildSidePlan)
       } else {
-        val packedKeys = BindReferences.bindReferences(
-          HashJoin.rewriteKeyExpr(sab.buildKeys),
-          buildSidePlan.output)
-        val mode = HashedRelationBroadcastMode(packedKeys)
-        val newBe = BroadcastExchangeExec(mode, buildSidePlan)
-        buildSidePlan.logicalLink.foreach(newBe.setLogicalLink)
-        newBe
+        BroadcastExchangeExec(mode, buildSidePlan)
       }
+      buildSidePlan.logicalLink.foreach(newExchange.setLogicalLink)
+
       // supportsColumnar must match the exchange. ASPE.getFinalPhysicalPlan
       // applies postStageCreationRules(supportsColumnar) to the final plan.
       // With supportsColumnar=false (the SAB ASPE's default),
@@ -243,6 +236,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // which clears the logicalLink tag as a side effect. Re-set it so
       // getFinalPhysicalPlan (line 276) can read inputPlan.logicalLink.
       buildSidePlan.logicalLink.foreach(newAdaptivePlan.inputPlan.setLogicalLink)
+
       val subquery = if (isComet) {
         CometSubqueryBroadcastExec(sab.name, sab.indices, sab.buildKeys, newAdaptivePlan)
       } else {
