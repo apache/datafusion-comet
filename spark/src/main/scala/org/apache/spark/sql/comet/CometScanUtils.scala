@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
+import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 
 object CometScanUtils {
 
@@ -28,6 +29,26 @@ object CometScanUtils {
    * DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
    */
   def filterUnusedDynamicPruningExpressions(predicates: Seq[Expression]): Seq[Expression] = {
-    predicates.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral))
+    // Strip DPP expressions from partition filters for canonicalization.
+    // Matches Spark's FileSourceScanExec.filterUnusedDynamicPruningExpressions
+    // which strips DynamicPruningExpression(TrueLiteral).
+    //
+    // We also strip unresolved SAB wrappers (CometSubqueryAdaptiveBroadcastExec
+    // and SubqueryAdaptiveBroadcastExec). DPP filters only affect which partitions
+    // are read, not the scan's logical data output, so they should not prevent
+    // exchange reuse between otherwise-identical scans. AQE's stageCache
+    // canonicalization happens before our queryStageOptimizerRule converts SABs,
+    // so without stripping, one CTE reference with DPP and another without would
+    // have different canonical forms and miss exchange reuse.
+    predicates.filterNot {
+      case DynamicPruningExpression(Literal.TrueLiteral) => true
+      case DynamicPruningExpression(
+            InSubqueryExec(_, _: CometSubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
+        true
+      case DynamicPruningExpression(
+            InSubqueryExec(_, _: SubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
+        true
+      case _ => false
+    }
   }
 }

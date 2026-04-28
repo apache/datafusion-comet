@@ -1485,6 +1485,60 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // SPARK-32509: previously IgnoreComet(#4045). Unused DPP filter with
+  // AUTO_BROADCASTJOIN_THRESHOLD=-1 (no broadcast). Should not affect exchange reuse.
+  test("AQE DPP: unused DPP filter and exchange reuse (SPARK-32509)") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        val df = sql(""" WITH view1 as (
+            |   SELECT f.store_id FROM fact_stats f WHERE f.units_sold = 70
+            | )
+            | SELECT * FROM view1 v1 join view1 v2 WHERE v1.store_id = v2.store_id
+          """.stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+        checkAnswer(df, Row(15, 15) :: Nil)
+
+        if (isSpark35Plus) {
+          import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+          val reusedExchanges = collect(cometPlan) { case r: ReusedExchangeExec => r }
+          assert(
+            reusedExchanges.size == 1,
+            s"Expected 1 ReusedExchangeExec, got ${reusedExchanges.size}")
+        }
+      }
+    }
+  }
+
+  // SPARK-34637: previously IgnoreComet(#4045). DPP side broadcast query stage
+  // should be created before the main join's broadcast stage.
+  test("AQE DPP: broadcast query stage creation order (SPARK-34637)") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+        val df = sql(""" WITH v as (
+            |   SELECT f.store_id FROM fact_stats f WHERE f.units_sold = 70 group by f.store_id
+            | )
+            | SELECT * FROM v v1 join v v2 WHERE v1.store_id = v2.store_id
+          """.stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+        checkAnswer(df, Row(15, 15) :: Nil)
+
+        if (isSpark35Plus) {
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          assert(cometSubqueries.nonEmpty, "Expected CometSubqueryBroadcastExec for DPP")
+        }
+      }
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"

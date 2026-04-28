@@ -86,6 +86,18 @@ case class CometShuffleExchangeExec(
     "CometColumnarExchange"
   }
 
+  // Exclude originalPlan from canonical form. It's a reference to the
+  // pre-Comet Spark exchange kept for metrics, not semantic content.
+  // Without this, two identical CometShuffleExchangeExec nodes with
+  // different originalPlans (e.g., one scan has DPP filters, one doesn't)
+  // would fail to match in AQE's stageCache, preventing exchange reuse.
+  // Matches CometBroadcastExchangeExec.doCanonicalize which also nulls
+  // originalPlan.
+  override def doCanonicalize(): SparkPlan = {
+    val base = super.doCanonicalize().asInstanceOf[CometShuffleExchangeExec]
+    base.copy(originalPlan = null)
+  }
+
   private lazy val serializer: Serializer =
     new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))
 
