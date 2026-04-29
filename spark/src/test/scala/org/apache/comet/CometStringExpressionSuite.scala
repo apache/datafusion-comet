@@ -722,7 +722,7 @@ class CometStringExpressionSuite extends CometTestBase {
       sql(s"CREATE TABLE $table(s1 STRING, s2 STRING) USING parquet")
       sql(
         s"INSERT INTO $table VALUES " +
-          s"('abc', 'adc'), (NULL, 'test'), ('hello', NULL), (NULL, NULL)")
+          "('abc', 'adc'), (NULL, 'test'), ('hello', NULL), (NULL, NULL)")
       checkSparkAnswerAndOperator(s"SELECT levenshtein(s1, s2) FROM $table")
     }
   }
