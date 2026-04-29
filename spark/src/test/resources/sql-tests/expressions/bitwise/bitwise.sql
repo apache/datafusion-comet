@@ -64,7 +64,7 @@ CREATE TABLE test_bit_get(i int, pos int) USING parquet
 statement
 INSERT INTO test_bit_get VALUES (11, 0), (11, 1), (11, 2), (11, 3), (0, 0), (NULL, 0), (11, NULL)
 
-query spark_answer_only
+query
 SELECT bit_get(i, pos) FROM test_bit_get
 
 -- literal arguments
@@ -74,7 +74,7 @@ SELECT 1111 & 2, 1111 | 2, 1111 ^ 2
 query
 SELECT bit_count(0), bit_count(7), bit_count(-1)
 
-query spark_answer_only
+query
 SELECT bit_get(11, 0), bit_get(11, 1), bit_get(11, 2), bit_get(11, 3)
 
 query

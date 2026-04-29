@@ -21,7 +21,7 @@ CREATE TABLE test_array_min(arr array<int>) USING parquet
 statement
 INSERT INTO test_array_min VALUES (array(1, 2, 3)), (array(3, 1, 2)), (array()), (NULL), (array(NULL, 1, 2)), (array(-1, -2, -3))
 
-query spark_answer_only
+query
 SELECT array_min(arr) FROM test_array_min
 
 -- literal arguments
