@@ -26,7 +26,7 @@ statement
 INSERT INTO test_str_right VALUES ('hello', 3), ('hello', 0), ('hello', -1), ('hello', 10), ('', 3), (NULL, 3), ('hello', NULL)
 
 -- both columns: len must be literal, falls back
-query
+query expect_fallback(Substring pos and len must be literals)
 SELECT right(s, n) FROM test_str_right
 
 -- column + literal: basic
@@ -45,7 +45,7 @@ query
 SELECT right(s, 10) FROM test_str_right
 
 -- literal + column: falls back
-query
+query expect_fallback(Substring pos and len must be literals)
 SELECT right('hello', n) FROM test_str_right
 
 -- literal + literal
