@@ -30,7 +30,11 @@ Make sure the following requirements are met and software installed on your mach
 
 ### Supported Spark Versions
 
-Comet $COMET_VERSION supports the following versions of Apache Spark.
+Comet $COMET_VERSION supports the following versions of Apache Spark. Refer to the [Spark Version Compatibility] page
+in the [Compatibility Guide] for more information, such as known limitations per Spark version.
+
+[Spark Version Compatibility]: compatibility/spark-versions.md
+[Compatibility Guide]: compatibility
 
 We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
 Other versions may work well enough for development and evaluation purposes.
@@ -38,9 +42,6 @@ Other versions may work well enough for development and evaluation purposes.
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
 | 3.4.3         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
-| 3.5.5         | 11/17        | 2.12/2.13     | Yes               | No                    |
-| 3.5.6         | 11/17        | 2.12/2.13     | Yes               | No                    |
-| 3.5.7         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
 | 3.5.8         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
 | 4.0.2         | 17           | 2.13          | Yes               | Yes                   |
 
@@ -50,9 +51,9 @@ Experimental support is provided for the following versions of Apache Spark and 
 use only and should not be used in production yet.
 
 | Spark Version  | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
-| -------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 4.1.1          | 17           | 2.13          | Compile only      | No                    |
-| 4.2.0-preview4 | 17           | 2.13          | Compile only      | No                    |
+| -------------- | ------------ | ------------- |-------------------| --------------------- |
+| 4.1.1          | 17           | 2.13          | Yes               | No                    |
+| 4.2.0-preview4 | 17           | 2.13          | No                | No                    |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
