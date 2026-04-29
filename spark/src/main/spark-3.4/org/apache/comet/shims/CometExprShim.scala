@@ -41,6 +41,8 @@ trait CometExprShim extends CommonStringExprs {
     Map.empty
   def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map.empty
+  def versionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map.empty
 
   def versionSpecificExprToProtoInternal(
       expr: Expression,

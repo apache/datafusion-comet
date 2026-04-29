@@ -133,14 +133,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     base ++ versionSpecificMathExpressions
   }
 
-  private[comet] val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[GetMapValue] -> CometMapExtract,
-    classOf[MapKeys] -> CometMapKeys,
-    classOf[MapEntries] -> CometMapEntries,
-    classOf[MapValues] -> CometMapValues,
-    classOf[MapFromArrays] -> CometMapFromArrays,
-    classOf[MapContainsKey] -> CometMapContainsKey,
-    classOf[MapFromEntries] -> CometMapFromEntries)
+  private[comet] val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = {
+    // Explicit type ascription on `base`: Scala 2.13 cannot infer the existential key type
+    // when `++` is applied directly to a `Map(...)` literal.
+    val base: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+      classOf[GetMapValue] -> CometMapExtract,
+      classOf[MapKeys] -> CometMapKeys,
+      classOf[MapEntries] -> CometMapEntries,
+      classOf[MapValues] -> CometMapValues,
+      classOf[MapFromArrays] -> CometMapFromArrays,
+      classOf[MapContainsKey] -> CometMapContainsKey,
+      classOf[MapFromEntries] -> CometMapFromEntries)
+    base ++ versionSpecificMapExpressions
+  }
 
   private[comet] val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(

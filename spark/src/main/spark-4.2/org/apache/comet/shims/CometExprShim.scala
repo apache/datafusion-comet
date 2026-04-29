@@ -19,123 +19,26 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.EvalMode
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
-import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
-import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, MapType, StringType}
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometExpressionSerde, CometToPrettyString, CometWidthBucket, CommonStringExprs, SupportLevel}
-import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
+import org.apache.comet.serde.ExprOuterClass.BinaryOutputStyle
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
-  protected def evalMode(c: Cast): CometEvalMode.Value =
-    CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+trait CometExprShim extends Spark4xCometExprShim {
 
   def binaryOutputStyle: BinaryOutputStyle = {
-    // In Spark 4.1, BINARY_OUTPUT_STYLE is an enumConf so getConf already returns the enum value.
+    // In Spark 4.2, BINARY_OUTPUT_STYLE is an enumConf so getConf already returns the enum value.
     SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE) match {
       case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
       case Some(SQLConf.BinaryOutputStyle.BASIC) => BinaryOutputStyle.BASIC
       case Some(SQLConf.BinaryOutputStyle.BASE64) => BinaryOutputStyle.BASE64
       case Some(SQLConf.BinaryOutputStyle.HEX) => BinaryOutputStyle.HEX
       case _ => BinaryOutputStyle.HEX_DISCRETE
-    }
-  }
-
-  def versionSpecificStringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map.empty
-  def versionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map(classOf[WidthBucket] -> CometWidthBucket)
-  def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map(classOf[ToPrettyString] -> CometToPrettyString)
-
-  def versionSpecificExprToProtoInternal(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr match {
-      case knc: KnownNotContainsNull =>
-        // On Spark 4.0, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
-        // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact.
-        knc.child match {
-          case filter: ArrayFilter =>
-            filter.function.children.headOption match {
-              case Some(_: IsNotNull) =>
-                val arrayChild = filter.left
-                val elementType = arrayChild.dataType.asInstanceOf[ArrayType].elementType
-                val arrayExprProto = exprToProtoInternal(arrayChild, inputs, binding)
-                val returnType = ArrayType(elementType)
-                val scalarExpr = scalarFunctionExprToProtoWithReturnType(
-                  "spark_array_compact",
-                  returnType,
-                  false,
-                  arrayExprProto)
-                optExprWithInfo(scalarExpr, knc, arrayChild)
-              case _ => exprToProtoInternal(knc.child, inputs, binding)
-            }
-          case _ => exprToProtoInternal(knc.child, inputs, binding)
-        }
-
-      case s: StaticInvoke
-          if s.staticObject == classOf[StringDecode] &&
-            s.dataType.isInstanceOf[StringType] &&
-            s.functionName == "decode" &&
-            s.arguments.size == 4 &&
-            s.inputTypes == Seq(
-              BinaryType,
-              StringTypeWithCollation(supportsTrimCollation = true),
-              BooleanType,
-              BooleanType) =>
-        val Seq(bin, charset, _, _) = s.arguments
-        stringDecode(expr, charset, bin, inputs, binding)
-
-      // In Spark 4.0, StructsToJson is a RuntimeReplaceable whose replacement is
-      // Invoke(Literal(StructsToJsonEvaluator), "evaluate", ...). Reconstruct the
-      // original StructsToJson and recurse so support-level checks apply.
-      case i: Invoke =>
-        (i.targetObject, i.functionName, i.arguments) match {
-          case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
-            exprToProtoInternal(
-              StructsToJson(evaluator.options, child, evaluator.timeZoneId),
-              inputs,
-              binding)
-          case _ => None
-        }
-
-      case ms: MapSort =>
-        val keyType = ms.dataType.asInstanceOf[MapType].keyType
-        if (!supportedScalarSortElementType(keyType)) {
-          withInfo(ms, s"MapSort on map with key type $keyType is not supported")
-          None
-        } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-          SupportLevel.containsFloatingPoint(keyType)) {
-          withInfo(
-            ms,
-            "MapSort on floating-point key is not 100% compatible with Spark, and Comet is " +
-              s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-              s"${CometConf.COMPAT_GUIDE}")
-          None
-        } else {
-          val childExpr = exprToProtoInternal(ms.child, inputs, binding)
-          val mapSortExpr = scalarFunctionExprToProtoWithReturnType(
-            "map_sort",
-            ms.dataType,
-            failOnError = false,
-            childExpr)
-          optExprWithInfo(mapSortExpr, ms, ms.child)
-        }
-
-      case _ => None
     }
   }
 }
@@ -147,6 +50,6 @@ object CometEvalModeUtil {
     case EvalMode.ANSI => CometEvalMode.ANSI
   }
 
-  // In Spark 4.1, Sum carries a NumericEvalContext rather than a direct EvalMode.
+  // In Spark 4.2, Sum carries a NumericEvalContext rather than a direct EvalMode.
   def sumEvalMode(s: Sum): EvalMode.Value = s.evalContext.evalMode
 }
