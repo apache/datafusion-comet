@@ -123,9 +123,9 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
   }
 
   // Case 3: INT96 TimestampLTZ read as TimestampNTZ. Spark throws on all
-  // versions (SPARK-36182). Comet's native_datafusion scan detects the
-  // TimestampType/TimestampNTZType mismatch between the file and read schemas
-  // at plan time and falls back to Spark, which throws SparkException.
+  // versions (SPARK-36182). Comet's native_datafusion scan falls back to Spark
+  // for TimestampNTZ columns by default (timestampNTZSafetyCheck) because INT96
+  // timestamps lose their LTZ/NTZ distinction after Parquet schema coercion.
   // native_iceberg_compat throws via TypeUtil.convertErrorForTimestampNTZ on
   // Spark 3.x (mirrors Spark's behavior). On Spark 4.0, TypeUtil.checkParquetType
   // has an isSpark40Plus guard that bypasses the INT96 check, so the read succeeds.
@@ -139,8 +139,8 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
       }
       spark.read.schema("ts timestamp_ntz").parquet(path)
     } { df =>
-      // native_datafusion falls back to Spark due to TimestampType/TimestampNTZType
-      // mismatch detection; Spark throws SparkException on all versions.
+      // native_datafusion falls back to Spark for TimestampNTZ columns
+      // (timestampNTZSafetyCheck); Spark throws SparkException on all versions.
       intercept[SparkException] {
         df.collect()
       }

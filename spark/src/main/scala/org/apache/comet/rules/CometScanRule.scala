@@ -709,6 +709,15 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
           "native execution if your data does not contain unsigned small integers. " +
           CometConf.COMPAT_GUIDE
         false
+      case _: TimestampNTZType
+          if scanImpl == CometConf.SCAN_NATIVE_DATAFUSION &&
+            CometConf.COMET_PARQUET_TIMESTAMP_NTZ_CHECK.get() =>
+        fallbackReasons +=
+          s"$scanImpl scan may read INT96 timestamps as TimestampNTZ incorrectly. " +
+            s"Set ${CometConf.COMET_PARQUET_TIMESTAMP_NTZ_CHECK.key}=false to allow " +
+            "native execution if your Parquet files do not contain INT96 timestamps " +
+            s"being read as TimestampNTZ. ${CometConf.COMPAT_GUIDE}"
+        false
       case dt if isStringCollationType(dt) =>
         // we don't need specific support for collation in scans, but this
         // is a convenient place to force the whole query to fall back to Spark for now
