@@ -78,9 +78,3 @@ disabled by default. The goal is to reach correctness and performance parity wit
 enabled by default ([#1625]).
 
 [#1625]: https://github.com/apache/datafusion-comet/issues/1625
-
-## Ongoing Areas of Work
-
-- Adding support for more Spark expressions
-- Performance tuning
-- Nested type support improvements
