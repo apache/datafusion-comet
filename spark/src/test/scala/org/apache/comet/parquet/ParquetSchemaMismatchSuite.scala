@@ -32,40 +32,12 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
 
 /**
- * Documents Comet's behavior for the Parquet read-schema/file-schema mismatch cases tracked in
+ * Tests for Parquet read-schema/file-schema mismatch cases tracked in
  * https://github.com/apache/datafusion-comet/issues/3720.
- *
- * Each test exercises one case under one of the two Comet scan implementations
- * (`native_datafusion`, `native_iceberg_compat`). Assertions encode Comet's actual current
- * behavior. Spark's reference behavior is recorded in the per-case comments and in the matrix
- * below; assertions do not run Spark in isolation.
- *
- * If a Comet fix lands that aligns one of these cases with Spark, update the affected test(s) and
- * the matrix below in the same PR.
  */
-// Behavior matrix (Spark reference behavior; Comet behavior is asserted by each
-// test). "OK" = read succeeds. "throw" = SparkException at runtime.
-//
-//   Case                                   Spark 3.4  3.5    4.0    Comet native_datafusion  Comet native_iceberg_compat
-//   1. BINARY -> TIMESTAMP                 throw      throw  throw  throw                    throw
-//   2. INT32 -> INT64                      throw      throw  OK     OK (widened values)      throw on 3.x / OK on 4.0 (COMET_SCHEMA_EVOLUTION_ENABLED defaults true)
-//   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  OK (silent, possible wall-clock diff)  throw on 3.x / OK on 4.0 (isSpark40Plus guard in TypeUtil)
-//   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  throw                    throw
-//   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     OK (1 row, no overflow)  throw on 3.x / OK on 4.0 (COMET_SCHEMA_EVOLUTION_ENABLED defaults true)
-//   6. STRING -> INT                       throw      throw  throw  throw                    throw
-//   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  throw                    throw
-//   C1. INT8 -> INT32                      OK         OK     OK     OK (widened values)      OK (widened values)
-//   C2. FLOAT -> DOUBLE                    OK         OK     OK     OK (widened values)      throw on 3.x / OK on 4.0 (COMET_SCHEMA_EVOLUTION_ENABLED defaults true)
 class ParquetSchemaMismatchSuite extends CometTestBase {
   import testImplicits._
 
-  /**
-   * Force a specific Comet scan implementation, force V1 datasource (both native_datafusion and
-   * native_iceberg_compat are V1-only), then run the given block in a fresh temp directory. The
-   * block writes Parquet under `path`, builds a DataFrame with a mismatched schema, and runs
-   * assertions inside `check`. The temp directory (and its files) is present for the entire
-   * duration of `body`, so `collect()` and other actions may be called safely inside `check`.
-   */
   private def withMismatchedSchema(scanImpl: String)(body: String => DataFrame)(
       check: DataFrame => Unit): Unit = {
     withSQLConf(
