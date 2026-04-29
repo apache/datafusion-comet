@@ -123,9 +123,9 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
   }
 
   // Case 3: INT96 TimestampLTZ read as TimestampNTZ. Spark throws on all
-  // versions (SPARK-36182). INT96 carries no timezone info in the Parquet
-  // schema, so native_datafusion cannot detect the LTZ -> NTZ mismatch and
-  // silently reads (possibly with a wrong wall-clock value).
+  // versions (SPARK-36182). Comet's native_datafusion scan detects the
+  // TimestampType/TimestampNTZType mismatch between the file and read schemas
+  // at plan time and falls back to Spark, which throws SparkException.
   // native_iceberg_compat throws via TypeUtil.convertErrorForTimestampNTZ on
   // Spark 3.x (mirrors Spark's behavior). On Spark 4.0, TypeUtil.checkParquetType
   // has an isSpark40Plus guard that bypasses the INT96 check, so the read succeeds.
@@ -139,12 +139,11 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
       }
       spark.read.schema("ts timestamp_ntz").parquet(path)
     } { df =>
-      // native_datafusion succeeds silently: INT96 carries no timezone info so
-      // the LTZ -> NTZ mismatch is undetectable; result may have a wrong
-      // wall-clock value depending on the executor timezone.
-      val outcome = Try(df.collect())
-      assert(outcome.isSuccess, s"unexpected failure: $outcome")
-      assert(outcome.get.length == 1)
+      // native_datafusion falls back to Spark due to TimestampType/TimestampNTZType
+      // mismatch detection; Spark throws SparkException on all versions.
+      intercept[SparkException] {
+        df.collect()
+      }
     }
   }
 

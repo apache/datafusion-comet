@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefa
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{TimestampNTZType, TimestampType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -76,6 +77,27 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         .contains("true")) {
 
       withInfo(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
+    }
+
+    // INT96 timestamps lose their LTZ/NTZ distinction once DataFusion reads them as
+    // Arrow Timestamp(Microsecond, None). Detect TimestampType <-> TimestampNTZType
+    // mismatches between the file schema and the read schema and fall back to Spark,
+    // which will throw the appropriate error (see issue #3720).
+    val dataSchema = scanExec.relation.dataSchema
+    scanExec.requiredSchema.fields.foreach { reqField =>
+      if (dataSchema.fieldNames.contains(reqField.name)) {
+        val dataType = dataSchema(reqField.name).dataType
+        (dataType, reqField.dataType) match {
+          case (_: TimestampType, _: TimestampNTZType) |
+              (_: TimestampNTZType, _: TimestampType) =>
+            withInfo(
+              scanExec,
+              s"Native DataFusion scan does not support reading column '${reqField.name}' " +
+                s"as ${reqField.dataType.simpleString} when the file schema type is " +
+                s"${dataType.simpleString}")
+          case _ =>
+        }
+      }
     }
 
     // the scan is supported if no fallback reasons were added to the node

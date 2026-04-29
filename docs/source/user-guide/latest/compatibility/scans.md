@@ -71,6 +71,9 @@ requires `spark.comet.exec.enabled=true` because the scan node must be wrapped b
 - Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
   are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
   matching Spark's behavior.
+- When reading a Parquet file where the file schema has `TimestampType` (LTZ) but the read schema requests
+  `TimestampNTZType` (or vice versa), the `native_datafusion` scan falls back to Spark.
+  See [issue #3720](https://github.com/apache/datafusion-comet/issues/3720) for more details.
 
 ## `native_iceberg_compat` Limitations
 
