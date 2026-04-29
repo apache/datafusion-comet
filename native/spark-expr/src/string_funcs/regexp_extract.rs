@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, GenericStringArray, GenericStringBuilder};
+use arrow::array::{
+    Array, ArrayRef, GenericStringArray, GenericStringBuilder, OffsetSizeTrait, StringArray,
+};
 use arrow::datatypes::DataType;
 use datafusion::common::{
     cast::as_generic_string_array, exec_err, DataFusionError, Result as DataFusionResult,
@@ -56,9 +58,9 @@ pub fn spark_regexp_extract(args: &[ColumnarValue]) -> DataFusionResult<Columnar
         1
     };
 
-    let pattern = match &args[1] {
+    let pattern: &str = match &args[1] {
         ColumnarValue::Scalar(ScalarValue::Utf8(Some(p)))
-        | ColumnarValue::Scalar(ScalarValue::LargeUtf8(Some(p))) => p.clone(),
+        | ColumnarValue::Scalar(ScalarValue::LargeUtf8(Some(p))) => p,
         ColumnarValue::Scalar(ScalarValue::Utf8(None))
         | ColumnarValue::Scalar(ScalarValue::LargeUtf8(None)) => {
             return Ok(null_result(subject_len(&args[0])));
@@ -68,7 +70,7 @@ pub fn spark_regexp_extract(args: &[ColumnarValue]) -> DataFusionResult<Columnar
         }
     };
 
-    let regex = Regex::new(&pattern).map_err(|e| {
+    let regex = Regex::new(pattern).map_err(|e| {
         DataFusionError::Execution(format!(
             "The value of parameter `regexp` in `regexp_extract` is invalid: '{pattern}' ({e})"
         ))
@@ -105,25 +107,30 @@ pub fn spark_regexp_extract(args: &[ColumnarValue]) -> DataFusionResult<Columnar
         ColumnarValue::Scalar(ScalarValue::Utf8(s))
         | ColumnarValue::Scalar(ScalarValue::LargeUtf8(s)) => match s {
             None => Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None))),
-            Some(s) => Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
-                extract_one(s, &regex, group_idx),
-            )))),
+            Some(s) => Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(extract_one(
+                s, &regex, group_idx,
+            ))))),
         },
         _ => exec_err!("regexp_extract subject must be a string"),
     }
 }
 
-fn extract_array<O: arrow::array::OffsetSizeTrait>(
+fn extract_array<O: OffsetSizeTrait>(
     array: &GenericStringArray<O>,
     regex: &Regex,
     group_idx: usize,
 ) -> ArrayRef {
-    let mut builder = GenericStringBuilder::<i32>::with_capacity(array.len(), array.value_data().len());
+    let mut builder =
+        GenericStringBuilder::<O>::with_capacity(array.len(), array.value_data().len());
     for i in 0..array.len() {
         if array.is_null(i) {
             builder.append_null();
         } else {
-            builder.append_value(extract_one(array.value(i), regex, group_idx));
+            let extracted = match regex.captures(array.value(i)) {
+                Some(caps) => caps.get(group_idx).map(|m| m.as_str()).unwrap_or(""),
+                None => "",
+            };
+            builder.append_value(extracted);
         }
     }
     Arc::new(builder.finish())
@@ -148,13 +155,7 @@ fn subject_len(value: &ColumnarValue) -> Option<usize> {
 
 fn null_result(len: Option<usize>) -> ColumnarValue {
     match len {
-        Some(n) => {
-            let mut builder = GenericStringBuilder::<i32>::with_capacity(n, 0);
-            for _ in 0..n {
-                builder.append_null();
-            }
-            ColumnarValue::Array(Arc::new(builder.finish()))
-        }
+        Some(n) => ColumnarValue::Array(Arc::new(StringArray::new_null(n))),
         None => ColumnarValue::Scalar(ScalarValue::Utf8(None)),
     }
 }
@@ -272,10 +273,9 @@ mod tests {
 
     #[test]
     fn group_index_out_of_range_errors() {
-        let err =
-            spark_regexp_extract(&[array(vec![Some("abc")]), pattern(r"(a)(b)"), idx(3)])
-                .err()
-                .unwrap();
+        let err = spark_regexp_extract(&[array(vec![Some("abc")]), pattern(r"(a)(b)"), idx(3)])
+            .err()
+            .unwrap();
         let msg = err.to_string();
         assert!(msg.contains("group index"), "{msg}");
         assert!(msg.contains("but got 3"), "{msg}");

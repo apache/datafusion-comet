@@ -384,7 +384,7 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
     val optExpr = scalarFunctionExprToProtoWithReturnType(
       "regexp_extract",
       expr.dataType,
-      failOnError = true,
+      failOnError = false,
       subjectExpr,
       patternExpr,
       idxExpr)
