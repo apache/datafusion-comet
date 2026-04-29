@@ -233,6 +233,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)
 
+  private val urlExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[ParseUrl] -> CometParseUrl)
+
   private[comet] val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
     classOf[Alias] -> CometAlias,
@@ -257,7 +260,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     mathExpressions ++ hashExpressions ++ stringExpressions ++
       conditionalExpressions ++ mapExpressions ++ predicateExpressions ++
       structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++
-      temporalExpressions ++ conversionExpressions
+      temporalExpressions ++ conversionExpressions ++ urlExpressions
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.

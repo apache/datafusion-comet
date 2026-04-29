@@ -62,6 +62,10 @@ use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
+use datafusion_spark::function::url::parse_url::ParseUrl as SparkParseUrl;
+use datafusion_spark::function::url::try_parse_url::TryParseUrl as SparkTryParseUrl;
+use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
+use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
 use futures::poll;
 use futures::stream::StreamExt;
 use futures::FutureExt;
@@ -567,6 +571,10 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStrToMap::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkParseUrl::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryParseUrl::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlDecode::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
 }
 
 /// Prepares arrow arrays for output.

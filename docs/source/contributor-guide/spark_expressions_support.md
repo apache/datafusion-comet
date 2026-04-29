@@ -476,9 +476,9 @@
 
 ### url_funcs
 
-- [ ] parse_url
-- [ ] url_decode
-- [ ] url_encode
+- [x] parse_url
+- [x] url_decode
+- [x] url_encode
 
 ### window_funcs
 

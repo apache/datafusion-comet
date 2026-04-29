@@ -1,0 +1,88 @@
+-- Licensed to the Apache Software Foundation (ASF) under one
+-- or more contributor license agreements.  See the NOTICE file
+-- distributed with this work for additional information
+-- regarding copyright ownership.  The ASF licenses this file
+-- to you under the Apache License, Version 2.0 (the
+-- "License"); you may not use this file except in compliance
+-- with the License.  You may obtain a copy of the License at
+--
+--   http://www.apache.org/licenses/LICENSE-2.0
+--
+-- Unless required by applicable law or agreed to in writing,
+-- software distributed under the License is distributed on an
+-- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+-- KIND, either express or implied.  See the License for the
+-- specific language governing permissions and limitations
+-- under the License.
+
+-- parse_url function
+statement
+CREATE TABLE test_urls(url string) USING parquet
+
+statement
+INSERT INTO test_urls VALUES
+  ('http://spark.apache.org/path?query=1'),
+  ('http://user:password@host:8080/path?key=value&key2=value2#ref'),
+  ('http://example.com/path'),
+  ('http://example.com?foo=bar&baz=qux'),
+  ('http://example.com#fragment'),
+  (''),
+  (NULL)
+
+-- extract HOST
+query
+SELECT parse_url(url, 'HOST') FROM test_urls
+
+-- extract PATH
+query
+SELECT parse_url(url, 'PATH') FROM test_urls
+
+-- extract QUERY
+query
+SELECT parse_url(url, 'QUERY') FROM test_urls
+
+-- extract REF (fragment)
+query
+SELECT parse_url(url, 'REF') FROM test_urls
+
+-- extract PROTOCOL
+query
+SELECT parse_url(url, 'PROTOCOL') FROM test_urls
+
+-- extract FILE
+query
+SELECT parse_url(url, 'FILE') FROM test_urls
+
+-- extract AUTHORITY
+query
+SELECT parse_url(url, 'AUTHORITY') FROM test_urls
+
+-- extract USERINFO
+query
+SELECT parse_url(url, 'USERINFO') FROM test_urls
+
+-- extract specific query parameter (3-arg form)
+query
+SELECT parse_url(url, 'QUERY', 'query') FROM test_urls
+
+query
+SELECT parse_url(url, 'QUERY', 'key') FROM test_urls
+
+query
+SELECT parse_url(url, 'QUERY', 'key2') FROM test_urls
+
+query
+SELECT parse_url(url, 'QUERY', 'nonexistent') FROM test_urls
+
+-- literal arguments
+query
+SELECT parse_url('http://spark.apache.org/path?query=1', 'HOST')
+
+query
+SELECT parse_url('http://spark.apache.org/path?query=1', 'QUERY', 'query')
+
+query
+SELECT parse_url(NULL, 'HOST')
+
+query
+SELECT parse_url('http://example.com', 'QUERY')
