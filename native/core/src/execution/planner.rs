@@ -68,8 +68,10 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SumInteger, ToCsv,
+    BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
+    SumInteger, ToCsv,
 };
+use datafusion_spark::function::aggregate::collect::SparkCollectSet;
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -93,7 +95,6 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
-
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
@@ -680,6 +681,24 @@ impl PhysicalPlanner {
                     csv_struct_expr,
                     &options.timezone,
                     csv_write_options,
+                )))
+            }
+            ExprStruct::ArraysZip(expr) => {
+                if expr.values.is_empty() {
+                    return Err(GeneralError(
+                        "arrays_zip requires at least one argument".to_string(),
+                    ));
+                }
+
+                let children = expr
+                    .values
+                    .iter()
+                    .map(|child| self.create_expr(child, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(Arc::new(SparkArraysZipFunc::new(
+                    children,
+                    expr.names.clone(),
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
@@ -2265,6 +2284,11 @@ impl PhysicalPlanner {
                     datatype,
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
+            }
+            AggExprStruct::CollectSet(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
+                Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
             }
         }
     }

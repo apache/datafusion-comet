@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -56,7 +56,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, with
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
 /**
@@ -1386,6 +1386,14 @@ trait CometBaseAggregate {
       return None
     }
 
+    if (groupingExpressions.exists(expr => isStringCollationType(expr.dataType))) {
+      // Collation-aware grouping requires collation-aware hashing/equality; Comet only
+      // compares raw bytes, which would put rows that compare equal under the collation
+      // into different groups.
+      withInfo(aggregate, "Grouping on non-default collated strings is not supported")
+      return None
+    }
+
     val groupingExprsWithInput =
       groupingExpressions.map(expr => expr.name -> exprToProto(expr, child.output))
 
@@ -1580,13 +1588,50 @@ object CometObjectHashAggregateExec
     CometHashAggregateExec(
       nativeOp,
       op,
-      op.output,
+      adjustOutputForNativeState(op),
       op.groupingExpressions,
       op.aggregateExpressions,
       op.resultExpressions,
       op.child.output,
       op.child,
       SerializedPlan(None))
+  }
+
+  /**
+   * For Partial mode aggregates containing TypedImperativeAggregate functions (like CollectSet),
+   * the Spark-side output declares buffer columns as BinaryType (since Spark serializes state to
+   * binary). However, the native Comet aggregate produces the actual state type (e.g.,
+   * ArrayType(elementType) for CollectSet). This method corrects the output schema to match the
+   * native state types so the shuffle exchange schema is consistent with the actual data.
+   *
+   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
+   * case branch here mapping it to the native state type.
+   */
+  private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
+    // CometBaseAggregate.doConvert guarantees all expressions share the same mode.
+    val modes = op.aggregateExpressions.map(_.mode).distinct
+    if (modes != Seq(Partial)) {
+      return op.output
+    }
+
+    val numGrouping = op.groupingExpressions.length
+    val output = op.output.toArray
+
+    var bufferIdx = numGrouping
+    for (aggExpr <- op.aggregateExpressions) {
+      val aggFunc = aggExpr.aggregateFunction
+      val bufferAttrs = aggFunc.aggBufferAttributes
+      aggFunc match {
+        case cs: CollectSet =>
+          val elementType = cs.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _ =>
+      }
+      bufferIdx += bufferAttrs.length
+    }
+
+    output.toSeq
   }
 }
 
@@ -1671,6 +1716,12 @@ trait CometHashJoin {
       return None
     }
 
+    val joinKeys = join.leftKeys ++ join.rightKeys
+    if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
+      withInfo(join, "unsupported non-default collated string join keys")
+      return None
+    }
+
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
@@ -1712,7 +1763,7 @@ trait CometHashJoin {
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
+      val allExprs: Seq[Expression] = joinKeys
       withInfo(join, allExprs: _*)
       None
     }
@@ -2033,8 +2084,14 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       }
     }
 
+    val joinKeys = join.leftKeys ++ join.rightKeys
+    if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
+      withInfo(join, "unsupported non-default collated string join keys")
+      return None
+    }
+
     // Checks if the join keys are supported by DataFusion SortMergeJoin.
-    val errorMsgs = join.leftKeys.flatMap { key =>
+    val errorMsgs = joinKeys.flatMap { key =>
       if (!supportedSortMergeJoinEqualType(key.dataType)) {
         Some(s"Unsupported join key type ${key.dataType} on key: ${key.sql}")
       } else {
@@ -2066,7 +2123,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       condition.map(joinBuilder.setCondition)
       Some(builder.setSortMergeJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
+      val allExprs: Seq[Expression] = joinKeys
       withInfo(join, allExprs: _*)
       None
     }
@@ -2091,6 +2148,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
    * Returns true if given datatype is supported as a key in DataFusion sort merge join.
    */
   private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
+    case st: StringType if isStringCollationType(st) => false
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true

@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::log::spark_log;
@@ -23,8 +24,9 @@ use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_isnan,
     spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
-    spark_unscaled_value, EvalMode, SparkArrayCompact, SparkContains, SparkDateDiff,
-    SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkSecondsToTimestamp, SparkSizeFunc,
+    spark_unscaled_value, EvalMode, SparkArrayCompact, SparkArrayPositionFunc, SparkArraysOverlap,
+    SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate,
+    SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -190,6 +192,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)
         }
+        "map_sort" => {
+            let func = Arc::new(spark_map_sort);
+            make_comet_scalar_udf!("spark_map_sort", func, without data_type)
+        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
@@ -201,6 +207,8 @@ pub fn create_comet_physical_fun_with_eval_mode(
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
         Arc::new(ScalarUDF::new_from_impl(SparkArrayCompact::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArrayPositionFunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkContains::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateDiff::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),
