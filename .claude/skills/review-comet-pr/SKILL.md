@@ -68,7 +68,6 @@ For expression PRs, check how similar expressions are implemented in the codebas
    ```
 
 3. **Read the Spark implementation carefully.** Pay attention to:
-
    - The `eval` and `doGenEval`/`nullSafeEval` methods. These define the exact behavior.
    - The `inputTypes` and `dataType` fields. These define which types Spark accepts and what it returns.
    - Null handling. Does it use `nullable = true`? Does `nullSafeEval` handle nulls implicitly?
@@ -83,7 +82,6 @@ For expression PRs, check how similar expressions are implemented in the codebas
    ```
 
 5. **Compare the Spark behavior against the Comet implementation in the PR.** Identify:
-
    - Edge cases tested in Spark but not in the PR
    - Data types supported in Spark but not handled in the PR
    - Behavioral differences that should be marked `Incompatible`
@@ -97,14 +95,12 @@ For expression PRs, check how similar expressions are implemented in the codebas
 For expression PRs, verify against the Spark source you read in step 2:
 
 1. **Check edge cases**
-
    - Null handling
    - Overflow behavior
    - Empty input behavior
    - Type-specific behavior
 
 2. **Verify all data types are handled**
-
    - Does Spark support this type? (Check `inputTypes` in Spark source)
    - Does the PR handle all Spark-supported types?
 
@@ -220,13 +216,11 @@ SELECT known_buggy_expr(v) FROM test_table
 2. **Look for a microbenchmark implementation.** Expression benchmarks live in `spark/src/test/scala/org/apache/spark/sql/benchmark/`. Check whether the PR adds a benchmark for the new expression.
 
 3. **Review the benchmark results if provided:**
-
    - Is Comet actually faster than Spark for this expression?
    - Are the benchmarks representative? They should test with realistic data sizes, not just trivial inputs.
    - Are different data types benchmarked if the expression supports multiple types?
 
 4. **Review the Rust implementation for performance concerns:**
-
    - Unnecessary allocations or copies
    - Row-by-row processing where batch/array operations are possible
    - Redundant type conversions
