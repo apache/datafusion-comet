@@ -21,7 +21,7 @@ package org.apache.comet.rules
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Alias, BindReferences, DynamicPruningExpression, Expression, Literal}
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometNativeScanExec, CometSubqueryAdaptiveBroadcastExec, CometSubqueryBroadcastExec}
@@ -317,7 +317,6 @@ case object CometPlanAdaptiveDynamicPruningFilters
     var result: Option[(SparkPlan, Boolean)] = None
     find(plan) {
       case join: CometBroadcastHashJoinExec =>
-        assert(result.isEmpty, "find() should stop after first match")
         result = extractBroadcastChild(
           join.buildSide,
           join.left,
@@ -328,7 +327,6 @@ case object CometPlanAdaptiveDynamicPruningFilters
           sabKeyIds)
         result.isDefined
       case join: BroadcastHashJoinExec =>
-        assert(result.isEmpty, "find() should stop after first match")
         result = extractBroadcastChild(
           join.buildSide,
           join.left,
@@ -344,7 +342,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
   }
 
   private def extractBroadcastChild(
-      buildSide: org.apache.spark.sql.catalyst.optimizer.BuildSide,
+      buildSide: BuildSide,
       left: SparkPlan,
       right: SparkPlan,
       leftKeys: Seq[Expression],
@@ -363,6 +361,14 @@ case object CometPlanAdaptiveDynamicPruningFilters
       }
       Some((bc, isCometJoin))
     } else {
+      // exprId mismatch between SAB and candidate BHJ. This is expected when the plan
+      // contains multiple broadcast joins and we're iterating through non-matches.
+      // It is also the silent-DPP-loss failure mode if AQE has rewritten attribute
+      // exprIds across stage boundaries such that no BHJ matches the SAB. Log at debug
+      // so it's observable without being noisy.
+      logDebug(
+        s"BHJ buildKey exprIds do not match SAB: sab=$sabKeyIds join=$joinKeyIds " +
+          s"(isCometJoin=$isCometJoin)")
       None
     }
   }
