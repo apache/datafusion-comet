@@ -25,11 +25,10 @@ import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, StringType}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CometExpressionSerde, CometWidthBucket, CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.{CometExpressionSerde, CometToPrettyString, CometWidthBucket, CommonStringExprs}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 
@@ -57,7 +56,7 @@ trait CometExprShim extends CommonStringExprs {
   def versionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[WidthBucket] -> CometWidthBucket)
   def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map.empty
+    Map(classOf[ToPrettyString] -> CometToPrettyString)
 
   def versionSpecificExprToProtoInternal(
       expr: Expression,
@@ -98,41 +97,6 @@ trait CometExprShim extends CommonStringExprs {
               BooleanType) =>
         val Seq(bin, charset, _, _) = s.arguments
         stringDecode(expr, charset, bin, inputs, binding)
-
-      case expr @ ToPrettyString(child, timeZoneId) =>
-        val castSupported = CometCast.isSupported(
-          child.dataType,
-          DataTypes.StringType,
-          timeZoneId,
-          CometEvalMode.TRY)
-
-        val isCastSupported = castSupported match {
-          case Compatible(_) => true
-          case Incompatible(_) => true
-          case _ => false
-        }
-
-        if (isCastSupported) {
-          exprToProtoInternal(child, inputs, binding) match {
-            case Some(p) =>
-              val toPrettyString = ExprOuterClass.ToPrettyString
-                .newBuilder()
-                .setChild(p)
-                .setTimezone(timeZoneId.getOrElse("UTC"))
-                .setBinaryOutputStyle(binaryOutputStyle)
-                .build()
-              Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setToPrettyString(toPrettyString)
-                  .build())
-            case _ =>
-              withInfo(expr, child)
-              None
-          }
-        } else {
-          None
-        }
 
       // In Spark 4.0, StructsToJson is a RuntimeReplaceable whose replacement is
       // Invoke(Literal(StructsToJsonEvaluator), "evaluate", ...). Reconstruct the
