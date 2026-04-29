@@ -98,7 +98,7 @@
   - Spark 4.0.1 audited 2026-04-24 (ordering incompatibility as above; collated strings now fall back to Spark)
 - [x] array_join
 - [x] array_max
-- [ ] array_min
+- [x] array_min
 - [x] array_position
 - [x] array_remove
 - [x] array_repeat
@@ -106,7 +106,7 @@
 - [x] arrays_overlap
 - [x] arrays_zip
 - [x] element_at
-- [ ] flatten
+- [x] flatten
 - [x] get
 - [ ] sequence
 - [ ] shuffle
@@ -117,8 +117,8 @@
 
 - [x] &
 - [x] ^
-- [ ] bit_count
-- [ ] bit_get
+- [x] bit_count
+- [x] bit_get
 - [ ] getbit
 - [x] shiftright
 - [ ] shiftrightunsigned
@@ -129,9 +129,9 @@
 
 - [ ] array_size
 - [ ] cardinality
-- [ ] concat
+- [x] concat
 - [x] reverse
-- [ ] size
+- [x] size
 
 ### conditional_funcs
 
@@ -149,7 +149,7 @@
 - [ ] bigint
 - [ ] binary
 - [ ] boolean
-- [ ] cast
+- [x] cast
 - [ ] date
 - [ ] decimal
 - [ ] double
@@ -174,40 +174,40 @@
 - [x] current_date
 - [ ] current_timestamp
 - [x] current_timezone
-- [ ] date_add
-- [ ] date_diff
-- [ ] date_format
+- [x] date_add
+- [x] date_diff
+- [x] date_format
 - [x] date_from_unix_date
 - [x] date_part
-- [ ] date_sub
-- [ ] date_trunc
-- [ ] dateadd
-- [ ] datediff
+- [x] date_sub
+- [x] date_trunc
+- [x] dateadd
+- [x] datediff
 - [x] datepart
-- [ ] day
-- [ ] dayofmonth
-- [ ] dayofweek
-- [ ] dayofyear
+- [x] day
+- [x] dayofmonth
+- [x] dayofweek
+- [x] dayofyear
 - [x] extract
 - [x] from_unixtime
 - [ ] from_utc_timestamp
-- [ ] hour
-- [ ] last_day
+- [x] hour
+- [x] last_day
 - [ ] localtimestamp
-- [ ] make_date
+- [x] make_date
 - [ ] make_dt_interval
 - [ ] make_interval
 - [ ] make_timestamp
 - [ ] make_timestamp_ltz
 - [ ] make_timestamp_ntz
 - [ ] make_ym_interval
-- [ ] minute
-- [ ] month
+- [x] minute
+- [x] month
 - [ ] months_between
-- [ ] next_day
+- [x] next_day
 - [ ] now
-- [ ] quarter
-- [ ] second
+- [x] quarter
+- [x] second
 - [ ] timestamp_micros
 - [ ] timestamp_millis
 - [ ] timestamp_seconds
@@ -217,16 +217,16 @@
 - [ ] to_timestamp_ntz
 - [ ] to_unix_timestamp
 - [ ] to_utc_timestamp
-- [ ] trunc
+- [x] trunc
 - [ ] try_to_timestamp
-- [ ] unix_date
+- [x] unix_date
 - [ ] unix_micros
 - [ ] unix_millis
 - [ ] unix_seconds
 - [x] unix_timestamp
-- [ ] weekday
-- [ ] weekofyear
-- [ ] year
+- [x] weekday
+- [x] weekofyear
+- [x] year
 
 ### generator_funcs
 
@@ -241,12 +241,12 @@
 ### hash_funcs
 
 - [x] crc32
-- [ ] hash
+- [x] hash
 - [x] md5
 - [ ] sha
-- [ ] sha1
-- [ ] sha2
-- [ ] xxhash64
+- [x] sha1
+- [x] sha2
+- [x] xxhash64
 
 ### json_funcs
 
@@ -284,7 +284,7 @@
 - [ ] map_from_entries
 - [x] map_keys
 - [ ] map_values
-- [ ] str_to_map
+- [x] str_to_map
 - [ ] try_element_at
 
 ### math_funcs
@@ -309,18 +309,18 @@
 - [x] ceiling
 - [ ] conv
 - [x] cos
-- [ ] cosh
-- [ ] cot
+- [x] cosh
+- [x] cot
 - [ ] csc
 - [ ] degrees
 - [ ] div
 - [ ] e
 - [x] exp
-- [ ] expm1
+- [x] expm1
 - [ ] factorial
 - [x] floor
 - [ ] greatest
-- [ ] hex
+- [x] hex
 - [ ] hypot
 - [ ] least
 - [x] ln
@@ -336,8 +336,8 @@
 - [x] pow
 - [x] power
 - [ ] radians
-- [ ] rand
-- [ ] randn
+- [x] rand
+- [x] randn
 - [ ] random
 - [ ] rint
 - [x] round
@@ -346,10 +346,10 @@
 - [x] sign
 - [x] signum
 - [x] sin
-- [ ] sinh
+- [x] sinh
 - [x] sqrt
 - [x] tan
-- [ ] tanh
+- [x] tanh
 - [x] try_add
 - [x] try_divide
 - [x] try_multiply
@@ -393,7 +393,7 @@
 - [x] and
 - [x] ilike
 - [x] in
-- [ ] isnan
+- [x] isnan
 - [x] isnotnull
 - [x] isnull
 - [x] like
@@ -401,7 +401,7 @@
 - [x] or
 - [ ] regexp
 - [ ] regexp_like
-- [ ] rlike
+- [x] rlike
 
 ### string_funcs
 
@@ -425,7 +425,7 @@
 - [x] initcap
 - [x] instr
 - [x] lcase
-- [ ] left
+- [x] left
 - [x] len
 - [x] length
 - [ ] levenshtein
@@ -442,21 +442,21 @@
 - [ ] regexp_extract
 - [ ] regexp_extract_all
 - [ ] regexp_instr
-- [ ] regexp_replace
+- [x] regexp_replace
 - [ ] regexp_substr
 - [x] repeat
 - [x] replace
-- [ ] right
+- [x] right
 - [x] rpad
 - [x] rtrim
 - [ ] sentences
 - [ ] soundex
 - [x] space
-- [ ] split
+- [x] split
 - [ ] split_part
 - [x] startswith
-- [ ] substr
-- [ ] substring
+- [x] substr
+- [x] substring
 - [ ] substring_index
 - [ ] to_binary
 - [ ] to_char
@@ -471,7 +471,7 @@
 
 ### struct_funcs
 
-- [ ] named_struct
+- [x] named_struct
 - [ ] struct
 
 ### url_funcs
