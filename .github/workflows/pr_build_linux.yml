@@ -444,7 +444,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 11
+          jdk-version: 17
 
       - name: Download native library
         uses: actions/download-artifact@v8
@@ -502,7 +502,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 11
+          jdk-version: 17
 
       - name: Download native library
         uses: actions/download-artifact@v8
