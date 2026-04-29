@@ -148,7 +148,7 @@ case object CometSpark34AqeDppFallbackRule
    */
   private def findSabScans(plan: SparkPlan): Seq[(SparkPlan, SubqueryAdaptiveBroadcastExec)] = {
     val buf = scala.collection.mutable.ArrayBuffer[(SparkPlan, SubqueryAdaptiveBroadcastExec)]()
-    plan.foreach { node =>
+    foreach(plan) { node =>
       extractFirstSab(node).foreach(sab => buf += ((node, sab)))
     }
     buf.toSeq
@@ -308,7 +308,7 @@ case object CometSpark34AqeDppFallbackRule
     val sabRel = sabRelation.get
 
     var taggedScans = 0
-    plan.foreach {
+    foreach(plan) {
       case peer: FileSourceScanExec if (peer ne sabScan) && sameRelation(peer.relation, sabRel) =>
         peer.setTagValue(CometScanRule.SKIP_COMET_SCAN_TAG, ())
         taggedScans += 1
@@ -316,7 +316,7 @@ case object CometSpark34AqeDppFallbackRule
     }
 
     var taggedShuffles = 0
-    plan.foreach {
+    foreach(plan) {
       case sh: ShuffleExchangeExec if shuffleSubtreeContainsMatchingScan(sh, sabRel, sabScan) =>
         sh.setTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG, ())
         taggedShuffles += 1
@@ -339,11 +339,11 @@ case object CometSpark34AqeDppFallbackRule
       shuffle: ShuffleExchangeExec,
       sabRelation: HadoopFsRelation,
       sabScan: SparkPlan): Boolean = {
-    shuffle.child.exists {
+    find(shuffle.child) {
       case scan: FileSourceScanExec =>
         (scan eq sabScan) || sameRelation(scan.relation, sabRelation)
       case _ => false
-    }
+    }.isDefined
   }
 
   /**
@@ -369,7 +369,7 @@ case object CometSpark34AqeDppFallbackRule
       plan: SparkPlan,
       sabKeyIds: Set[Any]): Option[SparkPlan] = {
     var result: Option[SparkPlan] = None
-    plan.find {
+    find(plan) {
       case j: BroadcastHashJoinExec =>
         val joinBuildKeys = j.buildSide match {
           case BuildLeft => j.leftKeys
