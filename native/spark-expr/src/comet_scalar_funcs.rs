@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::log::spark_log;
@@ -190,6 +191,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "get_json_object" => {
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)
+        }
+        "map_sort" => {
+            let func = Arc::new(spark_map_sort);
+            make_comet_scalar_udf!("spark_map_sort", func, without data_type)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(

@@ -28,6 +28,9 @@ import org.apache.comet.serde.QueryPlanSerde.{binaryOutputStyle, exprToProtoInte
 
 object CometToPrettyString extends CometExpressionSerde[ToPrettyString] {
 
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq("Falls back to Spark when the input type cannot be cast to string.")
+
   override def getSupportLevel(expr: ToPrettyString): SupportLevel = {
     CometCast.isSupported(
       expr.child.dataType,

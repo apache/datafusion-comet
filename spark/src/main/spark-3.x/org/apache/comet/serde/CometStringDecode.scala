@@ -23,6 +23,9 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, StringDecode}
 
 object CometStringDecode extends CometExpressionSerde[StringDecode] with CommonStringExprs {
 
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq("Only the `'utf-8'` charset is supported. Other charsets fall back to Spark.")
+
   override def convert(
       expr: StringDecode,
       inputs: Seq[Attribute],
