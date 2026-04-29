@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, Slice, SortArray}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -448,6 +448,30 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
         expr.children(2))
       None
     }
+  }
+}
+
+object CometSlice extends CometExpressionSerde[Slice] {
+  override def convert(
+      expr: Slice,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val elementType = expr.x.dataType.asInstanceOf[ArrayType].elementType
+    val arrayExprProto = exprToProto(expr.x, inputs, binding)
+    val startExprProto = exprToProto(Cast(expr.start, LongType), inputs, binding)
+    val lengthExprProto = exprToProto(Cast(expr.length, LongType), inputs, binding)
+    // DataFusion list types always have nullable inner elements, so promise
+    // ArrayType(elementType, containsNull = true) here even if Spark's
+    // expr.dataType reports containsNull = false (e.g. for array(1, 2, 3)).
+    val sliceScalarExpr =
+      scalarFunctionExprToProtoWithReturnType(
+        "spark_array_slice",
+        ArrayType(elementType, containsNull = true),
+        false,
+        arrayExprProto,
+        startExprProto,
+        lengthExprProto)
+    optExprWithInfo(sliceScalarExpr, expr, expr.children: _*)
   }
 }
 
