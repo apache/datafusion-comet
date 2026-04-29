@@ -143,7 +143,10 @@ jobs:
           - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
       fail-fast: false
     name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    # Hive tests stay on the standard GitHub-hosted runner: HiveSparkSubmitSuite
+    # relies on an Ivy 'local-m2-cache' resolver that the runs-on.com
+    # ubuntu24-full-x64 image does not provide, so spark-submit fails there.
+    runs-on: ${{ startsWith(matrix.module.name, 'sql_hive') && 'ubuntu-24.04' || (github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest') }}
     container:
       image: amd64/rust
     steps:
