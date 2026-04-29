@@ -102,11 +102,8 @@ object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr = scalarFunctionExprToProtoWithReturnType(
-      "levenshtein",
-      IntegerType,
-      false,
-      childExprs: _*)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("levenshtein", IntegerType, false, childExprs: _*)
     optExprWithInfo(optExpr, expr, expr.children: _*)
   }
 }
