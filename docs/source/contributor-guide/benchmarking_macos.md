@@ -55,13 +55,13 @@ export DF_BENCH=`pwd`
 
 ## Install Spark
 
-Install Apache Spark. This example refers to 3.5.4 version.
+Install Apache Spark. This example refers to 4.0.2 version.
 
 ```shell
-wget https://archive.apache.org/dist/spark/spark-3.5.4/spark-3.5.4-bin-hadoop3.tgz
-tar xzf spark-3.5.4-bin-hadoop3.tgz
-sudo mv spark-3.5.4-bin-hadoop3 /opt
-export SPARK_HOME=/opt/spark-3.5.4-bin-hadoop3/
+wget https://archive.apache.org/dist/spark/spark-4.0.2/spark-4.0.2-bin-hadoop3.tgz
+tar xzf spark-4.0.2-bin-hadoop3.tgz
+sudo mv spark-4.0.2-bin-hadoop3 /opt
+export SPARK_HOME=/opt/spark-4.0.2-bin-hadoop3/
 ```
 
 Start Spark in standalone mode:
@@ -129,7 +129,7 @@ make release COMET_FEATURES=mimalloc
 Set `COMET_JAR` to point to the location of the Comet jar file. Example for Comet 0.8
 
 ```shell
-export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
+export COMET_JAR=`pwd`/spark/target/comet-spark-spark4.0_2.13-0.8.0-SNAPSHOT.jar
 ```
 
 Run the following command (the `--data` parameter will need to be updated to point to your S3 bucket):

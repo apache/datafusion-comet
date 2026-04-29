@@ -65,24 +65,24 @@ under the License.
     <extra-enforcer-rules.version>1.7.0</extra-enforcer-rules.version>
     <scalafmt.version>3.6.1</scalafmt.version>
     <apache-rat-plugin.version>0.16.1</apache-rat-plugin.version>
-    <scala.version>2.12.18</scala.version>
-    <scala.binary.version>2.12</scala.binary.version>
+    <scala.version>2.13.16</scala.version>
+    <scala.binary.version>2.13</scala.binary.version>
     <scala.plugin.version>4.9.6</scala.plugin.version>
     <scalatest.version>3.2.16</scalatest.version>
     <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
-    <spark.version>3.5.8</spark.version>
-    <spark.version.short>3.5</spark.version.short>
+    <spark.version>4.0.2</spark.version>
+    <spark.version.short>4.0</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.25.5</protobuf.version>
-    <parquet.version>1.13.1</parquet.version>
+    <parquet.version>1.15.2</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
     <hadoop.version>3.3.4</hadoop.version>
     <arrow.version>18.3.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <jacoco.version>0.8.11</jacoco.version>
-    <semanticdb.version>4.8.8</semanticdb.version>
-    <slf4j.version>2.0.7</slf4j.version>
+    <semanticdb.version>4.13.6</semanticdb.version>
+    <slf4j.version>2.0.16</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
     <testcontainers.version>1.21.0</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
@@ -116,8 +116,8 @@ under the License.
       -Djdk.reflect.useDirectMethodHandle=false
     </extraJavaTestArgs>
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
-    <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
-    <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
+    <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+    <shims.minorVerSrc>spark-4.0</shims.minorVerSrc>
   </properties>
 
   <dependencyManagement>
@@ -635,10 +635,13 @@ under the License.
       <id>spark-3.4</id>
       <properties>
         <scala.version>2.12.17</scala.version>
+        <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.4.3</spark.version>
         <spark.version.short>3.4</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
+        <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.6</slf4j.version>
+        <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
@@ -650,10 +653,13 @@ under the License.
       <id>spark-3.5</id>
       <properties>
         <scala.version>2.12.18</scala.version>
+        <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.5.8</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
+        <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.7</slf4j.version>
+        <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
@@ -662,10 +668,8 @@ under the License.
     </profile>
 
     <profile>
-      <!-- FIXME: this is WIP. Tests may fail https://github.com/apache/datafusion-comet/issues/551 -->
       <id>spark-4.0</id>
       <properties>
-        <!-- Use Scala 2.13 by default -->
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.0.2</spark.version>
@@ -675,7 +679,6 @@ under the License.
         <slf4j.version>2.0.16</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-4.0</shims.minorVerSrc>
-        <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -729,15 +732,15 @@ under the License.
 
     <profile>
       <id>scala-2.12</id>
+      <properties>
+        <scala.version>2.12.18</scala.version>
+        <scala.binary.version>2.12</scala.binary.version>
+        <semanticdb.version>4.8.8</semanticdb.version>
+      </properties>
     </profile>
 
     <profile>
       <id>scala-2.13</id>
-      <properties>
-        <scala.version>2.13.16</scala.version>
-        <scala.binary.version>2.13</scala.binary.version>
-        <semanticdb.version>4.13.6</semanticdb.version>
-      </properties>
     </profile>
 
     <profile>

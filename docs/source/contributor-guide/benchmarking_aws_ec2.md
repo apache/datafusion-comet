@@ -104,7 +104,7 @@ make release
 Set `COMET_JAR` environment variable.
 
 ```shell
-export COMET_JAR=/home/ec2-user/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
+export COMET_JAR=/home/ec2-user/datafusion-comet/spark/target/comet-spark-spark4.0_2.13-$COMET_VERSION.jar
 ```
 
 ## Run Benchmarks

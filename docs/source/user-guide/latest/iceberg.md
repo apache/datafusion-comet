@@ -31,7 +31,7 @@ reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
-    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
+    --packages org.apache.datafusion:comet-spark-spark4.0_2.13:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
     --repositories https://repo1.maven.org/maven2/ \
     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
     --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkCatalog \
@@ -106,7 +106,7 @@ configure Spark to use a REST catalog with Comet's native Iceberg scan:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
-    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
+    --packages org.apache.datafusion:comet-spark-spark4.0_2.13:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
     --repositories https://repo1.maven.org/maven2/ \
     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
     --conf spark.sql.catalog.rest_cat=org.apache.iceberg.spark.SparkCatalog \

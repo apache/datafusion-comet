@@ -40,7 +40,7 @@ Here is an overview of the changes that the diffs make to Iceberg:
 Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
 
 ```shell
-PROFILES="-Pspark-3.5" make release
+PROFILES="-Pspark-4.0" make release
 ```
 
 ## 2. Clone Iceberg and Apply Diff
