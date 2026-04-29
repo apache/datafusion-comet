@@ -72,16 +72,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       return None
     }
 
-    // Offset window functions (LAG, LEAD) support arbitrary partition and order specs, so skip
-    // the validatePartitionAndSortSpecsForWindowFunc check which requires partition columns to
-    // equal order columns. That stricter check is only needed for aggregate window functions.
-    val hasOnlyOffsetFunctions = winExprs.nonEmpty &&
-      winExprs.forall(e => e.windowFunction.isInstanceOf[FrameLessOffsetWindowFunction])
-    if (!hasOnlyOffsetFunctions && op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty &&
-      !validatePartitionAndSortSpecsForWindowFunc(op.partitionSpec, op.orderSpec, op)) {
-      return None
-    }
-
     val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
     val partitionExprs = op.partitionSpec.map(exprToProto(_, op.child.output))
 
@@ -298,42 +288,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       op.orderSpec,
       op.child,
       SerializedPlan(None))
-  }
-
-  private def validatePartitionAndSortSpecsForWindowFunc(
-      partitionSpec: Seq[Expression],
-      orderSpec: Seq[SortOrder],
-      op: SparkPlan): Boolean = {
-    if (partitionSpec.length != orderSpec.length) {
-      return false
-    }
-
-    val partitionColumnNames = partitionSpec.collect {
-      case a: AttributeReference => a.name
-      case other =>
-        withFallbackReason(
-          op,
-          s"Unsupported partition expression: ${other.getClass.getSimpleName}")
-        return false
-    }
-
-    val orderColumnNames = orderSpec.collect { case s: SortOrder =>
-      s.child match {
-        case a: AttributeReference => a.name
-        case other =>
-          withFallbackReason(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
-          return false
-      }
-    }
-
-    if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
-        partCol != orderCol
-      }) {
-      withFallbackReason(op, "Partitioning and sorting specifications must be the same.")
-      return false
-    }
-
-    true
   }
 
 }

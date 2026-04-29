@@ -42,7 +42,12 @@ class CometWindowExecSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true",
+        "spark.comet.operator.WindowExec.allowIncompatible" -> "true",
+        "spark.comet.explainFallback.enabled" -> "true",
+        "spark.comet.logFallbackReasons.enabled" -> "true",
+        "spark.comet.exec.localTableScan.enabled" -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
         testFun
       }
     }
@@ -53,14 +58,14 @@ class CometWindowExecSuite extends CometTestBase {
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-      checkSparkAnswer(sql("""
+      checkSparkAnswerAndOperator(sql("""
                              |SELECT
                              |  lag(123, 100, 321) OVER (ORDER BY id) as lag,
                              |  lead(123, 100, 321) OVER (ORDER BY id) as lead
                              |FROM (SELECT 1 as id) tmp
       """.stripMargin))
 
-      checkSparkAnswer(sql("""
+      checkSparkAnswerAndOperator(sql("""
                              |SELECT
                              |  lag(123, 100, a) OVER (ORDER BY id) as lag,
                              |  lead(123, 100, a) OVER (ORDER BY id) as lead
@@ -83,7 +88,7 @@ class CometWindowExecSuite extends CometTestBase {
 
     // Comet does not support RANGE BETWEEN
     // https://github.com/apache/datafusion-comet/issues/1246
-    val (_, cometPlan) = checkSparkAnswer(df2)
+    val (_, cometPlan) = checkSparkAnswerAndOperator(df2)
     val cometWindowExecs = collect(cometPlan) { case w: CometWindowExec =>
       w
     }
@@ -104,7 +109,7 @@ class CometWindowExecSuite extends CometTestBase {
                         |select month, area, product, sum(product + 1) over (partition by 1 order by 2)
                         |from windowData
           """.stripMargin)
-        checkSparkAnswer(df2)
+        checkSparkAnswerAndOperator(df2)
         val cometShuffles = collect(df2.queryExecution.executedPlan) {
           case _: CometShuffleExchangeExec => true
         }
@@ -133,7 +138,7 @@ class CometWindowExecSuite extends CometTestBase {
       val df = sql("""
           SELECT k, v, every(v) OVER (PARTITION BY k ORDER BY v) FROM test_agg
                      |""".stripMargin)
-      checkSparkAnswer(df)
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -156,7 +161,7 @@ class CometWindowExecSuite extends CometTestBase {
                       |SELECT val, cate, count(val) OVER(PARTITION BY cate ORDER BY val ROWS CURRENT ROW)
                       |FROM testData ORDER BY cate, val
                       |""".stripMargin)
-      checkSparkAnswer(df1)
+      checkSparkAnswerAndOperator(df1)
     }
   }
 
@@ -165,12 +170,12 @@ class CometWindowExecSuite extends CometTestBase {
       Seq((1L, "1"), (1L, "1"), (2147483650L, "1"), (3L, "2"), (2L, "1"), (2147483650L, "2"))
         .toDF("key", "value")
 
-    checkSparkAnswer(
+    checkSparkAnswerAndOperator(
       df.select(
         $"key",
         count("key").over(
           Window.partitionBy($"value").orderBy($"key").rangeBetween(0, 2147483648L))))
-    checkSparkAnswer(
+    checkSparkAnswerAndOperator(
       df.select(
         $"key",
         count("key").over(
@@ -201,12 +206,12 @@ class CometWindowExecSuite extends CometTestBase {
           .repartition($"key1")
           .select(lead($"key1", 1).over(windowSpec), lead($"value", 1).over(windowSpec))
 
-        checkSparkAnswer(windowed)
+        checkSparkAnswerAndOperator(windowed)
       }
     }
   }
 
-  ignore("aggregate window function for all types") {
+  test("aggregate window function for all types") {
     val numValues = 2048
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -222,16 +227,16 @@ class CometWindowExecSuite extends CometTestBase {
                     List(s"COUNT(_$col)", s"MAX(_$col)", s"MIN(_$col)", s"SUM(_$col)")
                   aggregateFunctions.foreach { function =>
                     val df1 = sql(s"SELECT $function OVER() FROM tbl")
-                    checkSparkAnswerWithTolerance(df1, 1e-6)
+                    checkSparkAnswerAndOperatorWithTol(df1)
 
                     val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
-                    checkSparkAnswerWithTolerance(df2, 1e-6)
+                    checkSparkAnswerAndOperatorWithTol(df2)
 
                     val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
-                    checkSparkAnswerWithTolerance(df3, 1e-6)
+                    checkSparkAnswerAndOperatorWithTol(df3)
 
                     val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
-                    checkSparkAnswerWithTolerance(df4, 1e-6)
+                    checkSparkAnswerAndOperatorWithTol(df4)
                   }
                 }
 
@@ -239,16 +244,16 @@ class CometWindowExecSuite extends CometTestBase {
                 val aggregateFunctionsWithoutSum = List("COUNT(_12)", "MAX(_12)", "MIN(_12)")
                 aggregateFunctionsWithoutSum.foreach { function =>
                   val df1 = sql(s"SELECT $function OVER() FROM tbl")
-                  checkSparkAnswerWithTolerance(df1, 1e-6)
+                  checkSparkAnswerAndOperatorWithTol(df1)
 
                   val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
-                  checkSparkAnswerWithTolerance(df2, 1e-6)
+                  checkSparkAnswerAndOperatorWithTol(df2)
 
                   val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
-                  checkSparkAnswerWithTolerance(df3, 1e-6)
+                  checkSparkAnswerAndOperatorWithTol(df3)
 
                   val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
-                  checkSparkAnswerWithTolerance(df4, 1e-6)
+                  checkSparkAnswerAndOperatorWithTol(df4)
                 }
               }
             }
@@ -258,7 +263,7 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  ignore("Windows support") {
+  test("Windows support") {
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -327,7 +332,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: AVG with PARTITION BY and ORDER BY not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: AVG with PARTITION BY and ORDER BY") {
+  test("window: AVG with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -367,7 +372,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW produces incorrect results
   // Returns wrong cnt values - ordering issue causes swapped values for rows with same partition
-  ignore("window: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
+  test("window: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -388,7 +393,7 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING produces incorrect results
-  ignore("window: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING") {
+  test("window: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -410,7 +415,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: AVG with ROWS BETWEEN produces incorrect results
   // Returns wrong avg_c values - calculation appears to be off
-  ignore("window: AVG with ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING") {
+  test("window: AVG with ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -431,7 +436,7 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: SUM with ROWS BETWEEN produces incorrect results
-  ignore("window: SUM with ROWS BETWEEN 2 PRECEDING AND CURRENT ROW") {
+  test("window: SUM with ROWS BETWEEN 2 PRECEDING AND CURRENT ROW") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -453,7 +458,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: COUNT with ROWS BETWEEN not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: COUNT with ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING") {
+  test("window: COUNT with ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -475,7 +480,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: MAX with ROWS BETWEEN UNBOUNDED not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: MAX with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING") {
+  test("window: MAX with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -497,7 +502,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: ROW_NUMBER not supported
   // Falls back to Spark Window operator
-  ignore("window: ROW_NUMBER with PARTITION BY and ORDER BY") {
+  test("window: ROW_NUMBER with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -519,7 +524,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: RANK not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: RANK with PARTITION BY and ORDER BY") {
+  test("window: RANK with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -541,7 +546,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: DENSE_RANK not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: DENSE_RANK with PARTITION BY and ORDER BY") {
+  test("window: DENSE_RANK with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -563,7 +568,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: PERCENT_RANK not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: PERCENT_RANK with PARTITION BY and ORDER BY") {
+  test("window: PERCENT_RANK with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -585,7 +590,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: NTILE not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: NTILE with PARTITION BY and ORDER BY") {
+  test("window: NTILE with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -735,7 +740,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: FIRST_VALUE causes encoder error
   // org.apache.spark.SparkUnsupportedOperationException: [ENCODER_NOT_FOUND] Not found an encoder of the type Any
-  ignore("window: FIRST_VALUE with default ignore nulls") {
+  test("window: FIRST_VALUE with default ignore nulls") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, if (i % 7 == 0) null else i))
@@ -757,7 +762,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: LAST_VALUE causes encoder error
   // org.apache.spark.SparkUnsupportedOperationException: [ENCODER_NOT_FOUND] Not found an encoder of the type Any
-  ignore("window: LAST_VALUE with ROWS frame") {
+  test("window: LAST_VALUE with ROWS frame") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, if (i % 7 == 0) null else i))
@@ -778,7 +783,7 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: NTH_VALUE returns incorrect results - produces 0 instead of null for first row,
-  ignore("window: NTH_VALUE with position 2") {
+  test("window: NTH_VALUE with position 2") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -800,7 +805,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: CUME_DIST not supported - falls back to Spark Window operator
   // Error: "Partitioning and sorting specifications must be the same"
-  ignore("window: CUME_DIST with PARTITION BY and ORDER BY") {
+  test("window: CUME_DIST with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -821,7 +826,7 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: Multiple window functions with mixed frame types (RowFrame and RangeFrame)
-  ignore("window: multiple window functions in single query") {
+  test("window: multiple window functions in single query") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -846,7 +851,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: Different window specifications not fully supported
   // Falls back to Spark Project and Window operators
-  ignore("window: different window specifications in single query") {
+  test("window: different window specifications in single query") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -870,7 +875,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: ORDER BY DESC with aggregation not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: ORDER BY DESC with aggregation") {
+  test("window: ORDER BY DESC with aggregation") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -892,7 +897,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: Multiple PARTITION BY columns not supported
   // Falls back to Spark Window operator
-  ignore("window: multiple PARTITION BY columns") {
+  test("window: multiple PARTITION BY columns") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i % 2, i))
@@ -914,7 +919,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: Multiple ORDER BY columns not supported
   // Falls back to Spark Window operator
-  ignore("window: multiple ORDER BY columns") {
+  test("window: multiple ORDER BY columns") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i % 2, i))
@@ -936,7 +941,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: RANGE BETWEEN with numeric ORDER BY not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: RANGE BETWEEN with numeric ORDER BY") {
+  test("window: RANGE BETWEEN with numeric ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i, i * 2))
@@ -958,7 +963,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
+  test("window: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i, i * 2))
@@ -980,7 +985,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: Complex expressions in window functions not fully supported
   // Falls back to Spark Project operator
-  ignore("window: complex expression in window function") {
+  test("window: complex expression in window function") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -1002,7 +1007,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: Window function with WHERE clause not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: window function with WHERE clause") {
+  test("window: window function with WHERE clause") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -1025,7 +1030,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   // TODO: Window function with GROUP BY not fully supported
   // Falls back to Spark Project and Window operators
-  ignore("window: window function with GROUP BY") {
+  test("window: window function with GROUP BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -1047,7 +1052,7 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: ROWS BETWEEN with negative offset produces incorrect results
-  ignore("window: ROWS BETWEEN with negative offset") {
+  test("window: ROWS BETWEEN with negative offset") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -1068,7 +1073,7 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: All ranking functions together produce incorrect row_num values
-  ignore("window: all ranking functions together") {
+  test("window: all ranking functions together") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
