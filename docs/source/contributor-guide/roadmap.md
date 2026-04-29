@@ -24,21 +24,24 @@ helpful to have a roadmap for some of the major items that require coordination 
 
 ## Major Initiatives
 
-### Iceberg Integration
+### Window Expressions
 
-Reads of Iceberg tables with Parquet data files are fully native and enabled by default, powered by a scan operator
-backed by Iceberg-rust ([#2528]). We anticipate major improvements in the next few releases, including bringing Iceberg table format V3 features (_e.g._,
-encryption) to the reader.
+Native window execution is currently disabled by default due to known correctness issues ([#2721], [#2841]).
+In addition, dedicated window functions such as `rank`, `dense_rank`, `row_number`, `lag`, `lead`, `ntile`,
+`cume_dist`, `percent_rank`, and `nth_value` are not yet implemented and fall back to Spark ([#2705]). The
+goal is to enable windowed aggregates by default ([#4007]) and add the missing dedicated window functions.
 
-[#2528]: https://github.com/apache/datafusion-comet/pull/2528
+[#2705]: https://github.com/apache/datafusion-comet/issues/2705
+[#2721]: https://github.com/apache/datafusion-comet/issues/2721
+[#2841]: https://github.com/apache/datafusion-comet/issues/2841
+[#4007]: https://github.com/apache/datafusion-comet/issues/4007
 
-### Spark 4.0 Support
+### Lambda Expressions
 
-Comet has experimental support for Spark 4.0, but there is more work to do ([#1637]), such as enabling
-more Spark SQL tests and fully implementing ANSI support ([#313]) for all supported expressions.
-
-[#313]: https://github.com/apache/datafusion-comet/issues/313
-[#1637]: https://github.com/apache/datafusion-comet/issues/1637
+Spark supports higher-order functions on arrays and maps that take a lambda, including `transform`, `exists`,
+`forall`, `aggregate`, `zip_with`, `map_filter`, and `map_zip_with`. Comet currently lacks a general mechanism
+for serializing lambda expressions and evaluating them in DataFusion. Adding this capability will unlock a
+significant family of Spark expressions in one effort.
 
 ### Dynamic Partition Pruning
 
@@ -51,11 +54,37 @@ requires a redesign of Comet's plan translation. This effort can be tracked at [
 [#3510]: https://github.com/apache/datafusion-comet/issues/3510
 [#3511]: https://github.com/apache/datafusion-comet/pull/3511
 
+### TPC-H and TPC-DS Performance
+
+We regularly publish benchmark results derived from TPC-H and TPC-DS to track performance against Spark. Closing
+the remaining gaps and increasing the speedup on both benchmark suites is an ongoing focus, tracked under [#2004]
+(TPC-H), [#858] (TPC-DS), and [#3799] (improving the awslabs published TPC-DS results).
+
+[#858]: https://github.com/apache/datafusion-comet/issues/858
+[#2004]: https://github.com/apache/datafusion-comet/issues/2004
+[#3799]: https://github.com/apache/datafusion-comet/issues/3799
+
+### Upstream Work in DataFusion
+
+A growing number of Spark-compatible expressions live in the `datafusion-spark` crate in the core DataFusion
+repository. Comet is migrating its expression implementations to that crate so that they can be shared by other
+DataFusion-based projects, tracked in [#2084]. Improvements to core DataFusion operators (joins, aggregates,
+window) made in support of Comet also benefit the wider ecosystem.
+
+[#2084]: https://github.com/apache/datafusion-comet/issues/2084
+
+### Native Parquet Writes
+
+Comet has experimental support for native Parquet writes via `InsertIntoHadoopFsRelationCommand`, currently
+disabled by default. The goal is to reach correctness and performance parity with Spark's writer so it can be
+enabled by default ([#1625]).
+
+[#1625]: https://github.com/apache/datafusion-comet/issues/1625
+
 ## Ongoing Improvements
 
 In addition to the major initiatives above, we have the following ongoing areas of work:
 
 - Adding support for more Spark expressions
-- Moving more expressions to the `datafusion-spark` crate in the core DataFusion repository
 - Performance tuning
 - Nested type support improvements
