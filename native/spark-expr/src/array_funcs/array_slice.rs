@@ -116,19 +116,27 @@ fn slice_list<O: OffsetSizeTrait>(
 
     let values = list_array.values();
     let original_data = values.to_data();
-    let mut offsets = Vec::<O>::with_capacity(list_array.len() + 1);
-    offsets.push(O::zero());
+    let row_count = list_array.len();
+    let mut offsets = Vec::<O>::with_capacity(row_count + 1);
+    let mut last_offset = O::zero();
+    offsets.push(last_offset);
     let mut mutable = MutableArrayData::with_capacities(
         vec![&original_data],
         true,
         Capacities::Array(original_data.len()),
     );
-    let mut nulls = NullBufferBuilder::new(list_array.len());
+    let mut nulls = NullBufferBuilder::new(row_count);
 
     let row_offsets = list_array.offsets();
-    for row in 0..list_array.len() {
-        if list_array.is_null(row) || start.is_null(row) || length.is_null(row) {
-            offsets.push(*offsets.last().unwrap());
+    let list_nulls = list_array.nulls();
+    let start_nulls = start.nulls();
+    let length_nulls = length.nulls();
+    for row in 0..row_count {
+        let is_row_null = list_nulls.is_some_and(|n| n.is_null(row))
+            || start_nulls.is_some_and(|n| n.is_null(row))
+            || length_nulls.is_some_and(|n| n.is_null(row));
+        if is_row_null {
+            offsets.push(last_offset);
             nulls.append_null();
             continue;
         }
@@ -155,25 +163,17 @@ fn slice_list<O: OffsetSizeTrait>(
             start_value + arr_len
         };
 
-        let copied = if zero_based_start < 0 || zero_based_start >= arr_len {
+        let copied = if zero_based_start < 0 || zero_based_start >= arr_len || length_value == 0 {
             0
         } else {
-            let take = std::cmp::min(length_value, arr_len - zero_based_start);
-            if take > 0 {
-                let take = take as usize;
-                let zero_based_start = zero_based_start as usize;
-                mutable.extend(
-                    0,
-                    row_start + zero_based_start,
-                    row_start + zero_based_start + take,
-                );
-                take
-            } else {
-                0
-            }
+            let take = std::cmp::min(length_value, arr_len - zero_based_start) as usize;
+            let begin = row_start + zero_based_start as usize;
+            mutable.extend(0, begin, begin + take);
+            take
         };
 
-        offsets.push(*offsets.last().unwrap() + O::usize_as(copied));
+        last_offset += O::usize_as(copied);
+        offsets.push(last_offset);
         nulls.append_non_null();
     }
 
