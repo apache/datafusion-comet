@@ -84,6 +84,40 @@ For simple scalar functions that map directly to a DataFusion function, you can 
 classOf[Cos] -> CometScalarFunction("cos")
 ```
 
+#### When to set the return type explicitly
+
+`CometScalarFunction(name)` and the lower-level `scalarFunctionExprToProto(name, args)` helper both produce a protobuf `ScalarFunc` message **without** a `return_type` field. That is fine when the function name does not collide with a DataFusion built-in, or when it does collide and the Spark and DataFusion versions take the same arity and types. In that case the native planner consults DataFusion's UDF registry only to resolve the return type, then swaps in Comet's UDF for execution.
+
+It is **not** fine when the Spark function and the DataFusion built-in differ in arity or input types. The native planner calls `coerce_types` and `return_field_from_args` on DataFusion's UDF before Comet's UDF is selected, and a signature mismatch fails the query at execution time with an error like:
+
+```
+org.apache.comet.CometNativeException: Error from DataFusion:
+Function 'levenshtein' expects 2 arguments but received 3.
+```
+
+The classic case is `levenshtein`. Spark accepts an optional 3rd `threshold` argument, DataFusion's built-in is 2-arg only, so the 3-arg form fails native execution unless the serde sets the return type explicitly. Other names that exist in both engines with potentially different signatures include `concat`, `coalesce`, `sha2`, and `regexp_replace`. If you are adding a function whose name is shared with `datafusion-functions`, check the upstream signature before deciding how to serialize.
+
+To avoid the registry lookup, write a custom `CometExpressionSerde` and use `scalarFunctionExprToProtoWithReturnType`, passing the Spark expression's declared `dataType`:
+
+```scala
+object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
+  override def convert(
+      expr: Levenshtein,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "levenshtein",
+      expr.dataType,
+      false,
+      childExprs: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
+```
+
+When the return type is set on the proto, the native planner skips the registry lookup entirely and routes straight to the Comet UDF registered in `create_comet_physical_fun_with_eval_mode`.
+
 #### Registering the Expression Handler
 
 Once you've created your `CometExpressionSerde` implementation, register it in `QueryPlanSerde.scala` by adding it to the appropriate expression map (e.g., `mathExpressions`, `stringExpressions`, `predicateExpressions`, etc.):
