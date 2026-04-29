@@ -228,6 +228,11 @@ jobs:
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
+              org.apache.comet.CometWidthBucketFrameworkSuite
+        # The macOS workflow only runs Spark 4.x profiles. The suite
+        # `org.apache.comet.CometStringDecodeFrameworkSuite` exists only on Spark 3.x and is run
+        # on the Linux workflow. Referenced here in a YAML comment so dev/ci/check-suites.py
+        # finds the class name; not executed on macOS.
 
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
