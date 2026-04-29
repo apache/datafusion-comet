@@ -81,7 +81,7 @@ benefits of Comet's acceleration capabilities without disrupting your Spark appl
 
 ## Getting Started
 
-Comet supports Apache Spark 3.4 and 3.5, and provides experimental support for Spark 4.0. See the
+Comet supports Apache Spark 3.4, 3.5, and 4.0, and provides experimental support for Spark 4.1 and 4.2. See the
 [installation guide](https://datafusion.apache.org/comet/user-guide/installation.html) for the detailed
 version, Java, and Scala compatibility matrix.
 

@@ -378,9 +378,9 @@ abstract class CometTestBase
              |${org.apache.spark.sql.catalyst.util.stackTraceToString(e)}
            """.stripMargin)
       }
-    if (!QueryTest.compare(
-        QueryTest.prepareAnswer(sparkAnswer, isSorted),
-        QueryTest.prepareAnswer(cometAnswer, isSorted))) {
+    val preparedSpark = prepareCometAnswer(sparkAnswer, isSorted)
+    val preparedComet = prepareCometAnswer(cometAnswer, isSorted)
+    if (!QueryTest.compare(preparedSpark, preparedComet)) {
       val getRowType: Option[Row] => String = row =>
         row
           .map(r => if (r.schema == null) "struct<>" else r.schema.catalogString)
@@ -394,12 +394,45 @@ abstract class CometTestBase
            |${sideBySide(
                s"== Spark Answer - ${sparkAnswer.size} ==" +:
                  getRowType(sparkAnswer.headOption) +:
-                 QueryTest.prepareAnswer(sparkAnswer, isSorted).map(_.toString()),
+                 preparedSpark.map(_.toString()),
                s"== Comet Answer - ${cometAnswer.size} ==" +:
                  getRowType(cometAnswer.headOption) +:
-                 QueryTest.prepareAnswer(cometAnswer, isSorted).map(_.toString())).mkString("\n")}
+                 preparedComet.map(_.toString())).mkString("\n")}
          """.stripMargin)
     }
+  }
+
+  /**
+   * Like `QueryTest.prepareAnswer` but recursively converts nested arrays to seqs. Spark's
+   * version only normalizes top-level `Array[_]`, leaving inner arrays (e.g. `Array[Byte]` from
+   * `array<binary>`) intact. Their default `toString` is the JVM identity (`[B@<hex>`), which
+   * makes the toString-based sort in `prepareAnswer` non-deterministic and causes spurious
+   * mismatches between the two sides.
+   */
+  private def prepareCometAnswer(answer: Seq[Row], isSorted: Boolean): Seq[Row] = {
+    val converted = answer.map(prepareCometRow)
+    if (isSorted) converted else converted.sortBy(_.toString())
+  }
+
+  private def prepareCometRow(row: Row): Row = {
+    Row.fromSeq(row.toSeq.map(normalizeForComparison))
+  }
+
+  private def normalizeForComparison(value: Any): Any = value match {
+    case null => null
+    case bd: java.math.BigDecimal => BigDecimal(bd)
+    case row: Row => prepareCometRow(row)
+    case arr: Array[_] => arr.toSeq.map(normalizeForComparison)
+    case map: scala.collection.Map[_, _] =>
+      map.map { case (k, v) => normalizeForComparison(k) -> normalizeForComparison(v) }
+    case seq: scala.collection.Iterable[_] => seq.map(normalizeForComparison).toSeq
+    case b: java.lang.Byte => b.byteValue
+    case s: java.lang.Short => s.shortValue
+    case i: java.lang.Integer => i.intValue
+    case l: java.lang.Long => l.longValue
+    case f: java.lang.Float => f.floatValue
+    case d: java.lang.Double => d.doubleValue
+    case x => x
   }
 
   /**

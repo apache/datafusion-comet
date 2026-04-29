@@ -27,6 +27,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.CometMapFromEntries
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
@@ -218,6 +219,18 @@ class CometMapExpressionSuite extends CometTestBase {
         checkSparkAnswerAndOperator(
           spark.sql(s"SELECT map_from_entries(array(struct($field as a, $field as b))) FROM t1"))
       }
+    }
+  }
+
+  test("group by map column with string values") {
+    assume(isSpark40Plus, "Spark 4.0 inserts MapSort for group-by on map keys")
+    withTable("t_map_group") {
+      sql("""
+        |CREATE TABLE t_map_group USING parquet AS
+        |SELECT map(cast(id as string), cast(id + 100 as string)) as m
+        |FROM range(5)
+      """.stripMargin)
+      checkSparkAnswer(sql("SELECT m, count(*) FROM t_map_group GROUP BY m"))
     }
   }
 

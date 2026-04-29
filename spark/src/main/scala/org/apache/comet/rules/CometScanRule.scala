@@ -718,7 +718,7 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
         // fields plus per-field VariantMetadata, expecting the scan to honor Parquet variant
         // shredding semantics. Comet's native scans don't, so fall back to Spark.
         fallbackReasons +=
-          s"$scanImpl scan does not support shredded Variant reads (column $name)"
+          s"Unsupported $name of type VariantType (shredded; not supported by $scanImpl scan)"
         false
       case s: StructType if s.fields.isEmpty =>
         false
