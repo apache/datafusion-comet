@@ -20,7 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.execution.datasources.VariantMetadata
-import org.apache.spark.sql.types.{DataType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType}
 
 trait CometTypeShim {
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
@@ -30,6 +30,20 @@ trait CometTypeShim {
   // `private[sql]` helpers on `StringType`.
   def isStringCollationType(dt: DataType): Boolean = dt match {
     case st: StringType => st.collationId != StringType.collationId
+    case _ => false
+  }
+
+  /**
+   * Returns true if `dt`, or any nested element/field/key/value type, is a `StringType` with a
+   * non-default (non-UTF8_BINARY) collation. Expression serdes can use this to fall back to Spark
+   * when they cannot honour collation semantics. Stubbed to `false` in Spark 3.x.
+   */
+  def hasNonDefaultStringCollation(dt: DataType): Boolean = dt match {
+    case _: StringType => isStringCollationType(dt)
+    case ArrayType(elementType, _) => hasNonDefaultStringCollation(elementType)
+    case MapType(kt, vt, _) =>
+      hasNonDefaultStringCollation(kt) || hasNonDefaultStringCollation(vt)
+    case StructType(fields) => fields.exists(f => hasNonDefaultStringCollation(f.dataType))
     case _ => false
   }
 

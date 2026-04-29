@@ -264,6 +264,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | MapEntries    |
 | MapValues     |
 | MapFromArrays |
+| StringToMap   |
 
 ## Struct Expressions
 

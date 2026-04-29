@@ -17,19 +17,14 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark
 
-import scala.annotation.nowarn
+object CometListenerBusUtils {
 
-import org.apache.spark.sql.types.{DataType, StructType}
-
-trait CometTypeShim {
-  @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
-  def isStringCollationType(dt: DataType): Boolean = false
-
-  @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
-  def hasNonDefaultStringCollation(dt: DataType): Boolean = false
-
-  @nowarn // Spark 4 feature; Variant shredding doesn't exist in Spark 3.x.
-  def isVariantStruct(s: StructType): Boolean = false
+  /**
+   * Blocks until the SparkContext's listener bus has drained all pending events. Exposes the
+   * package-private `listenerBus.waitUntilEmpty()` to tests outside the `org.apache.spark`
+   * package.
+   */
+  def waitUntilEmpty(sc: SparkContext): Unit = sc.listenerBus.waitUntilEmpty()
 }

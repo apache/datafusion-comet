@@ -159,3 +159,10 @@ object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from
     Compatible(None)
   }
 }
+
+object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
+
+  override def getSupportLevel(expr: StringToMap): SupportLevel = {
+    Compatible(None)
+  }
+}
