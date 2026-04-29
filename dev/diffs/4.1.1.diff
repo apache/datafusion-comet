@@ -3922,7 +3922,7 @@ index 22028a585e2..20c6b7c796a 100644
    }
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
-index 7adf98b7920..2ee20793cd2 100644
+index 7adf98b7920..ac46942b55d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
 @@ -43,7 +43,7 @@ import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
@@ -3930,7 +3930,7 @@ index 7adf98b7920..2ee20793cd2 100644
  import org.apache.spark.sql.connector.read.InputPartition
  import org.apache.spark.sql.connector.read.streaming.{Offset => OffsetV2, ReadLimit}
 -import org.apache.spark.sql.execution.exchange.{REQUIRED_BY_STATEFUL_OPERATOR, ReusedExchangeExec, ShuffleExchangeExec}
-+import org.apache.spark.sql.execution.exchange.{REQUIRED_BY_STATEFUL_OPERATOR, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
++import org.apache.spark.sql.execution.exchange.{REQUIRED_BY_STATEFUL_OPERATOR, ReusedExchangeExec, ShuffleExchangeLike}
  import org.apache.spark.sql.execution.streaming._
  import org.apache.spark.sql.execution.streaming.checkpointing.{CheckpointFileManager, OffsetSeqMetadata}
  import org.apache.spark.sql.execution.streaming.operators.stateful.StateStoreSaveExec
