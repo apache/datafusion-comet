@@ -51,7 +51,7 @@ Experimental support is provided for the following versions of Apache Spark and 
 use only and should not be used in production yet.
 
 | Spark Version  | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
-| -------------- | ------------ | ------------- |-------------------| --------------------- |
+| -------------- | ------------ | ------------- | ----------------- | --------------------- |
 | 4.1.1          | 17           | 2.13          | Yes               | No                    |
 | 4.2.0-preview4 | 17           | 2.13          | No                | No                    |
 
