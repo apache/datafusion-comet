@@ -352,18 +352,26 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 
 object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Uses Rust regexp engine, which has different behavior to Java regexp engine")
+  private val incompatReason: String =
+    "Uses Rust regexp engine, which has different behavior to Java regexp engine"
+  private val nonLiteralPatternReason: String =
+    "Only scalar regexp patterns are supported"
+  private val nonLiteralIdxReason: String =
+    "idx must be an integer literal"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(nonLiteralPatternReason, nonLiteralIdxReason)
 
   override def getSupportLevel(expr: RegExpExtract): SupportLevel = {
     if (!expr.regexp.isInstanceOf[Literal]) {
-      return Unsupported(Some("Only scalar regexp patterns are supported"))
+      return Unsupported(Some(nonLiteralPatternReason))
     }
     if (!expr.idx.isInstanceOf[Literal]) {
-      return Unsupported(Some("idx must be an integer literal"))
+      return Unsupported(Some(nonLiteralIdxReason))
     }
-    Incompatible(
-      Some("Uses Rust regexp engine, which has different behavior to Java regexp engine"))
+    Incompatible(Some(incompatReason))
   }
 
   override def convert(

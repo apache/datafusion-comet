@@ -71,3 +71,65 @@ SELECT
   regexp_extract('alice@example.com', '^([\\w.+-]+)@([\\w.-]+)$', 2),
   regexp_extract('not-an-email', '^([\\w.+-]+)@([\\w.-]+)$', 1),
   regexp_extract(NULL, '(\\d+)', 1)
+
+-- NULL pattern propagates as NULL (Spark and Comet both return NULL)
+query
+SELECT regexp_extract(s, CAST(NULL AS STRING), 1) FROM test_regexp_extract_enabled
+
+-- NULL idx propagates as NULL
+query
+SELECT regexp_extract(s, '(\\d+)-(\\d+)', CAST(NULL AS INT)) FROM test_regexp_extract_enabled
+
+-- idx = 0 with no capture groups returns the whole match
+query
+SELECT regexp_extract(s, '\\d+', 0) FROM test_regexp_extract_enabled
+
+-- multibyte / Unicode subject
+statement
+CREATE TABLE test_regexp_extract_unicode(s string) USING parquet
+
+statement
+INSERT INTO test_regexp_extract_unicode VALUES
+  ('café=42'),
+  ('café=99'),
+  ('世界=1'),
+  ('日本=東京'),
+  ('🔥=hot'),
+  ('मानक=हिन्दी')
+
+-- ASCII anchors and capture groups against multibyte data
+query
+SELECT regexp_extract(s, '^(.+)=(.+)$', 1) FROM test_regexp_extract_unicode
+
+query
+SELECT regexp_extract(s, '^(.+)=(.+)$', 2) FROM test_regexp_extract_unicode
+
+-- digit class against multibyte data
+query
+SELECT regexp_extract(s, '=(\\d+)$', 1) FROM test_regexp_extract_unicode
+
+-- ERROR CASES
+-- idx > groupCount (pattern has 2 groups, ask for 3)
+query expect_error(group index)
+SELECT regexp_extract(s, '(\\d+)-(\\d+)', 3) FROM test_regexp_extract_enabled
+
+-- pattern with no capture groups but idx >= 1
+query expect_error(group index)
+SELECT regexp_extract(s, '\\d+', 1) FROM test_regexp_extract_enabled
+
+-- negative idx
+query expect_error(group index)
+SELECT regexp_extract(s, '(\\d+)-(\\d+)', -1) FROM test_regexp_extract_enabled
+
+-- invalid regex syntax (unclosed group): both engines fail at pattern compile time.
+-- Spark surfaces INVALID_PARAMETER_VALUE.PATTERN, Comet surfaces a regex parse error.
+-- Both messages mention `regexp_extract`.
+query expect_error(regexp_extract)
+SELECT regexp_extract(s, '(unclosed', 1) FROM test_regexp_extract_enabled
+
+-- Java-only regex feature: lookahead. Rust regex rejects this at compile time;
+-- Spark accepts it and returns "" for every row. This is one of the documented
+-- incompatibilities behind the Incompatible support level, not an invariant we
+-- test for cross-engine equivalence.
+query ignore(Rust regex does not support lookahead, unlike Java regex)
+SELECT regexp_extract(s, '(?=\\d)\\w+', 0) FROM test_regexp_extract_enabled

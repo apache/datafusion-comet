@@ -33,3 +33,16 @@ SELECT regexp_extract(s, '(\\d+)-(\\d+)', 2) FROM test_regexp_extract
 
 query expect_fallback(Rust regexp engine)
 SELECT regexp_extract(s, '(\\d+)-(\\d+)') FROM test_regexp_extract
+
+-- Non-literal pattern: Comet falls back regardless of the allowIncompatible flag.
+statement
+CREATE TABLE test_regexp_extract_nonliteral(s string, p string, i int) USING parquet
+
+statement
+INSERT INTO test_regexp_extract_nonliteral VALUES ('abc', '(a)(b)', 1), ('xyz', '(x)', 1)
+
+query expect_fallback(Only scalar regexp patterns)
+SELECT regexp_extract(s, p, 1) FROM test_regexp_extract_nonliteral
+
+query expect_fallback(idx must be an integer literal)
+SELECT regexp_extract(s, '(\\w+)', i) FROM test_regexp_extract_nonliteral

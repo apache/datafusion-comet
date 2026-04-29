@@ -56,10 +56,6 @@ pub fn spark_regexp_extract(args: &[ColumnarValue]) -> DataFusionResult<Columnar
         1
     };
 
-    if idx < 0 {
-        return exec_err!("regexp_extract idx must be non-negative, got {}", idx);
-    }
-
     let pattern = match &args[1] {
         ColumnarValue::Scalar(ScalarValue::Utf8(Some(p)))
         | ColumnarValue::Scalar(ScalarValue::LargeUtf8(Some(p))) => p.clone(),
@@ -73,13 +69,16 @@ pub fn spark_regexp_extract(args: &[ColumnarValue]) -> DataFusionResult<Columnar
     };
 
     let regex = Regex::new(&pattern).map_err(|e| {
-        DataFusionError::Execution(format!("Invalid regex pattern '{pattern}': {e}"))
+        DataFusionError::Execution(format!(
+            "The value of parameter `regexp` in `regexp_extract` is invalid: '{pattern}' ({e})"
+        ))
     })?;
 
     let group_count = regex.captures_len() as i32 - 1;
-    if idx > group_count {
+    if idx < 0 || idx > group_count {
         return Err(DataFusionError::Execution(format!(
-            "Regex group count is {group_count}, but the specified group index is {idx}"
+            "The value of parameter `idx` in `regexp_extract` is invalid: \
+             Expects group index between 0 and {group_count}, but got {idx}."
         )));
     }
     let group_idx = idx as usize;
@@ -273,14 +272,13 @@ mod tests {
 
     #[test]
     fn group_index_out_of_range_errors() {
-        let err = spark_regexp_extract(&[
-            array(vec![Some("abc")]),
-            pattern(r"(a)(b)"),
-            idx(3),
-        ])
-        .err()
-        .unwrap();
-        assert!(err.to_string().contains("group count"));
+        let err =
+            spark_regexp_extract(&[array(vec![Some("abc")]), pattern(r"(a)(b)"), idx(3)])
+                .err()
+                .unwrap();
+        let msg = err.to_string();
+        assert!(msg.contains("group index"), "{msg}");
+        assert!(msg.contains("but got 3"), "{msg}");
     }
 
     #[test]
@@ -288,7 +286,9 @@ mod tests {
         let err = spark_regexp_extract(&[array(vec![Some("abc")]), pattern(r"(a)"), idx(-1)])
             .err()
             .unwrap();
-        assert!(err.to_string().contains("non-negative"));
+        let msg = err.to_string();
+        assert!(msg.contains("group index"), "{msg}");
+        assert!(msg.contains("but got -1"), "{msg}");
     }
 
     #[test]
@@ -296,6 +296,6 @@ mod tests {
         let err = spark_regexp_extract(&[array(vec![Some("abc")]), pattern(r"(unclosed"), idx(0)])
             .err()
             .unwrap();
-        assert!(err.to_string().contains("Invalid regex"));
+        assert!(err.to_string().contains("`regexp`"));
     }
 }

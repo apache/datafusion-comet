@@ -439,7 +439,10 @@
 - [ ] position
 - [ ] printf
 - [ ] regexp_count
-- [ ] regexp_extract
+- [x] regexp_extract
+  - Spark 3.4.3 audited 2026-04-29 (Incompatible: Rust regex engine differs from Java; `idx` out-of-range check happens at compile time in Comet vs per-row in Spark)
+  - Spark 3.5.8 audited 2026-04-29 (same as 3.4.3)
+  - Spark 4.0.1 audited 2026-04-29 (collation support added in Spark; Comet does not honour `UTF8_LCASE` and runs case-sensitively)
 - [ ] regexp_extract_all
 - [ ] regexp_instr
 - [ ] regexp_replace
