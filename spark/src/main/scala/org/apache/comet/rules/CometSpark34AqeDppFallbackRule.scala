@@ -272,8 +272,10 @@ case object CometSpark34AqeDppFallbackRule extends Rule[SparkPlan] with Logging 
    * Mirrors `PlanAdaptiveDynamicPruningFilters.apply` lines 50-57:
    * {{{
    *   find(rootPlan) {
-   *     case BroadcastHashJoinExec(_, _, _, BuildLeft,  _, left,  _, _) => left.sameResult(exchange)
-   *     case BroadcastHashJoinExec(_, _, _, BuildRight, _, _, right, _) => right.sameResult(exchange)
+   *     case BroadcastHashJoinExec(_, _, _, BuildLeft,  _, left,  _, _) =>
+   *        left.sameResult(exchange)
+   *     case BroadcastHashJoinExec(_, _, _, BuildRight, _, _, right, _) =>
+   *        right.sameResult(exchange)
    *   }
    * }}}
    *
