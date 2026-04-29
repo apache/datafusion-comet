@@ -176,7 +176,6 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-          _JAVA_OPTIONS: "-Xmx4g -XX:MaxMetaspaceSize=1g -XX:ReservedCodeCacheSize=512m"
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v7
