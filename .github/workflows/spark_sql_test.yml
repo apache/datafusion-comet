@@ -170,12 +170,13 @@ jobs:
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
-            build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+            build/sbt -Dsbt.log.noformat=true -mem 6144 ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
           fi
         env:
           LC_ALL: "C.UTF-8"
+          _JAVA_OPTIONS: "-Xmx4g -XX:MaxMetaspaceSize=1g -XX:ReservedCodeCacheSize=512m"
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v7
