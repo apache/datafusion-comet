@@ -1580,12 +1580,22 @@ class CometExecSuite extends CometTestBase {
         val (_, cometPlan) = checkSparkAnswer(df)
         checkAnswer(df, Row(15, 15) :: Nil)
 
-        // Rule always clears SABs on 3.5+, regardless of which conversion branch fires.
+        // SABs should have been unwrapped by CometPlanAdaptiveDynamicPruningFilters on 3.5+.
         if (isSpark35Plus) {
           assertAqeDppShape(cometPlan)
         }
 
-        if (isSpark41Plus || !isSpark35Plus) {
+        if (isSpark35Plus && !isSpark41Plus) {
+          // 3.5 - 4.0: CometPlanAdaptiveDynamicPruningFilters rewrites the SAB into
+          // CometSubqueryBroadcastExec with the join's CometBroadcastExchange for native
+          // broadcast reuse.
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          assert(
+            cometSubqueries.nonEmpty,
+            s"V2 scan should have CometSubqueryBroadcastExec for DPP:\n$cometPlan")
+        } else {
           // 3.4 and 4.1+: DPP runs as Spark-native SubqueryBroadcastExec.
           //   - 3.4: CometSpark34AqeDppFallbackRule keeps the BHJ build broadcast Spark-native
           //     so Spark's PlanAdaptiveDynamicPruningFilters can create SubqueryBroadcastExec
@@ -1609,6 +1619,9 @@ class CometExecSuite extends CometTestBase {
             val dppBroadcast = s.child match {
               case aspe: AdaptiveSparkPlanExec =>
                 val bqs = collectFirst(aspe) { case b: BroadcastQueryStageExec => b }
+                assert(
+                  bqs.isDefined,
+                  s"Expected BroadcastQueryStageExec under DPP subquery's ASPE:\n$cometPlan")
                 bqs.get.broadcast
               case other =>
                 fail(s"Unexpected SubqueryBroadcastExec child: ${other.getClass.getSimpleName}")
@@ -1620,13 +1633,6 @@ class CometExecSuite extends CometTestBase {
             }.isDefined
             assert(hasReuse, s"DPP broadcast should be reused in main plan:\n$cometPlan")
           }
-        } else {
-          val cometSubqueries = collectWithSubqueries(cometPlan) {
-            case s: CometSubqueryBroadcastExec => s
-          }
-          assert(
-            cometSubqueries.nonEmpty,
-            s"V2 scan should have CometSubqueryBroadcastExec for DPP:\n$cometPlan")
         }
       } finally {
         sql("DROP TABLE IF EXISTS testcat.fact_stats_v2")

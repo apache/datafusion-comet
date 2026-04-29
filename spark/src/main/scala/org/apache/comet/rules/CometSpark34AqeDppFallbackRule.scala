@@ -51,7 +51,7 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
  * Registered via injectPreSpark35QueryStagePrepRuleShim before CometScanRule/CometExecRule in
  * CometSparkSessionExtensions, so tags are in place when conversion runs. No-op on Spark 3.5+.
  *
- * Three cases handled:
+ * Four cases handled:
  *
  *   1. SAB + matching BHJ (non-V1 fact scans: Hive / V2 / V2Filter). The cascade up from a non-V1
  *      scan reaches a CometBroadcastHashJoinExec + CometBroadcastExchangeExec build side; Spark's
@@ -77,17 +77,23 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
  * via filterUnusedDynamicPruningExpressions (DataSourceScanExec.scala:731,736), restoring
  * canonical symmetry for reuse.
  *
+ * 4. SubqueryBroadcastExec-bearing scans (AQE re-optimize). On re-optimize cycles,
+ * ASPE.preprocessingRules (PlanAdaptiveSubqueries) fills the DPP slot with the already-
+ * materialized SubqueryBroadcastExec (produced by Spark's PlanAdaptiveDynamicPruningFilters on a
+ * previous pass) rather than the original SAB. The freshly-planned BroadcastExchangeExec on the
+ * main BHJ's build side is a new instance with no SKIP_COMET_BROADCAST_TAG carried over, so
+ * CometExecRule would Cometize it and lose AQE stageCache broadcast reuse with the DPP subquery's
+ * Spark broadcast. The rule also scans for SubqueryBroadcastExec (descending into QueryStageExec
+ * via AdaptiveSparkPlanHelper since the fact scan is already inside a materialized stage),
+ * extracts its buildKeys, finds the matching BHJ by exprId, and tags the build BE.
+ *
  * Non-AQE DPP (#4011) is untouched: it produces SubqueryBroadcastExec, not the adaptive variant,
  * and is handled by CometExecRule.convertSubqueryBroadcasts.
  *
- * Known limitations on 3.4:
- *
- *   - Cross-plan scalar-subquery DPP: an SAB in a scalar subquery cannot see a matching BHJ in
- *     the main query. At prep-rule time each AdaptiveSparkPlanExec sees only its own plan. When
- *     the match fails, Spark's own rule falls back to TrueLiteral or aggregate SubqueryExec (same
- *     behavior as Spark-without-Comet on 3.4).
- *   - AQE re-optimization that rebuilds the plan: tags are per-node, so a rebuild drops them, but
- *     this rule re-runs on each prep-rule pass and re-tags from scratch.
+ * Known limitation on 3.4: cross-plan scalar-subquery DPP. An SAB in a scalar subquery cannot see
+ * a matching BHJ in the main query because at prep-rule time each AdaptiveSparkPlanExec sees only
+ * its own plan. When the match fails, Spark's own rule falls back to TrueLiteral or aggregate
+ * SubqueryExec (same behavior as Spark-without-Comet on 3.4).
  *
  * @see
  *   PlanAdaptiveDynamicPruningFilters (Spark's rule this code arranges to succeed)
@@ -117,16 +123,9 @@ case object CometSpark34AqeDppFallbackRule
       tagForSab(plan, scan, sab)
     }
 
-    // AQE re-optimization path: on subsequent re-optimize cycles, ASPE.preprocessingRules
-    // fills the subqueryMap-backed DPP slot with the already-materialized SubqueryBroadcastExec
-    // (produced by Spark's PlanAdaptiveDynamicPruningFilters on a previous pass) instead of the
-    // original SubqueryAdaptiveBroadcastExec. The freshly-planned BroadcastExchangeExec on the
-    // main BHJ's build side is a new instance with no SKIP_COMET_BROADCAST_TAG carried over. If
-    // we only tagged via SABs, the next CometExecRule pass would Cometize this BE and the main
-    // join's build would no longer canonically match the DPP subquery's Spark BroadcastExchange,
-    // losing AQE stageCache broadcast reuse (Spark's DynamicPartitionPruningSuiteV2 SPARK-34637
-    // asserts on this reuse). SubqueryBroadcastExec carries the same buildKeys as the original
-    // SAB, so we can find the matching BHJ by exprId the same way and tag its build BE again.
+    // AQE re-optimization path: see case 4 in the class-level docstring. On subsequent
+    // re-optimize cycles Spark's PlanAdaptiveSubqueries hands us a SubqueryBroadcastExec (not
+    // the original SAB), and the freshly-planned main-BHJ build BE has no tag carried over.
     sbScans.foreach { case (scan, sb) =>
       tagForSubqueryBroadcast(plan, scan, sb)
     }
@@ -240,7 +239,7 @@ case object CometSpark34AqeDppFallbackRule
 
     findMatchingBroadcastJoin(plan, keyIds) match {
       case Some(buildSide) =>
-        tagBhjBuildBroadcast(buildSide, sb.name + " (via SubqueryBroadcast)")
+        tagBhjBuildBroadcast(buildSide, sb.name)
       case None =>
         // Nothing to tag. Either the BHJ has a different buildKey exprId set (e.g. AQE
         // rewrote attributes across stages) or the matching join isn't in this plan snapshot.
@@ -260,7 +259,7 @@ case object CometSpark34AqeDppFallbackRule
    * `PlanAdaptiveDynamicPruningFilters` can then match it via `sameResult`
    * (`PlanAdaptiveDynamicPruningFilters.scala:50-57`) and create a `SubqueryBroadcastExec`.
    */
-  private def tagBhjBuildBroadcast(buildSide: SparkPlan, sabName: String): Unit = {
+  private def tagBhjBuildBroadcast(buildSide: SparkPlan, dppName: String): Unit = {
     val found = buildSide.find {
       case _: BroadcastExchangeExec => true
       case _ => false
@@ -268,10 +267,10 @@ case object CometSpark34AqeDppFallbackRule
     found match {
       case Some(be: BroadcastExchangeExec) =>
         be.setTagValue(CometExecRule.SKIP_COMET_BROADCAST_TAG, ())
-        logDebug(s"Tagged BroadcastExchangeExec for SAB '$sabName' (BHJ build side)")
+        logDebug(s"Tagged BroadcastExchangeExec for DPP '$dppName' (BHJ build side)")
       case _ =>
         logWarning(
-          s"SAB '$sabName': matched BHJ but could not locate BroadcastExchangeExec on " +
+          s"DPP '$dppName': matched BHJ but could not locate BroadcastExchangeExec on " +
             "build side; skipping")
     }
   }
