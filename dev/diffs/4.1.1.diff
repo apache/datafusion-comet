@@ -3561,6 +3561,27 @@ index e31e0e70cf3..034ad5b953e 100644
  
    import testImplicits._
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala
+index 38e5b15465b..ca3e8fef27a 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala
+@@ -24,6 +24,7 @@ import scala.jdk.CollectionConverters.SetHasAsScala
+ import org.scalatest.time.{Millis, Minute, Seconds, Span}
+ 
+ import org.apache.spark.memory.UnifiedMemoryManager
++import org.apache.spark.sql.IgnoreCometSuite
+ import org.apache.spark.sql.execution.streaming.runtime.{MemoryStream, StreamingQueryWrapper}
+ import org.apache.spark.sql.functions.{count, max}
+ import org.apache.spark.sql.internal.SQLConf
+@@ -32,7 +33,7 @@ import org.apache.spark.sql.streaming.OutputMode.Update
+ import org.apache.spark.util.Utils
+ 
+ class RocksDBStateStoreIntegrationSuite extends StreamTest
+-  with AlsoTestWithRocksDBFeatures {
++  with AlsoTestWithRocksDBFeatures with IgnoreCometSuite {
+   import testImplicits._
+ 
+   testWithColumnFamilies("RocksDBStateStore",
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index 83ebd24384c..32511091bb2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
