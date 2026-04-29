@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
-import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -89,6 +89,10 @@ class CometSparkSessionExtensions
   override def apply(extensions: SparkSessionExtensions): Unit = {
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
+    // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
+    // Registered before CometScanRule/CometExecRule so tags are in place when conversion runs.
+    // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
+    injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)

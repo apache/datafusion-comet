@@ -46,4 +46,15 @@ trait ShimCometSparkSessionExtensions {
   def injectQueryStageOptimizerRuleShim(
       extensions: SparkSessionExtensions,
       rule: Rule[SparkPlan]): Unit = {}
+
+  // Registers a queryStagePrepRule only on Spark < 3.5. The 3.5+ variants no-op this shim.
+  // Used by CometSpark34AqeDppFallbackRule, which is a correctness workaround for AQE DPP on
+  // Spark 3.4 where injectQueryStageOptimizerRule (and therefore
+  // CometPlanAdaptiveDynamicPruningFilters) is unavailable. See
+  // CometSpark34AqeDppFallbackRule's class docstring for details.
+  def injectPreSpark35QueryStagePrepRuleShim(
+      extensions: SparkSessionExtensions,
+      rule: Rule[SparkPlan]): Unit = {
+    extensions.injectQueryStagePrepRule(_ => rule)
+  }
 }

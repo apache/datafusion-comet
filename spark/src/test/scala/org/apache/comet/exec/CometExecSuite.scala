@@ -1430,13 +1430,12 @@ class CometExecSuite extends CometTestBase {
         val (_, cometPlan) = checkSparkAnswer(df)
         checkAnswer(df, Row(15, 15) :: Nil)
 
-        if (isSpark35Plus) {
-          import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
-          val reusedExchanges = collect(cometPlan) { case r: ReusedExchangeExec => r }
-          assert(
-            reusedExchanges.size == 1,
-            s"Expected 1 ReusedExchangeExec, got ${reusedExchanges.size}")
-        }
+        import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+        val reusedExchanges = collect(cometPlan) { case r: ReusedExchangeExec => r }
+        assert(
+          reusedExchanges.size == 1,
+          s"Expected 1 ReusedExchangeExec, got ${reusedExchanges.size}.\n" +
+            s"Plan:\n${cometPlan.treeString}")
       }
     }
   }
@@ -1461,7 +1460,20 @@ class CometExecSuite extends CometTestBase {
           val cometSubqueries = collectWithSubqueries(cometPlan) {
             case s: CometSubqueryBroadcastExec => s
           }
-          assert(cometSubqueries.nonEmpty, "Expected CometSubqueryBroadcastExec for DPP")
+          assert(
+            cometSubqueries.nonEmpty,
+            s"Expected CometSubqueryBroadcastExec for DPP.\nPlan:\n${cometPlan.treeString}")
+        } else {
+          // On 3.4, fall back to Spark-native DPP: expect a SubqueryBroadcastExec
+          // (not Comet) indicating Spark's PlanAdaptiveDynamicPruningFilters ran.
+          val sparkSubqueries = collectWithSubqueries(cometPlan) {
+            case s: SubqueryBroadcastExec => s
+          }
+          assert(
+            sparkSubqueries.nonEmpty,
+            "Expected Spark SubqueryBroadcastExec for DPP on 3.4 fallback. " +
+              "If empty, Spark's rule killed DPP (likely because Comet BHJ was " +
+              s"not falling back).\nPlan:\n${cometPlan.treeString}")
         }
       }
     }
