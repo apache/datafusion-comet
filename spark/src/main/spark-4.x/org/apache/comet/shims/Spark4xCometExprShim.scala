@@ -39,16 +39,17 @@ trait Spark4xCometExprShim extends CommonStringExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
-  def versionSpecificStringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  def sparkVersionSpecificStringExpressions
+      : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map.empty
-  def versionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  def sparkVersionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[WidthBucket] -> CometWidthBucket)
-  def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[ToPrettyString] -> CometToPrettyString)
-  def versionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[MapSort] -> CometMapSort)
 
-  def versionSpecificExprToProtoInternal(
+  def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {

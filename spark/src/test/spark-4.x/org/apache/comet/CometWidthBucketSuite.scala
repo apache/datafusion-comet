@@ -22,7 +22,7 @@ package org.apache.comet
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 
-class CometWidthBucketFrameworkSuite extends CometTestBase {
+class CometWidthBucketSuite extends CometTestBase {
 
   private def countSparkProjectExec(plan: SparkPlan): Int =
     plan.collect { case _: ProjectExec => true }.length

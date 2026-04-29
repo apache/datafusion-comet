@@ -130,7 +130,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Unhex] -> CometUnhex,
       classOf[Abs] -> CometAbs,
       classOf[Bin] -> CometScalarFunction("bin"))
-    base ++ versionSpecificMathExpressions
+    base ++ sparkVersionSpecificMathExpressions
   }
 
   private[comet] val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = {
@@ -144,7 +144,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MapFromArrays] -> CometMapFromArrays,
       classOf[MapContainsKey] -> CometMapContainsKey,
       classOf[MapFromEntries] -> CometMapFromEntries)
-    base ++ versionSpecificMapExpressions
+    base ++ sparkVersionSpecificMapExpressions
   }
 
   private[comet] val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
@@ -201,7 +201,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Right] -> CometRight,
       classOf[Substring] -> CometSubstring,
       classOf[Upper] -> CometUpper)
-    base ++ versionSpecificStringExpressions
+    base ++ sparkVersionSpecificStringExpressions
   }
 
   private val bitwiseExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
@@ -265,7 +265,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[SortOrder] -> CometSortOrder,
       classOf[StaticInvoke] -> CometStaticInvoke,
       classOf[UnscaledValue] -> CometUnscaledValue)
-    base ++ versionSpecificMiscExpressions
+    base ++ sparkVersionSpecificMiscExpressions
   }
 
   /**
@@ -668,7 +668,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       }
     }
 
-    versionSpecificExprToProtoInternal(expr, inputs, binding)
+    sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
       .orElse(expr match {
 
         case UnaryExpression(child) if expr.prettyName == "promote_precision" =>

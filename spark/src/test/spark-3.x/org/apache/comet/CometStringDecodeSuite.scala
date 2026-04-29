@@ -24,7 +24,7 @@ import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
-class CometStringDecodeFrameworkSuite extends CometTestBase {
+class CometStringDecodeSuite extends CometTestBase {
 
   private def countSparkProjectExec(plan: SparkPlan): Int =
     plan.collect { case _: ProjectExec => true }.length

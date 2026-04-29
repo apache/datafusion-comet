@@ -35,16 +35,17 @@ trait CometExprShim extends CommonStringExprs {
 
   def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
 
-  def versionSpecificStringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  def sparkVersionSpecificStringExpressions
+      : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[StringDecode] -> CometStringDecode)
-  def versionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  def sparkVersionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[WidthBucket] -> CometWidthBucket)
-  def versionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[ToPrettyString] -> CometToPrettyString)
-  def versionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map.empty
 
-  def versionSpecificExprToProtoInternal(
+  def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = None
