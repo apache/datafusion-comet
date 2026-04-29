@@ -169,6 +169,26 @@ trait CometExprShim extends CommonStringExprs {
           optExprWithInfo(mapSortExpr, ms, ms.child)
         }
 
+      case h: HoursOfTime =>
+        exprToProtoInternal(h.child, inputs, binding) match {
+          case Some(childExpr) =>
+            val builder = ExprOuterClass.Hour.newBuilder()
+            builder.setChild(childExpr)
+            val timeZone = h.timeZoneId.getOrElse("UTC")
+            builder.setTimezone(timeZone)
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setHour(builder)
+                .build())
+          case None =>
+            withInfo(h, h.child)
+            None
+        }
+
+      case _ if expr.getClass.getSimpleName == "HoursOfTime" =>
+        hoursOfTimeToProto(expr, inputs, binding)
+
       case _ => None
     }
   }
