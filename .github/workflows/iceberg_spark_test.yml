@@ -38,12 +38,20 @@ on:
       - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
       - "fuzz-testing/**"
       - "spark-integration/**"
-  # TEMP: pull_request trigger restricted to a never-matching path while
-  # iterating on the spark-4.1.1 branch. Restore the original paths-ignore
-  # list before merging this branch back to main.
   pull_request:
-    paths:
-      - "DISABLED_FOR_spark-4.1.1_iteration"
+    paths-ignore:
+      - "benchmarks/**"
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+      - "dev/changelog/*.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:

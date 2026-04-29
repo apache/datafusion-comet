@@ -137,10 +137,9 @@ jobs:
         # Since 4f5eaf0, auto mode uses native_datafusion for V1 scans,
         # so we only need to test with auto.
         config:
-          # TEMP: 3.4/3.5/4.0 disabled while iterating on 4.1.1; restore before merge.
-          # - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
-          # - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
-          # - {spark-short: '4.0', spark-full: '4.0.2', java: 17, scan-impl: 'auto'}
+          - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
+          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
+          - {spark-short: '4.0', spark-full: '4.0.2', java: 17, scan-impl: 'auto'}
           - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
       fail-fast: false
     name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}

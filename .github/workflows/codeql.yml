@@ -25,12 +25,8 @@ concurrency:
 on:
   push:
     branches: [ "main" ]
-  # TEMP: pull_request trigger restricted to a never-matching path while
-  # iterating on the spark-4.1.1 branch. Restore `branches: [ "main" ]`
-  # before merging this branch back to main.
   pull_request:
-    paths:
-      - "DISABLED_FOR_spark-4.1.1_iteration"
+    branches: [ "main" ]
   schedule:
     - cron: '16 4 * * 1'
 
