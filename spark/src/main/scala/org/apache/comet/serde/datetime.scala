@@ -23,7 +23,7 @@ import java.util.Locale
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, SecondsToTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -353,7 +353,13 @@ object CometNextDay extends CometScalarFunction[NextDay]("next_day")
 object CometMakeDate extends CometScalarFunction[MakeDate]("make_date")
 
 object CometSecondsToTimestamp
-    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp")
+    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
+  override def getSupportLevel(expr: SecondsToTimestamp): SupportLevel =
+    expr.child.dataType match {
+      case IntegerType | LongType | FloatType | DoubleType => Compatible()
+      case dt => Unsupported(Some(s"timestamp_seconds does not support input type $dt"))
+    }
+}
 
 object CometLastDay extends CometScalarFunction[LastDay]("last_day")
 
