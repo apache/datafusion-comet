@@ -39,7 +39,7 @@ import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
@@ -1506,7 +1506,6 @@ class CometExecSuite extends CometTestBase {
   // Comet replaces BroadcastHashJoinExec with CometBroadcastHashJoinExec, which
   // breaks Spark's PlanAdaptiveDynamicPruningFilters pattern match for non-Comet scans.
   test("AQE DPP: V2 BatchScan broadcast query stage creation order (SPARK-34637)") {
-    assume(isSpark35Plus)
     // On Spark 4.1+, the shuffle between partial/final aggregates is elided for this
     // plan, which removes the only Comet entry point (CometColumnarShuffle over a Spark
     // shuffle) that would let the cascade reach CometBroadcastHashJoinExec. Without a
@@ -1582,16 +1581,45 @@ class CometExecSuite extends CometTestBase {
         checkAnswer(df, Row(15, 15) :: Nil)
 
         // Rule always clears SABs on 3.5+, regardless of which conversion branch fires.
-        assertAqeDppShape(cometPlan)
+        if (isSpark35Plus) {
+          assertAqeDppShape(cometPlan)
+        }
 
-        if (isSpark41Plus) {
-          // 4.1: Spark-native SubqueryBroadcastExec, DPP still works
+        if (isSpark41Plus || !isSpark35Plus) {
+          // 3.4 and 4.1+: DPP runs as Spark-native SubqueryBroadcastExec.
+          //   - 3.4: CometSpark34AqeDppFallbackRule keeps the BHJ build broadcast Spark-native
+          //     so Spark's PlanAdaptiveDynamicPruningFilters can create SubqueryBroadcastExec
+          //     and AQE stageCache can dedupe with the DPP subquery's broadcast.
+          //   - 4.1+: Partial/final aggregate shuffle is elided, which removes Comet's entry
+          //     point for this query, so CometPlanAdaptiveDynamicPruningFilters falls into
+          //     its Spark-native branch.
           val sparkSubqueries = collectWithSubqueries(cometPlan) {
             case s: SubqueryBroadcastExec => s
           }
           assert(
             sparkSubqueries.nonEmpty,
-            s"V2 scan should have SubqueryBroadcastExec for DPP on 4.1+:\n$cometPlan")
+            s"V2 scan should have SubqueryBroadcastExec for DPP:\n$cometPlan")
+
+          // Broadcast reuse: the DPP subquery's BroadcastExchange must be reused in the main
+          // plan as a ReusedExchangeExec (or appear directly). Mirrors Spark's
+          // DynamicPartitionPruningSuiteBase.checkPartitionPruningPredicate hasReuse check
+          // (DynamicPartitionPruningSuite.scala:207-231). Without this, the main BHJ's build
+          // side would run a second broadcast with the same data.
+          sparkSubqueries.foreach { s =>
+            val dppBroadcast = s.child match {
+              case aspe: AdaptiveSparkPlanExec =>
+                val bqs = collectFirst(aspe) { case b: BroadcastQueryStageExec => b }
+                bqs.get.broadcast
+              case other =>
+                fail(s"Unexpected SubqueryBroadcastExec child: ${other.getClass.getSimpleName}")
+            }
+            val hasReuse = find(cometPlan) {
+              case ReusedExchangeExec(_, e) => e eq dppBroadcast
+              case b: BroadcastExchangeLike => b eq dppBroadcast
+              case _ => false
+            }.isDefined
+            assert(hasReuse, s"DPP broadcast should be reused in main plan:\n$cometPlan")
+          }
         } else {
           val cometSubqueries = collectWithSubqueries(cometPlan) {
             case s: CometSubqueryBroadcastExec => s

@@ -23,7 +23,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec}
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
@@ -93,7 +94,10 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
  * @see
  *   CometPlanAdaptiveDynamicPruningFilters (Spark 3.5+ equivalent via queryStageOptimizerRule)
  */
-case object CometSpark34AqeDppFallbackRule extends Rule[SparkPlan] with Logging {
+case object CometSpark34AqeDppFallbackRule
+    extends Rule[SparkPlan]
+    with AdaptiveSparkPlanHelper
+    with Logging {
 
   override def apply(plan: SparkPlan): SparkPlan = {
     // Registered only on Spark < 3.5 via injectPreSpark35QueryStagePrepRuleShim. If the
@@ -106,10 +110,25 @@ case object CometSpark34AqeDppFallbackRule extends Rule[SparkPlan] with Logging 
     if (!conf.dynamicPartitionPruningEnabled) return plan
 
     val sabScans = findSabScans(plan)
-    if (sabScans.isEmpty) return plan
+    val sbScans = findSubqueryBroadcastScans(plan)
+    if (sabScans.isEmpty && sbScans.isEmpty) return plan
 
     sabScans.foreach { case (scan, sab) =>
       tagForSab(plan, scan, sab)
+    }
+
+    // AQE re-optimization path: on subsequent re-optimize cycles, ASPE.preprocessingRules
+    // fills the subqueryMap-backed DPP slot with the already-materialized SubqueryBroadcastExec
+    // (produced by Spark's PlanAdaptiveDynamicPruningFilters on a previous pass) instead of the
+    // original SubqueryAdaptiveBroadcastExec. The freshly-planned BroadcastExchangeExec on the
+    // main BHJ's build side is a new instance with no SKIP_COMET_BROADCAST_TAG carried over. If
+    // we only tagged via SABs, the next CometExecRule pass would Cometize this BE and the main
+    // join's build would no longer canonically match the DPP subquery's Spark BroadcastExchange,
+    // losing AQE stageCache broadcast reuse (Spark's DynamicPartitionPruningSuiteV2 SPARK-34637
+    // asserts on this reuse). SubqueryBroadcastExec carries the same buildKeys as the original
+    // SAB, so we can find the matching BHJ by exprId the same way and tag its build BE again.
+    sbScans.foreach { case (scan, sb) =>
+      tagForSubqueryBroadcast(plan, scan, sb)
     }
 
     // This rule only tags; it never rewrites the plan structurally.
@@ -147,6 +166,36 @@ case object CometSpark34AqeDppFallbackRule extends Rule[SparkPlan] with Logging 
   }
 
   /**
+   * Find every scan whose DPP `partitionFilters` contain a `SubqueryBroadcastExec` - i.e. a DPP
+   * subquery that Spark's `PlanAdaptiveDynamicPruningFilters` has already materialized on a
+   * previous AQE pass. See the comment block in `apply` for why we need this in addition to the
+   * SAB path.
+   *
+   * Uses `AdaptiveSparkPlanHelper.foreach`, which descends through `QueryStageExec.plan` and
+   * `AdaptiveSparkPlanExec.executedPlan`. By the re-optimize pass where this matters, the fact
+   * scan is inside a `ShuffleQueryStageExec` whose `children` is `Seq.empty`, so a plain
+   * `plan.foreach` would stop there and miss the scan's `SubqueryBroadcastExec`.
+   */
+  private def findSubqueryBroadcastScans(
+      plan: SparkPlan): Seq[(SparkPlan, SubqueryBroadcastExec)] = {
+    val buf = scala.collection.mutable.ArrayBuffer[(SparkPlan, SubqueryBroadcastExec)]()
+    foreach(plan) { node =>
+      extractFirstSubqueryBroadcast(node).foreach(sb => buf += ((node, sb)))
+    }
+    buf.toSeq
+  }
+
+  private def extractFirstSubqueryBroadcast(node: SparkPlan): Option[SubqueryBroadcastExec] = {
+    node.expressions
+      .flatMap(_.collect {
+        case DynamicPruningExpression(inSub: InSubqueryExec)
+            if inSub.plan.isInstanceOf[SubqueryBroadcastExec] =>
+          inSub.plan.asInstanceOf[SubqueryBroadcastExec]
+      })
+      .headOption
+  }
+
+  /**
    * Place tags for a single SAB-bearing scan. Behavior depends on whether a matching
    * broadcast-hash join exists in the plan:
    *   - Matching BHJ found: tag its build-side `BroadcastExchangeExec` (case 1 above).
@@ -167,6 +216,36 @@ case object CometSpark34AqeDppFallbackRule extends Rule[SparkPlan] with Logging 
         tagBhjBuildBroadcast(buildSide, sab.name)
       case None =>
         tagPeerScansAndShuffles(plan, scan, sab.name)
+    }
+  }
+
+  /**
+   * Tag the matching BHJ's build-side `BroadcastExchangeExec` for a scan whose DPP filter holds a
+   * `SubqueryBroadcastExec` (post-PADPF form). Only the matching-BHJ case applies here: if PADPF
+   * already ran on a previous AQE cycle, it would have fallen back to aggregate `SubqueryExec` or
+   * `Literal.TrueLiteral` instead of producing a `SubqueryBroadcastExec` when no BHJ matched - so
+   * a `SubqueryBroadcastExec` always implies a BHJ with compatible build keys somewhere in the
+   * plan. No peer-scan tagging path is needed because the SMJ self-join case (SPARK-32509) never
+   * produces a `SubqueryBroadcastExec`.
+   */
+  private def tagForSubqueryBroadcast(
+      plan: SparkPlan,
+      scan: SparkPlan,
+      sb: SubqueryBroadcastExec): Unit = {
+    val keyIds: Set[Any] = sb.buildKeys.flatMap(_.references.map(_.exprId)).toSet
+    if (keyIds.isEmpty) {
+      logWarning(s"SubqueryBroadcast '${sb.name}' has empty buildKeys; skipping")
+      return
+    }
+
+    findMatchingBroadcastJoin(plan, keyIds) match {
+      case Some(buildSide) =>
+        tagBhjBuildBroadcast(buildSide, sb.name + " (via SubqueryBroadcast)")
+      case None =>
+        // Nothing to tag. Either the BHJ has a different buildKey exprId set (e.g. AQE
+        // rewrote attributes across stages) or the matching join isn't in this plan snapshot.
+        logDebug(
+          s"SubqueryBroadcast '${sb.name}': no matching BHJ on this plan snapshot; no tag placed")
     }
   }
 
