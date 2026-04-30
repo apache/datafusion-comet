@@ -28,9 +28,11 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, count, sum}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 
@@ -498,5 +500,51 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         checkSparkAnswerAndOperator(testDF)
       }
     }
+  }
+
+  test("estimateUnsafeRowMultiplier: narrow fixed-width schema has high multiplier") {
+    // Schema of boolean + byte + short columns: Arrow uses ~3.125 bytes/row,
+    // UnsafeRow uses 4 + 8 + 24 = 36 bytes/row
+    val fields = Seq(
+      AttributeReference("a", BooleanType)(),
+      AttributeReference("b", ByteType)(),
+      AttributeReference("c", ShortType)())
+    val multiplier = CometShuffleExchangeExec.estimateUnsafeRowMultiplier(fields)
+    assert(multiplier > 5.0, s"Expected > 5.0 for narrow types, got $multiplier")
+  }
+
+  test("estimateUnsafeRowMultiplier: wide fixed-width schema (longs/doubles)") {
+    // Schema of 4 longs: Arrow uses 32 bytes/row, UnsafeRow uses 4 + 8 + 32 = 44 bytes/row
+    val fields = (1 to 4).map(i => AttributeReference(s"c$i", LongType)())
+    val multiplier = CometShuffleExchangeExec.estimateUnsafeRowMultiplier(fields)
+    assert(
+      multiplier >= 1.0 && multiplier < 2.0,
+      s"Expected ~1.3 for all-long schema, got $multiplier")
+  }
+
+  test("estimateUnsafeRowMultiplier: string-heavy schema") {
+    val fields = (1 to 5).map(i => AttributeReference(s"s$i", StringType)())
+    val multiplier = CometShuffleExchangeExec.estimateUnsafeRowMultiplier(fields)
+    assert(multiplier >= 1.0, s"Expected >= 1.0 for string schema, got $multiplier")
+  }
+
+  test("estimateUnsafeRowMultiplier: empty schema returns 1.0") {
+    val multiplier = CometShuffleExchangeExec.estimateUnsafeRowMultiplier(Seq.empty)
+    assert(multiplier == 1.0)
+  }
+
+  test("estimateUnsafeRowMultiplier: mixed TPC-DS-like schema") {
+    // Typical dimension table: ints, strings, decimals
+    val fields = Seq(
+      AttributeReference("id", IntegerType)(),
+      AttributeReference("name", StringType)(),
+      AttributeReference("price", DecimalType(10, 2))(),
+      AttributeReference("qty", IntegerType)(),
+      AttributeReference("date", DateType)(),
+      AttributeReference("flag", BooleanType)())
+    val multiplier = CometShuffleExchangeExec.estimateUnsafeRowMultiplier(fields)
+    assert(
+      multiplier >= 1.0 && multiplier <= 4.0,
+      s"Expected between 1.0 and 4.0 for mixed schema, got $multiplier")
   }
 }
