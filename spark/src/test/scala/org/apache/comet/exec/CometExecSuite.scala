@@ -1698,6 +1698,93 @@ class CometExecSuite extends CometTestBase {
           // one CSAB survives the rule and trips CometSubqueryAdaptiveBroadcastExec.doExecute
           // at runtime. assertAqeDppShape verifies no CSABs remain in the final plan.
           assertAqeDppShape(cometPlan)
+
+          // Subquery reuse: exactly one canonical CometSubqueryBroadcastExec, plus at
+          // least one ReusedSubqueryExec(CometSubqueryBroadcastExec) pointer for the
+          // second fact scan. Without this dedup, both fact scans would evaluate the
+          // DPP subquery independently.
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          assert(
+            cometSubqueries.size == 1,
+            s"Expected exactly 1 CometSubqueryBroadcastExec (shared between fact scans), " +
+              s"got ${cometSubqueries.size}:\n${cometPlan.treeString}")
+          val reusedCsbs = collectWithSubqueries(cometPlan) {
+            case r @ ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => r
+          }
+          assert(
+            reusedCsbs.nonEmpty,
+            s"Expected at least one ReusedSubqueryExec(CometSubqueryBroadcastExec) " +
+              s"for the second fact scan's DPP filter:\n${cometPlan.treeString}")
+
+          // Broadcast reuse via AQE stageCache: the DPP subquery's ASPE and the main
+          // BHJ should share the same underlying CometBroadcastExchange. Without this,
+          // we'd build two identical broadcasts of the dim.
+          val dppBroadcast = cometSubqueries.head.child match {
+            case aspe: AdaptiveSparkPlanExec =>
+              val bqs = collectFirst(aspe) { case b: BroadcastQueryStageExec => b }
+              assert(
+                bqs.isDefined,
+                s"Expected BroadcastQueryStageExec inside DPP subquery's ASPE:\n" +
+                  cometPlan.treeString)
+              bqs.get.broadcast
+            case other =>
+              fail(
+                s"Unexpected CometSubqueryBroadcastExec child: ${other.getClass.getSimpleName}")
+          }
+          val hasReuse = find(cometPlan) {
+            case ReusedExchangeExec(_, e) => e eq dppBroadcast
+            case b: BroadcastExchangeLike => b eq dppBroadcast
+            case _ => false
+          }.isDefined
+          assert(
+            hasReuse,
+            s"DPP subquery's broadcast should be reused by the main BHJ " +
+              s"(via AQE stageCache):\n${cometPlan.treeString}")
+        } else {
+          // Spark 3.4: injectQueryStageOptimizerRule is unavailable, so
+          // CometPlanAdaptiveDynamicPruningFilters can't run. V1 fact scans are rejected
+          // to Spark by CometScanRule.transformV1Scan, and CometSpark34AqeDppFallbackRule
+          // tags the BHJ's build-side BroadcastExchange so Spark's own
+          // PlanAdaptiveDynamicPruningFilters handles DPP natively. Expected shape
+          // mirrors the 3.5+ assertions but with Spark-native node types.
+          val sparkSubqueries = collectWithSubqueries(cometPlan) {
+            case s: SubqueryBroadcastExec => s
+          }
+          assert(
+            sparkSubqueries.size == 1,
+            s"Expected exactly 1 SubqueryBroadcastExec on 3.4 (Spark-native DPP, " +
+              s"shared between fact scans), got ${sparkSubqueries.size}. If 0, " +
+              s"CometSpark34AqeDppFallbackRule didn't keep the BHJ Spark-native and " +
+              s"Spark's rule killed DPP:\n${cometPlan.treeString}")
+          val reusedSparkSubqueries = collectWithSubqueries(cometPlan) {
+            case r @ ReusedSubqueryExec(_: SubqueryBroadcastExec) => r
+          }
+          assert(
+            reusedSparkSubqueries.nonEmpty,
+            s"Expected at least one ReusedSubqueryExec(SubqueryBroadcastExec) on 3.4 " +
+              s"for the second fact scan's DPP filter:\n${cometPlan.treeString}")
+          val dppBroadcast = sparkSubqueries.head.child match {
+            case aspe: AdaptiveSparkPlanExec =>
+              val bqs = collectFirst(aspe) { case b: BroadcastQueryStageExec => b }
+              assert(
+                bqs.isDefined,
+                s"Expected BroadcastQueryStageExec inside DPP subquery's ASPE:\n" +
+                  cometPlan.treeString)
+              bqs.get.broadcast
+            case other =>
+              fail(s"Unexpected SubqueryBroadcastExec child: ${other.getClass.getSimpleName}")
+          }
+          val hasReuse = find(cometPlan) {
+            case ReusedExchangeExec(_, e) => e eq dppBroadcast
+            case b: BroadcastExchangeLike => b eq dppBroadcast
+            case _ => false
+          }.isDefined
+          assert(
+            hasReuse,
+            s"DPP subquery's broadcast should be reused by the main BHJ on 3.4:\n" +
+              cometPlan.treeString)
         }
       }
     }
