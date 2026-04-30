@@ -479,7 +479,7 @@
 - [x] parse_url
   - 3.4.3, 2026-04-29
   - 3.5.8, 2026-04-29
-  - 4.0.1, 2026-04-29: marked Incompatible. Native impl returns NULL for empty-string input where Spark returns "", and inserts a leading "/" when extracting FILE from a URL with no explicit path. Tracked at https://github.com/apache/datafusion/issues/21943.
+  - 4.0.1, 2026-04-29: marked Incompatible. Comet tracks the work at https://github.com/apache/datafusion-comet/issues/4156, with the divergences enumerated upstream at https://github.com/apache/datafusion/issues/21943.
 - [x] url_decode
   - 3.4.3, 2026-04-29
   - 3.5.8, 2026-04-29
