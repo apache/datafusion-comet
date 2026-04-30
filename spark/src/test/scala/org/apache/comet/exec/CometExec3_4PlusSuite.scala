@@ -33,7 +33,7 @@ import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.util.sketch.BloomFilter
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus}
 
 /**
  * This test suite contains tests for only Spark 3.4+.
@@ -45,15 +45,19 @@ class CometExec3_4PlusSuite extends CometTestBase {
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    // Register 'might_contain' to builtin.
-    spark.sessionState.functionRegistry.registerFunction(
-      func_might_contain,
-      new ExpressionInfo(classOf[BloomFilterMightContain].getName, "might_contain"),
-      (children: Seq[Expression]) => BloomFilterMightContain(children.head, children(1)))
+    if (!isSpark42Plus) {
+      // Register 'might_contain' to builtin.
+      spark.sessionState.functionRegistry.registerFunction(
+        func_might_contain,
+        new ExpressionInfo(classOf[BloomFilterMightContain].getName, "might_contain"),
+        (children: Seq[Expression]) => BloomFilterMightContain(children.head, children(1)))
+    }
   }
 
   override def afterAll(): Unit = {
-    spark.sessionState.functionRegistry.dropFunction(func_might_contain)
+    if (!isSpark42Plus) {
+      spark.sessionState.functionRegistry.dropFunction(func_might_contain)
+    }
     super.afterAll()
   }
 
@@ -128,6 +132,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
   }
 
   test("test BloomFilterMightContain can take a constant value input") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val table = "test"
 
     withTable(table) {
@@ -141,6 +146,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
   }
 
   test("test NULL inputs for BloomFilterMightContain") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val table = "test"
 
     withTable(table) {

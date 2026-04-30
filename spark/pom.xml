@@ -300,7 +300,28 @@ under the License.
     </profile>
     <profile>
       <id>spark-4.2</id>
-      <!-- 4.2 preview profile is build-only; no Iceberg or Jetty test dependencies are wired up. -->
+      <dependencies>
+        <!-- iceberg-spark-runtime-4.2 is not yet published; reuse the 4.0 runtime -->
+        <dependency>
+          <groupId>org.apache.iceberg</groupId>
+          <artifactId>iceberg-spark-runtime-4.0_${scala.binary.version}</artifactId>
+          <version>1.10.0</version>
+          <scope>test</scope>
+        </dependency>
+        <!-- Jetty 11.x for Spark 4.2 (jakarta.servlet); matches Spark 4.2.0-preview4's jetty.version -->
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-server</artifactId>
+          <version>11.0.26</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+          <version>11.0.26</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
     </profile>
     <profile>
       <id>generate-docs</id>
