@@ -140,6 +140,7 @@ jobs:
           - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
           - {spark-short: '4.0', spark-full: '4.0.2', java: 17, scan-impl: 'auto'}
+          - {spark-short: '4.0', spark-full: '4.0.2', java: 21, scan-impl: 'auto'}
           - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
       fail-fast: false
     name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
@@ -179,6 +180,14 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
+          # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
+          # build_java21.yml and build_java25.yml set this same env var to
+          # process-isolate the V1/V2 Parquet and Orc source suites because
+          # they exhibit cross-suite resource interactions (file-stream and
+          # thread leaks) under the newer JDKs. project/SparkBuild.scala
+          # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
+          # listed suite. Empty value is a safe no-op.
+          DEDICATED_JVM_SBT_TESTS: ${{ matrix.config.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v7

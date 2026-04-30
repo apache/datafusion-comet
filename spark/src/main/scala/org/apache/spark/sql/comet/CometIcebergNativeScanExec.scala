@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, DynamicPruningExpression, SortOrder}
@@ -272,7 +273,8 @@ case class CometIcebergNativeScanExec(
 
   override lazy val metrics: Map[String, SQLMetric] = {
     val baseMetrics = Map(
-      "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
+      "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
+      "bytes_scanned" -> SQLMetrics.createSizeMetric(sparkContext, "number of bytes scanned"))
 
     // Create IMMUTABLE metrics with captured values AND types
     // these won't be affected by accumulator merges
@@ -296,16 +298,22 @@ case class CometIcebergNativeScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
-    CometExecRDD(
+    new CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
       commonByKey = Map(metadataLocation -> commonData),
       perPartitionByKey = Map(metadataLocation -> perPartitionData),
       serializedPlan = serializedPlan,
-      numPartitions = perPartitionData.length,
+      defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty)
+      subqueries = Seq.empty) {
+      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+        val res = super.compute(split, context)
+        Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+        res
+      }
+    }
   }
 
   /**

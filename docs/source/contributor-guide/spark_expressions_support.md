@@ -93,6 +93,9 @@
   - Spark 3.5.8 audited 2026-04-02
   - Spark 4.0.1 audited 2026-04-02 (pos=0 error message differs from Spark)
 - [x] array_intersect
+  - Spark 3.4.3 audited 2026-04-24 (result element order may differ from Spark when the right array is longer than the left; DataFusion probes the longer side)
+  - Spark 3.5.8 audited 2026-04-24 (same ordering incompatibility as 3.4.3)
+  - Spark 4.0.1 audited 2026-04-24 (ordering incompatibility as above; collated strings now fall back to Spark)
 - [x] array_join
 - [x] array_max
 - [ ] array_min

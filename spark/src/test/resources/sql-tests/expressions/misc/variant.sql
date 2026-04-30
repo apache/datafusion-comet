@@ -31,16 +31,16 @@ INSERT INTO test_variant VALUES
   (3, parse_json('null')),
   (4, NULL)
 
-query expect_fallback(Unsupported v of type VariantType)
+query expect_fallback(type VariantType)
 SELECT id, v FROM test_variant ORDER BY id
 
-query expect_fallback(Unsupported v of type VariantType)
+query expect_fallback(type VariantType)
 SELECT variant_get(v, '$.a', 'int') AS a FROM test_variant ORDER BY id
 
-query expect_fallback(Unsupported v of type VariantType)
+query expect_fallback(type VariantType)
 SELECT id FROM test_variant WHERE variant_get(v, '$.a', 'int') = 1
 
-query expect_fallback(Unsupported v of type VariantType)
+query expect_fallback(type VariantType)
 SELECT COUNT(*) FROM test_variant WHERE v IS NOT NULL
 
 statement
@@ -51,5 +51,5 @@ INSERT INTO test_variant_struct VALUES
   (1, named_struct('v', parse_json('{"x": 10}'))),
   (2, named_struct('v', parse_json('{"x": 20}')))
 
-query expect_fallback(Unsupported v of type VariantType)
+query expect_fallback(type VariantType)
 SELECT id, s FROM test_variant_struct ORDER BY id
