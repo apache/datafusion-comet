@@ -24,6 +24,15 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, ParseUrl}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometParseUrl extends CometExpressionSerde[ParseUrl] {
+
+  private val incompatibleReason =
+    "Comet returns NULL for an empty-string URL, while Spark returns an empty string"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatibleReason)
+
+  override def getSupportLevel(expr: ParseUrl): SupportLevel =
+    Incompatible(Some(incompatibleReason))
+
   override def convert(
       expr: ParseUrl,
       inputs: Seq[Attribute],

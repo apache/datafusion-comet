@@ -15,74 +15,12 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- parse_url function
-statement
-CREATE TABLE test_urls(url string) USING parquet
+-- parse_url is marked Incompatible (see CometParseUrl). In the default
+-- configuration, Comet falls back to Spark. See parse_url_native.sql for
+-- coverage of the native implementation.
 
-statement
-INSERT INTO test_urls VALUES
-  ('http://spark.apache.org/path?query=1'),
-  ('http://user:password@host:8080/path?key=value&key2=value2#ref'),
-  ('http://example.com/path'),
-  ('http://example.com?foo=bar&baz=qux'),
-  ('http://example.com#fragment'),
-  (''),
-  (NULL)
-
--- extract HOST
-query
-SELECT parse_url(url, 'HOST') FROM test_urls
-
--- extract PATH
-query
-SELECT parse_url(url, 'PATH') FROM test_urls
-
--- extract QUERY
-query
-SELECT parse_url(url, 'QUERY') FROM test_urls
-
--- extract REF (fragment)
-query
-SELECT parse_url(url, 'REF') FROM test_urls
-
--- extract PROTOCOL
-query
-SELECT parse_url(url, 'PROTOCOL') FROM test_urls
-
--- extract FILE
-query
-SELECT parse_url(url, 'FILE') FROM test_urls
-
--- extract AUTHORITY
-query
-SELECT parse_url(url, 'AUTHORITY') FROM test_urls
-
--- extract USERINFO
-query
-SELECT parse_url(url, 'USERINFO') FROM test_urls
-
--- extract specific query parameter (3-arg form)
-query
-SELECT parse_url(url, 'QUERY', 'query') FROM test_urls
-
-query
-SELECT parse_url(url, 'QUERY', 'key') FROM test_urls
-
-query
-SELECT parse_url(url, 'QUERY', 'key2') FROM test_urls
-
-query
-SELECT parse_url(url, 'QUERY', 'nonexistent') FROM test_urls
-
--- literal arguments
-query
+query expect_fallback(not fully compatible with Spark)
 SELECT parse_url('http://spark.apache.org/path?query=1', 'HOST')
 
-query
+query expect_fallback(not fully compatible with Spark)
 SELECT parse_url('http://spark.apache.org/path?query=1', 'QUERY', 'query')
-
-query
-SELECT parse_url(NULL, 'HOST')
-
-query
-SELECT parse_url('http://example.com', 'QUERY')
