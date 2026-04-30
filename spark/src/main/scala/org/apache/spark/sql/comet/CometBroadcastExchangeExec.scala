@@ -110,6 +110,12 @@ case class CometBroadcastExchangeExec(
   @transient
   private lazy val maxBroadcastRows = 512000000
 
+  private def getByteArrayRdd(plan: SparkPlan): RDD[(Long, ChunkedByteBuffer)] = {
+    plan.executeColumnar().mapPartitionsInternal { iter =>
+      Utils.serializeBatches(iter)
+    }
+  }
+
   def getNumPartitions(): Int = {
     child.executeColumnar().getNumPartitions
   }
@@ -125,16 +131,18 @@ case class CometBroadcastExchangeExec(
 
         val countsAndBytes = child match {
           case c: CometPlan => CometExec.getByteArrayRdd(c).collect()
-          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _)
+          // Execute through AQEShuffleReadExec to respect AQE partition coalescing
+          case aqe @ AQEShuffleReadExec(s: ShuffleQueryStageExec, _)
               if s.plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
+            getByteArrayRdd(aqe).collect()
           case s: ShuffleQueryStageExec if s.plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
           case ReusedExchangeExec(_, plan) if plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case AQEShuffleReadExec(ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _), _)
-              if plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
+          case aqe @ AQEShuffleReadExec(
+                ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _),
+                _) if plan.isInstanceOf[CometPlan] =>
+            getByteArrayRdd(aqe).collect()
           case ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _)
               if plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()

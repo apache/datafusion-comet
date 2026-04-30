@@ -443,4 +443,30 @@ class CometJoinSuite extends CometTestBase {
       }
     }
   }
+
+  test("Broadcast exchange respects AQE shuffle partition coalescing") {
+    // When a shuffle feeds into a broadcast exchange, AQE may coalesce the shuffle
+    // partitions. The broadcast collect should execute through the AQEShuffleReadExec
+    // to use coalesced partitions rather than bypassing it.
+    val numPartitions = 200
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> numPartitions.toString,
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "small_tbl") {
+        withParquetTable((0 until 10000).map(i => (i, i + 2)), "large_tbl") {
+          val query =
+            s"""SELECT /*+ BROADCAST(a) */ *
+               |FROM (SELECT /*+ REPARTITION($numPartitions) */ * FROM small_tbl) a
+               |JOIN large_tbl b ON a._1 = b._1""".stripMargin
+
+          checkSparkAnswerAndOperator(
+            sql(query),
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
 }
