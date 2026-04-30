@@ -19,6 +19,15 @@
 
 # Supported Spark Expressions
 
+## How to Read This Document
+
+- A function marked with `[x]` has a native implementation in Comet and does not fall back to Spark by default.
+- A function marked with `[ ]` has no native Comet implementation and falls back to Spark.
+- If a function has known incompatibilities with Spark, or conditions that cause it to fall back to Spark,
+  a sub-bullet labeled **Known issues** links to the relevant category page of the
+  [Compatibility Guide](../user-guide/latest/compatibility/expressions/index.md), where per-function
+  details are documented.
+
 ### agg_funcs
 
 - [x] any
@@ -27,6 +36,7 @@
 - [ ] approx_percentile
 - [ ] array_agg
 - [x] avg
+  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [x] bit_and
 - [x] bit_or
 - [x] bit_xor
@@ -34,6 +44,7 @@
 - [x] bool_or
 - [ ] collect_list
 - [x] collect_set
+  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [ ] corr
 - [x] count
 - [x] count_if
@@ -42,13 +53,17 @@
 - [x] covar_samp
 - [x] every
 - [x] first
+  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [x] first_value
+  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [ ] grouping
 - [ ] grouping_id
 - [ ] histogram_numeric
 - [ ] kurtosis
 - [x] last
+  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [x] last_value
+  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [x] max
 - [ ] max_by
 - [x] mean
@@ -74,6 +89,7 @@
 - [x] stddev_pop
 - [x] stddev_samp
 - [x] sum
+  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [ ] try_avg
 - [ ] try_sum
 - [x] var_pop
@@ -88,15 +104,18 @@
 - [x] array_contains
 - [x] array_distinct
 - [x] array_except
+  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 - [x] array_insert
   - Spark 3.4.3 audited 2026-04-02
   - Spark 3.5.8 audited 2026-04-02
   - Spark 4.0.1 audited 2026-04-02 (pos=0 error message differs from Spark)
 - [x] array_intersect
+  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
   - Spark 3.4.3 audited 2026-04-24 (result element order may differ from Spark when the right array is longer than the left; DataFusion probes the longer side)
   - Spark 3.5.8 audited 2026-04-24 (same ordering incompatibility as 3.4.3)
   - Spark 4.0.1 audited 2026-04-24 (ordering incompatibility as above; collated strings now fall back to Spark)
 - [x] array_join
+  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 - [x] array_max
 - [ ] array_min
 - [x] array_position
@@ -105,13 +124,16 @@
 - [x] array_union
 - [x] arrays_overlap
 - [x] arrays_zip
+  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 - [x] element_at
+  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 - [ ] flatten
 - [x] get
 - [ ] sequence
 - [ ] shuffle
 - [ ] slice
 - [x] sort_array
+  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 
 ### bitwise_funcs
 
@@ -131,6 +153,7 @@
 - [ ] cardinality
 - [ ] concat
 - [x] reverse
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] size
 
 ### conditional_funcs
@@ -190,6 +213,7 @@
 - [ ] dayofyear
 - [x] extract
 - [x] from_unixtime
+  - [Known issues](../user-guide/latest/compatibility/expressions/datetime.md)
 - [ ] from_utc_timestamp
 - [ ] hour
 - [ ] last_day
@@ -224,6 +248,7 @@
 - [ ] unix_millis
 - [ ] unix_seconds
 - [x] unix_timestamp
+  - [Known issues](../user-guide/latest/compatibility/expressions/datetime.md)
 - [ ] weekday
 - [ ] weekofyear
 - [ ] year
@@ -252,6 +277,7 @@
 
 - [ ] from_json
 - [x] get_json_object
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] json_array_length
 - [ ] json_object_keys
 - [ ] json_tuple
@@ -295,6 +321,7 @@
 - [x] -
 - [x] /
 - [x] abs
+  - [Known issues](../user-guide/latest/compatibility/expressions/math.md)
 - [x] acos
 - [ ] acosh
 - [x] asin
@@ -411,7 +438,9 @@
 - [x] btrim
 - [x] char
 - [x] char_length
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] character_length
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] chr
 - [x] concat_ws
 - [x] contains
@@ -423,14 +452,19 @@
 - [ ] format_number
 - [ ] format_string
 - [x] initcap
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] instr
 - [x] lcase
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] left
 - [x] len
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] length
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] levenshtein
 - [ ] locate
 - [x] lower
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] lpad
 - [x] ltrim
 - [ ] mask
@@ -445,6 +479,7 @@
 - [ ] regexp_replace
 - [ ] regexp_substr
 - [x] repeat
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] replace
 - [ ] right
 - [x] rpad
@@ -466,8 +501,10 @@
 - [ ] try_to_binary
 - [ ] try_to_number
 - [x] ucase
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] unbase64
 - [x] upper
+  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 
 ### struct_funcs
 
