@@ -16,8 +16,9 @@
 -- under the License.
 
 -- Exercises the native parse_url implementation. Inputs are restricted to
--- URLs with explicit paths to avoid known divergences (e.g. FILE on
--- path-less URLs, and empty-string input).
+-- URLs with explicit paths because the native implementation diverges from
+-- Spark for empty-string input and for FILE extraction on path-less URLs.
+-- Tracked upstream at https://github.com/apache/datafusion/issues/21943.
 
 -- Config: spark.comet.expression.ParseUrl.allowIncompatible=true
 

@@ -15,7 +15,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- parse_url is marked Incompatible (see CometParseUrl). In the default
+-- parse_url is marked Incompatible (see CometParseUrl) because the native
+-- implementation diverges from Spark for empty-string input and for FILE
+-- extraction on path-less URLs. Tracked upstream at
+-- https://github.com/apache/datafusion/issues/21943. In the default
 -- configuration, Comet falls back to Spark. See parse_url_native.sql for
 -- coverage of the native implementation.
 

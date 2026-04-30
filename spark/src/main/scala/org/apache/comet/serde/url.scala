@@ -25,8 +25,11 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithIn
 
 object CometParseUrl extends CometExpressionSerde[ParseUrl] {
 
+  // See https://github.com/apache/datafusion/issues/21943 for the upstream
+  // tracking issue covering the divergences from Spark.
   private val incompatibleReason =
-    "Comet returns NULL for an empty-string URL, while Spark returns an empty string"
+    "Comet returns NULL for an empty-string URL, while Spark returns an empty string. " +
+      "See https://github.com/apache/datafusion/issues/21943."
 
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatibleReason)
 
