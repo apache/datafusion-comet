@@ -121,7 +121,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * TPC-DS q5/q14a/q14b/q54 where a single DPP pushes through a UNION ALL to multiple fact scans.
    * The outer match below unwraps `ReusedSubqueryExec` before dispatching so the inner pattern
    * match is reached regardless of reuse. If you add another wrapper type here, update
-   * `hasWrappedSAB` to match — the two must stay in sync or non-Comet nodes holding that wrapper
+   * `hasWrappedSAB` to match. The two must stay in sync or non-Comet nodes holding that wrapper
    * will be skipped.
    */
   private case class SABData(
@@ -397,7 +397,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * Unlike hasCometSAB, this only checks for the wrapped variant. Unwrapped SABs on non-Comet
    * nodes are handled by Spark's own PlanAdaptiveDynamicPruningFilters.
    *
-   * Keep the set of accepted wrapper shapes in sync with `extractSABData` — if extractSABData
+   * Keep the set of accepted wrapper shapes in sync with `extractSABData`. If extractSABData
    * learns to unwrap a new form, add the matching gate predicate here or non-Comet nodes holding
    * that form will be silently skipped by `apply`.
    */
