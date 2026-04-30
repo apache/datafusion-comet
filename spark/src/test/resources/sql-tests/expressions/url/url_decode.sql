@@ -27,7 +27,9 @@ INSERT INTO test_decode VALUES
   ('caf%C3%A9'),
   (''),
   (NULL),
-  ('no+encoding+needed')
+  ('no+encoding+needed'),
+  ('%21%40%23%24%25%5E%26%2A%28%29%5F%2B'),
+  ('%2a%2b%2c')
 
 query
 SELECT url_decode(s) FROM test_decode
@@ -52,3 +54,12 @@ SELECT url_decode(url_encode('hello world & goodbye'))
 -- multibyte UTF-8
 query
 SELECT url_decode('%E6%97%A5%E6%9C%AC%E8%AA%9E%E3%83%86%E3%82%B9%E3%83%88')
+
+-- lowercase hex (RFC 3986 says hex digits are case-insensitive)
+query
+SELECT url_decode('%2a%2b%2c')
+
+-- malformed percent-encoding: both Spark and Comet must error and the bad
+-- sequence must appear in the error message
+query expect_error(%2s)
+SELECT url_decode('http%3A%2F%2spark.apache.org')

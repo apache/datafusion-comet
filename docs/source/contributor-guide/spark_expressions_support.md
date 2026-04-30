@@ -481,6 +481,9 @@
   - 3.5.8, 2026-04-29
   - 4.0.1, 2026-04-29: marked Incompatible. Native impl returns NULL for empty-string input where Spark returns "", and inserts a leading "/" when extracting FILE from a URL with no explicit path. Tracked at https://github.com/apache/datafusion/issues/21943.
 - [x] url_decode
+  - 3.4.3, 2026-04-29
+  - 3.5.8, 2026-04-29
+  - 4.0.1, 2026-04-29: `try_url_decode` is not handled correctly. Spark rewrites `try_url_decode(x)` to `StaticInvoke(UrlCodec, "decode", [x, Literal(false)], ...)`, but `CometUrlDecodeStaticInvoke` drops the `failOnError=false` flag and emits a plain `url_decode(x)`, so Comet errors on malformed input where Spark returns NULL. Tracked at https://github.com/apache/datafusion-comet/issues/4155.
 - [x] url_encode
   - 3.4.3, 2026-04-29
   - 3.5.8, 2026-04-29
