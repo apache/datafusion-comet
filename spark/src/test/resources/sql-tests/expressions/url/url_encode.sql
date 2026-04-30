@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 -- url_encode function
 statement
 CREATE TABLE test_encode(s string) USING parquet
