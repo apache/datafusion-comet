@@ -21,6 +21,7 @@
 -- Tracked upstream at https://github.com/apache/datafusion/issues/21943.
 
 -- Config: spark.comet.expression.ParseUrl.allowIncompatible=true
+-- Config: spark.sql.ansi.enabled=true
 
 statement
 CREATE TABLE test_urls_native(url string) USING parquet
@@ -76,3 +77,9 @@ SELECT parse_url('http://spark.apache.org/path?query=1', 'QUERY', 'query')
 
 query
 SELECT parse_url(NULL, 'HOST')
+
+-- ANSI-mode invalid URL: parse_url's failOnError is driven by spark.sql.ansi.enabled
+-- (set above). Both Spark (INVALID_URL error class) and Comet's native impl
+-- produce a message starting "The url is invalid".
+query expect_error(The url is invalid)
+SELECT parse_url('inva lid://user:pass@host/file', 'HOST')
