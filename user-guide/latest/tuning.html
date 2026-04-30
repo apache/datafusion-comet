@@ -571,6 +571,13 @@ partitioning keys. Columns that are not partitioning keys may contain complex ty
 <h4>Columnar (JVM) Shuffle<a class="headerlink" href="#columnar-jvm-shuffle" title="Link to this heading">#</a></h4>
 <p>Comet Columnar shuffle is JVM-based and supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and
 <code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code>. This shuffle implementation supports complex data types as partitioning keys.</p>
+<p>By default, Comet will convert a Spark <code class="docutils literal notranslate"><span class="pre">ShuffleExchangeExec</span></code> to columnar shuffle even when the shuffle’s child is a
+non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
+shuffle output is already in Arrow format. The cost is a row to columnar conversion at the shuffle boundary on the
+write side. To restrict columnar shuffle to cases where the child is already a Comet plan, set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.convertFromSparkPlan.enabled=false</span></code>. Shuffles whose child is a Spark plan will then be left
+as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
+on Spark.</p>
 </section>
 <section id="automatic-revert-to-spark-shuffle">
 <h4>Automatic Revert to Spark Shuffle<a class="headerlink" href="#automatic-revert-to-spark-shuffle" title="Link to this heading">#</a></h4>
