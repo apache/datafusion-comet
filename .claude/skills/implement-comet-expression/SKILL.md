@@ -78,4 +78,8 @@ make format
 cd native && cargo clippy --all-targets --workspace -- -D warnings
 ```
 
-Use the repo's PR template and fill in every section.
+### 6. Open the PR
+
+Use the repo's PR template at `.github/pull_request_template.md` and fill in every section: "Which issue does this PR close?", "Rationale for this change", "What changes are included in this PR?", and "How are these changes tested?". Do not add a separate test plan section.
+
+In the "What changes are included in this PR?" section, add a brief note that the `implement-comet-expression` skill was used to scaffold the implementation, so reviewers know which workflow produced the change.
