@@ -37,7 +37,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 
 /**
  * Similar to [[org.apache.spark.sql.PlanStabilitySuite]], checks that TPC-DS Comet plans don't
@@ -262,7 +262,9 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 }
 
 class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
-  private val planName = if (isSpark41Plus) {
+  private val planName = if (isSpark42Plus) {
+    "approved-plans-v1_4-spark4_2"
+  } else if (isSpark41Plus) {
     "approved-plans-v1_4-spark4_1"
   } else if (isSpark40Plus) {
     "approved-plans-v1_4-spark4_0"
@@ -286,7 +288,9 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
 }
 
 class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
-  private val planName = if (isSpark41Plus) {
+  private val planName = if (isSpark42Plus) {
+    "approved-plans-v2_7-spark4_2"
+  } else if (isSpark41Plus) {
     "approved-plans-v2_7-spark4_1"
   } else if (isSpark40Plus) {
     "approved-plans-v2_7-spark4_0"
