@@ -26,6 +26,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
@@ -739,6 +740,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("levenshtein with threshold") {
+    assume(isSpark35Plus, "levenshtein with threshold requires Spark 3.5+")
     val data = Seq(("kitten", "sitting"), ("frog", "fog"), ("abc", "abc"), ("hello", "world"))
 
     withParquetTable(data, "tbl") {
