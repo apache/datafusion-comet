@@ -155,10 +155,12 @@ Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobin
 `SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
 
 By default, Comet will convert a Spark `ShuffleExchangeExec` to columnar shuffle even when the shuffle's child is a
-non-Comet (Spark) plan. This pays for a `row -> Arrow` conversion at the shuffle boundary in exchange for Comet's
-shuffle implementation. To restrict columnar shuffle to cases where the child is already a Comet plan, set
+non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
+shuffle output is already in Arrow format. The cost is a `row -> Arrow` conversion at the shuffle boundary on the
+write side. To restrict columnar shuffle to cases where the child is already a Comet plan, set
 `spark.comet.exec.shuffle.convertFromSparkPlan.enabled=false`. Shuffles whose child is a Spark plan will then be left
-as native Spark shuffles.
+as native Spark shuffles, which avoids the row-to-Arrow conversion but means the downstream stage will also start
+on Spark.
 
 #### Automatic Revert to Spark Shuffle
 
