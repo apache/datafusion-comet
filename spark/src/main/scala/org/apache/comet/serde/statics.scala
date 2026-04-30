@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, ExpressionImplUtils}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
@@ -35,7 +35,22 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
         "read_side_padding"),
-      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"))
+      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"),
+      ("encode", classOf[Base64]) -> CometBase64StaticInvoke)
+
+  override def getExprConfigName(expr: StaticInvoke): String = {
+    staticInvokeExpressions.get((expr.functionName, expr.staticObject)) match {
+      case Some(handler) => handler.getExprConfigName(expr)
+      case None => expr.getClass.getSimpleName
+    }
+  }
+
+  override def getSupportLevel(expr: StaticInvoke): SupportLevel = {
+    staticInvokeExpressions.get((expr.functionName, expr.staticObject)) match {
+      case Some(handler) => handler.getSupportLevel(expr)
+      case None => Compatible(None)
+    }
+  }
 
   override def convert(
       expr: StaticInvoke,

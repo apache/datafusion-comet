@@ -21,7 +21,8 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -450,6 +451,69 @@ object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
       jsonExpr,
       pathExpr)
     optExprWithInfo(optExpr, expr, expr.json, expr.path)
+  }
+}
+
+private object Base64Common {
+
+  val incompatReason: String =
+    "Spark's default `base64` chunks output into 76-character lines via `getMimeEncoder`;" +
+      " Comet always produces unchunked output. To match Comet, set" +
+      " `spark.sql.chunkBase64String.enabled=false`."
+
+  def convert(
+      expr: Expression,
+      child: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val childExpr = exprToProtoInternal(child, inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("base64", expr.dataType, false, childExpr)
+    optExprWithInfo(optExpr, expr, child)
+  }
+}
+
+/**
+ * Serde for the Spark 3.4 shape of `Base64`, which is a `UnaryExpression` with no `chunkBase64`
+ * argument. Spark 3.4 always uses the chunked MIME encoder, so output differs from Comet for
+ * inputs that produce more than 76 characters of base64.
+ */
+object CometBase64 extends CometExpressionSerde[Base64] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(Base64Common.incompatReason)
+
+  override def getSupportLevel(expr: Base64): SupportLevel =
+    Incompatible(Some(Base64Common.incompatReason))
+
+  override def convert(expr: Base64, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    Base64Common.convert(expr, expr.child, inputs, binding)
+  }
+}
+
+/**
+ * Serde for the Spark 3.5+ shape of `Base64`, which is `RuntimeReplaceable` and arrives as a
+ * `StaticInvoke` to `Base64.encode(child, chunkBase64)`. When the planner can prove
+ * `chunkBase64=false`, the output is fully compatible with Spark; otherwise it is incompatible.
+ */
+object CometBase64StaticInvoke extends CometExpressionSerde[StaticInvoke] {
+
+  override def getExprConfigName(expr: StaticInvoke): String = "Base64"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(Base64Common.incompatReason)
+
+  override def getSupportLevel(expr: StaticInvoke): SupportLevel = {
+    expr.arguments match {
+      case Seq(_, Literal(false, _)) => Compatible(None)
+      case _ => Incompatible(Some(Base64Common.incompatReason))
+    }
+  }
+
+  override def convert(
+      expr: StaticInvoke,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val child = expr.arguments.head
+    Base64Common.convert(expr, child, inputs, binding)
   }
 }
 

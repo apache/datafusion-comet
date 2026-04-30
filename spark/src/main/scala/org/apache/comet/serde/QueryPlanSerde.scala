@@ -158,6 +158,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   private[comet] val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(
       classOf[Ascii] -> CometScalarFunction("ascii"),
+      classOf[Base64] -> CometBase64,
       classOf[BitLength] -> CometScalarFunction("bit_length"),
       classOf[Chr] -> CometScalarFunction("char"),
       classOf[ConcatWs] -> CometConcatWs,
