@@ -116,8 +116,8 @@ use datafusion_comet_proto::{
     },
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide,
-        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        upper_window_frame_bound::UpperFrameBoundStruct, AggregateMode as ProtoAggregateMode,
+        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -985,21 +985,25 @@ impl PhysicalPlanner {
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
                 let schema = child.schema();
 
-                let mode = match agg.mode {
-                    0 => DFAggregateMode::Partial,
-                    1 => DFAggregateMode::Final,
-                    2 => DFAggregateMode::Partial, // PartialMerge: Partial + MergeAsPartial
-                    other => {
-                        return Err(ExecutionError::GeneralError(format!(
-                            "Unsupported aggregate mode: {other}"
-                        )))
-                    }
+                let proto_mode = ProtoAggregateMode::try_from(agg.mode).map_err(|_| {
+                    ExecutionError::GeneralError(format!(
+                        "Unsupported aggregate mode: {}",
+                        agg.mode
+                    ))
+                })?;
+                let mode = match proto_mode {
+                    ProtoAggregateMode::Partial => DFAggregateMode::Partial,
+                    ProtoAggregateMode::Final => DFAggregateMode::Final,
+                    // PartialMerge: Partial + MergeAsPartial
+                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Partial,
                 };
 
-                // Check if any expression uses PartialMerge mode (2). When present,
+                // Check if any expression uses PartialMerge mode. When present,
                 // those expressions are wrapped with MergeAsPartial to get merge
                 // semantics inside a Partial-mode AggregateExec.
-                let has_partial_merge = agg.mode == 2 || agg.expr_modes.contains(&2);
+                let partial_merge_value = ProtoAggregateMode::PartialMerge as i32;
+                let has_partial_merge = proto_mode == ProtoAggregateMode::PartialMerge
+                    || agg.expr_modes.contains(&partial_merge_value);
 
                 let agg_exprs: PhyAggResult = agg
                     .agg_exprs
@@ -1021,7 +1025,7 @@ impl PhysicalPlanner {
                         .into_iter()
                         .enumerate()
                         .map(|(idx, expr)| {
-                            if per_expr_modes[idx] == 2 {
+                            if per_expr_modes[idx] == partial_merge_value {
                                 // PartialMerge: wrap with MergeAsPartial
                                 let state_fields = expr
                                     .state_fields()

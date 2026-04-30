@@ -21,8 +21,11 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.execution.SparkPlan
 
-// StreamSourceAwareSparkPlan does not exist in Spark 3.x, so the streaming
-// detection is a no-op on those versions.
+// StreamSourceAwareSparkPlan does not exist in Spark 3.x, so fall back to
+// walking the physical tree and checking each node's logical link. Inspecting
+// only the root's logical link would silently miss streaming plans whenever a
+// rule produced a fresh root node without copying the link over.
 object ShimCometStreaming {
-  def isStreamingPlan(plan: SparkPlan): Boolean = plan.logicalLink.exists(_.isStreaming)
+  def isStreamingPlan(plan: SparkPlan): Boolean =
+    plan.exists(_.logicalLink.exists(_.isStreaming))
 }

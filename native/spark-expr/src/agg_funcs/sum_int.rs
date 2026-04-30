@@ -990,4 +990,29 @@ mod tests {
             .collect();
         assert_eq!(result, vec![Some(6)]);
     }
+
+    /// Regression coverage for the scalar `Accumulator` path used when Comet wraps a PartialMerge
+    /// expression with `MergeAsPartial`: `merge_batch` has to consume every row of the incoming
+    /// state array. The previous implementation read only row 0, which silently under-counted
+    /// whenever the MergeAsPartial operator handed us a state batch with more than one row.
+    #[test]
+    fn test_legacy_accumulator_merge_batch_multi_row() {
+        let mut acc = SumIntegerAccumulatorLegacy::new();
+        let states: ArrayRef = Arc::new(Int64Array::from(vec![Some(1i64), Some(2), None, Some(3)]));
+        acc.merge_batch(&[states]).unwrap();
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::Int64(Some(6)));
+    }
+
+    #[test]
+    fn test_ansi_accumulator_merge_batch_multi_row() {
+        let mut acc = SumIntegerAccumulatorAnsi::new();
+        let states: ArrayRef = Arc::new(Int64Array::from(vec![
+            Some(10i64),
+            Some(20),
+            None,
+            Some(30),
+        ]));
+        acc.merge_batch(&[states]).unwrap();
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::Int64(Some(60)));
+    }
 }

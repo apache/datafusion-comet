@@ -712,10 +712,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         "spark.comet.exec.shuffle.fallbackToColumnar" -> "false",
-        "spark.comet.cast.allowIncompatible" -> "true",
         "spark.sql.adaptive.enabled" -> "false",
         "spark.comet.enabled" -> "true",
-        "spark.comet.expression.Cast.allowIncompatible" -> "true",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_iceberg_compat") {
         spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t2")
         checkSparkAnswerAndOperator("SELECT i, sum(v1), count(distinct v) FROM t2 group by i")
@@ -723,12 +721,17 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     })
   }
 
-  test("partialMerge - distinct + non-distinct with first() FILTER (Expand pattern)") {
+  test("partialMerge - distinct + non-distinct aggregates (Expand pattern)") {
     withParquetTable((1 to 100).map(i => (i, i.toString)), "tbl", false) {
       checkSparkAnswerAndOperator("SELECT avg(_1), sum(_1), count(distinct _1) FROM tbl")
 
       checkSparkAnswerAndOperator(
         "SELECT max(_1), count(distinct _1), sum(distinct _1), sum(1) FROM tbl")
+
+      // Exercises the Expand plan for a non-COUNT distinct (AVG(DISTINCT)) mixed with a
+      // non-distinct aggregate, so the PartialMerge stage has to survive for a float-producing
+      // distinct aggregate.
+      checkSparkAnswerAndOperator("SELECT avg(distinct _1), sum(_1) FROM tbl")
     }
   }
 
@@ -1204,7 +1207,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
                 checkSparkAnswerAndOperator(s"SELECT DISTINCT(col2) FROM $table")
 
-                checkSparkAnswerAndOperator(s"SELECT COUNT(distinct col2) FROM $table")
+                // Keep one explicit aggregate-count assertion so a silent regression in the
+                // middle PartialMerge stage (which used to fall back before this PR) is caught:
+                // all four Spark aggregate stages for COUNT(DISTINCT ...) must remain native.
+                checkSparkAnswerAndNumOfAggregates(s"SELECT COUNT(distinct col2) FROM $table", 4)
 
                 checkSparkAnswerAndOperator(
                   s"SELECT COUNT(distinct col2), col1 FROM $table group by col1")
