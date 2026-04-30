@@ -15,33 +15,26 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- MinSparkVersion: 3.5
+
 statement
 CREATE TABLE test_levenshtein(s1 string, s2 string) USING parquet
 
 statement
 INSERT INTO test_levenshtein VALUES ('kitten', 'sitting'), ('frog', 'fog'), ('abc', 'abc'), ('', 'hello'), ('hello', ''), ('', ''), (NULL, 'test'), ('hello', NULL), (NULL, NULL)
 
--- column arguments
+-- three argument version with threshold
 query
-SELECT levenshtein(s1, s2) FROM test_levenshtein
+SELECT levenshtein('kitten', 'sitting', 2), levenshtein('kitten', 'sitting', 3), levenshtein('kitten', 'sitting', 4)
 
--- column + literal
+-- threshold with column arguments
 query
-SELECT levenshtein(s1, 'abc') FROM test_levenshtein
+SELECT levenshtein(s1, s2, 2) FROM test_levenshtein
 
--- literal + column
+-- threshold edge cases
 query
-SELECT levenshtein('kitten', s2) FROM test_levenshtein
+SELECT levenshtein('abc', 'abc', 0), levenshtein('abc', 'adc', 0), levenshtein('', '', 0)
 
--- literal + literal
+-- threshold with NULL
 query
-SELECT levenshtein('kitten', 'sitting'), levenshtein('frog', 'fog'), levenshtein('', ''), levenshtein(NULL, 'a')
-
--- identical strings
-query
-SELECT levenshtein(s1, s1) FROM test_levenshtein
-
--- unicode characters
-query
-SELECT levenshtein('café', 'cafe'), levenshtein('你好', '你坏')
-
+SELECT levenshtein('abc', 'adc', NULL), levenshtein(NULL, 'test', 2)
