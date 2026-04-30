@@ -37,7 +37,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 
 /**
  * Similar to [[org.apache.spark.sql.PlanStabilitySuite]], checks that TPC-DS Comet plans don't
@@ -337,6 +337,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 private object CometPlanStabilitySuite {
   def planNameChain(variant: String): Seq[String] = {
     Seq(
+      isSpark42Plus -> s"approved-plans-${variant}-spark4_2",
       isSpark41Plus -> s"approved-plans-${variant}-spark4_1",
       isSpark40Plus -> s"approved-plans-${variant}-spark4_0",
       isSpark35Plus -> s"approved-plans-${variant}-spark3_5")

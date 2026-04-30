@@ -410,12 +410,13 @@ impl SparkPhysicalExprAdapter {
                     | DataType::Decimal128(_, _)
                     | DataType::Decimal256(_, _)
             ) {
-                return Err(DataFusionError::Plan(format!(
-                    "Parquet column cannot be converted. Column: [{}], \
-                     Expected: {}, Found: {}",
-                    cast.input_field().name(),
-                    target_type,
-                    physical_type,
+                return Err(DataFusionError::External(Box::new(
+                    SparkError::ParquetSchemaConvert {
+                        file_path: String::new(),
+                        column: cast.input_field().name().to_string(),
+                        physical_type: physical_type.to_string(),
+                        spark_type: target_type.to_string(),
+                    },
                 )));
             }
 
@@ -445,12 +446,13 @@ impl SparkPhysicalExprAdapter {
                 (physical_type, target_type)
             {
                 if dst_s < src_s {
-                    return Err(DataFusionError::Plan(format!(
-                        "Parquet column cannot be converted. Column: [{}], \
-                         Expected: {}, Found: {}",
-                        cast.input_field().name(),
-                        target_type,
-                        physical_type,
+                    return Err(DataFusionError::External(Box::new(
+                        SparkError::ParquetSchemaConvert {
+                            file_path: String::new(),
+                            column: cast.input_field().name().to_string(),
+                            physical_type: physical_type.to_string(),
+                            spark_type: target_type.to_string(),
+                        },
                     )));
                 }
             }
@@ -472,6 +474,29 @@ impl SparkPhysicalExprAdapter {
             // TIMESTAMP(NANOS) to LongType. Spark's Cast would divide by MICROS_PER_SECOND
             // (assuming microseconds), but the values are nanoseconds. Arrow cast correctly
             // reinterprets the raw i64 value without conversion.
+            // Reject scalar/complex mismatches at planning time. Spark's
+            // vectorized reader rejects e.g. reading a TIMESTAMP column as
+            // ARRAY<TIMESTAMP> with SchemaColumnConvertNotSupportedException
+            // (see SPARK-45604). Without this guard the runtime cast would
+            // raise a less-specific Arrow CastError. Same-complex-type pairs
+            // and timestamp→timestamp / timestamp→int64 are handled below.
+            let is_complex = |t: &DataType| {
+                matches!(
+                    t,
+                    DataType::Struct(_) | DataType::List(_) | DataType::Map(_, _)
+                )
+            };
+            if is_complex(physical_type) != is_complex(target_type) {
+                return Err(DataFusionError::External(Box::new(
+                    SparkError::ParquetSchemaConvert {
+                        file_path: String::new(),
+                        column: cast.input_field().name().to_string(),
+                        physical_type: physical_type.to_string(),
+                        spark_type: target_type.to_string(),
+                    },
+                )));
+            }
+
             if matches!(
                 (physical_type, target_type),
                 (DataType::Struct(_), DataType::Struct(_))
