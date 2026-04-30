@@ -115,6 +115,14 @@ case object CometPlanAdaptiveDynamicPruningFilters
    *   - CometSubqueryAdaptiveBroadcastExec (outer partitionFilters, wrapped by CometExecRule)
    *   - SubqueryAdaptiveBroadcastExec (inner CometScanExec.partitionFilters, never wrapped
    *     because CometScanExec is @transient and not part of the plan expression tree)
+   *
+   * Either form may itself be wrapped in a `ReusedSubqueryExec` when Spark's
+   * `ReuseAdaptiveSubquery` (which runs before our rule) dedupes identical DPP subqueries, e.g.
+   * TPC-DS q5/q14a/q14b/q54 where a single DPP pushes through a UNION ALL to multiple fact scans.
+   * The outer match below unwraps `ReusedSubqueryExec` before dispatching so the inner pattern
+   * match is reached regardless of reuse. If you add another wrapper type here, update
+   * `hasWrappedSAB` to match — the two must stay in sync or non-Comet nodes holding that wrapper
+   * will be skipped.
    */
   private case class SABData(
       name: String,
@@ -149,8 +157,12 @@ case object CometPlanAdaptiveDynamicPruningFilters
       }
     }
     inSub.plan match {
+      // ReusedSubqueryExec extends BaseSubqueryExec, so unwrap it before dispatching
+      // to `BaseSubqueryExec`. The order is load-bearing: if the general case runs
+      // first it catches the wrapper and extract() returns None, leaving a wrapped
+      // CSAB in the plan that throws at doExecute() time. See the scaladoc above.
+      case ReusedSubqueryExec(sub) => extract(sub)
       case sub: BaseSubqueryExec => extract(sub)
-      case ReusedSubqueryExec(sub: BaseSubqueryExec) => extract(sub)
       case _ => None
     }
   }
@@ -384,11 +396,26 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * Checks if a SparkPlan's expressions contain a wrapped CometSubqueryAdaptiveBroadcastExec.
    * Unlike hasCometSAB, this only checks for the wrapped variant. Unwrapped SABs on non-Comet
    * nodes are handled by Spark's own PlanAdaptiveDynamicPruningFilters.
+   *
+   * Keep the set of accepted wrapper shapes in sync with `extractSABData` — if extractSABData
+   * learns to unwrap a new form, add the matching gate predicate here or non-Comet nodes holding
+   * that form will be silently skipped by `apply`.
    */
   private def hasWrappedSAB(p: SparkPlan): Boolean =
     p.expressions.exists(_.exists {
       case DynamicPruningExpression(
             InSubqueryExec(_, _: CometSubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
+        true
+      // ReuseAdaptiveSubquery wraps the CSAB when two scans share a DPP subquery
+      // (e.g. UNION ALL under one join). Mirrors extractSABData's unwrap.
+      case DynamicPruningExpression(
+            InSubqueryExec(
+              _,
+              ReusedSubqueryExec(_: CometSubqueryAdaptiveBroadcastExec),
+              _,
+              _,
+              _,
+              _)) =>
         true
       case _ => false
     })

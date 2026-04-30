@@ -1640,6 +1640,69 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Regression for the TPC-DS q5/q14a/q14b/q54 failure: two fact scans inside a single
+  // UNION ALL that joins a dimension once produce DPP subqueries that share their
+  // logical build plan (since the join pushes DPP down to both scans via one subquery).
+  // Spark's ReuseAdaptiveSubquery (which runs before our rule) collapses them into
+  // ReusedSubqueryExec(CometSubqueryAdaptiveBroadcastExec). Our rule's extractSABData
+  // must unwrap ReusedSubqueryExec before inspecting the inner plan; otherwise the
+  // wrapped CSAB survives to runtime and doExecute() throws.
+  test("AQE DPP: ReuseAdaptiveSubquery wraps CSAB in ReusedSubqueryExec") {
+    withTempDir { path =>
+      val fact1Path = s"${path.getAbsolutePath}/fact1.parquet"
+      val fact2Path = s"${path.getAbsolutePath}/fact2.parquet"
+      val dimPath = s"${path.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val one_day = 24 * 60 * 60000
+        val fact1 = Range(0, 100)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + (i % 10) * one_day)))
+          .toDF("fact_id", "fact_date")
+        fact1.write.partitionBy("fact_date").parquet(fact1Path)
+        val fact2 = Range(100, 200)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + (i % 10) * one_day)))
+          .toDF("fact_id", "fact_date")
+        fact2.write.partitionBy("fact_date").parquet(fact2Path)
+        val dim = Range(0, 10)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day)))
+          .toDF("dim_id", "dim_date")
+        dim.write.parquet(dimPath)
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+        spark.read.parquet(fact1Path).createOrReplaceTempView("aqe_dpp_reuse_fact1")
+        spark.read.parquet(fact2Path).createOrReplaceTempView("aqe_dpp_reuse_fact2")
+        spark.read.parquet(dimPath).createOrReplaceTempView("aqe_dpp_reuse_dim")
+
+        // Mirror TPC-DS q54: UNION ALL of two fact tables inside a single join to
+        // the dimension. DPP is pushed through the UNION to both fact scans from a
+        // single logical DynamicPruningSubquery, so both SABs share their buildPlan
+        // and canonicalize identically. ReuseAdaptiveSubquery then wraps one in a
+        // ReusedSubqueryExec, exercising the bug path.
+        val df = spark.sql("""
+            |SELECT f.fact_id, f.fact_date
+            |FROM (
+            |  SELECT fact_id, fact_date FROM aqe_dpp_reuse_fact1
+            |  UNION ALL
+            |  SELECT fact_id, fact_date FROM aqe_dpp_reuse_fact2
+            |) f
+            |JOIN aqe_dpp_reuse_dim d ON f.fact_date = d.dim_date
+            |WHERE d.dim_id > 7
+          """.stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        if (isSpark35Plus) {
+          // Regression check: without the ReusedSubqueryExec unwrap in extractSABData,
+          // one CSAB survives the rule and trips CometSubqueryAdaptiveBroadcastExec.doExecute
+          // at runtime. assertAqeDppShape verifies no CSABs remain in the final plan.
+          assertAqeDppShape(cometPlan)
+        }
+      }
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"
