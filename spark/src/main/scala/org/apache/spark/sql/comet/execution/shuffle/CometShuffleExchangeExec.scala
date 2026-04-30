@@ -293,6 +293,16 @@ object CometShuffleExchangeExec
       return Some(CometNativeShuffle)
     }
 
+    if (!isCometPlan(s.child) &&
+      !CometConf.COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.get(s.conf)) {
+      withInfos(
+        s,
+        Set(
+          s"${CometConf.COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key} is disabled " +
+            "and child is not a Comet plan"))
+      return None
+    }
+
     val columnarReasons = columnarShuffleFailureReasons(s)
     if (columnarReasons.isEmpty) {
       return Some(CometColumnarShuffle)
