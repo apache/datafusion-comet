@@ -39,8 +39,10 @@ object GenerateDocs {
 
   private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
 
-  /** (expression class simple name, incompatible reasons, unsupported reasons) */
-  private type CategoryNotes = Seq[(String, Seq[String], Seq[String])]
+  /**
+   * (expression class simple name, compatible notes, incompatible reasons, unsupported reasons)
+   */
+  private type CategoryNotes = Seq[(String, Seq[String], Seq[String], Seq[String])]
 
   /**
    * Mapping from expression category to the compatibility guide page where that category's
@@ -51,27 +53,74 @@ object GenerateDocs {
     "array" -> ("compatibility/expressions/array.md",
     () =>
       QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
-        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
       }),
     "datetime" -> ("compatibility/expressions/datetime.md",
     () =>
       QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
-        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
       }),
     "math" -> ("compatibility/expressions/math.md",
     () =>
       QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
-        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
       }),
     "struct" -> ("compatibility/expressions/struct.md",
     () =>
       QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
-        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
       }),
     "aggregate" -> ("compatibility/expressions/aggregate.md",
     () =>
       QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
-        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "string" -> ("compatibility/expressions/string.md",
+    () =>
+      QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "map" -> ("compatibility/expressions/map.md",
+    () =>
+      QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
+      }),
+    "misc" -> ("compatibility/expressions/misc.md",
+    () =>
+      QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
+        (
+          cls.getSimpleName,
+          serde.getCompatibleNotes(),
+          serde.getIncompatibleReasons(),
+          serde.getUnsupportedReasons())
       }))
 
   def main(args: Array[String]): Unit = {
@@ -176,11 +225,19 @@ object GenerateDocs {
   }
 
   private def writeExpressionCompatNotes(w: BufferedOutputStream, notes: CategoryNotes): Unit = {
-    val sorted = notes.sortBy(_._1).filter { case (_, incompat, unsupported) =>
-      incompat.nonEmpty || unsupported.nonEmpty
+    val sorted = notes.sortBy(_._1).filter { case (_, compat, incompat, unsupported) =>
+      compat.nonEmpty || incompat.nonEmpty || unsupported.nonEmpty
     }
-    for ((name, incompat, unsupported) <- sorted) {
+    for ((name, compat, incompat, unsupported) <- sorted) {
       w.write(s"\n### $name\n".getBytes)
+      if (compat.nonEmpty) {
+        w.write(
+          ("\nThe following differences from Spark are always present and do not require" +
+            " any additional configuration:\n\n").getBytes)
+        for (note <- compat) {
+          w.write(s"- $note\n".getBytes)
+        }
+      }
       if (incompat.nonEmpty) {
         w.write(
           (s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +

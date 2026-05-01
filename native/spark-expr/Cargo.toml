@@ -112,3 +112,7 @@ harness = false
 [[bench]]
 name = "cast_non_int_numeric_timestamp"
 harness = false
+
+[[bench]]
+name = "map_sort"
+harness = false

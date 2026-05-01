@@ -205,6 +205,8 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq("Falls back to Spark in ANSI mode.")
+
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
@@ -217,7 +219,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       return None
     }
 
-    val evalMode = sum.evalMode
+    val evalMode = CometEvalModeUtil.sumEvalMode(sum)
 
     val childExpr = exprToProto(sum.child, inputs, binding)
     val dataType = serializeDataType(sum.dataType)
@@ -245,6 +247,10 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
 }
 
 object CometFirst extends CometAggregateExpressionSerde[First] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "This function is not deterministic. Results may not match Spark.")
+
   override def convert(
       aggExpr: AggregateExpression,
       first: First,
@@ -277,6 +283,10 @@ object CometFirst extends CometAggregateExpressionSerde[First] {
 }
 
 object CometLast extends CometAggregateExpressionSerde[Last] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "This function is not deterministic. Results may not match Spark.")
+
   override def convert(
       aggExpr: AggregateExpression,
       last: Last,

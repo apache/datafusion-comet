@@ -417,7 +417,7 @@ index daef11ae4d6..9f3cc9181f2 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index f33432ddb6f..914afa6b01d 100644
+index f33432ddb6f..b375e285dde 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -477,27 +477,7 @@ index f33432ddb6f..914afa6b01d 100644
  
        assert(countSubqueryBroadcasts == 1)
        assert(countReusedSubqueryBroadcasts == 1)
-@@ -1215,7 +1231,8 @@ abstract class DynamicPartitionPruningSuiteBase
-   }
- 
-   test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
--    "canonicalization and exchange reuse") {
-+    "canonicalization and exchange reuse",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/4045")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-       withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-         val df = sql(
-@@ -1423,7 +1440,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("SPARK-34637: DPP side broadcast query stage is created firstly") {
-+  test("SPARK-34637: DPP side broadcast query stage is created firstly",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/4045")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-       val df = sql(
-         """ WITH v as (
-@@ -1577,6 +1595,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1577,6 +1593,7 @@ abstract class DynamicPartitionPruningSuiteBase
  
          val subqueryBroadcastExecs = collectWithSubqueries(df.queryExecution.executedPlan) {
            case s: SubqueryBroadcastExec => s
@@ -505,7 +485,7 @@ index f33432ddb6f..914afa6b01d 100644
          }
          assert(subqueryBroadcastExecs.size === 1)
          subqueryBroadcastExecs.foreach { subqueryBroadcastExec =>
-@@ -1729,6 +1748,10 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1729,6 +1746,10 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
@@ -2155,7 +2135,7 @@ index 104b4e416cd..b8af360fa14 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8670d95c65e..c7ba51f770f 100644
+index 8670d95c65e..9411af57a26 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -41,6 +41,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
@@ -2166,17 +2146,7 @@ index 8670d95c65e..c7ba51f770f 100644
  import org.apache.spark.sql.catalyst.{InternalRow, ScalaReflection}
  import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeRow}
  import org.apache.spark.sql.catalyst.util.DateTimeUtils
-@@ -1064,7 +1065,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
-+  test("SPARK-35640: read binary as timestamp should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
-     val data = (1 to 4).map(i => Tuple1(i.toString))
-     val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
- 
-@@ -1075,7 +1077,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1075,7 +1076,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2186,7 +2156,7 @@ index 8670d95c65e..c7ba51f770f 100644
      val data = (1 to 4).map(i => Tuple1(i))
      val readSchema = StructType(Seq(StructField("_1", DataTypes.LongType)))
  
-@@ -1335,7 +1338,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1335,7 +1337,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2353,7 +2323,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index bf5c51b89bb..4e2f0bdb389 100644
+index bf5c51b89bb..dc3aac281c3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -2384,16 +2354,6 @@ index bf5c51b89bb..4e2f0bdb389 100644
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SparkException])
-@@ -1067,7 +1070,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
-     }
-   }
- 
--  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>") {
-+  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
-     import testImplicits._
- 
-     withTempPath { dir =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index 3a0bd35cb70..b28f06a757f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala

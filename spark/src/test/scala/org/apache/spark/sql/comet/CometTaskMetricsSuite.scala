@@ -38,6 +38,7 @@ import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -191,6 +192,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("native_datafusion scan reports task-level input metrics matching Spark") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     val totalRows = 10000
     withTempPath { dir =>
       spark
@@ -236,6 +238,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("input metrics aggregate across multiple native scans in a join") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     withTempPath { dir1 =>
       withTempPath { dir2 =>
         // Create two separate parquet tables
@@ -289,6 +292,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("input metrics aggregate across multiple native scans in a union") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     withTempPath { dir1 =>
       withTempPath { dir2 =>
         spark

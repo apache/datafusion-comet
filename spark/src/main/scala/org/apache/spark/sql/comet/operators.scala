@@ -56,7 +56,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, with
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
 /**
@@ -1386,6 +1386,14 @@ trait CometBaseAggregate {
       return None
     }
 
+    if (groupingExpressions.exists(expr => isStringCollationType(expr.dataType))) {
+      // Collation-aware grouping requires collation-aware hashing/equality; Comet only
+      // compares raw bytes, which would put rows that compare equal under the collation
+      // into different groups.
+      withInfo(aggregate, "Grouping on non-default collated strings is not supported")
+      return None
+    }
+
     val groupingExprsWithInput =
       groupingExpressions.map(expr => expr.name -> exprToProto(expr, child.output))
 
@@ -1708,6 +1716,12 @@ trait CometHashJoin {
       return None
     }
 
+    val joinKeys = join.leftKeys ++ join.rightKeys
+    if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
+      withInfo(join, "unsupported non-default collated string join keys")
+      return None
+    }
+
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
@@ -1749,7 +1763,7 @@ trait CometHashJoin {
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
+      val allExprs: Seq[Expression] = joinKeys
       withInfo(join, allExprs: _*)
       None
     }
@@ -2070,8 +2084,14 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       }
     }
 
+    val joinKeys = join.leftKeys ++ join.rightKeys
+    if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
+      withInfo(join, "unsupported non-default collated string join keys")
+      return None
+    }
+
     // Checks if the join keys are supported by DataFusion SortMergeJoin.
-    val errorMsgs = join.leftKeys.flatMap { key =>
+    val errorMsgs = joinKeys.flatMap { key =>
       if (!supportedSortMergeJoinEqualType(key.dataType)) {
         Some(s"Unsupported join key type ${key.dataType} on key: ${key.sql}")
       } else {
@@ -2103,7 +2123,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       condition.map(joinBuilder.setCondition)
       Some(builder.setSortMergeJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
+      val allExprs: Seq[Expression] = joinKeys
       withInfo(join, allExprs: _*)
       None
     }
@@ -2128,6 +2148,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
    * Returns true if given datatype is supported as a key in DataFusion sort merge join.
    */
   private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
+    case st: StringType if isStringCollationType(st) => false
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true
