@@ -383,6 +383,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_REGEXP_USE_JVM: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.regexp.useJVM")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When true, route Spark RLike (regexp or regexp_like) through a JVM-side UDF for " +
+          "Java-compatible regex semantics, at the cost of JNI roundtrips per batch. When " +
+          "false, the native (Rust) regex implementation is used, which is faster but reports " +
+          "as Incompatible because Rust regex semantics differ from Java's.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
       .category(CATEGORY_SHUFFLE)
