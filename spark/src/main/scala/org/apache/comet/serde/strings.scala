@@ -267,15 +267,18 @@ object CometRLike extends CometExpressionSerde[RLike] {
     "Uses Rust regexp engine, which has different behavior to Java regexp engine")
 
   override def getSupportLevel(expr: RLike): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == "java") {
-      Compatible(None)
+    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
+      expr.right match {
+        case _: Literal => Compatible(None)
+        case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
+      }
     } else {
       super.getSupportLevel(expr)
     }
   }
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == "java") {
+    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
       convertViaJvmUdf(expr, inputs, binding)
     } else {
       convertViaNativeRegex(expr, inputs, binding)

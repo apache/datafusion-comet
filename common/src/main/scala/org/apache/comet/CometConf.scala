@@ -383,19 +383,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val REGEXP_ENGINE_RUST = "rust"
+  val REGEXP_ENGINE_JAVA = "java"
+
   val COMET_REGEXP_ENGINE: ConfigEntry[String] =
     conf("spark.comet.exec.regexp.engine")
       .category(CATEGORY_EXEC)
       .doc(
         "Experimental. Selects the engine used to evaluate supported regular-expression " +
-          "expressions. `rust` uses the native DataFusion regexp engine. `java` routes through " +
-          "a JVM-side UDF (java.util.regex.Pattern) for Spark-compatible semantics, at the " +
-          "cost of JNI roundtrips per batch. Only RLike is routed today; additional " +
-          "expressions may opt in over time.")
+          s"expressions. `$REGEXP_ENGINE_RUST` uses the native DataFusion regexp engine. " +
+          s"`$REGEXP_ENGINE_JAVA` routes through a JVM-side UDF (java.util.regex.Pattern) for " +
+          "Spark-compatible semantics, at the cost of JNI roundtrips per batch. Only RLike " +
+          "is routed today; additional expressions may opt in over time.")
       .stringConf
       .transform(_.toLowerCase(Locale.ROOT))
-      .checkValues(Set("rust", "java"))
-      .createWithDefault("rust")
+      .checkValues(Set(REGEXP_ENGINE_RUST, REGEXP_ENGINE_JAVA))
+      .createWithDefault(REGEXP_ENGINE_RUST)
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
