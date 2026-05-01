@@ -33,6 +33,7 @@ import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{Compatible, Incompatible}
@@ -524,6 +525,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast FloatType to TimestampType") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         // Use useDFDiff to avoid collect() which fails on extreme timestamp values
@@ -589,6 +591,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DoubleType to TimestampType") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         // Use useDFDiff to avoid collect() which fails on extreme timestamp values
@@ -1268,12 +1271,31 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("cast StringType to TimestampNTZType") {
-    // Phase 5: String → NTZ parsing not yet implemented
-    // https://github.com/apache/datafusion-comet/issues/378
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
-      val values = Seq("2020-01-01T12:34:56.123456", "2020-01-01T12:34:56", "2020-01-01")
-      castTimestampTest(values.toDF("a"), DataTypes.TimestampNTZType)
+  test("cast StringType to TimestampNTZType") {
+    representativeTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        val values = Seq(
+          "2020-01-01T12:34:56.123456",
+          "2020-01-01T12:34:56",
+          "2020-01-01 12:34:56",
+          "2020-01-01",
+          "2020-01",
+          "2020",
+          "2020-06-15T12:30:00Z",
+          "2020-06-15T12:30:00+05:30",
+          "2020-06-15T12:30:00-08:00",
+          "2020-06-15T12:30:00 UTC",
+          "2024-03-10 02:30:00",
+          "2024-11-03 01:30:00",
+          "not a timestamp",
+          "",
+          "T12:34:56",
+          "12:34:56",
+          "2020-02-29 00:00:00",
+          "2023-02-29 00:00:00",
+          null)
+        castTimestampTest(values.toDF("a"), DataTypes.TimestampNTZType, assertNative = true)
+      }
     }
   }
 
@@ -1546,6 +1568,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to ArrayType") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     val types = Seq(
       BooleanType,
       StringType,
@@ -1594,7 +1617,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from TimestampNTZType
 
   test("cast TimestampNTZType to StringType") {
-    castTest(generateTimestampNTZ(), DataTypes.StringType)
+    // TimestampNTZ is timezone-independent, so casting to string should produce
+    // the same result regardless of the session timezone.
+    for (tz <- representativeTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateTimestampNTZ(), DataTypes.StringType)
+      }
+    }
   }
 
   test("cast TimestampNTZType to DateType") {

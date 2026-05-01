@@ -17,28 +17,48 @@
 
 
 statement
-CREATE TABLE test_array_compact(arr array<int>) USING parquet
+CREATE TABLE test_array_compact(
+  ints array<int>,
+  strs array<string>,
+  dbls array<double>,
+  nested array<array<int>>
+) USING parquet
 
 statement
-INSERT INTO test_array_compact VALUES (array(1, NULL, 2, NULL, 3)), (array()), (NULL), (array(NULL, NULL)), (array(1, 2, 3))
+INSERT INTO test_array_compact VALUES
+  (array(1, NULL, 2, NULL, 3), array('a', NULL, 'b', NULL, 'c'), array(1.0, NULL, 2.0), array(array(1, NULL, 3), NULL, array(4, NULL, 6))),
+  (array(), array(), array(), array()),
+  (NULL, NULL, NULL, NULL),
+  (array(NULL, NULL), array(NULL, NULL), array(NULL, NULL), array(NULL, NULL)),
+  (array(1, 2, 3), array('x', 'y', 'z'), array(1.5, 2.5), array(array(1, 2), array(3, 4)))
 
--- column argument
+-- integer column
 query
-SELECT array_compact(arr) FROM test_array_compact
+SELECT array_compact(ints) FROM test_array_compact
+
+-- string column
+query
+SELECT array_compact(strs) FROM test_array_compact
+
+-- double column
+query
+SELECT array_compact(dbls) FROM test_array_compact
+
+-- nested array column: outer nulls removed, inner nulls preserved
+query
+SELECT array_compact(nested) FROM test_array_compact
 
 -- literal arguments
 query
 SELECT array_compact(array(1, NULL, 2, NULL, 3))
 
--- string element type
-statement
-CREATE TABLE test_array_compact_str(arr array<string>) USING parquet
-
-statement
-INSERT INTO test_array_compact_str VALUES (array('a', NULL, 'b', NULL, 'c')), (array()), (NULL), (array(NULL, NULL)), (array('', NULL, '', NULL))
-
+-- literal string array
 query
-SELECT array_compact(arr) FROM test_array_compact_str
+SELECT array_compact(array('a', NULL, 'b'))
+
+-- all-null literal array
+query
+SELECT array_compact(array(NULL, NULL, NULL))
 
 -- double element type
 query

@@ -28,7 +28,8 @@ use crate::conversion_funcs::numeric::{
 };
 use crate::conversion_funcs::string::{
     cast_string_to_date, cast_string_to_decimal, cast_string_to_float, cast_string_to_int,
-    cast_string_to_timestamp, is_df_cast_from_string_spark_compatible, spark_cast_utf8_to_boolean,
+    cast_string_to_timestamp, cast_string_to_timestamp_ntz,
+    is_df_cast_from_string_spark_compatible, spark_cast_utf8_to_boolean,
 };
 use crate::conversion_funcs::temporal::{
     cast_date_to_timestamp, is_df_cast_from_date_spark_compatible,
@@ -316,6 +317,9 @@ pub(crate) fn cast_array(
         (Null, _) => Ok(cast_with_options(&array, to_type, &native_cast_options)?),
         (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
         (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
+        (Utf8, Timestamp(_, None)) => {
+            cast_string_to_timestamp_ntz(&array, eval_mode, true, cast_options.is_spark4_plus)
+        }
         (Utf8, Timestamp(_, _)) => cast_string_to_timestamp(
             &array,
             to_type,

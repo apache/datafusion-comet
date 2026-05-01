@@ -22,14 +22,18 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.Files
 
+import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.CometListenerBusUtils
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.iceberg.RESTCatalogHelper
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
@@ -544,6 +548,69 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         checkIcebergNativeScan("SELECT * FROM test_cat.db.positional_delete_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.positional_delete_test")
+      }
+    }
+  }
+
+  test("bytes_scanned includes delete file I/O") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.delete_bytes_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark
+          .range(1000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .coalesce(1)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.delete_bytes_test")
+
+        // Scan before deletes: data files only
+        val dfBefore = spark.sql("SELECT * FROM test_cat.db.delete_bytes_test")
+        val scanBefore = dfBefore.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+          .head
+        dfBefore.collect()
+        val bytesBefore = scanBefore.metrics("bytes_scanned").value
+        assert(bytesBefore > 0, s"bytes_scanned before deletes should be > 0, got $bytesBefore")
+
+        // Create position delete files
+        spark.sql("DELETE FROM test_cat.db.delete_bytes_test WHERE id < 100")
+
+        // Scan after deletes: data files + delete files
+        val dfAfter = spark.sql("SELECT * FROM test_cat.db.delete_bytes_test")
+        val scanAfter = dfAfter.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+          .head
+        dfAfter.collect()
+        val bytesAfter = scanAfter.metrics("bytes_scanned").value
+
+        assert(
+          bytesAfter > bytesBefore,
+          s"bytes_scanned should increase after deletes: before=$bytesBefore, after=$bytesAfter")
+
+        spark.sql("DROP TABLE test_cat.db.delete_bytes_test")
       }
     }
   }
@@ -1445,6 +1512,9 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
         assert(metrics("output_rows").value == 10000)
         assert(metrics("num_splits").value > 0)
+        assert(
+          metrics("bytes_scanned").value > 0,
+          "bytes_scanned should be > 0 after reading data files")
         // ImmutableSQLMetric prevents these from being reset to 0 after execution
         assert(
           metrics("totalDataManifest").value > 0,
@@ -2402,6 +2472,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
   }
 
   test("REST catalog with native Iceberg scan") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withRESTCatalog { (restUri, _, warehouseDir) =>
@@ -2760,6 +2831,105 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         } catch {
           case _: ClassNotFoundException =>
             cancel("SparkTableUtil not available")
+        }
+      }
+    }
+  }
+
+  test("task-level inputMetrics.bytesRead is populated for Iceberg native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.task_metrics_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark
+          .range(10000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .repartition(5)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.task_metrics_test")
+
+        val bytesReadValues = mutable.ArrayBuffer.empty[Long]
+        val recordsReadValues = mutable.ArrayBuffer.empty[Long]
+
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val im = taskEnd.taskMetrics.inputMetrics
+            if (im.bytesRead > 0) {
+              bytesReadValues.synchronized {
+                bytesReadValues += im.bytesRead
+                recordsReadValues += im.recordsRead
+              }
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        try {
+          val query = "SELECT * FROM test_cat.db.task_metrics_test"
+
+          // Same drain-run-drain pattern as CometTaskMetricsSuite's shuffle test
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+          // Baseline: iceberg-Java scan (Comet native disabled)
+          withSQLConf(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "false") {
+            bytesReadValues.clear()
+            recordsReadValues.clear()
+            spark.sql(query).collect()
+            CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+          }
+          val sparkBytes = bytesReadValues.sum
+          val sparkRecords = recordsReadValues.sum
+
+          // Comet native Iceberg scan
+          bytesReadValues.clear()
+          recordsReadValues.clear()
+          val df = spark.sql(query)
+
+          val scanNodes = df.queryExecution.executedPlan
+            .collectLeaves()
+            .collect { case s: CometIcebergNativeScanExec => s }
+          assert(scanNodes.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+
+          df.collect()
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+          val cometBytes = bytesReadValues.sum
+          val cometRecords = recordsReadValues.sum
+
+          // Both paths should report metrics
+          assert(sparkBytes > 0, s"Spark bytesRead should be > 0, got $sparkBytes")
+          assert(sparkRecords > 0, s"Spark recordsRead should be > 0, got $sparkRecords")
+          assert(cometBytes > 0, s"Comet bytesRead should be > 0, got $cometBytes")
+          assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
+
+          assert(
+            cometRecords == sparkRecords,
+            s"recordsRead mismatch: comet=$cometRecords, spark=$sparkRecords")
+
+          // SQL-level metric should match task-level metric
+          val sqlBytes = scanNodes.head.metrics("bytes_scanned").value
+          assert(
+            sqlBytes == cometBytes,
+            s"SQL bytes_scanned ($sqlBytes) should match task bytesRead ($cometBytes)")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+          spark.sql("DROP TABLE test_cat.db.task_metrics_test")
         }
       }
     }

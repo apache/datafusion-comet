@@ -39,12 +39,12 @@ import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
-import org.apache.comet.shims.CometExprShim
+import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 /**
  * An utility object for query plan and expression serialization.
  */
-object QueryPlanSerde extends Logging with CometExprShim {
+object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
@@ -128,14 +128,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Abs] -> CometAbs,
     classOf[Bin] -> CometScalarFunction("bin"))
 
-  private val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[GetMapValue] -> CometMapExtract,
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapEntries] -> CometMapEntries,
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[MapContainsKey] -> CometMapContainsKey,
-    classOf[MapFromEntries] -> CometMapFromEntries)
+    classOf[MapFromEntries] -> CometMapFromEntries,
+    classOf[StringToMap] -> CometStrToMap)
 
   private[comet] val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(
@@ -217,6 +218,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       classOf[Minute] -> CometMinute,
       classOf[NextDay] -> CometNextDay,
       classOf[Second] -> CometSecond,
+      classOf[SecondsToTimestamp] -> CometSecondsToTimestamp,
       classOf[TruncDate] -> CometTruncDate,
       classOf[TruncTimestamp] -> CometTruncTimestamp,
       classOf[UnixTimestamp] -> CometUnixTimestamp,
@@ -232,7 +234,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)
 
-  private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
@@ -805,6 +807,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
   // scalastyle:on
   def supportedScalarSortElementType(dt: DataType): Boolean = {
     dt match {
+      // Collated strings require collation-aware ordering; Comet only compares raw bytes.
+      case st: StringType if isStringCollationType(st) => false
       case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
           _: DoubleType | _: DecimalType | _: DateType | _: TimestampType | _: TimestampNTZType |
           _: BooleanType | _: BinaryType | _: StringType =>
