@@ -2034,16 +2034,6 @@ index 050a004a935..96d982f2829 100644
      withTable("t") {
        Seq(2, 3, 1).toDF("c1").write.format("parquet").saveAsTable("t")
        withView("v1") {
-@@ -1334,7 +1335,8 @@ abstract class SQLViewSuite extends QueryTest with SQLTestUtils {
-     }
-   }
- 
--  test("SPARK-53968 reading the view after allowPrecisionLoss is changed") {
-+  test("SPARK-53968 reading the view after allowPrecisionLoss is changed",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/4124")) {
-     import org.apache.spark.sql.internal.SQLConf
-     val partsTableName = "parts_tbl"
-     val ordersTableName = "orders_tbl"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 index aed11badb71..1a365b5aacf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
