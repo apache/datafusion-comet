@@ -24,7 +24,7 @@ between them. This document is likely biased because the Comet community maintai
 
 We recommend trying out both Comet and Gluten to see which is the best fit for your needs.
 
-This document is based on Comet 0.14.1 and Gluten 1.6.0.
+This document is based on Comet 0.15.0 and Gluten 1.6.0.
 
 ## Architecture
 
@@ -109,7 +109,7 @@ Comet relies on the full Spark SQL test suite (consisting of more than 24,000 te
 integration tests to ensure compatibility with Spark. Features that are known to have compatibility differences with
 Spark are disabled by default, but users can opt in. See the [Comet Compatibility Guide] for more information.
 
-[Comet Compatibility Guide]: /user-guide/latest/compatibility/index.md
+[Comet Compatibility Guide]: https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html
 
 Gluten also aims to provide compatibility with Spark, and includes a subset of the Spark SQL tests in its own test
 suite. See the Gluten [Velox backend limitations] page for known gaps, including notes on case sensitivity, regular
