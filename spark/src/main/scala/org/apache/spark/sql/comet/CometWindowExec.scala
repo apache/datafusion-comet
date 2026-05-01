@@ -21,20 +21,21 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, FrameLessOffsetWindowFunction, Lag, Lead, NamedExpression, RangeFrame, RowFrame, RowNumber, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CurrentRow, Expression, Lag, Lead, Literal, NamedExpression, RangeFrame, RowFrame, RowNumber, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.types.{DecimalType, NumericType}
+import org.apache.spark.sql.types.Decimal
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, LiteralOuterClass, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto, serializeDataType}
 
@@ -209,9 +210,25 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                   .setOffset(offset)
                   .build())
               .build()
-          case _ =>
-            // TODO add support for numeric and temporal RANGE BETWEEN expressions
-            // see https://github.com/apache/datafusion-comet/issues/1246
+          case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
+            rangeBoundLiteral(e, isLower = true, output) match {
+              case Some(lit) =>
+                OperatorOuterClass.LowerWindowFrameBound
+                  .newBuilder()
+                  .setPreceding(
+                    OperatorOuterClass.Preceding
+                      .newBuilder()
+                      .setRangeOffset(lit)
+                      .build())
+                  .build()
+              case None =>
+                withInfo(windowExpr, s"Unsupported RANGE frame lower offset: $e")
+                return None
+            }
+          case e =>
+            withInfo(
+              windowExpr,
+              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
             return None
         }
 
@@ -240,9 +257,25 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                   .setOffset(offset)
                   .build())
               .build()
-          case _ =>
-            // TODO add support for numeric and temporal RANGE BETWEEN expressions
-            // see https://github.com/apache/datafusion-comet/issues/1246
+          case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
+            rangeBoundLiteral(e, isLower = false, output) match {
+              case Some(lit) =>
+                OperatorOuterClass.UpperWindowFrameBound
+                  .newBuilder()
+                  .setFollowing(
+                    OperatorOuterClass.Following
+                      .newBuilder()
+                      .setRangeOffset(lit)
+                      .build())
+                  .build()
+              case None =>
+                withInfo(windowExpr, s"Unsupported RANGE frame upper offset: $e")
+                return None
+            }
+          case e =>
+            withInfo(
+              windowExpr,
+              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
             return None
         }
 
@@ -302,6 +335,54 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       op.orderSpec,
       op.child,
       SerializedPlan(None))
+  }
+
+  // Folds a RANGE frame bound expression to a constant and serializes its
+  // magnitude as a typed Literal proto. Spark encodes PRECEDING/FOLLOWING via
+  // the sign of the literal (negative => PRECEDING, positive => FOLLOWING),
+  // but the proto only carries magnitude with direction implied by Lower vs
+  // Upper position. So we reject lower=positive (FOLLOWING) and upper=negative
+  // (PRECEDING) by returning None.
+  private def rangeBoundLiteral(
+      bound: Expression,
+      isLower: Boolean,
+      output: Seq[Attribute]): Option[LiteralOuterClass.Literal] = {
+    val rawValue =
+      try {
+        bound.eval()
+      } catch {
+        case _: Exception => return None
+      }
+    if (rawValue == null) {
+      return None
+    }
+    val signum = rawValue match {
+      case b: java.lang.Byte => Integer.signum(b.intValue())
+      case s: java.lang.Short => Integer.signum(s.intValue())
+      case i: java.lang.Integer => Integer.signum(i.intValue())
+      case l: java.lang.Long => java.lang.Long.signum(l.longValue())
+      case f: java.lang.Float => Math.signum(f.doubleValue()).toInt
+      case d: java.lang.Double => Math.signum(d.doubleValue()).toInt
+      case d: Decimal => d.toBigDecimal.signum
+      case _ => return None
+    }
+    if (isLower && signum > 0) return None
+    if (!isLower && signum < 0) return None
+
+    val absValue: Any = rawValue match {
+      case b: java.lang.Byte => java.lang.Byte.valueOf(Math.abs(b.intValue()).toByte)
+      case s: java.lang.Short => java.lang.Short.valueOf(Math.abs(s.intValue()).toShort)
+      case i: java.lang.Integer => java.lang.Integer.valueOf(Math.abs(i.intValue()))
+      case l: java.lang.Long => java.lang.Long.valueOf(Math.abs(l.longValue()))
+      case f: java.lang.Float => java.lang.Float.valueOf(Math.abs(f.floatValue()))
+      case d: java.lang.Double => java.lang.Double.valueOf(Math.abs(d.doubleValue()))
+      case d: Decimal => d.abs
+      case _ => return None
+    }
+
+    exprToProto(Literal(absValue, bound.dataType), output).flatMap { exprProto =>
+      if (exprProto.hasLiteral) Some(exprProto.getLiteral) else None
+    }
   }
 
   private def validatePartitionAndSortSpecsForWindowFunc(
