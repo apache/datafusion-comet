@@ -19,7 +19,8 @@
 
 package org.apache.comet.udf;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
@@ -35,14 +36,23 @@ import org.apache.arrow.vector.ValueVector;
  */
 public class CometUdfBridge {
 
-  // Per-thread cache of UDF instances keyed by class name. Comet native
-  // execution threads (Tokio/DataFusion worker pool) are reused across
-  // tasks within an executor, so the effective lifetime of cached entries
-  // is the worker thread (i.e. the executor JVM). This is fine for
+  // Per-thread, bounded LRU of UDF instances keyed by class name. Comet
+  // native execution threads (Tokio/DataFusion worker pool) are reused
+  // across tasks within an executor, so the effective lifetime of cached
+  // entries is the worker thread (i.e. the executor JVM). This is fine for
   // stateless UDFs like RegExpLikeUDF; future stateful UDFs would need
   // explicit per-task isolation.
-  private static final ThreadLocal<HashMap<String, CometUDF>> INSTANCES =
-      ThreadLocal.withInitial(HashMap::new);
+  private static final int CACHE_CAPACITY = 64;
+
+  private static final ThreadLocal<LinkedHashMap<String, CometUDF>> INSTANCES =
+      ThreadLocal.withInitial(
+          () ->
+              new LinkedHashMap<String, CometUDF>(CACHE_CAPACITY, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CometUDF> eldest) {
+                  return size() > CACHE_CAPACITY;
+                }
+              });
 
   /**
    * Called from native via JNI.
@@ -59,7 +69,7 @@ public class CometUdfBridge {
       long[] inputSchemaPtrs,
       long outArrayPtr,
       long outSchemaPtr) {
-    HashMap<String, CometUDF> cache = INSTANCES.get();
+    LinkedHashMap<String, CometUDF> cache = INSTANCES.get();
     CometUDF udf = cache.get(udfClassName);
     if (udf == null) {
       try {
