@@ -308,6 +308,8 @@ object CometShuffleExchangeExec
    * Pure: does not tag the node.
    */
   private def nativeShuffleFailureReasons(s: ShuffleExchangeExec): Seq[String] = {
+    val conf = SQLConf.get
+    val strictFloatingPoint = CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get(conf)
 
     /**
      * Determine which data types are supported as partition columns in native shuffle.
@@ -344,9 +346,11 @@ object CometShuffleExchangeExec
     def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
       // Collated strings require collation-aware ordering; Comet only compares raw bytes.
       case st: StringType if isStringCollationType(st) => false
+      case _: FloatType | _: DoubleType =>
+        !strictFloatingPoint
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
+          _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+          _: DecimalType | _: DateType =>
         true
       case _ =>
         false
@@ -390,7 +394,6 @@ object CometShuffleExchangeExec
     }
 
     val partitioning = s.outputPartitioning
-    val conf = SQLConf.get
     partitioning match {
       case HashPartitioning(expressions, _) =>
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)) {
@@ -425,7 +428,15 @@ object CometShuffleExchangeExec
         }
         for (dt <- orderings.map(_.dataType).distinct) {
           if (!supportedRangePartitioningDataType(dt)) {
-            reasons += s"unsupported range partitioning data type for native shuffle: $dt"
+            val reason = dt match {
+              case _: FloatType | _: DoubleType if strictFloatingPoint =>
+                s"Range partitioning on $dt is not 100% compatible with Spark, and Comet is " +
+                  s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+                  s"${CometConf.COMPAT_GUIDE}"
+              case _ =>
+                s"unsupported range partitioning data type for native shuffle: $dt"
+            }
+            reasons += reason
           }
         }
       case RoundRobinPartitioning(_) =>
