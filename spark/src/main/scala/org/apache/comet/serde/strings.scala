@@ -29,7 +29,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -266,7 +266,26 @@ object CometRLike extends CometExpressionSerde[RLike] {
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Uses Rust regexp engine, which has different behavior to Java regexp engine")
 
+  override def getSupportLevel(expr: RLike): SupportLevel = {
+    if (CometConf.COMET_REGEXP_USE_JVM.get()) {
+      Compatible(None)
+    } else {
+      super.getSupportLevel(expr)
+    }
+  }
+
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    if (CometConf.COMET_REGEXP_USE_JVM.get()) {
+      convertViaJvmUdf(expr, inputs, binding)
+    } else {
+      convertViaNativeRegex(expr, inputs, binding)
+    }
+  }
+
+  private def convertViaNativeRegex(
+      expr: RLike,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
     expr.right match {
       case Literal(pattern, DataTypes.StringType) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
@@ -286,6 +305,35 @@ object CometRLike extends CometExpressionSerde[RLike] {
             binding,
             (builder, binaryExpr) => builder.setRlike(binaryExpr))
         }
+      case _ =>
+        withInfo(expr, "Only scalar regexp patterns are supported")
+        None
+    }
+  }
+
+  private def convertViaJvmUdf(
+      expr: RLike,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr.right match {
+      case Literal(_, DataTypes.StringType) =>
+        val subjectProto = exprToProtoInternal(expr.left, inputs, binding)
+        val patternProto = exprToProtoInternal(expr.right, inputs, binding)
+        if (subjectProto.isEmpty || patternProto.isEmpty) {
+          return None
+        }
+        val returnType = serializeDataType(DataTypes.BooleanType).getOrElse(return None)
+        val udfBuilder = ExprOuterClass.JvmScalarUdf
+          .newBuilder()
+          .setClassName("org.apache.comet.udf.RegExpLikeUDF")
+          .addArgs(subjectProto.get)
+          .addArgs(patternProto.get)
+          .setReturnType(returnType)
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setJvmScalarUdf(udfBuilder.build())
+            .build())
       case _ =>
         withInfo(expr, "Only scalar regexp patterns are supported")
         None
