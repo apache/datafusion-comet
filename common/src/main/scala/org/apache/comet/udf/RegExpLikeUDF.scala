@@ -24,8 +24,9 @@ import java.util.regex.Pattern
 
 import scala.collection.mutable
 
-import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.{BitVector, ValueVector, VarCharVector}
+
+import org.apache.comet.CometArrowAllocator
 
 /**
  * `regexp` / `RLike` implemented with java.util.regex.Pattern (Java semantics).
@@ -38,7 +39,6 @@ import org.apache.arrow.vector.{BitVector, ValueVector, VarCharVector}
  */
 class RegExpLikeUDF extends CometUDF {
 
-  private val allocator = new RootAllocator(Long.MaxValue)
   private val patternCache = mutable.Map.empty[String, Pattern]
 
   override def evaluate(inputs: Array[ValueVector]): ValueVector = {
@@ -53,7 +53,7 @@ class RegExpLikeUDF extends CometUDF {
     val pattern = patternCache.getOrElseUpdate(patternStr, Pattern.compile(patternStr))
 
     val n = subject.getValueCount
-    val out = new BitVector("rlike_result", allocator)
+    val out = new BitVector("rlike_result", CometArrowAllocator)
     out.allocateNew(n)
 
     var i = 0
