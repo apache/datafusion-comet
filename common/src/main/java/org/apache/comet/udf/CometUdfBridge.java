@@ -93,6 +93,19 @@ public class CometUdfBridge {
         throw new RuntimeException(
             "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());
       }
+      // Result length must match the longest input. Scalar (length-1) inputs
+      // are allowed to be shorter, but a vector input bounds the output.
+      int expectedLen = 0;
+      for (ValueVector v : inputs) {
+        expectedLen = Math.max(expectedLen, v.getValueCount());
+      }
+      if (result.getValueCount() != expectedLen) {
+        throw new RuntimeException(
+            "CometUDF.evaluate() returned "
+                + result.getValueCount()
+                + " rows, expected "
+                + expectedLen);
+      }
       ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
       ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);
       Data.exportVector(allocator, (FieldVector) result, null, outArr, outSch);
