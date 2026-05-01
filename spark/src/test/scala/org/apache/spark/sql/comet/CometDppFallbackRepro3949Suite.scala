@@ -105,10 +105,21 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
     found
   }
 
+  // Exercises the stickiness mechanism: once shuffleSupported decides to fall back (because
+  // stageContainsDPPScan finds a FileSourceScanExec with DPP), the decision persists even
+  // when AQE wraps the child in a QueryStageExec (hiding the scan from tree walks).
+  //
+  // On 3.5+, AQE DPP scans normally convert to CometNativeScanExec (via
+  // CometPlanAdaptiveDynamicPruningFilters), so stageContainsDPPScan doesn't trigger.
+  // We disable native scan to force the FileSourceScanExec fallback and exercise the path.
   test("mechanism: DPP fallback decision is sticky across an AQE-style child wrap") {
     withTempDir { dir =>
       buildDppTables(dir, "mech")
       withSQLConf(
+        // Disable native scan so the scan stays as FileSourceScanExec with DPP,
+        // producing the mixed state (Comet shuffle wrapping Spark DPP scan) that
+        // stageContainsDPPScan is designed to catch.
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -132,11 +143,11 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
         }
 
         // Simulate AQE stage prep: wrap the shuffle's child in an opaque LeafExecNode,
-        // matching how `ShuffleQueryStageExec` presents to `.exists` walks (its `children`
-        // is `Seq.empty`). `withNewChildren` preserves tree-node tags, so if the fix is in
-        // place the explain-info tag on `shuffle` carries over to `postAqeShuffle`, and the
-        // decision short-circuits to None. Without the fix, the DPP walk re-runs, fails to
-        // see the scan, and flips to Some(...).
+        // matching how ShuffleQueryStageExec presents to .exists walks (its children
+        // is Seq.empty). withNewChildren preserves tree-node tags, so if the fix is in
+        // place the explain-info tag on shuffle carries over to postAqeShuffle, and the
+        // decision short-circuits to None. Without the fix, the DPP walk re-runs, fails
+        // to see the scan, and flips to Some(...).
         val hiddenChild = OpaqueStageStub(shuffle.child.output)
         val postAqeShuffle =
           shuffle.withNewChildren(Seq(hiddenChild)).asInstanceOf[ShuffleExchangeExec]
