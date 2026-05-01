@@ -201,7 +201,7 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.
 index ceece28..057cc18 100644
 --- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
 +++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
-@@ -43,6 +43,21 @@ trait DeltaHiveTest extends SparkFunSuite with BeforeAndAfterAll { self: DeltaSQ
+@@ -43,6 +43,20 @@ trait DeltaHiveTest extends SparkFunSuite with BeforeAndAfterAll { self: DeltaSQ
      conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[DeltaCatalog].getName)
      conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
        classOf[DeltaSparkSessionExtension].getName)
@@ -216,10 +216,9 @@ index ceece28..057cc18 100644
 +    conf.set("spark.comet.explainFallback.enabled", "true")
 +    conf.set("spark.memory.offHeap.enabled", "true")
 +    conf.set("spark.memory.offHeap.size", "10g")
-+    // Disable Delta's test-only filename prefix injection (see DeltaSQLCommandTest
-+    // for the full rationale).
++    // Disable Delta's test-only data-file name prefix (see DeltaSQLCommandTest
++    // for the full rationale). DV prefix is intentionally left at its default.
 +    conf.set("spark.databricks.delta.testOnly.dataFileNamePrefix", "")
-+    conf.set("spark.databricks.delta.testOnly.dvFileNamePrefix", "")
      _sc = new SparkContext("local", this.getClass.getName, conf)
      _hiveContext = new TestHiveContext(_sc)
      _session = _hiveContext.sparkSession
@@ -227,7 +226,7 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLComman
 index cb28a4f..1113ffc 100644
 --- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
 +++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
-@@ -35,5 +35,25 @@ trait DeltaSQLCommandTest extends SharedSparkSession {
+@@ -35,5 +35,26 @@ trait DeltaSQLCommandTest extends SharedSparkSession {
          classOf[DeltaSparkSessionExtension].getName)
        .set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key,
          classOf[DeltaCatalog].getName)
@@ -242,15 +241,16 @@ index cb28a4f..1113ffc 100644
 +      .set("spark.comet.explainFallback.enabled", "true")
 +      .set("spark.memory.offHeap.enabled", "true")
 +      .set("spark.memory.offHeap.size", "10g")
-+      // Disable Delta's test-only filename prefix injection. By default Delta's
++      // Disable Delta's test-only DATA-FILE name prefix. By default Delta's
 +      // test harness prepends `test%file%prefix-` to data-file names to exercise
 +      // its own URL-encoded-path handling, but the `%` chars round-trip badly
 +      // through several path-parsing code paths (our native Delta scan AND
 +      // Delta's own `getTouchedFile` lookup on MERGE/UPDATE/DELETE), producing
 +      // spurious `DELTA_FILE_TO_OVERWRITE_NOT_FOUND` errors that do not reflect
 +      // a real bug. Same approach Comet's in-tree `CometDeltaTestBase` takes.
++      // The DV-file prefix is left at its default — overriding it to "" would
++      // break golden DV fixtures whose on-disk filenames include the prefix.
 +      .set("spark.databricks.delta.testOnly.dataFileNamePrefix", "")
-+      .set("spark.databricks.delta.testOnly.dvFileNamePrefix", "")
    }
  }
 diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/TestsStatistics.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/TestsStatistics.scala
