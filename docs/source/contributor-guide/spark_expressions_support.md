@@ -23,10 +23,11 @@
 
 - A function marked with `[x]` has a native implementation in Comet and does not fall back to Spark by default.
 - A function marked with `[ ]` has no native Comet implementation and falls back to Spark.
-- If a function has known incompatibilities with Spark, or conditions that cause it to fall back to Spark,
-  a sub-bullet labeled **Known issues** links to the relevant category page of the
-  [Compatibility Guide](../user-guide/latest/compatibility/expressions/index.md), where per-function
-  details are documented.
+
+> **Note:** Some functions listed as supported may still be incompatible with Spark in
+> certain cases (data types, modes, edge values) and fall back to Spark at runtime. Full
+> per-function details are documented in the
+> [Compatibility Guide](https://datafusion.apache.org/comet/user-guide/latest/compatibility/expressions/index.html).
 
 ### agg_funcs
 
@@ -34,9 +35,11 @@
 - [x] any_value
 - [ ] approx_count_distinct
 - [ ] approx_percentile
+- [ ] approx_top_k
+- [ ] approx_top_k_accumulate
+- [ ] approx_top_k_combine
 - [ ] array_agg
 - [x] avg
-  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [x] bit_and
 - [x] bit_or
 - [x] bit_xor
@@ -44,7 +47,6 @@
 - [x] bool_or
 - [ ] collect_list
 - [x] collect_set
-  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [ ] corr
 - [x] count
 - [x] count_if
@@ -53,17 +55,34 @@
 - [x] covar_samp
 - [x] every
 - [x] first
-  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [x] first_value
-  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [ ] grouping
 - [ ] grouping_id
 - [ ] histogram_numeric
+- [ ] hll_sketch_agg
+- [ ] hll_union_agg
+- [ ] kll_sketch_agg_bigint
+- [ ] kll_sketch_agg_double
+- [ ] kll_sketch_agg_float
+- [ ] kll_sketch_get_n_bigint
+- [ ] kll_sketch_get_n_double
+- [ ] kll_sketch_get_n_float
+- [ ] kll_sketch_get_quantile_bigint
+- [ ] kll_sketch_get_quantile_double
+- [ ] kll_sketch_get_quantile_float
+- [ ] kll_sketch_get_rank_bigint
+- [ ] kll_sketch_get_rank_double
+- [ ] kll_sketch_get_rank_float
+- [ ] kll_sketch_merge_bigint
+- [ ] kll_sketch_merge_double
+- [ ] kll_sketch_merge_float
+- [ ] kll_sketch_to_string_bigint
+- [ ] kll_sketch_to_string_double
+- [ ] kll_sketch_to_string_float
 - [ ] kurtosis
 - [x] last
-  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
 - [x] last_value
-  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
+- [ ] listagg
 - [x] max
 - [ ] max_by
 - [x] mean
@@ -73,6 +92,8 @@
 - [ ] mode
 - [ ] percentile
 - [ ] percentile_approx
+- [ ] percentile_cont
+- [ ] percentile_disc
 - [x] regr_avgx
 - [x] regr_avgy
 - [x] regr_count
@@ -88,8 +109,11 @@
 - [x] stddev
 - [x] stddev_pop
 - [x] stddev_samp
+- [ ] string_agg
 - [x] sum
-  - [Known issues](../user-guide/latest/compatibility/expressions/aggregate.md)
+- [ ] theta_intersection_agg
+- [ ] theta_sketch_agg
+- [ ] theta_union_agg
 - [ ] try_avg
 - [ ] try_sum
 - [x] var_pop
@@ -104,48 +128,40 @@
 - [x] array_contains
 - [x] array_distinct
 - [x] array_except
-  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 - [x] array_insert
-  - Spark 3.4.3 audited 2026-04-02
-  - Spark 3.5.8 audited 2026-04-02
-  - Spark 4.0.1 audited 2026-04-02 (pos=0 error message differs from Spark)
 - [x] array_intersect
-  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
-  - Spark 3.4.3 audited 2026-04-24 (result element order may differ from Spark when the right array is longer than the left; DataFusion probes the longer side)
-  - Spark 3.5.8 audited 2026-04-24 (same ordering incompatibility as 3.4.3)
-  - Spark 4.0.1 audited 2026-04-24 (ordering incompatibility as above; collated strings now fall back to Spark)
 - [x] array_join
-  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 - [x] array_max
 - [ ] array_min
 - [x] array_position
+- [ ] array_prepend
 - [x] array_remove
 - [x] array_repeat
 - [x] array_union
 - [x] arrays_overlap
 - [x] arrays_zip
-  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 - [x] element_at
-  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 - [ ] flatten
 - [x] get
 - [ ] sequence
 - [ ] shuffle
 - [ ] slice
 - [x] sort_array
-  - [Known issues](../user-guide/latest/compatibility/expressions/array.md)
 
 ### bitwise_funcs
 
-- [x] &
-- [x] ^
+- [x] `&`
+- [ ] `<<`
+- [ ] `>>`
+- [ ] `>>>`
+- [x] `^`
 - [ ] bit_count
 - [ ] bit_get
 - [ ] getbit
 - [x] shiftright
 - [ ] shiftrightunsigned
-- [x] |
-- [x] ~
+- [x] `|`
+- [x] `~`
 
 ### collection_funcs
 
@@ -153,7 +169,6 @@
 - [ ] cardinality
 - [ ] concat
 - [x] reverse
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] size
 
 ### conditional_funcs
@@ -163,9 +178,11 @@
 - [x] ifnull
 - [ ] nanvl
 - [x] nullif
+- [ ] nullifzero
 - [x] nvl
 - [x] nvl2
 - [ ] when
+- [ ] zeroifnull
 
 ### conversion_funcs
 
@@ -195,6 +212,7 @@
 - [ ] convert_timezone
 - [x] curdate
 - [x] current_date
+- [ ] current_time
 - [ ] current_timestamp
 - [x] current_timezone
 - [ ] date_add
@@ -208,12 +226,12 @@
 - [ ] datediff
 - [x] datepart
 - [ ] day
+- [ ] dayname
 - [ ] dayofmonth
 - [ ] dayofweek
 - [ ] dayofyear
 - [x] extract
 - [x] from_unixtime
-  - [Known issues](../user-guide/latest/compatibility/expressions/datetime.md)
 - [ ] from_utc_timestamp
 - [ ] hour
 - [ ] last_day
@@ -221,36 +239,47 @@
 - [ ] make_date
 - [ ] make_dt_interval
 - [ ] make_interval
+- [ ] make_time
 - [ ] make_timestamp
 - [ ] make_timestamp_ltz
 - [ ] make_timestamp_ntz
 - [ ] make_ym_interval
 - [ ] minute
 - [ ] month
+- [ ] monthname
 - [ ] months_between
 - [ ] next_day
 - [ ] now
 - [ ] quarter
 - [ ] second
+- [ ] session_window
+- [ ] time_diff
+- [ ] time_trunc
 - [ ] timestamp_micros
 - [ ] timestamp_millis
 - [x] timestamp_seconds
 - [ ] to_date
+- [ ] to_time
 - [ ] to_timestamp
 - [ ] to_timestamp_ltz
 - [ ] to_timestamp_ntz
 - [ ] to_unix_timestamp
 - [ ] to_utc_timestamp
 - [ ] trunc
+- [ ] try_make_interval
+- [ ] try_make_timestamp
+- [ ] try_to_date
+- [ ] try_to_time
 - [ ] try_to_timestamp
 - [ ] unix_date
 - [ ] unix_micros
 - [ ] unix_millis
 - [ ] unix_seconds
 - [x] unix_timestamp
-  - [Known issues](../user-guide/latest/compatibility/expressions/datetime.md)
 - [ ] weekday
 - [ ] weekofyear
+- [ ] window
+- [ ] window_time
 - [ ] year
 
 ### generator_funcs
@@ -277,7 +306,6 @@
 
 - [ ] from_json
 - [x] get_json_object
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] json_array_length
 - [ ] json_object_keys
 - [ ] json_tuple
@@ -315,13 +343,12 @@
 
 ### math_funcs
 
-- [x] %
-- [x] -
-- [x] -
-- [x] -
-- [x] /
+- [x] `%`
+- [ ] `*`
+- [ ] `+`
+- [x] `-`
+- [x] `/`
 - [x] abs
-  - [Known issues](../user-guide/latest/compatibility/expressions/math.md)
 - [x] acos
 - [ ] acosh
 - [x] asin
@@ -366,6 +393,7 @@
 - [ ] rand
 - [ ] randn
 - [ ] random
+- [ ] randstr
 - [ ] rint
 - [x] round
 - [ ] sec
@@ -379,45 +407,84 @@
 - [ ] tanh
 - [x] try_add
 - [x] try_divide
+- [ ] try_mod
 - [x] try_multiply
 - [x] try_subtract
 - [x] unhex
+- [ ] uniform
 - [x] width_bucket
 
 ### misc_funcs
 
 - [ ] aes_decrypt
 - [ ] aes_encrypt
+- [ ] approx_top_k_estimate
 - [ ] assert_true
+- [ ] bitmap_and_agg
+- [ ] bitmap_bit_position
+- [ ] bitmap_bucket_number
+- [ ] bitmap_construct_agg
+- [ ] bitmap_count
+- [ ] bitmap_or_agg
 - [x] current_catalog
 - [x] current_database
 - [x] current_schema
 - [x] current_user
 - [x] equal_null
+- [ ] from_avro
+- [ ] from_protobuf
+- [ ] hll_sketch_estimate
+- [ ] hll_union
 - [ ] input_file_block_length
 - [ ] input_file_block_start
 - [ ] input_file_name
+- [ ] is_variant_null
+- [ ] java_method
 - [x] monotonically_increasing_id
+- [ ] parse_json
 - [ ] raise_error
 - [x] rand
 - [x] randn
+- [ ] reflect
+- [ ] schema_of_avro
+- [ ] schema_of_variant
+- [ ] schema_of_variant_agg
+- [ ] session_user
 - [x] spark_partition_id
+- [ ] st_asbinary
+- [ ] st_geogfromwkb
+- [ ] st_geomfromwkb
+- [ ] st_setsrid
+- [ ] st_srid
+- [ ] theta_difference
+- [ ] theta_intersection
+- [ ] theta_sketch_estimate
+- [ ] theta_union
+- [ ] to_avro
+- [ ] to_protobuf
+- [ ] to_variant_object
+- [ ] try_aes_decrypt
+- [ ] try_parse_json
+- [ ] try_reflect
+- [ ] try_variant_get
 - [ ] typeof
 - [x] user
 - [ ] uuid
+- [ ] variant_get
 - [ ] version
 
 ### predicate_funcs
 
-- [x] !
-- [x] <
-- [x] <=
-- [x] <=>
-- [x] =
-- [x] ==
-- [x] >
-- [x] > =
+- [x] `!`
+- [x] `<`
+- [x] `<=`
+- [x] `<=>`
+- [x] `=`
+- [x] `==`
+- [x] `>`
+- [x] `>=`
 - [x] and
+- [ ] between
 - [x] ilike
 - [x] in
 - [ ] isnan
@@ -438,10 +505,10 @@
 - [x] btrim
 - [x] char
 - [x] char_length
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] character_length
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] chr
+- [ ] collate
+- [ ] collation
 - [x] concat_ws
 - [x] contains
 - [ ] decode
@@ -452,26 +519,25 @@
 - [ ] format_number
 - [ ] format_string
 - [x] initcap
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] instr
+- [ ] is_valid_utf8
 - [x] lcase
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] left
 - [x] len
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] length
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] levenshtein
 - [ ] locate
 - [x] lower
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] lpad
 - [x] ltrim
+- [ ] luhn_check
+- [ ] make_valid_utf8
 - [ ] mask
 - [x] octet_length
 - [ ] overlay
 - [ ] position
 - [ ] printf
+- [ ] quote
 - [ ] regexp_count
 - [ ] regexp_extract
 - [ ] regexp_extract_all
@@ -479,7 +545,6 @@
 - [ ] regexp_replace
 - [ ] regexp_substr
 - [x] repeat
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [x] replace
 - [ ] right
 - [x] rpad
@@ -496,15 +561,16 @@
 - [ ] to_binary
 - [ ] to_char
 - [ ] to_number
+- [ ] to_varchar
 - [x] translate
 - [x] trim
 - [ ] try_to_binary
 - [ ] try_to_number
+- [ ] try_validate_utf8
 - [x] ucase
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
 - [ ] unbase64
 - [x] upper
-  - [Known issues](../user-guide/latest/compatibility/expressions/string.md)
+- [ ] validate_utf8
 
 ### struct_funcs
 
@@ -514,6 +580,8 @@
 ### url_funcs
 
 - [ ] parse_url
+- [ ] try_parse_url
+- [ ] try_url_decode
 - [ ] url_decode
 - [ ] url_encode
 
@@ -531,6 +599,9 @@
 
 ### xml_funcs
 
+- [ ] from_xml
+- [ ] schema_of_xml
+- [ ] to_xml
 - [ ] xpath
 - [ ] xpath_boolean
 - [ ] xpath_double
