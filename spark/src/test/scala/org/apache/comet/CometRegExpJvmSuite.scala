@@ -19,13 +19,14 @@
 
 package org.apache.comet
 
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  override protected def sparkConf =
+  override protected def sparkConf: SparkConf =
     super.sparkConf.set("spark.comet.exec.regexp.useJVM", "true")
 
   test("rlike: Java regex semantics, with flag on") {

@@ -55,9 +55,9 @@ pub use cast::{spark_cast, Cast, SparkCastOptions};
 mod bloom_filter;
 pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
 
-pub mod jvm_udf;
 mod conditional_funcs;
 mod conversion_funcs;
+pub mod jvm_udf;
 mod map_funcs;
 pub use map_funcs::spark_map_sort;
 mod math_funcs;
