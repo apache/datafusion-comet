@@ -71,6 +71,31 @@ window) made in support of Comet also benefit the wider ecosystem.
 
 [#2084]: https://github.com/apache/datafusion-comet/issues/2084
 
+## Spillable Hash Join
+
+Comet's native hash join currently requires the build side to fit entirely in memory. Adding spill-to-disk
+support will allow Comet to handle larger joins without falling back to Spark, improving both reliability and
+performance for memory-intensive workloads.
+
+## Java/Scala Columnar and Arrow UDF Support
+
+Spark users frequently define custom UDFs in Java or Scala. Comet currently falls back to Spark when a query
+contains a JVM UDF. Adding support for calling Java/Scala UDFs that operate on columnar Arrow data directly
+from native execution will reduce fallbacks and allow more queries to run end-to-end in Comet.
+
+## Memory Management Improvements
+
+Comet coordinates memory between the JVM and native Rust execution through a custom memory pool. Improving
+memory accounting, reservation strategies, and spill integration will reduce out-of-memory errors and allow
+Comet to make better use of available resources, especially in multi-query and multi-task environments.
+
+## Prepare for 1.0.0 Release
+
+The project is working toward a 1.0.0 release. This effort includes finalizing configuration options,
+resolving known correctness issues, and improving documentation. Progress is tracked in [#4082].
+
+[#4082]: https://github.com/apache/datafusion-comet/issues/4082
+
 ## Native Parquet Writes
 
 Comet has experimental support for native Parquet writes via `InsertIntoHadoopFsRelationCommand`, currently
