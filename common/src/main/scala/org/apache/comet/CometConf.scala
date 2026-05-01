@@ -387,10 +387,11 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.regexp.useJVM")
       .category(CATEGORY_EXEC)
       .doc(
-        "When true, route Spark RLike (regexp or regexp_like) through a JVM-side UDF for " +
-          "Java-compatible regex semantics, at the cost of JNI roundtrips per batch. When " +
-          "false, the native (Rust) regex implementation is used, which is faster but reports " +
-          "as Incompatible because Rust regex semantics differ from Java's.")
+        "Experimental. When true, route supported regular-expression expressions through a " +
+          "JVM-side UDF (java.util.regex.Pattern) for Spark-compatible semantics, at the cost " +
+          "of JNI roundtrips per batch. When false, falls back to whichever native or Spark " +
+          "path the expression normally selects. Only RLike is routed today; additional " +
+          "expressions may opt in over time.")
       .booleanConf
       .createWithDefault(false)
 
