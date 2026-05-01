@@ -285,7 +285,13 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,
       b: BroadcastExchangeExec): CometNativeExec = {
-    CometSinkPlaceHolder(nativeOp, b, CometBroadcastExchangeExec(b, b.output, b.mode, b.child))
+    val cbe = CometBroadcastExchangeExec(b, b.output, b.mode, b.child)
+    // AQE asserts the new query stage's plan carries a logicalLink (see
+    // AdaptiveSparkPlanExec.setLogicalLinkForNewQueryStage). The QueryStage Spark
+    // builds at this Exchange takes its logicalLink from `b`, but the comet sink
+    // placeholder it actually wraps is `cbe`, so we have to copy the link forward.
+    b.logicalLink.foreach(cbe.setLogicalLink)
+    CometSinkPlaceHolder(nativeOp, b, cbe)
   }
 
   private[comet] val executionContext = ExecutionContext.fromExecutorService(
