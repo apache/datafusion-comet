@@ -341,8 +341,20 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
     // so we do the pruning in Scala by evaluating each task's partition-value map
     // against Spark's `partitionFilters`. This is a single driver-side loop; filtered
     // tasks never go over the wire to executors.
-    val filteredTasks =
+    val filteredTasks0 =
       prunePartitions(taskList.getTasksList.asScala.toSeq, scan, relation.partitionSchema)
+
+    // Split files larger than `maxSplitBytes` into byte-range chunks so a single
+    // big parquet file can be read across multiple Spark partitions, matching
+    // Spark's `FilePartition.splitFiles` semantics. This is what makes
+    // FILES_MAX_PARTITION_BYTES, files.openCostInBytes, and
+    // files.minPartitionNum take effect on Delta tables: without it every file
+    // is exactly one partition and the *.size assertions in
+    // DeletionVectorsSuite's PredicatePushdown tests fail (they configure
+    // FILES_MAX_PARTITION_BYTES=2MB on a multi-row-group fixture and assert
+    // exactly 2 splits).
+    val filteredTasks =
+      splitTasks(scan, filteredTasks0)
 
     // --- 2. Build the common block ---
     val commonBuilder = DeltaScanCommon.newBuilder()
@@ -562,6 +574,64 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
         physicaliseDataType(m.valueType),
         m.valueContainsNull)
     case other => other
+  }
+
+  /**
+   * Compute Spark's `maxSplitBytes` for a Delta scan. Mirrors
+   * `org.apache.spark.sql.execution.datasources.FilePartition.maxSplitBytes` verbatim so a
+   * Delta-native scan splits files the same way a vanilla `FileSourceScanExec` would. Inputs are
+   * file sizes (bytes); other knobs come from session conf and the relation's spark session.
+   */
+  private def maxSplitBytes(scan: CometScanExec, fileSizes: Seq[Long]): Long = {
+    val sparkSession = scan.relation.sparkSession
+    val conf = sparkSession.sessionState.conf
+    val openCostInBytes = conf.filesOpenCostInBytes
+    val maxPartitionBytes = conf.filesMaxPartitionBytes
+    val minPartitionNum = conf.filesMinPartitionNum
+      .getOrElse(sparkSession.sparkContext.defaultParallelism)
+    val totalBytes = fileSizes.map(_ + openCostInBytes).sum
+    val bytesPerCore = totalBytes / math.max(1, minPartitionNum)
+    math.min(maxPartitionBytes, math.max(openCostInBytes, bytesPerCore))
+  }
+
+  /**
+   * Expand `tasks` so any task whose file is larger than `maxSplitBytes` is replaced by a
+   * sequence of byte-range chunks. Each chunk inherits the task's metadata (partition values, DV
+   * row indexes, row-tracking ids) but carries `byte_range_start` / `byte_range_end` so the
+   * native parquet reader only materialises row groups whose start offset falls in this range.
+   *
+   * Tasks that fit in one chunk are emitted unchanged (no range fields), which preserves the
+   * original whole-file semantics on the native side.
+   *
+   * Note on DV semantics: deletion-vector indexes on the proto are absolute row positions within
+   * the file. They are copied to every chunk; the native scan filters out rows whose absolute
+   * index is in the DV regardless of which chunk produced them, so duplicating the index list
+   * across chunks is correct (just slightly wasteful).
+   */
+  private def splitTasks(
+      scan: CometScanExec,
+      tasks: Seq[OperatorOuterClass.DeltaScanTask]): Seq[OperatorOuterClass.DeltaScanTask] = {
+    if (tasks.isEmpty) return tasks
+    val sizes = tasks.map(_.getFileSize)
+    val msb = maxSplitBytes(scan, sizes)
+    if (msb <= 0) return tasks
+    tasks.flatMap { task =>
+      val size = task.getFileSize
+      if (size <= msb) Seq(task)
+      else {
+        val chunks = scala.collection.mutable.ArrayBuffer[OperatorOuterClass.DeltaScanTask]()
+        var offset = 0L
+        while (offset < size) {
+          val end = math.min(offset + msb, size)
+          chunks += task.toBuilder
+            .setByteRangeStart(offset)
+            .setByteRangeEnd(end)
+            .build()
+          offset = end
+        }
+        chunks.toSeq
+      }
+    }
   }
 
   private def prunePartitions(

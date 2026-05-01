@@ -169,6 +169,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_planDeltaScan(
                 // rowTracking is enabled.
                 base_row_id: None,
                 default_row_commit_version: None,
+                // Splitting is done on the Scala side just before serialization,
+                // not here on the kernel-driver path. Leave unset.
+                byte_range_start: None,
+                byte_range_end: None,
             })
             .collect();
 

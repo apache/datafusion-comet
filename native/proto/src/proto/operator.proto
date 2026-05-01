@@ -328,9 +328,17 @@ message DeltaScanTask {
   // `_row_commit_version_` column.
   optional int64 base_row_id = 6;
   optional int64 default_row_commit_version = 7;
+  // File-splitting byte range. When set, this task only reads parquet row
+  // groups whose start offsets fall within `[byte_range_start, byte_range_end)`,
+  // so a single large parquet file can be split across multiple Spark
+  // partitions. Both unset means "read the whole file" (the original
+  // pre-split-mode semantics). Set together when set at all.
+  // Mirrors `PartitionedFile::range` on the DataFusion side.
+  optional uint64 byte_range_start = 8;
+  optional uint64 byte_range_end = 9;
   // Reserved for future use:
-  //   8: per-task residual predicate index (predicates kernel couldn't fully evaluate)
-  //   9: per-task physical schema index (for per-file schema evolution)
+  //   10: per-task residual predicate index (predicates kernel couldn't fully evaluate)
+  //   11: per-task physical schema index (for per-file schema evolution)
 }
 
 // Partition column value extracted from a Delta add action. Delta represents

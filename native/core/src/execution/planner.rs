@@ -3281,11 +3281,18 @@ fn build_delta_partitioned_files(
             .map_err(|e| GeneralError(format!("Invalid Delta file URL: {e}")))?;
         let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
 
-        let mut partitioned_file = PartitionedFile::new(
-            // placeholder — overwritten below by object_meta.location
-            String::new(),
-            task.file_size,
-        );
+        // Honour byte-range splitting when both ends are set: this is one
+        // chunk of a multi-partition file split. Otherwise the task covers
+        // the whole file (original semantics).
+        let mut partitioned_file = match (task.byte_range_start, task.byte_range_end) {
+            (Some(start), Some(end)) => PartitionedFile::new_with_range(
+                String::new(),
+                task.file_size,
+                start as i64,
+                end as i64,
+            ),
+            _ => PartitionedFile::new(String::new(), task.file_size),
+        };
         partitioned_file.object_meta.location = path;
 
         let mut partition_values: Vec<ScalarValue> =
