@@ -595,6 +595,70 @@ git<span class="w"> </span>diff<span class="w"> </span>v3.5.6<span class="w"> </
 new Spark version, the <code class="docutils literal notranslate"><span class="pre">spark_sql_test.yaml</span></code> and <code class="docutils literal notranslate"><span class="pre">spark_sql_test_ansi.yaml</span></code> files will need updating with the
 new version.</p>
 </section>
+<section id="adding-support-for-a-new-spark-major-or-minor-version">
+<h2>Adding support for a new Spark major or minor version<a class="headerlink" href="#adding-support-for-a-new-spark-major-or-minor-version" title="Link to this heading">#</a></h2>
+<p>When the diff is for a brand-new minor (e.g. 4.0 to 4.1) or major version, the existing Comet <code class="docutils literal notranslate"><span class="pre">spark-X.Y</span></code> Maven
+profile will not match. Add a new profile alongside the existing ones in the root <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> and <code class="docutils literal notranslate"><span class="pre">spark/pom.xml</span></code>:</p>
+<ul class="simple">
+<li><p>Root <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code>: copy the existing <code class="docutils literal notranslate"><span class="pre">spark-4.0</span></code> profile, change <code class="docutils literal notranslate"><span class="pre">&lt;spark.version&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;spark.version.short&gt;</span></code>, and
+match the Spark target’s transitive dep versions (Spark’s own <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> is the source of truth):
+<code class="docutils literal notranslate"><span class="pre">&lt;scala.version&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;parquet.version&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;slf4j.version&gt;</span></code>. Set <code class="docutils literal notranslate"><span class="pre">&lt;shims.majorVerSrc&gt;spark-4.1&lt;/shims.majorVerSrc&gt;</span></code>
+and <code class="docutils literal notranslate"><span class="pre">&lt;shims.minorVerSrc&gt;not-needed-yet&lt;/shims.minorVerSrc&gt;</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark/pom.xml</span></code>: copy the matching profile block for iceberg-spark-runtime and Jetty test deps. The
+iceberg-spark-runtime artifact may not yet be published for a brand-new Spark minor — until it is, hardcode the
+previous version’s coordinate (e.g. <code class="docutils literal notranslate"><span class="pre">iceberg-spark-runtime-4.0_${scala.binary.version}</span></code> while running against
+Spark 4.1 source).</p></li>
+</ul>
+<p>Then create a corresponding shim source tree by copying the previous version’s:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cp<span class="w"> </span>-r<span class="w"> </span>spark/src/main/spark-4.0<span class="w"> </span>spark/src/main/spark-4.1
+cp<span class="w"> </span>-r<span class="w"> </span>common/src/main/spark-4.0<span class="w"> </span>common/src/main/spark-4.1
+</pre></div>
+</div>
+<p>Build with <code class="docutils literal notranslate"><span class="pre">PROFILES=&quot;-Pspark-4.1&quot;</span> <span class="pre">make</span> <span class="pre">release</span></code> (or <code class="docutils literal notranslate"><span class="pre">./mvnw</span> <span class="pre">install</span> <span class="pre">-Prelease</span> <span class="pre">-Pspark-4.1</span> <span class="pre">-DskipTests</span> <span class="pre">-Dmaven.test.skip=true</span></code> to skip Comet’s own test compile). Compile errors in the new shim tree will tell you
+exactly which Spark APIs moved between versions. Common patterns we have seen:</p>
+<ul class="simple">
+<li><p>A field is renamed or moved into a wrapper struct. Add a helper method to <code class="docutils literal notranslate"><span class="pre">CometEvalModeUtil</span></code> (or other shim
+utility object) and call it from the shared <code class="docutils literal notranslate"><span class="pre">spark/src/main/scala</span></code> code, with a per-profile implementation.
+Example: in Spark 4.1 <code class="docutils literal notranslate"><span class="pre">Sum.evalMode</span></code> became <code class="docutils literal notranslate"><span class="pre">Sum.evalContext.evalMode</span></code>.</p></li>
+<li><p>A <code class="docutils literal notranslate"><span class="pre">SQLConf</span></code> key changes shape (e.g. <code class="docutils literal notranslate"><span class="pre">stringConf</span></code> to <code class="docutils literal notranslate"><span class="pre">enumConf</span></code>). The shim trait is the natural place to
+encapsulate the new return type.</p></li>
+<li><p>A Spark constructor adds a new (optional) parameter that Java callers can’t see via Scala default values.
+Add a tiny non-versioned Scala wrapper in <code class="docutils literal notranslate"><span class="pre">spark/src/main/scala</span></code> that calls the Spark API; the Scala compiler
+fills in the default per profile. Example: <code class="docutils literal notranslate"><span class="pre">MapStatusHelper.apply</span></code> for <code class="docutils literal notranslate"><span class="pre">MapStatus.apply</span></code>’s 4.1 <code class="docutils literal notranslate"><span class="pre">checksumVal</span></code>.</p></li>
+<li><p>A reflective constructor lookup (<code class="docutils literal notranslate"><span class="pre">getDeclaredConstructors</span></code>) starts hitting “argument type mismatch” because a
+parameter type widened/changed. Pass a value compatible with both old and new types (e.g. a
+<code class="docutils literal notranslate"><span class="pre">ConcurrentHashMap</span></code> instead of <code class="docutils literal notranslate"><span class="pre">Collections.emptyMap()</span></code> after <code class="docutils literal notranslate"><span class="pre">IndexShuffleBlockResolver</span></code>’s third param became
+<code class="docutils literal notranslate"><span class="pre">ConcurrentMap</span></code>).</p></li>
+</ul>
+<p>Once Comet builds for the new profile, the iceberg test artifact may eventually need an updated coordinate, and
+<code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-X.Y</span></code> may diverge meaningfully from the previous version. Land the profile, then iterate.</p>
+</section>
+<section id="running-tests-locally-against-a-patched-spark-clone">
+<h2>Running tests locally against a patched Spark clone<a class="headerlink" href="#running-tests-locally-against-a-patched-spark-clone" title="Link to this heading">#</a></h2>
+<p>After applying the diff, run sbt from the patched Spark working tree. A few things that have caught us out:</p>
+<ul>
+<li><p><strong>Skip Spark’s scalastyle</strong>: set <code class="docutils literal notranslate"><span class="pre">NOLINT_ON_COMPILE=true</span></code> (Spark’s <code class="docutils literal notranslate"><span class="pre">SparkBuild.scala</span></code> checks this env var; our
+CI workflow already sets it). Without this, modifications introduced by the diff can fail the strict
+scalastyle check before any test runs.</p></li>
+<li><p><strong>Pin a clean local Maven cache</strong>: Coursier (sbt’s resolver) treats a <code class="docutils literal notranslate"><span class="pre">.pom</span></code> file in <code class="docutils literal notranslate"><span class="pre">~/.m2</span></code> as proof the
+artifact is fully present locally and stops looking remotely. If a previous Maven run only fetched POMs
+(without JARs), Coursier will fail with <code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">found:</span> <span class="pre">...some-artifact.jar</span></code> even though the file is on Maven
+Central. The fast workaround is to point sbt at a fresh location:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span>install<span class="w"> </span>-Prelease<span class="w"> </span>-DskipTests<span class="w"> </span>-Dmaven.test.skip<span class="o">=</span><span class="nb">true</span><span class="w"> </span>-Pspark-4.1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Dmaven.repo.local<span class="o">=</span>/tmp/spark-m2-repo
+<span class="nb">cd</span><span class="w"> </span>../apache-spark
+<span class="nv">NOLINT_ON_COMPILE</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>build/sbt<span class="w"> </span>-Dmaven.repo.local<span class="o">=</span>/tmp/spark-m2-repo<span class="w"> </span><span class="s2">&quot;sql/testOnly org.apache.spark.sql.MathFunctionsSuite&quot;</span>
+</pre></div>
+</div>
+<p>Make sure to install Comet into the same alternate repo so sbt can resolve it.</p>
+</li>
+<li><p><strong>Avoid <code class="docutils literal notranslate"><span class="pre">-DskipTests</span></code> alone for the install step</strong> if you want to skip Comet’s own test compile: it still
+compiles tests and only skips execution. Pair it with <code class="docutils literal notranslate"><span class="pre">-Dmaven.test.skip=true</span></code>.</p></li>
+<li><p><strong>Targeted suites first</strong>: <code class="docutils literal notranslate"><span class="pre">MathFunctionsSuite</span></code> (~60 tests) is a quick smoke check that exercises Comet’s
+serde and shuffle paths without booting most of the SQL test infrastructure.</p></li>
+</ul>
+</section>
 </section>
 
 
