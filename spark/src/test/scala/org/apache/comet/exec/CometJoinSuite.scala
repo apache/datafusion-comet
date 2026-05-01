@@ -225,6 +225,22 @@ class CometJoinSuite extends CometTestBase {
           checkSparkAnswerAndOperator(df)
         }
       }
+
+      // Empty subquery: NOT IN against an empty set returns all left rows, including NULL probe.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq.empty[(Integer, Int)], "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Both sides have NULL keys: probe-side NULL and build-side NULL on the same query.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
     }
   }
 

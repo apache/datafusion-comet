@@ -1722,6 +1722,18 @@ trait CometHashJoin {
       return None
     }
 
+    // Spark's BroadcastHashJoinExec.scala enforces these invariants for null-aware anti-join
+    // at construction. Verify them defensively so that, if Spark ever loosens them, we fall
+    // back to Spark with a clear message instead of failing in DataFusion.
+    if (isNullAwareAntiJoin &&
+      (join.leftKeys.length != 1 || join.rightKeys.length != 1 ||
+        join.joinType != LeftAnti || join.buildSide != BuildRight ||
+        join.condition.isDefined)) {
+      withInfo(
+        join,
+        "null-aware anti-join requires single-column LeftAnti BuildRight with no condition")
+      return None
+    }
 
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
