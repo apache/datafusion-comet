@@ -90,6 +90,7 @@ message Expr {
     ToCsv to_csv = 67;
     HoursTransform hours_transform = 68;
     ArraysZip arrays_zip = 69;
+    JvmScalarUdf jvm_scalar_udf = 70;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -502,4 +503,17 @@ message Rand {
 message ArraysZip {
   repeated Expr values = 1;
   repeated string names = 2;
+}
+
+// Scalar UDF dispatched to the JVM via JNI. Native side exports input arrays
+// through Arrow C Data Interface, calls CometUdfBridge.evaluate, and imports
+// the result.
+message JvmScalarUdf {
+  // Fully-qualified Java/Scala class name implementing
+  // org.apache.comet.udf.CometUDF (must have a public no-arg constructor).
+  string class_name = 1;
+  // Argument expressions, evaluated by the native side before invocation.
+  repeated Expr args = 2;
+  // Expected return type. Used to import the result FFI_ArrowArray.
+  DataType return_type = 3;
 }
