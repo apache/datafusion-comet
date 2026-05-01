@@ -267,7 +267,7 @@ object CometRLike extends CometExpressionSerde[RLike] {
     "Uses Rust regexp engine, which has different behavior to Java regexp engine")
 
   override def getSupportLevel(expr: RLike): SupportLevel = {
-    if (CometConf.COMET_REGEXP_USE_JVM.get()) {
+    if (CometConf.COMET_REGEXP_ENGINE.get() == "java") {
       Compatible(None)
     } else {
       super.getSupportLevel(expr)
@@ -275,7 +275,7 @@ object CometRLike extends CometExpressionSerde[RLike] {
   }
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_USE_JVM.get()) {
+    if (CometConf.COMET_REGEXP_ENGINE.get() == "java") {
       convertViaJvmUdf(expr, inputs, binding)
     } else {
       convertViaNativeRegex(expr, inputs, binding)

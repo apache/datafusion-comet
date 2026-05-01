@@ -110,7 +110,7 @@ object CometRegExpBenchmark extends CometBenchmarkBase {
     }
 
     benchmark.addCase("Comet (Exec, JVM regex)") { _ =>
-      val configs = baseExec ++ Map(CometConf.COMET_REGEXP_USE_JVM.key -> "true")
+      val configs = baseExec ++ Map(CometConf.COMET_REGEXP_ENGINE.key -> "java")
       withSQLConf(configs.toSeq: _*) {
         spark.sql(query).noop()
       }
