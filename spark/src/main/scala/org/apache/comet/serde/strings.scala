@@ -316,7 +316,19 @@ object CometRLike extends CometExpressionSerde[RLike] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr.right match {
-      case Literal(_, DataTypes.StringType) =>
+      case Literal(value, DataTypes.StringType) =>
+        if (value == null) {
+          withInfo(expr, "Null literal pattern is handled by Spark fallback")
+          return None
+        }
+        val patternStr = value.toString
+        try {
+          java.util.regex.Pattern.compile(patternStr)
+        } catch {
+          case e: java.util.regex.PatternSyntaxException =>
+            withInfo(expr, s"Invalid regex pattern: ${e.getDescription}")
+            return None
+        }
         val subjectProto = exprToProtoInternal(expr.left, inputs, binding)
         val patternProto = exprToProtoInternal(expr.right, inputs, binding)
         if (subjectProto.isEmpty || patternProto.isEmpty) {
