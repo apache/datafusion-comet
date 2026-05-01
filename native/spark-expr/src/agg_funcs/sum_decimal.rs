@@ -311,7 +311,12 @@ impl Accumulator for SumDecimalAccumulator {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> DFResult<()> {
-        assert_eq!(states.len(), 2, "expected (sum, is_empty), got {}", states.len());
+        assert_eq!(
+            states.len(),
+            2,
+            "expected (sum, is_empty), got {}",
+            states.len()
+        );
         assert_eq!(states[0].len(), states[1].len());
 
         let sum_array = states[0].as_primitive::<Decimal128Type>();
