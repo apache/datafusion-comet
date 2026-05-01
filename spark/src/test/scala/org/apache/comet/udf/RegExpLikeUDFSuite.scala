@@ -23,12 +23,20 @@ import java.nio.charset.StandardCharsets
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{BitVector, ValueVector, VarCharVector}
+
+import org.apache.comet.CometArrowAllocator
 
 class RegExpLikeUDFSuite extends AnyFunSuite {
 
-  private def varchar(allocator: RootAllocator, values: Seq[String]): VarCharVector = {
+  // Use the same allocator that RegExpLikeUDF allocates its output from. A
+  // per-test RootAllocator interacts poorly with shared Arrow accounting state
+  // when other suites have already exercised CometArrowAllocator in the same
+  // surefire JVM (observed under Spark 3.5 Scala 2.13 / Spark 4.x in CI).
+  private def allocator: BufferAllocator = CometArrowAllocator
+
+  private def varchar(values: Seq[String]): VarCharVector = {
     val v = new VarCharVector("subject", allocator)
     v.allocateNew()
     values.zipWithIndex.foreach { case (s, i) =>
@@ -39,7 +47,7 @@ class RegExpLikeUDFSuite extends AnyFunSuite {
     v
   }
 
-  private def scalarPattern(allocator: RootAllocator, pattern: String): VarCharVector = {
+  private def scalarPattern(pattern: String): VarCharVector = {
     val v = new VarCharVector("pattern", allocator)
     v.allocateNew()
     v.setSafe(0, pattern.getBytes(StandardCharsets.UTF_8))
@@ -47,11 +55,19 @@ class RegExpLikeUDFSuite extends AnyFunSuite {
     v
   }
 
+  /** Verify that everything allocated within `body` is released by the time it returns. */
+  private def assertNoLeak(body: => Unit): Unit = {
+    val before = allocator.getAllocatedMemory
+    body
+    assert(
+      allocator.getAllocatedMemory === before,
+      s"test leaked Arrow memory: ${allocator.getAllocatedMemory - before} bytes")
+  }
+
   test("matches Java regex semantics including null handling") {
-    val allocator = new RootAllocator(Long.MaxValue)
-    try {
-      val subject = varchar(allocator, Seq("abc123", "no-digits", null, "X"))
-      val pattern = scalarPattern(allocator, "\\d+")
+    assertNoLeak {
+      val subject = varchar(Seq("abc123", "no-digits", null, "X"))
+      val pattern = scalarPattern("\\d+")
 
       val udf = new RegExpLikeUDF
       val out = udf.evaluate(Array[ValueVector](subject, pattern)).asInstanceOf[BitVector]
@@ -64,18 +80,15 @@ class RegExpLikeUDFSuite extends AnyFunSuite {
       out.close()
       subject.close()
       pattern.close()
-    } finally {
-      allocator.close()
     }
   }
 
   test("compiled Pattern is cached across evaluate calls") {
-    val allocator = new RootAllocator(Long.MaxValue)
-    try {
+    assertNoLeak {
       val udf = new RegExpLikeUDF
-      val pattern = scalarPattern(allocator, "[a-z]+")
-      val s1 = varchar(allocator, Seq("hello"))
-      val s2 = varchar(allocator, Seq("WORLD"))
+      val pattern = scalarPattern("[a-z]+")
+      val s1 = varchar(Seq("hello"))
+      val s2 = varchar(Seq("WORLD"))
 
       val r1 = udf.evaluate(Array[ValueVector](s1, pattern)).asInstanceOf[BitVector]
       val r2 = udf.evaluate(Array[ValueVector](s2, pattern)).asInstanceOf[BitVector]
@@ -84,16 +97,13 @@ class RegExpLikeUDFSuite extends AnyFunSuite {
       assert(r2.get(0) === 0)
       r1.close(); r2.close()
       s1.close(); s2.close(); pattern.close()
-    } finally {
-      allocator.close()
     }
   }
 
   test("empty subject vector yields empty result") {
-    val allocator = new RootAllocator(Long.MaxValue)
-    try {
-      val subject = varchar(allocator, Seq.empty)
-      val pattern = scalarPattern(allocator, "\\d+")
+    assertNoLeak {
+      val subject = varchar(Seq.empty)
+      val pattern = scalarPattern("\\d+")
 
       val out = new RegExpLikeUDF()
         .evaluate(Array[ValueVector](subject, pattern))
@@ -101,16 +111,13 @@ class RegExpLikeUDFSuite extends AnyFunSuite {
 
       assert(out.getValueCount === 0)
       out.close(); subject.close(); pattern.close()
-    } finally {
-      allocator.close()
     }
   }
 
   test("all-null subject column produces all-null bitmap") {
-    val allocator = new RootAllocator(Long.MaxValue)
-    try {
-      val subject = varchar(allocator, Seq(null, null, null))
-      val pattern = scalarPattern(allocator, ".*")
+    assertNoLeak {
+      val subject = varchar(Seq(null, null, null))
+      val pattern = scalarPattern(".*")
 
       val out = new RegExpLikeUDF()
         .evaluate(Array[ValueVector](subject, pattern))
@@ -119,8 +126,6 @@ class RegExpLikeUDFSuite extends AnyFunSuite {
       assert(out.getValueCount === 3)
       assert(out.isNull(0) && out.isNull(1) && out.isNull(2))
       out.close(); subject.close(); pattern.close()
-    } finally {
-      allocator.close()
     }
   }
 }
