@@ -63,7 +63,14 @@ public class CometUdfBridge {
     CometUDF udf = cache.get(udfClassName);
     if (udf == null) {
       try {
-        udf = (CometUDF) Class.forName(udfClassName).getDeclaredConstructor().newInstance();
+        // Resolve via the executor's context classloader so user-supplied UDF jars
+        // (added via spark.jars / --jars) are visible.
+        ClassLoader cl = Thread.currentThread().getContextClassLoader();
+        if (cl == null) {
+          cl = CometUdfBridge.class.getClassLoader();
+        }
+        udf =
+            (CometUDF) Class.forName(udfClassName, true, cl).getDeclaredConstructor().newInstance();
       } catch (ReflectiveOperationException e) {
         throw new RuntimeException("Failed to instantiate CometUDF: " + udfClassName, e);
       }
@@ -73,24 +80,39 @@ public class CometUdfBridge {
     BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
-    for (int i = 0; i < inputArrayPtrs.length; i++) {
-      ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
-      ArrowSchema inSch = ArrowSchema.wrap(inputSchemaPtrs[i]);
-      inputs[i] = Data.importVector(allocator, inArr, inSch, null);
-    }
+    ValueVector result = null;
+    try {
+      for (int i = 0; i < inputArrayPtrs.length; i++) {
+        ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
+        ArrowSchema inSch = ArrowSchema.wrap(inputSchemaPtrs[i]);
+        inputs[i] = Data.importVector(allocator, inArr, inSch, null);
+      }
 
-    ValueVector result = udf.evaluate(inputs);
-    if (!(result instanceof FieldVector)) {
-      throw new RuntimeException(
-          "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());
+      result = udf.evaluate(inputs);
+      if (!(result instanceof FieldVector)) {
+        throw new RuntimeException(
+            "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());
+      }
+      ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
+      ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);
+      Data.exportVector(allocator, (FieldVector) result, null, outArr, outSch);
+    } finally {
+      for (ValueVector v : inputs) {
+        if (v != null) {
+          try {
+            v.close();
+          } catch (RuntimeException ignored) {
+            // do not mask the original throwable
+          }
+        }
+      }
+      if (result != null) {
+        try {
+          result.close();
+        } catch (RuntimeException ignored) {
+          // do not mask the original throwable
+        }
+      }
     }
-    ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
-    ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);
-    Data.exportVector(allocator, (FieldVector) result, null, outArr, outSch);
-
-    for (ValueVector v : inputs) {
-      v.close();
-    }
-    result.close();
   }
 }
