@@ -516,4 +516,6 @@ message JvmScalarUdf {
   repeated Expr args = 2;
   // Expected return type. Used to import the result FFI_ArrowArray.
   DataType return_type = 3;
+  // Whether the result column may contain nulls.
+  bool return_nullable = 4;
 }

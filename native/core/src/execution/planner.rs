@@ -715,6 +715,7 @@ impl PhysicalPlanner {
                     udf.class_name.clone(),
                     args,
                     return_type,
+                    udf.return_nullable,
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),

@@ -40,6 +40,7 @@ pub struct JvmScalarUdfExpr {
     class_name: String,
     args: Vec<Arc<dyn PhysicalExpr>>,
     return_type: DataType,
+    return_nullable: bool,
 }
 
 impl JvmScalarUdfExpr {
@@ -47,18 +48,24 @@ impl JvmScalarUdfExpr {
         class_name: String,
         args: Vec<Arc<dyn PhysicalExpr>>,
         return_type: DataType,
+        return_nullable: bool,
     ) -> Self {
         Self {
             class_name,
             args,
             return_type,
+            return_nullable,
         }
     }
 }
 
 impl Display for JvmScalarUdfExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "JvmScalarUdf({}, args={:?})", self.class_name, self.args)
+        write!(f, "JvmScalarUdf({}", self.class_name)?;
+        for a in &self.args {
+            write!(f, ", {a}")?;
+        }
+        write!(f, ")")
     }
 }
 
@@ -66,9 +73,10 @@ impl Hash for JvmScalarUdfExpr {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.class_name.hash(state);
         for a in &self.args {
-            format!("{}", a).hash(state);
+            a.hash(state);
         }
         self.return_type.hash(state);
+        self.return_nullable.hash(state);
     }
 }
 
@@ -76,12 +84,9 @@ impl PartialEq for JvmScalarUdfExpr {
     fn eq(&self, other: &Self) -> bool {
         self.class_name == other.class_name
             && self.return_type == other.return_type
+            && self.return_nullable == other.return_nullable
             && self.args.len() == other.args.len()
-            && self
-                .args
-                .iter()
-                .zip(other.args.iter())
-                .all(|(a, b)| format!("{}", a) == format!("{}", b))
+            && self.args.iter().zip(&other.args).all(|(a, b)| a.eq(b))
     }
 }
 
@@ -101,7 +106,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
     }
 
     fn nullable(&self, _input_schema: &Schema) -> DFResult<bool> {
-        Ok(true)
+        Ok(self.return_nullable)
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DFResult<ColumnarValue> {
@@ -229,6 +234,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             self.class_name.clone(),
             children,
             self.return_type.clone(),
+            self.return_nullable,
         )))
     }
 }

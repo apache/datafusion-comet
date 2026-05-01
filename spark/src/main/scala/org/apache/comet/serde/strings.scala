@@ -344,6 +344,7 @@ object CometRLike extends CometExpressionSerde[RLike] {
           .addArgs(subjectProto.get)
           .addArgs(patternProto.get)
           .setReturnType(returnType)
+          .setReturnNullable(expr.nullable)
         Some(
           ExprOuterClass.Expr
             .newBuilder()
