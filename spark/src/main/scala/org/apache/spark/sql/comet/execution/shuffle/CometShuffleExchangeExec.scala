@@ -86,6 +86,18 @@ case class CometShuffleExchangeExec(
     "CometColumnarExchange"
   }
 
+  // Exclude originalPlan from canonical form. It's a reference to the
+  // pre-Comet Spark exchange kept for metrics, not semantic content.
+  // Without this, two identical CometShuffleExchangeExec nodes with
+  // different originalPlans (e.g., one scan has DPP filters, one doesn't)
+  // would fail to match in AQE's stageCache, preventing exchange reuse.
+  // Matches CometBroadcastExchangeExec.doCanonicalize which also nulls
+  // originalPlan.
+  override def doCanonicalize(): SparkPlan = {
+    val base = super.doCanonicalize().asInstanceOf[CometShuffleExchangeExec]
+    base.copy(originalPlan = null)
+  }
+
   private lazy val serializer: Serializer =
     new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))
 
@@ -278,8 +290,9 @@ object CometShuffleExchangeExec
 
     // A Comet shuffle wrapped around a stage that still contains a Spark FileSourceScanExec
     // with DPP produces inefficient row<->columnar transitions. This only happens when the
-    // scan fell back (e.g., AQE DPP not supported). If the scan converted to
-    // CometNativeScanExec, stageContainsDPPScan won't match (it checks FileSourceScanExec).
+    // scan fell back to Spark (e.g., AQE DPP on Spark 3.4, or unsupported scan type).
+    // On 3.5+ with AQE DPP, the scan converts to CometNativeScanExec and
+    // stageContainsDPPScan won't match (it checks FileSourceScanExec).
     if (stageContainsDPPScan(s)) {
       withInfos(s, Set("Stage contains a scan with Dynamic Partition Pruning"))
       return None
@@ -291,6 +304,16 @@ object CometShuffleExchangeExec
       if (isCometPlan(s.child)) nativeShuffleFailureReasons(s) else Seq.empty
     if (isCometPlan(s.child) && nativeReasons.isEmpty) {
       return Some(CometNativeShuffle)
+    }
+
+    if (!isCometPlan(s.child) &&
+      !CometConf.COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.get(s.conf)) {
+      withInfos(
+        s,
+        Set(
+          s"${CometConf.COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key} is disabled " +
+            "and child is not a Comet plan"))
+      return None
     }
 
     val columnarReasons = columnarShuffleFailureReasons(s)

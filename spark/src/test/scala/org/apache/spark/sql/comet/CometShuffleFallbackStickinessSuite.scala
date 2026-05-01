@@ -82,7 +82,12 @@ class CometShuffleFallbackStickinessSuite extends CometTestBase {
       spark.read.parquet(factPath).createOrReplaceTempView("t_sticky_fact")
       spark.read.parquet(dimPath).createOrReplaceTempView("t_sticky_dim")
 
+      // Disable native scan so the scan stays as FileSourceScanExec with DPP,
+      // producing the mixed state (Spark shuffle wrapping Spark DPP scan) that
+      // stageContainsDPPScan is designed to catch. With native scan enabled, AQE DPP
+      // scans convert to CometNativeScanExec and the shuffle goes native.
       withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
