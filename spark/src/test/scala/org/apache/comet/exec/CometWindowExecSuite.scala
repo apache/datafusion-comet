@@ -500,8 +500,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: ROW_NUMBER not supported
-  // Falls back to Spark Window operator
   test("window: ROW_NUMBER with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)

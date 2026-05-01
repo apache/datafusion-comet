@@ -1778,10 +1778,62 @@ impl PhysicalPlanner {
                     InputOrderMode::Sorted,
                     !partition_exprs.is_empty(),
                 )?);
+
+                // DataFusion's window functions don't always return the same Arrow
+                // type that Spark expects (e.g. `row_number` returns UInt64 while
+                // Spark expects Int32). If any window expression carries a
+                // `result_type` that differs from the actual output type, wrap the
+                // aggregate in a projection that casts the mismatched columns.
+                let final_plan: Arc<dyn ExecutionPlan> = {
+                    let agg_schema = window_agg.schema();
+                    let input_field_count = input_schema.fields().len();
+                    let needs_cast = wnd.window_expr.iter().enumerate().any(|(i, w)| {
+                        w.result_type
+                            .as_ref()
+                            .map(|t| {
+                                let expected = to_arrow_datatype(t);
+                                let actual =
+                                    agg_schema.field(input_field_count + i).data_type();
+                                &expected != actual
+                            })
+                            .unwrap_or(false)
+                    });
+
+                    if needs_cast {
+                        let mut proj_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> =
+                            Vec::with_capacity(agg_schema.fields().len());
+                        for (idx, field) in agg_schema.fields().iter().enumerate() {
+                            let col: Arc<dyn PhysicalExpr> =
+                                Arc::new(Column::new(field.name(), idx));
+                            let expr: Arc<dyn PhysicalExpr> = if idx >= input_field_count
+                            {
+                                let w = &wnd.window_expr[idx - input_field_count];
+                                match &w.result_type {
+                                    Some(t) => {
+                                        let expected = to_arrow_datatype(t);
+                                        if &expected != field.data_type() {
+                                            Arc::new(CastExpr::new(col, expected, None))
+                                        } else {
+                                            col
+                                        }
+                                    }
+                                    None => col,
+                                }
+                            } else {
+                                col
+                            };
+                            proj_exprs.push((expr, field.name().to_string()));
+                        }
+                        Arc::new(ProjectionExec::try_new(proj_exprs, window_agg)?)
+                    } else {
+                        window_agg
+                    }
+                };
+
                 Ok((
                     scans,
                     shuffle_scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])),
                 ))
             }
             OpStruct::ShuffleScan(scan) => {
