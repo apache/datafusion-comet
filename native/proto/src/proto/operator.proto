@@ -22,6 +22,7 @@ syntax = "proto3";
 package spark.spark_operator;
 
 import "expr.proto";
+import "literal.proto";
 import "partitioning.proto";
 import "types.proto";
 
@@ -404,11 +405,19 @@ message UpperWindowFrameBound {
 }
 
 message Preceding {
+  // Used for ROWS frames. Integer row count.
   int64 offset = 1;
+  // Used for RANGE frames. Carries the typed offset value so the native
+  // side can build a ScalarValue whose type matches the ORDER BY column.
+  spark.spark_expression.Literal range_offset = 2;
 }
 
 message Following {
+  // Used for ROWS frames. Integer row count.
   int64 offset = 1;
+  // Used for RANGE frames. Carries the typed offset value so the native
+  // side can build a ScalarValue whose type matches the ORDER BY column.
+  spark.spark_expression.Literal range_offset = 2;
 }
 
 message UnboundedPreceding {}

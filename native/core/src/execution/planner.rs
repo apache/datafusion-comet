@@ -1792,8 +1792,7 @@ impl PhysicalPlanner {
                             .as_ref()
                             .map(|t| {
                                 let expected = to_arrow_datatype(t);
-                                let actual =
-                                    agg_schema.field(input_field_count + i).data_type();
+                                let actual = agg_schema.field(input_field_count + i).data_type();
                                 &expected != actual
                             })
                             .unwrap_or(false)
@@ -1805,8 +1804,7 @@ impl PhysicalPlanner {
                         for (idx, field) in agg_schema.fields().iter().enumerate() {
                             let col: Arc<dyn PhysicalExpr> =
                                 Arc::new(Column::new(field.name(), idx));
-                            let expr: Arc<dyn PhysicalExpr> = if idx >= input_field_count
-                            {
+                            let expr: Arc<dyn PhysicalExpr> = if idx >= input_field_count {
                                 let w = &wnd.window_expr[idx - input_field_count];
                                 match &w.result_type {
                                     Some(t) => {
@@ -2434,7 +2432,11 @@ impl PhysicalPlanner {
                             Some(offset_value as u64),
                         )),
                         WindowFrameUnits::Range => {
-                            WindowFrameBound::Preceding(ScalarValue::Int64(Some(offset_value)))
+                            let scalar = match offset.range_offset.as_ref() {
+                                Some(lit) => numeric_literal_to_scalar(lit)?,
+                                None => ScalarValue::Int64(Some(offset_value)),
+                            };
+                            WindowFrameBound::Preceding(scalar)
                         }
                         WindowFrameUnits::Groups => {
                             return Err(GeneralError(
@@ -2480,7 +2482,11 @@ impl PhysicalPlanner {
                         WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64)))
                     }
                     WindowFrameUnits::Range => {
-                        WindowFrameBound::Following(ScalarValue::Int64(Some(offset.offset)))
+                        let scalar = match offset.range_offset.as_ref() {
+                            Some(lit) => numeric_literal_to_scalar(lit)?,
+                            None => ScalarValue::Int64(Some(offset.offset)),
+                        };
+                        WindowFrameBound::Following(scalar)
                     }
                     WindowFrameUnits::Groups => {
                         return Err(GeneralError(
@@ -2868,6 +2874,62 @@ fn expr_to_columns(
     right_field_indices.sort();
 
     Ok((left_field_indices, right_field_indices))
+}
+
+/// Convert a Spark numeric Literal proto into a `ScalarValue` whose data type
+/// matches the literal's declared type. Used for RANGE window frame offsets,
+/// where the offset's type must match the ORDER BY column's type. Only numeric
+/// types are supported; the Scala side rejects non-numeric RANGE offsets before
+/// reaching here.
+fn numeric_literal_to_scalar(
+    lit: &spark_expression::Literal,
+) -> Result<ScalarValue, ExecutionError> {
+    let data_type = to_arrow_datatype(lit.datatype.as_ref().ok_or_else(|| {
+        GeneralError("RANGE frame offset literal is missing datatype".to_string())
+    })?);
+
+    if lit.is_null {
+        return Err(GeneralError(
+            "RANGE frame offset must not be null".to_string(),
+        ));
+    }
+
+    let value = lit
+        .value
+        .as_ref()
+        .ok_or_else(|| GeneralError("RANGE frame offset literal has no value".to_string()))?;
+
+    let scalar = match value {
+        Value::ByteVal(v) => ScalarValue::Int8(Some(*v as i8)),
+        Value::ShortVal(v) => ScalarValue::Int16(Some(*v as i16)),
+        Value::IntVal(v) => ScalarValue::Int32(Some(*v)),
+        Value::LongVal(v) => ScalarValue::Int64(Some(*v)),
+        Value::FloatVal(v) => ScalarValue::Float32(Some(*v)),
+        Value::DoubleVal(v) => ScalarValue::Float64(Some(*v)),
+        Value::DecimalVal(bytes) => {
+            let big_integer = BigInt::from_signed_bytes_be(bytes);
+            let integer = big_integer.to_i128().ok_or_else(|| {
+                GeneralError(format!(
+                    "Cannot parse {big_integer:?} as i128 for Decimal RANGE frame offset"
+                ))
+            })?;
+            match data_type {
+                DataType::Decimal128(p, s) => ScalarValue::Decimal128(Some(integer), p, s),
+                ref dt => {
+                    return Err(GeneralError(format!(
+                        "Decimal RANGE frame offset has non-Decimal128 datatype: {dt:?}"
+                    )))
+                }
+            }
+        }
+        other => {
+            return Err(GeneralError(format!(
+                "Unsupported value variant for RANGE frame offset: {other:?}"
+            )))
+        }
+    };
+
+    Ok(scalar)
 }
 
 /// A physical join filter rewritter which rewrites the column indices in the expression

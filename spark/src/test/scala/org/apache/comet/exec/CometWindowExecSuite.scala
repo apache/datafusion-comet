@@ -80,16 +80,30 @@ class CometWindowExecSuite extends CometTestBase {
     val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")
     val window = Window.orderBy($"value".desc)
 
-    // ranges are long
-    val df2 = df.select(
-      $"value",
-      sum($"value").over(window.rangeBetween(Window.unboundedPreceding, 1L)),
-      sum($"value").over(window.rangeBetween(1L, Window.unboundedFollowing)))
+    // ranges are long. Spark encodes PRECEDING/FOLLOWING via the sign of the bound;
+    // `rangeBetween(unboundedPreceding, 1L)` produces upper=1 FOLLOWING, which is
+    // representable in our proto and runs natively.
+    val df2 =
+      df.select($"value", sum($"value").over(window.rangeBetween(Window.unboundedPreceding, 1L)))
 
-    // Comet does not support RANGE BETWEEN
-    // https://github.com/apache/datafusion-comet/issues/1246
     val (_, cometPlan) = checkSparkAnswerAndOperator(df2)
     val cometWindowExecs = collect(cometPlan) { case w: CometWindowExec =>
+      w
+    }
+    assert(cometWindowExecs.nonEmpty)
+  }
+
+  test("window query with rangeBetween FOLLOWING lower bound falls back to Spark") {
+    // `rangeBetween(1L, unboundedFollowing)` puts a positive offset (FOLLOWING semantic)
+    // in the lower bound position, which the proto only encodes as Preceding. We fall
+    // back to Spark rather than misinterpret the bound.
+    val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")
+    val window = Window.orderBy($"value".desc)
+    val df2 =
+      df.select($"value", sum($"value").over(window.rangeBetween(1L, Window.unboundedFollowing)))
+
+    checkSparkAnswer(df2)
+    val cometWindowExecs = collect(df2.queryExecution.executedPlan) { case w: CometWindowExec =>
       w
     }
     assert(cometWindowExecs.isEmpty)
@@ -937,8 +951,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: RANGE BETWEEN with numeric ORDER BY not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   test("window: RANGE BETWEEN with numeric ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
@@ -959,8 +971,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   test("window: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
     withTempDir { dir =>
       (0 until 30)
