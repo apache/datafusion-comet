@@ -36,9 +36,11 @@ import org.apache.arrow.vector.ValueVector;
 public class CometUdfBridge {
 
   // Per-thread cache of UDF instances keyed by class name. Comet native
-  // execution threads (Tokio/DataFusion worker pool) are long-lived, so
-  // per-thread caching gives effective per-task lifetime without explicit
-  // task-id plumbing.
+  // execution threads (Tokio/DataFusion worker pool) are reused across
+  // tasks within an executor, so the effective lifetime of cached entries
+  // is the worker thread (i.e. the executor JVM). This is fine for
+  // stateless UDFs like RegExpLikeUDF; future stateful UDFs would need
+  // explicit per-task isolation.
   private static final ThreadLocal<HashMap<String, CometUDF>> INSTANCES =
       ThreadLocal.withInitial(HashMap::new);
 
