@@ -23,9 +23,14 @@ import org.apache.arrow.vector.ValueVector
 
 /**
  * Scalar UDF invoked from native execution via JNI. Receives Arrow vectors as input and returns
- * an Arrow vector. The returned vector must have the same length as the input vectors.
+ * an Arrow vector.
  *
- * Implementations must have a public no-arg constructor.
+ *   - Vector arguments arrive at the row count of the current batch.
+ *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
+ *   - The returned vector's length must match the longest input.
+ *
+ * Implementations must have a public no-arg constructor and should be stateless: instances are
+ * cached per executor thread for the lifetime of the JVM.
  */
 trait CometUDF {
   def evaluate(inputs: Array[ValueVector]): ValueVector

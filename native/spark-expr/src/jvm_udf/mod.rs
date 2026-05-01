@@ -105,12 +105,17 @@ impl PhysicalExpr for JvmScalarUdfExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DFResult<ColumnarValue> {
-        // Step 1: evaluate child expressions to get Arrow arrays.
-        let n = batch.num_rows();
+        // Step 1: evaluate child expressions to get Arrow arrays. Scalar children
+        // (e.g. literal patterns) are sent as length-1 vectors rather than expanded
+        // to batch-row count, so the JVM bridge does not pay an O(rows) copy for
+        // values that never vary across the batch.
         let arrays: Vec<ArrayRef> = self
             .args
             .iter()
-            .map(|e| e.evaluate(batch).and_then(|cv| cv.into_array(n)))
+            .map(|e| match e.evaluate(batch)? {
+                ColumnarValue::Array(a) => Ok(a),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(1),
+            })
             .collect::<DFResult<_>>()?;
 
         // Step 2: allocate FFI structs on the Rust heap and collect their raw pointers.
