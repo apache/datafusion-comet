@@ -19,20 +19,24 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.execution.{SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec}
+import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.execution.{SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec}
 
 trait ShimSubqueryBroadcast {
 
-  /**
-   * Gets the build key indices from SubqueryAdaptiveBroadcastExec. Spark 3.x has `index: Int`,
-   * Spark 4.x has `indices: Seq[Int]`.
-   */
   def getSubqueryBroadcastIndices(sab: SubqueryAdaptiveBroadcastExec): Seq[Int] = {
     sab.indices
   }
 
-  /** Same version shim for SubqueryBroadcastExec. */
   def getSubqueryBroadcastExecIndices(sub: SubqueryBroadcastExec): Seq[Int] = {
     sub.indices
+  }
+
+  def createSubqueryBroadcastExec(
+      name: String,
+      indices: Seq[Int],
+      buildKeys: Seq[Expression],
+      child: SparkPlan): SubqueryBroadcastExec = {
+    SubqueryBroadcastExec(name, indices, buildKeys, child)
   }
 }
