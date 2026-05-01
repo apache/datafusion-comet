@@ -195,6 +195,8 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         })?;
 
         // Step 4: import the result from the FFI slots filled by the JVM.
+        // SAFETY: from_ffi consumes the FFI_ArrowArray's release ownership; arrow-rs sets the
+        // release callback to None on the moved-from struct, so the Box's subsequent drop is a no-op.
         let result_data = unsafe { from_ffi(*out_array, &out_schema) }
             .map_err(|e| CometError::Arrow { source: e })?;
         Ok(ColumnarValue::Array(make_array(result_data)))
