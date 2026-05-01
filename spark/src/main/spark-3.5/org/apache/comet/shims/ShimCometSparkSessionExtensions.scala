@@ -45,4 +45,10 @@ trait ShimCometSparkSessionExtensions {
       rule: Rule[SparkPlan]): Unit = {
     extensions.injectQueryStageOptimizerRule(_ => rule)
   }
+
+  // No-op on Spark >= 3.5. See the Spark 3.4 shim and
+  // CometSpark34AqeDppFallbackRule's class docstring for why this shim exists.
+  def injectPreSpark35QueryStagePrepRuleShim(
+      extensions: SparkSessionExtensions,
+      rule: Rule[SparkPlan]): Unit = {}
 }
