@@ -88,4 +88,39 @@ class RegExpLikeUDFSuite extends AnyFunSuite {
       allocator.close()
     }
   }
+
+  test("empty subject vector yields empty result") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    try {
+      val subject = varchar(allocator, Seq.empty)
+      val pattern = scalarPattern(allocator, "\\d+")
+
+      val out = new RegExpLikeUDF()
+        .evaluate(Array[ValueVector](subject, pattern))
+        .asInstanceOf[BitVector]
+
+      assert(out.getValueCount === 0)
+      out.close(); subject.close(); pattern.close()
+    } finally {
+      allocator.close()
+    }
+  }
+
+  test("all-null subject column produces all-null bitmap") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    try {
+      val subject = varchar(allocator, Seq(null, null, null))
+      val pattern = scalarPattern(allocator, ".*")
+
+      val out = new RegExpLikeUDF()
+        .evaluate(Array[ValueVector](subject, pattern))
+        .asInstanceOf[BitVector]
+
+      assert(out.getValueCount === 3)
+      assert(out.isNull(0) && out.isNull(1) && out.isNull(2))
+      out.close(); subject.close(); pattern.close()
+    } finally {
+      allocator.close()
+    }
+  }
 }
