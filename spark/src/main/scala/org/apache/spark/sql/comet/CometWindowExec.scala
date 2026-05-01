@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, FrameLessOffsetWindowFunction, Lag, Lead, NamedExpression, RangeFrame, RowFrame, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, FrameLessOffsetWindowFunction, Lag, Lead, NamedExpression, RangeFrame, RowFrame, RowNumber, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -36,7 +36,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto, serializeDataType}
 
 object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
@@ -164,6 +164,8 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           val defaultExpr = exprToProto(lead.default, output)
           val func = scalarFunctionExprToProto("lead", inputExpr, offsetExpr, defaultExpr)
           (None, func, lead.ignoreNulls)
+        case _: RowNumber =>
+          (None, scalarFunctionExprToProto("row_number"), false)
         case _ =>
           (None, exprToProto(windowExpr.windowFunction, output), false)
       }
@@ -268,21 +270,23 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     val spec =
       OperatorOuterClass.WindowSpecDefinition.newBuilder().setFrameSpecification(frame).build()
 
+    val resultTypeProto = serializeDataType(windowExpr.dataType)
+
     if (builtinFunc.isDefined) {
-      Some(
-        OperatorOuterClass.WindowExpr
-          .newBuilder()
-          .setBuiltInWindowFunction(builtinFunc.get)
-          .setSpec(spec)
-          .setIgnoreNulls(ignoreNulls)
-          .build())
+      val b = OperatorOuterClass.WindowExpr
+        .newBuilder()
+        .setBuiltInWindowFunction(builtinFunc.get)
+        .setSpec(spec)
+        .setIgnoreNulls(ignoreNulls)
+      resultTypeProto.foreach(b.setResultType)
+      Some(b.build())
     } else if (aggExpr.isDefined) {
-      Some(
-        OperatorOuterClass.WindowExpr
-          .newBuilder()
-          .setAggFunc(aggExpr.get)
-          .setSpec(spec)
-          .build())
+      val b = OperatorOuterClass.WindowExpr
+        .newBuilder()
+        .setAggFunc(aggExpr.get)
+        .setSpec(spec)
+      resultTypeProto.foreach(b.setResultType)
+      Some(b.build())
     } else {
       None
     }
