@@ -264,7 +264,8 @@ object CometLike extends CometExpressionSerde[Like] {
 object CometRLike extends CometExpressionSerde[RLike] {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Uses Rust regexp engine, which has different behavior to Java regexp engine")
+    s"When ${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_RUST}: " +
+      "Uses Rust regexp engine, which has different behavior to Java regexp engine")
 
   override def getSupportLevel(expr: RLike): SupportLevel = {
     if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
