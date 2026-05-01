@@ -611,10 +611,6 @@ case class CometScanRule(session: SparkSession)
     val isColumnMapped = metadataConfig
       .get("delta.columnMapping.mode")
       .exists(m => m != null && !m.equalsIgnoreCase("none"))
-    val dvsEnabled = metadataConfig
-      .get("delta.enableDeletionVectors")
-      .exists(_.equalsIgnoreCase("true"))
-
     if (isColumnMapped) {
       def isComplex(dt: DataType): Boolean = dt match {
         case _: ArrayType | _: MapType | _: StructType => true
@@ -633,23 +629,23 @@ case class CometScanRule(session: SparkSession)
       }
     }
 
-    // DV-enabled UPDATE/DELETE/MERGE internal reads: when the scan's output already carries
-    // the `__delta_internal_is_row_deleted` column, Delta's PreprocessTableWithDVs has
-    // already wrapped the scan with a DV filter. The normal CometDeltaNativeScan path
-    // (kernel + DeltaDvFilterExec) applies DVs correctly for standalone SELECTs, but write
-    // commands' plans bypass our scan rule's stripDeltaDvWrappers and construct an internal
-    // DataFrame plan where Comet's native filter would have to produce the is_row_deleted
-    // column itself -- which Comet can't do. Decline so vanilla Spark+Delta handles the DV
-    // bookkeeping correctly. Observed failures: UpdateSQLWithDeletionVectorsSuite repeated
-    // UPDATE produces deletion vectors, SC-12276, different variations of column references.
-    val hasIsRowDeletedCol =
-      scanExec.output.exists(_.name.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName))
-    if (dvsEnabled && hasIsRowDeletedCol) {
+    // `__delta_internal_is_row_deleted` and `__delta_internal_row_index` are synthetic
+    // columns produced ONLY by Delta's own `DeltaParquetFileFormat` reader; Comet's
+    // parquet reader has no equivalent synthesis. Whenever either column appears in the
+    // scan's output (DV-write internal reads, useMetadataRowIndex-mode reads, or tests
+    // that explicitly read these metadata columns), we must decline so vanilla
+    // Spark+Delta produces the column. Otherwise it reaches downstream as null/garbage
+    // and assertNotNull-style decoders fail.
+    val hasDeltaSyntheticCol = scanExec.output.exists { a =>
+      a.name.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName) ||
+      a.name.equalsIgnoreCase(DeltaReflection.RowIndexColumnName)
+    }
+    if (hasDeltaSyntheticCol) {
       withInfo(
         scanExec,
-        "Native Delta scan declines DV-enabled table scan that already carries " +
-          "__delta_internal_is_row_deleted in its output (write command's internal read) -- " +
-          "vanilla Spark+Delta applies the DV filter correctly.")
+        "Native Delta scan declines reads that carry Delta's synthetic " +
+          "__delta_internal_is_row_deleted / __delta_internal_row_index columns in their " +
+          "output -- those are produced only by Delta's reader.")
       return None
     }
 

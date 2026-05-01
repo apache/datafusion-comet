@@ -61,6 +61,16 @@ object DeltaReflection extends Logging {
   val IsRowDeletedColumnName: String = "__delta_internal_is_row_deleted"
 
   /**
+   * Synthetic column name Delta requests on the parquet scan when it needs the per-row physical
+   * position within the file (e.g. for downstream DV bitmap lookup in `useMetadataRowIndex` mode,
+   * or test-only reads of the metadata column). Produced only by `DeltaParquetFileFormat`'s
+   * reader; Comet's parquet reader has no equivalent synthesis.
+   *
+   * Stable across Delta 2.x / 3.x - defined in `DeltaParquetFileFormat.ROW_INDEX_COLUMN_NAME`.
+   */
+  val RowIndexColumnName: String = "__delta_internal_row_index"
+
+  /**
    * Returns true if `fileFormat` is Delta's parquet-backed `FileFormat`. Checks the exact class
    * plus any subclass, so variants like `DeletionVectorBoundFileFormat` (some Delta versions)
    * also match.
