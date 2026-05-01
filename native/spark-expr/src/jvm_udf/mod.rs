@@ -29,7 +29,7 @@ use datafusion::common::Result as DFResult;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 
-use datafusion_comet_jni_bridge::errors::CometError;
+use datafusion_comet_jni_bridge::errors::{CometError, ExecutionError};
 use datafusion_comet_jni_bridge::JVMClasses;
 use jni::objects::{JObject, JValue};
 
@@ -148,7 +148,14 @@ impl PhysicalExpr for JvmScalarUdfExpr {
 
         // Step 3: attach a JNI env for this thread and call the static bridge method.
         JVMClasses::with_env(|env| {
-            let bridge = &JVMClasses::get().comet_udf_bridge;
+            let bridge = JVMClasses::get().comet_udf_bridge.as_ref().ok_or_else(|| {
+                CometError::from(ExecutionError::GeneralError(
+                    "JVM UDF bridge unavailable: org.apache.comet.udf.CometUdfBridge \
+                     class was not found on the JVM classpath. Set \
+                     spark.comet.exec.regexp.engine=rust to disable this path."
+                        .to_string(),
+                ))
+            })?;
 
             // Build the JVM String for the class name.
             let jclass_name = env
@@ -195,8 +202,11 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         })?;
 
         // Step 4: import the result from the FFI slots filled by the JVM.
-        // SAFETY: from_ffi consumes the FFI_ArrowArray's release ownership; arrow-rs sets the
-        // release callback to None on the moved-from struct, so the Box's subsequent drop is a no-op.
+        // SAFETY: `*out_array` moves the FFI_ArrowArray out of the Box (the heap
+        // allocation is freed by the move), and `from_ffi` wraps it in an Arc that
+        // keeps the JVM-installed release callback alive until the resulting
+        // ArrayData drops. `out_schema` is borrowed; its release callback runs
+        // exactly once when the Box drops at end of scope.
         let result_data = unsafe { from_ffi(*out_array, &out_schema) }
             .map_err(|e| CometError::Arrow { source: e })?;
         Ok(ColumnarValue::Array(make_array(result_data)))
