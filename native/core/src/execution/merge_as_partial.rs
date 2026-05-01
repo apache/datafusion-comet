@@ -119,20 +119,22 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
     }
 
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
-        // State fields must match the inner aggregate's state fields so that
-        // the output of this PartialMerge stage is compatible with subsequent
-        // Final or PartialMerge stages.
+        // Cached at construction: state schema depends on the inner aggregate's
+        // return type, not on StateFieldsArgs.
         Ok(self.cached_state_fields.clone())
     }
 
     fn accumulator(&self, args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
-        // Create the inner accumulator using the provided args (which have the
-        // correct Column refs, not UnboundColumns).
+        // args.exprs are state-typed (match this wrapper's signature), not the
+        // inner aggregate's original inputs. Safe for built-ins (SUM/COUNT/
+        // MIN/MAX/AVG) which build accumulators from return_type; aggregates
+        // that inspect args.exprs types would need reconsideration.
         let inner_acc = self.inner_udf.accumulator(args)?;
         Ok(Box::new(MergeAsPartialAccumulator { inner: inner_acc }))
     }
 
     fn groups_accumulator_supported(&self, args: AccumulatorArgs) -> bool {
+        // See `accumulator`: args.exprs are state-typed.
         self.inner_udf.groups_accumulator_supported(args)
     }
 
@@ -140,6 +142,7 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
         &self,
         args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
+        // See `accumulator`: args.exprs are state-typed.
         let inner_acc = self.inner_udf.create_groups_accumulator(args)?;
         Ok(Box::new(MergeAsPartialGroupsAccumulator {
             inner: inner_acc,

@@ -23,6 +23,7 @@
 -- state (rather than evaluating a final value).
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
+-- Config: spark.comet.expression.Cast.allowIncompatible=true
 
 -- ============================================================
 -- Setup: shared tables

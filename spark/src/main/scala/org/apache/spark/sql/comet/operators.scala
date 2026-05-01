@@ -1467,15 +1467,16 @@ trait CometBaseAggregate {
         }
       }
 
-      // FIRST/LAST are order-dependent aggregates whose merge result depends on
-      // hash table processing order. In PartialMerge mode, DataFusion's hash table
-      // may process rows in a different order than Spark's, producing different results.
+      // FIRST/LAST are order-dependent: in PartialMerge mode, DataFusion's hash
+      // table may process rows in a different order than Spark's. CollectSet is
+      // handled separately (floating-point compat in CometCollectSet; streaming
+      // in ShimCometStreaming.isStreamingPlan).
+      // https://github.com/apache/datafusion-comet/issues/4131
       if (hasPartialMerge) {
         val unsupportedAggs = aggregateExpressions.filter { a =>
           a.mode == PartialMerge && (a.aggregateFunction.isInstanceOf[First] ||
             a.aggregateFunction.isInstanceOf[Last])
         }
-        // https://github.com/apache/datafusion-comet/issues/4131
         if (unsupportedAggs.nonEmpty) {
           withInfo(
             aggregate,

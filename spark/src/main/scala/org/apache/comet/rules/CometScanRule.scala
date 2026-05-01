@@ -76,8 +76,9 @@ case class CometScanRule(session: SparkSession)
   private def _apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf)) return plan
 
-    // Comet does not support structured streaming. Fall back to Spark for any plan that
-    // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).
+    // Comet does not support structured streaming. The parallel guard in
+    // CometExecRule only stops operator wrapping, so without this check we
+    // would still rewrite scans to CometScanExec in a streaming plan.
     if (ShimCometStreaming.isStreamingPlan(plan)) return plan
 
     def isSupportedScanNode(plan: SparkPlan): Boolean = plan match {
