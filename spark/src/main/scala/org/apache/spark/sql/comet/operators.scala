@@ -1849,7 +1849,7 @@ case class CometHashJoinExec(
     case FullOuter => UnknownPartitioning(left.outputPartitioning.numPartitions)
     case LeftExistence(_) => left.outputPartitioning
     case x =>
-      throw new IllegalArgumentException(s"ShuffledJoin should not take $x as the JoinType")
+      throw new IllegalArgumentException(s"GraceHashJoin should not take $x as the JoinType")
   }
 
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
@@ -1878,7 +1878,7 @@ case class CometHashJoinExec(
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.hashJoinMetrics(sparkContext)
+    CometMetricNode.graceHashJoinMetrics(sparkContext)
 }
 
 case class CometBroadcastHashJoinExec(

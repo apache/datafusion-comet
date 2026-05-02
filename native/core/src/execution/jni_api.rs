@@ -297,6 +297,8 @@ struct ExecutionContext {
     pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
+    /// Spark configuration map for comet-specific settings
+    pub spark_conf: HashMap<String, String>,
     /// Rust thread ID, used for aggregating tracing metrics per thread
     pub rust_thread_id: u64,
     /// Pre-computed metric name for tracing memory usage
@@ -471,6 +473,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 explain_native,
                 memory_pool_config,
                 tracing_enabled,
+                spark_conf: spark_config,
                 rust_thread_id,
                 tracing_memory_metric_name: format!(
                     "thread_{rust_thread_id}_comet_memory_reserved"
@@ -697,7 +700,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let start = Instant::now();
                 let planner =
                     PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-                        .with_exec_id(exec_context_id);
+                        .with_exec_id(exec_context_id)
+                        .with_spark_conf(exec_context.spark_conf.clone());
                 let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),
