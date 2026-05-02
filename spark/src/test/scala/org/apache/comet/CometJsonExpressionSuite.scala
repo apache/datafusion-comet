@@ -58,7 +58,7 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
           filename,
           100,
           SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
-          DataGenOptions(generateNaN = false, generateInfinity = false))
+          DataGenOptions(generateNaN = true, generateInfinity = true))
       }
       val table = spark.read.parquet(filename)
       val fieldsNames = table.schema.fields
@@ -67,6 +67,19 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         .toSeq
       val df = table.select(to_json(struct(fieldsNames: _*)))
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("to_json - fallback reasons") {
+    withTable("t") {
+      sql("CREATE TABLE t(a INT, b STRING) USING parquet")
+      sql("INSERT INTO t VALUES (1, 'hello')")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT to_json(named_struct('a', a, 'b', b), map('timestampFormat', 'dd/MM/yyyy')) FROM t",
+        "StructsToJson with options is not supported")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT to_json(named_struct('b', array(b))) FROM t",
+        "Struct type: StructType(StructField(b,ArrayType(StringType,true),false)) contains unsupported types")
     }
   }
 

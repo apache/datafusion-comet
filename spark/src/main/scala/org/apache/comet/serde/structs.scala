@@ -105,57 +105,37 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
 
 object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Does not support `+Infinity` and `-Infinity` for numeric types (float, double)." +
-      " (https://github.com/apache/datafusion-comet/issues/3016)")
-
-  override def getSupportLevel(expr: StructsToJson): SupportLevel =
-    Incompatible(
-      Some(
-        "Does not support Infinity/-Infinity for numeric types" +
-          " (https://github.com/apache/datafusion-comet/issues/3016)"))
+  override def getSupportLevel(expr: StructsToJson): SupportLevel = {
+    if (expr.options.nonEmpty) {
+      return Unsupported(Some("StructsToJson with options is not supported"))
+    }
+    val dataType = expr.child.dataType
+    if (!isSupportedType(dataType)) {
+      return Unsupported(Some(s"Struct type: $dataType contains unsupported types"))
+    }
+    Compatible()
+  }
 
   override def convert(
       expr: StructsToJson,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (expr.options.nonEmpty) {
-      withInfo(expr, "StructsToJson with options is not supported")
-      None
-    } else {
-      val isSupported = expr.child.dataType match {
-        case s: StructType =>
-          s.fields.forall(f => isSupportedType(f.dataType))
-        case _: MapType | _: ArrayType =>
-          // Spark supports map and array in StructsToJson but this is not yet
-          // implemented in Comet
-          false
-        case _ =>
-          false
-      }
-
-      if (isSupported) {
-        exprToProtoInternal(expr.child, inputs, binding) match {
-          case Some(p) =>
-            val toJson = ExprOuterClass.ToJson
-              .newBuilder()
-              .setChild(p)
-              .setTimezone(expr.timeZoneId.getOrElse("UTC"))
-              .setIgnoreNullFields(true)
-              .build()
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setToJson(toJson)
-                .build())
-          case _ =>
-            withInfo(expr, expr.child)
-            None
-        }
-      } else {
-        withInfo(expr, "Unsupported data type", expr.child)
+    exprToProtoInternal(expr.child, inputs, binding) match {
+      case Some(p) =>
+        val toJson = ExprOuterClass.ToJson
+          .newBuilder()
+          .setChild(p)
+          .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+          .setIgnoreNullFields(true)
+          .build()
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setToJson(toJson)
+            .build())
+      case _ =>
+        withInfo(expr, expr.child)
         None
-      }
     }
   }
 
