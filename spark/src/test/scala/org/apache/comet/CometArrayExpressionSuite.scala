@@ -761,6 +761,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
             checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, null) from t1"))
             checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, 0) from t1"))
+            checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, -1) from t1"))
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_repeat(cast(_3 as string), -5) from t1"))
             checkSparkAnswerAndOperator(
               sql("SELECT array_repeat(_2, 5) from t1 where _2 is not null"))
             checkSparkAnswerAndOperator(
