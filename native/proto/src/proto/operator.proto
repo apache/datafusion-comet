@@ -341,6 +341,9 @@ message HashJoin {
   JoinType join_type = 3;
   optional spark.spark_expression.Expr condition = 4;
   BuildSide build_side = 5;
+  // True when this join was produced by rewriting a SortMergeJoin. Native
+  // planner uses this to decide between HashJoinExec and GraceHashJoinExec.
+  bool rewritten_from_sort_merge_join = 6;
 }
 
 message SortMergeJoin {

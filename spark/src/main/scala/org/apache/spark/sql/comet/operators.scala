@@ -54,6 +54,7 @@ import com.google.protobuf.CodedOutputStream
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -1760,6 +1761,8 @@ trait CometHashJoin {
         .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
         .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
         else OperatorOuterClass.BuildSide.BuildRight)
+        .setRewrittenFromSortMergeJoin(
+          join.getTagValue(CometExecRule.REWRITTEN_FROM_SMJ_TAG).isDefined)
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
@@ -1878,7 +1881,11 @@ case class CometHashJoinExec(
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.graceHashJoinMetrics(sparkContext)
+    if (originalPlan.getTagValue(CometExecRule.REWRITTEN_FROM_SMJ_TAG).isDefined) {
+      CometMetricNode.graceHashJoinMetrics(sparkContext)
+    } else {
+      CometMetricNode.hashJoinMetrics(sparkContext)
+    }
 }
 
 case class CometBroadcastHashJoinExec(

@@ -58,7 +58,7 @@ use datafusion::{
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         empty::EmptyExec,
-        joins::{utils::JoinFilter, SortMergeJoinExec},
+        joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
@@ -1696,40 +1696,101 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
-                use crate::execution::spark_config::{
-                    SparkConfig, COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD,
-                    COMET_GRACE_HASH_JOIN_NUM_PARTITIONS,
-                };
-
-                let num_partitions = self
-                    .spark_conf
-                    .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
-                let fast_path_threshold = self
-                    .spark_conf
-                    .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 64 * 1024 * 1024);
-
                 let build_left = join.build_side == BuildSide::BuildLeft as i32;
 
-                let grace_join = Arc::new(crate::execution::operators::GraceHashJoinExec::try_new(
-                    Arc::clone(&left),
-                    Arc::clone(&right),
-                    join_params.join_on,
-                    join_params.join_filter,
-                    &join_params.join_type,
-                    num_partitions,
-                    build_left,
-                    fast_path_threshold,
-                )?);
+                if join.rewritten_from_sort_merge_join {
+                    use crate::execution::spark_config::{
+                        SparkConfig, COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD,
+                        COMET_GRACE_HASH_JOIN_MAX_CONCURRENT_PARTITIONS,
+                        COMET_GRACE_HASH_JOIN_NUM_PARTITIONS,
+                    };
 
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        grace_join,
-                        vec![join_params.left, join_params.right],
-                    )),
-                ))
+                    let num_partitions = self
+                        .spark_conf
+                        .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
+                    let fast_path_threshold = self
+                        .spark_conf
+                        .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 64 * 1024 * 1024);
+                    let max_concurrent_partitions = self
+                        .spark_conf
+                        .get_usize(COMET_GRACE_HASH_JOIN_MAX_CONCURRENT_PARTITIONS, 2);
+
+                    let grace_join =
+                        Arc::new(crate::execution::operators::GraceHashJoinExec::try_new(
+                            Arc::clone(&left),
+                            Arc::clone(&right),
+                            join_params.join_on,
+                            join_params.join_filter,
+                            &join_params.join_type,
+                            num_partitions,
+                            build_left,
+                            fast_path_threshold,
+                            max_concurrent_partitions,
+                        )?);
+
+                    Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            grace_join,
+                            vec![join_params.left, join_params.right],
+                        )),
+                    ))
+                } else {
+                    // Non-SMJ-rewrite path: inputs are already hash-partitioned by Spark shuffle,
+                    // so use HashJoinExec in Partitioned mode.
+                    let hash_join = Arc::new(HashJoinExec::try_new(
+                        left,
+                        right,
+                        join_params.join_on,
+                        join_params.join_filter,
+                        &join_params.join_type,
+                        None,
+                        PartitionMode::Partitioned,
+                        // null doesn't equal to null in Spark join key. If the join key is
+                        // `EqualNullSafe`, Spark will rewrite it during planning.
+                        NullEquality::NullEqualsNothing,
+                        // null_aware is for null-aware anti joins (NOT IN subqueries).
+                        // NullEquality controls whether NULL = NULL in join keys generally,
+                        // while null_aware changes anti-join semantics so any NULL changes
+                        // the entire result. Spark doesn't use this path (it rewrites
+                        // EqualNullSafe at plan time), so false is correct.
+                        false,
+                    )?);
+
+                    if build_left {
+                        Ok((
+                            scans,
+                            shuffle_scans,
+                            Arc::new(SparkPlan::new(
+                                spark_plan.plan_id,
+                                hash_join,
+                                vec![join_params.left, join_params.right],
+                            )),
+                        ))
+                    } else {
+                        let swapped_hash_join =
+                            hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
+
+                        let mut additional_native_plans = vec![];
+                        if swapped_hash_join.as_any().is::<ProjectionExec>() {
+                            additional_native_plans
+                                .push(Arc::clone(swapped_hash_join.children()[0]));
+                        }
+
+                        Ok((
+                            scans,
+                            shuffle_scans,
+                            Arc::new(SparkPlan::new_with_additional(
+                                spark_plan.plan_id,
+                                swapped_hash_join,
+                                vec![join_params.left, join_params.right],
+                                additional_native_plans,
+                            )),
+                        ))
+                    }
+                }
             }
             OpStruct::Window(wnd) => {
                 let (scans, shuffle_scans, child) =
@@ -4029,6 +4090,7 @@ mod tests {
                 join_type: 0,
                 condition: None,
                 build_side: 0,
+                rewritten_from_sort_merge_join: false,
             })),
         };
 
@@ -4037,7 +4099,7 @@ mod tests {
         let (_scans, _shuffle_scans, hash_join_exec) =
             planner.create_plan(&op_join, &mut vec![], 1).unwrap();
 
-        assert_eq!("GraceHashJoinExec", hash_join_exec.native_plan.name());
+        assert_eq!("HashJoinExec", hash_join_exec.native_plan.name());
         assert_eq!(2, hash_join_exec.children.len());
         assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());

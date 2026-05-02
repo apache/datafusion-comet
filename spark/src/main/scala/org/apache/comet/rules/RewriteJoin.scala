@@ -26,6 +26,7 @@ import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoin
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.rules.CometExecRule.REWRITTEN_FROM_SMJ_TAG
 
 /**
  * Adapted from equivalent rule in Apache Gluten.
@@ -95,7 +96,7 @@ object RewriteJoin extends JoinSelectionHelper {
             "build side exceeds spark.comet.exec.replaceSortMergeJoin.maxBuildSize")
         plan
       } else {
-        ShuffledHashJoinExec(
+        val shj = ShuffledHashJoinExec(
           smj.leftKeys,
           smj.rightKeys,
           smj.joinType,
@@ -104,6 +105,8 @@ object RewriteJoin extends JoinSelectionHelper {
           removeSort(smj.left),
           removeSort(smj.right),
           smj.isSkewJoin)
+        shj.setTagValue(REWRITTEN_FROM_SMJ_TAG, ())
+        shj
       }
     case _ => plan
   }

@@ -318,6 +318,17 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v >= 0, "The fast path threshold must be non-negative.")
       .createWithDefault(64L * 1024 * 1024) // 64 MB
 
+  val COMET_EXEC_GRACE_HASH_JOIN_MAX_CONCURRENT_PARTITIONS: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.graceHashJoin.maxConcurrentPartitions")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Maximum number of partitions to join in parallel during Grace Hash Join's " +
+          "slow path. Higher values improve latency at the cost of concurrent hash-table " +
+          "memory. Keep low when many Spark tasks share a single memory pool.")
+      .intConf
+      .checkValue(v => v > 0, "The max concurrent partitions must be positive.")
+      .createWithDefault(2)
+
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)

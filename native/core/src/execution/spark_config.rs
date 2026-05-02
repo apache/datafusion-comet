@@ -27,6 +27,8 @@ pub(crate) const COMET_GRACE_HASH_JOIN_NUM_PARTITIONS: &str =
     "spark.comet.exec.graceHashJoin.numPartitions";
 pub(crate) const COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD: &str =
     "spark.comet.exec.graceHashJoin.fastPathThreshold";
+pub(crate) const COMET_GRACE_HASH_JOIN_MAX_CONCURRENT_PARTITIONS: &str =
+    "spark.comet.exec.graceHashJoin.maxConcurrentPartitions";
 
 pub(crate) trait SparkConfig {
     fn get_bool(&self, name: &str) -> bool;

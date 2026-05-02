@@ -484,6 +484,8 @@ pub struct GraceHashJoinExec {
     build_left: bool,
     /// Maximum build-side bytes for the fast path (0 = disabled)
     fast_path_threshold: usize,
+    /// Maximum number of partitions to join concurrently in Phase 3
+    max_concurrent_partitions: usize,
     /// Output schema
     schema: SchemaRef,
     /// Plan properties cache
@@ -503,6 +505,7 @@ impl GraceHashJoinExec {
         num_partitions: usize,
         build_left: bool,
         fast_path_threshold: usize,
+        max_concurrent_partitions: usize,
     ) -> DFResult<Self> {
         // Build the output schema using HashJoinExec's logic.
         // HashJoinExec expects left=build, right=probe. When build_left=false,
@@ -540,6 +543,7 @@ impl GraceHashJoinExec {
             },
             build_left,
             fast_path_threshold,
+            max_concurrent_partitions: max_concurrent_partitions.max(1),
             schema,
             cache,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -596,6 +600,7 @@ impl ExecutionPlan for GraceHashJoinExec {
             self.num_partitions,
             self.build_left,
             self.fast_path_threshold,
+            self.max_concurrent_partitions,
         )?))
     }
 
@@ -657,6 +662,7 @@ impl ExecutionPlan for GraceHashJoinExec {
         let num_partitions = self.num_partitions;
         let build_left = self.build_left;
         let fast_path_threshold = self.fast_path_threshold;
+        let max_concurrent_partitions = self.max_concurrent_partitions;
 
         let result_stream = futures::stream::once(async move {
             execute_grace_hash_join(
@@ -670,6 +676,7 @@ impl ExecutionPlan for GraceHashJoinExec {
                 num_partitions,
                 build_left,
                 fast_path_threshold,
+                max_concurrent_partitions,
                 build_schema,
                 probe_schema,
                 context,
@@ -750,6 +757,7 @@ async fn execute_grace_hash_join(
     num_partitions: usize,
     build_left: bool,
     fast_path_threshold: usize,
+    max_concurrent_partitions: usize,
     build_schema: SchemaRef,
     probe_schema: SchemaRef,
     context: Arc<TaskContext>,
@@ -758,11 +766,9 @@ async fn execute_grace_hash_join(
     let ghj_id = GHJ_INSTANCE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Set up memory reservation (shared across build and probe phases)
-    let mut reservation = MutableReservation(
-        MemoryConsumer::new("GraceHashJoinExec")
-            .with_can_spill(true)
-            .register(&context.runtime_env().memory_pool),
-    );
+    let mut reservation = MemoryConsumer::new("GraceHashJoinExec")
+        .with_can_spill(true)
+        .register(&context.runtime_env().memory_pool);
 
     info!(
         "GHJ#{}: started. build_left={}, join_type={:?}, pool reserved={}",
@@ -903,6 +909,7 @@ async fn execute_grace_hash_join(
                     join_type,
                     num_partitions,
                     build_left,
+                    max_concurrent_partitions,
                     build_schema,
                     probe_schema,
                     context,
@@ -948,6 +955,7 @@ async fn execute_grace_hash_join(
         join_type,
         num_partitions,
         build_left,
+        max_concurrent_partitions,
         build_schema,
         probe_schema,
         context,
@@ -971,7 +979,7 @@ enum BuildBufferResult {
 /// or signals memory pressure with the partially-buffered data and remaining stream.
 async fn buffer_build_optimistic(
     mut input: SendableRecordBatchStream,
-    reservation: &mut MutableReservation,
+    reservation: &mut MemoryReservation,
     metrics: &GraceHashJoinMetrics,
 ) -> DFResult<BuildBufferResult> {
     let mut batches = Vec::new();
@@ -1011,7 +1019,7 @@ fn partition_from_buffer(
     num_partitions: usize,
     schema: &SchemaRef,
     partitions: &mut [HashPartition],
-    reservation: &mut MutableReservation,
+    reservation: &mut MemoryReservation,
     context: &Arc<TaskContext>,
     metrics: &GraceHashJoinMetrics,
     scratch: &mut ScratchSpace,
@@ -1021,7 +1029,6 @@ fn partition_from_buffer(
             continue;
         }
 
-        let total_batch_size = batch.get_array_memory_size();
         let total_rows = batch.num_rows();
 
         scratch.compute_partitions(&batch, keys, num_partitions, 0)?;
@@ -1038,11 +1045,7 @@ fn partition_from_buffer(
             } else {
                 scratch.take_partition(&batch, part_idx)?.unwrap()
             };
-            let batch_size = if total_rows > 0 {
-                (total_batch_size as u64 * sub_rows as u64 / total_rows as u64) as usize
-            } else {
-                0
-            };
+            let batch_size = sub_batch.get_array_memory_size();
 
             if partitions[part_idx].build_spilled() {
                 if let Some(ref mut writer) = partitions[part_idx].build_spill_writer {
@@ -1173,11 +1176,12 @@ async fn execute_slow_path(
     join_type: JoinType,
     num_partitions: usize,
     build_left: bool,
+    max_concurrent_partitions: usize,
     build_schema: SchemaRef,
     probe_schema: SchemaRef,
     context: Arc<TaskContext>,
     metrics: GraceHashJoinMetrics,
-    mut reservation: MutableReservation,
+    mut reservation: MemoryReservation,
     mut scratch: ScratchSpace,
 ) -> DFResult<impl Stream<Item = DFResult<RecordBatch>>> {
     let build_spilled = partitions.iter().any(|p| p.build_spilled());
@@ -1241,7 +1245,7 @@ async fn execute_slow_path(
             total_probe_rows,
             total_probe_bytes,
             probe_spilled,
-            reservation.0.size(),
+            reservation.size(),
             context.runtime_env().memory_pool.reserved(),
         );
     }
@@ -1279,19 +1283,17 @@ async fn execute_slow_path(
     info!(
         "GHJ#{}: freeing reservation ({} bytes) before Phase 3. pool reserved={}",
         ghj_id,
-        reservation.0.size(),
+        reservation.size(),
         context.runtime_env().memory_pool.reserved(),
     );
     reservation.free();
 
-    // Phase 3: Join partitions sequentially.
-    // We use a concurrency limit of 1 to avoid creating multiple simultaneous
-    // HashJoinInput reservations per task. With multiple Spark tasks sharing
-    // the same memory pool, even modest build sides (e.g. 22 MB) can exhaust
-    // memory when many tasks run concurrent hash table builds simultaneously.
-    const MAX_CONCURRENT_PARTITIONS: usize = 1;
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PARTITIONS));
-    let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(MAX_CONCURRENT_PARTITIONS * 2);
+    // Phase 3: Join partitions with bounded concurrency. Keeping this low
+    // avoids creating many simultaneous HashJoinInput reservations per task
+    // when multiple Spark tasks share the same memory pool.
+    let max_concurrent_partitions = max_concurrent_partitions.max(1);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent_partitions));
+    let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(max_concurrent_partitions * 2);
 
     for partition in finished_partitions {
         let tx = tx.clone();
@@ -1365,23 +1367,6 @@ async fn execute_slow_path(
     Ok(result_stream.boxed())
 }
 
-/// Wraps MemoryReservation to allow mutation through reference.
-struct MutableReservation(MemoryReservation);
-
-impl MutableReservation {
-    fn try_grow(&mut self, additional: usize) -> DFResult<()> {
-        self.0.try_grow(additional)
-    }
-
-    fn shrink(&mut self, amount: usize) {
-        self.0.shrink(amount);
-    }
-
-    fn free(&mut self) -> usize {
-        self.0.free()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // ScratchSpace: reusable buffers for efficient hash partitioning
 // ---------------------------------------------------------------------------
@@ -1421,10 +1406,11 @@ impl ScratchSpace {
             .map(|expr| expr.evaluate(batch).and_then(|cv| cv.into_array(num_rows)))
             .collect::<DFResult<Vec<_>>>()?;
 
-        // Hash
+        // Hash. `create_hashes` XORs into the existing values, so the buffer
+        // must be zeroed. `clear()` + `resize()` produces a fresh zeroed buffer
+        // of the right length regardless of its previous size.
+        self.hashes.clear();
         self.hashes.resize(num_rows, 0);
-        self.hashes.truncate(num_rows);
-        self.hashes.fill(0);
         let random_state = partition_random_state(recursion_level);
         create_hashes(&key_columns, &random_state, &mut self.hashes)?;
 
@@ -1526,7 +1512,7 @@ async fn partition_build_side(
     num_partitions: usize,
     schema: &SchemaRef,
     partitions: &mut [HashPartition],
-    reservation: &mut MutableReservation,
+    reservation: &mut MemoryReservation,
     context: &Arc<TaskContext>,
     metrics: &GraceHashJoinMetrics,
     scratch: &mut ScratchSpace,
@@ -1540,8 +1526,6 @@ async fn partition_build_side(
         metrics.build_input_batches.add(1);
         metrics.build_input_rows.add(batch.num_rows());
 
-        // Track total batch size once, estimate per-partition proportionally
-        let total_batch_size = batch.get_array_memory_size();
         let total_rows = batch.num_rows();
 
         scratch.compute_partitions(&batch, keys, num_partitions, 0)?;
@@ -1558,11 +1542,7 @@ async fn partition_build_side(
             } else {
                 scratch.take_partition(&batch, part_idx)?.unwrap()
             };
-            let batch_size = if total_rows > 0 {
-                (total_batch_size as u64 * sub_rows as u64 / total_rows as u64) as usize
-            } else {
-                0
-            };
+            let batch_size = sub_batch.get_array_memory_size();
 
             if partitions[part_idx].build_spilled() {
                 // This partition is already spilled; append incrementally
@@ -1613,7 +1593,7 @@ fn spill_largest_partition(
     partitions: &mut [HashPartition],
     schema: &SchemaRef,
     context: &Arc<TaskContext>,
-    reservation: &mut MutableReservation,
+    reservation: &mut MemoryReservation,
     metrics: &GraceHashJoinMetrics,
 ) -> DFResult<()> {
     // Find the largest non-spilled partition
@@ -1642,7 +1622,7 @@ fn spill_partition_build(
     partition: &mut HashPartition,
     schema: &SchemaRef,
     context: &Arc<TaskContext>,
-    reservation: &mut MutableReservation,
+    reservation: &mut MemoryReservation,
     metrics: &GraceHashJoinMetrics,
 ) -> DFResult<()> {
     let temp_file = context
@@ -1672,7 +1652,7 @@ fn spill_partition_probe(
     partition: &mut HashPartition,
     schema: &SchemaRef,
     context: &Arc<TaskContext>,
-    reservation: &mut MutableReservation,
+    reservation: &mut MemoryReservation,
     metrics: &GraceHashJoinMetrics,
 ) -> DFResult<()> {
     if partition.probe_batches.is_empty() && partition.probe_spill_writer.is_some() {
@@ -1708,7 +1688,7 @@ fn spill_partition_both_sides(
     probe_schema: &SchemaRef,
     build_schema: &SchemaRef,
     context: &Arc<TaskContext>,
-    reservation: &mut MutableReservation,
+    reservation: &mut MemoryReservation,
     metrics: &GraceHashJoinMetrics,
 ) -> DFResult<()> {
     if !partition.build_spilled() {
@@ -1734,7 +1714,7 @@ async fn partition_probe_side(
     num_partitions: usize,
     schema: &SchemaRef,
     partitions: &mut [HashPartition],
-    reservation: &mut MutableReservation,
+    reservation: &mut MemoryReservation,
     build_schema: &SchemaRef,
     context: &Arc<TaskContext>,
     metrics: &GraceHashJoinMetrics,
@@ -1754,7 +1734,7 @@ async fn partition_probe_side(
                 "GraceHashJoin: probe accumulation progress: {} rows, \
                  reservation={}, pool reserved={}",
                 probe_rows_accumulated,
-                reservation.0.size(),
+                reservation.size(),
                 context.runtime_env().memory_pool.reserved(),
             );
         }
@@ -2600,6 +2580,7 @@ mod tests {
             4, // Use 4 partitions for testing
             true,
             10 * 1024 * 1024, // 10 MB fast path threshold
+            2,                // max_concurrent_partitions
         )?;
 
         let stream = grace_join.execute(0, task_ctx)?;
@@ -2654,6 +2635,7 @@ mod tests {
             4,
             true,
             10 * 1024 * 1024, // 10 MB fast path threshold
+            2,                // max_concurrent_partitions
         )?;
 
         let stream = grace_join.execute(0, task_ctx)?;
@@ -2761,6 +2743,7 @@ mod tests {
             16,
             true, // build_left
             0,    // fast_path_threshold = 0 (disabled)
+            2,    // max_concurrent_partitions
         )?;
 
         let stream = grace_join.execute(0, task_ctx)?;
@@ -2824,6 +2807,7 @@ mod tests {
             16,
             false, // build_left=false → right is build side
             0,     // fast_path_threshold = 0 (disabled)
+            2,     // max_concurrent_partitions
         )?;
 
         let stream = grace_join.execute(0, task_ctx)?;

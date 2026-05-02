@@ -103,6 +103,14 @@ object CometExecRule {
    */
   val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
+
+  /**
+   * Tag set on a `ShuffledHashJoinExec` produced by [[RewriteJoin]] to indicate that the join was
+   * rewritten from a `SortMergeJoinExec`. The native planner uses this to route the join through
+   * `GraceHashJoinExec` instead of `HashJoinExec`.
+   */
+  val REWRITTEN_FROM_SMJ_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
+    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.rewrittenFromSortMergeJoin")
 }
 
 /**
