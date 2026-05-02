@@ -43,6 +43,12 @@ The status column uses these values:
   - Affected expressions: `date_format`, `from_unixtime`, `unix_timestamp`, `to_unix_timestamp`, `to_timestamp`, `to_timestamp_ntz`, `to_date`, `try_to_timestamp` (Spark 4+)
   - Spark versions checked: 3.4.3, 3.5.8, 4.0.1
   - Date: 2026-05-02
+- `spark.sql.optimizer.nestedSchemaPruning.enabled`
+  - Default: `true`
+  - Status: Supported
+  - Affected components: catalyst optimizer rules `SchemaPruning` and `NestedColumnAliasing`, datasource V2 push-down (`PushDownUtils`), Parquet readers (`ParquetReadSupport`, `ParquetFileFormat`, `ParquetScan`)
+  - Spark versions checked: 3.4.3, 3.5.8, 4.0.1
+  - Date: 2026-05-02
 
 ## Audit Notes
 
@@ -110,3 +116,45 @@ whitelist, this audit should be revisited and the policy must be honored explici
 Comet bugs were uncovered by the audit. The tests use `query spark_answer_only` so
 that result-correctness is enforced regardless of whether Comet runs the expression
 natively or falls back.
+
+### `spark.sql.optimizer.nestedSchemaPruning.enabled`
+
+**Source.** When `true`, the catalyst optimizer rewrites projections of nested
+fields so columnar readers fetch only the requested leaves of a struct, array, or
+map column. Read sites verified on Spark 3.4.3, 3.5.8, 4.0.1:
+
+- `org.apache.spark.sql.catalyst.optimizer.SchemaPruning` and
+  `org.apache.spark.sql.catalyst.optimizer.NestedColumnAliasing` -- gated by
+  `nestedSchemaPruningEnabled`; rewrite the project list to expose only the leaves
+  that downstream operators consume.
+- `org.apache.spark.sql.execution.datasources.v2.PushDownUtils.pruneColumns` --
+  pushes the pruned schema into V2 scans only when the flag is `true`.
+- `org.apache.spark.sql.execution.datasources.parquet.ParquetReadSupport`,
+  `ParquetFileFormat`, and `ParquetScan` -- propagate the flag into the Parquet
+  reader's requested schema.
+
+**Comet status.** `CometParquetFileFormat.populateConf` propagates the SQL conf
+into the Hadoop conf so the Parquet read path honors it. Comet has no other
+special handling -- native scans inherit Spark's already-pruned `requiredSchema`
+and pass it through to the native reader. The separate
+`spark.sql.optimizer.serializer.nestedSchemaPruning.enabled` (Encoder-level) is
+out of scope.
+
+**Test coverage.** `spark/src/test/scala/org/apache/comet/parquet/CometNestedSchemaPruningSuite.scala`:
+
+- One Scala test per scenario, run across both `SCAN_NATIVE_DATAFUSION` and
+  `SCAN_NATIVE_ICEBERG_COMPAT` under the V1 Parquet path. Plain Parquet V2 is not
+  Comet-accelerated (Comet's V2 scan rule covers only CSV and Iceberg) so it is
+  excluded from the matrix.
+- Each scenario inspects the executed plan via a small helper that walks Comet
+  scan execs (`CometScanExec`, `CometNativeScanExec`) and asserts the
+  `requiredSchema` matches the expected pruned (or unpruned) shape, then compares
+  results against Spark via `checkSparkAnswer`.
+- Scenarios: top-level struct field, field inside array of struct, field inside
+  map value, doubly-nested struct field, projection plus filter on nested field,
+  null at intermediate struct level. Each scenario asserts both the
+  pruning-enabled and pruning-disabled behavior, except the null-intermediate
+  case which only varies the pruning-on path.
+
+**Findings.** All 12 generated test cases pass on Spark 3.4.3, 3.5.8, and 4.0.1.
+No Comet bugs were uncovered.
