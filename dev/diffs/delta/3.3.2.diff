@@ -304,4 +304,21 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/perf/OptimizeGenera
 +        c.originalPlan.partitionFilters
      }.getOrElse(Nil)
    }
- 
+
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLTestUtils.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLTestUtils.scala
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLTestUtils.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLTestUtils.scala
+@@ -29,7 +29,12 @@ trait DeltaSQLTestUtils extends SQLTestUtils {
+    * 2. Allow creating paths with special characters for better test coverage.
+    */
+
+-  protected val defaultTempDirPrefix: String = "spark%dir%prefix"
++  // Delta's test harness uses `spark%dir%prefix` to exercise URL-encoding in path
++  // handling. Comet's scan path round-trips file paths through `URI.create` /
++  // `Path.from_url_path`, where the embedded `%` chars decode back as something
++  // other than the literal directory name -- streaming sources end up with 0 rows
++  // and partitioned reads can hit FileNotFound. Use a plain prefix instead.
++  protected val defaultTempDirPrefix: String = "spark-dir-prefix"
+
+   override protected def withTempDir(f: File => Unit): Unit = {
+     withTempDir(prefix = defaultTempDirPrefix)(f)
