@@ -76,12 +76,27 @@ class CometSparkSessionExtensions
           // Delta's metadata-row-index strategy, and flipping would invalidate the
           // constructor contract (`useMetadataRowIndex == optimizationsEnabled`).
           try {
-            if (CometConf.COMET_DELTA_NATIVE_ENABLED.get(session.sessionState.conf) &&
+            // Don't override an explicit user/test setting. Tests like
+            // `DeletionVectorsWithPredicatePushdownSuite` set
+            // `spark.databricks.delta.deletionVectors.useMetadataRowIndex=true`
+            // to exercise Delta's predicate-pushdown read path (which keeps
+            // `optimizationsEnabled=true` so files are splittable). Flipping
+            // it back to `false` here makes Delta produce one partition per
+            // file regardless of `FILES_MAX_PARTITION_BYTES`, breaking the
+            // `partitions.size === 2` assertion.
+            val confKey = "spark.databricks.delta.deletionVectors.useMetadataRowIndex"
+            // Probe whether the session has the conf set (test or user). `getConfString`
+            // returns the explicit value; `getOption` would also do, but that API isn't
+            // public in older Sparks. Wrap in try because reading an unset key throws.
+            val userSet =
+              try {
+                session.sessionState.conf.getConfString(confKey, null) != null
+              } catch { case scala.util.control.NonFatal(_) => false }
+            if (!userSet &&
+              CometConf.COMET_DELTA_NATIVE_ENABLED.get(session.sessionState.conf) &&
               planHasDeltaScan(plan) &&
               !planReferencesIsRowDeleted(plan)) {
-              session.conf.set(
-                "spark.databricks.delta.deletionVectors.useMetadataRowIndex",
-                "false")
+              session.conf.set(confKey, "false")
             }
           } catch {
             case scala.util.control.NonFatal(_) => // delta-spark not on classpath; ignore

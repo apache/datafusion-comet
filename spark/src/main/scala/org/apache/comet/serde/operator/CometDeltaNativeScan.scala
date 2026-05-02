@@ -630,6 +630,9 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
     if (tasks.isEmpty) return tasks
     val sizes = tasks.map(_.getFileSize)
     val msb = maxSplitBytes(scan, sizes)
+    logWarning(
+      s"COMETDBG splitTasks tasks.size=${tasks.size} msb=$msb sizes=${sizes.mkString(",")} " +
+        s"maxPartitionBytes=${scan.relation.sparkSession.sessionState.conf.filesMaxPartitionBytes}")
     if (msb <= 0) return tasks
     tasks.flatMap { task =>
       val size = task.getFileSize
