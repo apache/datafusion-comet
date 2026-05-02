@@ -126,34 +126,39 @@ object DeltaReflection extends Logging {
   }
 
   /**
-   * Convert a Hadoop `Path` to a single-URI-encoded string suitable for
-   * `Url::parse` on the native side. Hadoop's `Path` stores its inner URI in
-   * one of two forms:
+   * Convert a Hadoop `Path` to a URI string whose decoded path component matches the literal
+   * on-disk filesystem path Hadoop uses when reading the file.
    *
-   *   - URI form: the path string was constructed from already-encoded input
-   *     (e.g. `file:/T/spark%25dir-uuid` representing a literal `spark%dir`).
-   *     `Path.toString` returns the single-encoded URI; `Path.toUri.toString`
-   *     re-encodes (`%25` -> `%2525`) -- double-encoding that breaks the
-   *     native scan.
-   *   - Literal form: the path string contains literal characters that need
-   *     encoding (e.g. `file:/T/spark%dir-uuid` where `%dir` is not a valid
-   *     URL escape). `Path.toString` returns the unencoded literal;
-   *     `Path.toUri.toString` returns single-encoded URI form.
+   * Hadoop's `RawLocalFileSystem.pathToFile` treats the bytes of `path.toUri.getRawPath` -- i.e.
+   * the URI's path component WITHOUT decoding -- as the literal filesystem path. So if Hadoop's
+   * Path stores URI form `file:/T/spark%25dir%25prefix-uuid` (typical for Delta tests whose
+   * `defaultTempDirPrefix` is the literal `spark%dir%prefix`), the actual on-disk dir name is
+   * `spark%25dir%25prefix-uuid` (with `%25` literal in the filename, four chars `%`, `2`, `5`).
    *
-   * Detect which form we have by trying to parse `toString` as a URI. If it
-   * parses cleanly, the Path was already URI form and `toString` is the
-   * correct single-encoded representation. If parsing throws (because the
-   * unencoded `%` chars are invalid escapes), fall back to `toUri.toString`
-   * which will perform the encoding.
+   * To send a URI that the native side can decode back to that on-disk literal, we take the raw
+   * path component verbatim and URL-encode `%` one extra time, yielding
+   * `file:/T/spark%2525dir%2525prefix-uuid`. The native scan decodes once (`%2525` -> `%25`) and
+   * opens at the literal `%25` filename.
    */
-  private def pathToSingleEncodedUri(p: org.apache.hadoop.fs.Path): String = {
-    val raw = p.toString
-    try {
-      java.net.URI.create(raw)
-      raw
-    } catch {
-      case _: IllegalArgumentException => p.toUri.toString
-    }
+  def pathToSingleEncodedUri(p: org.apache.hadoop.fs.Path): String = {
+    // Hadoop's `Path` keeps two forms of the same URI:
+    //   - `path.toString` returns a once-decoded form for display: any `%XX`
+    //     escape stored in the URI is decoded once. For Delta tests whose
+    //     `defaultTempDirPrefix` is the literal `spark%dir%prefix` and whose
+    //     on-disk dir Spark actually creates is `spark%25dir%25prefix-uuid`
+    //     (with `%25` four-char-literal in the filename), this returns
+    //     `file:/T/spark%25dir%25prefix-uuid` -- which when fed to a URL
+    //     parser would single-decode to a non-existent `spark%dir%prefix-uuid`.
+    //   - `path.toUri.toString` returns the FULL URI form, double-encoding the
+    //     literal `%` chars (`%25` -> `%2525`). When the native side parses
+    //     this and percent-decodes once, it recovers the literal on-disk
+    //     filename `spark%25dir%25prefix-uuid`.
+    //
+    // We always want the second form for native consumption, so the raw
+    // ParquetSource open path matches Hadoop's `RawLocalFileSystem`
+    // interpretation (which reads the URI's raw path component verbatim as
+    // the filesystem path).
+    p.toUri.toString
   }
 
   /**
