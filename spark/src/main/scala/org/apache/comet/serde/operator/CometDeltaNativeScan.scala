@@ -278,8 +278,19 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
     // mappings from the data-schema side (metadata on relation.dataSchema is stripped) and
     // later to physicalise nested field names before serialisation.
     val snapshotSchemaEarly: Option[StructType] = DeltaReflection.extractSnapshotSchema(relation)
+    // Only honour physicalName metadata when the table actually has column mapping
+    // mode enabled. Some Delta test helpers (e.g. `DeltaSourceSuiteBase.withMetadata`)
+    // call `DeltaColumnMapping.assignColumnIdAndPhysicalName` unconditionally, which
+    // attaches `delta.columnMapping.physicalName` to every StructField even when the
+    // table's `delta.columnMapping.mode` is unset / `none`. In that case the writer
+    // still uses LOGICAL names in the parquet file, so physicalising our scan would
+    // look up non-existent physical column names and return empty rows.
+    val tableColumnMappingMode = DeltaReflection
+      .extractMetadataConfiguration(relation)
+      .flatMap(_.get("delta.columnMapping.mode"))
+      .filter(m => m != null && !m.equalsIgnoreCase("none"))
     val taskList =
-      if (!taskList0.getColumnMappingsList.isEmpty) {
+      if (!taskList0.getColumnMappingsList.isEmpty || tableColumnMappingMode.isEmpty) {
         taskList0
       } else {
         // `relation.dataSchema.fields[*].metadata` is stripped of Delta's column-mapping
