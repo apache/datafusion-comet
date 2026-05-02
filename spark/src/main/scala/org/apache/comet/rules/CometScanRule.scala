@@ -349,6 +349,23 @@ case class CometScanRule(session: SparkSession)
         // at execution time (DPP expressions are filtered out of the
         // planning-time InterpretedPredicate and applied by Spark post-scan).
         if (DeltaReflection.isDeltaFileFormat(r.fileFormat)) {
+          // Decline when the plan references `input_file_name()` /
+          // `input_file_block_*`. Those expressions read from
+          // `InputFileBlockHolder`, a thread-local that Spark's `FileScanRDD`
+          // sets per file. Comet's `CometExecRDD` doesn't populate it, so the
+          // expressions return empty, breaking commands like Delta UPDATE
+          // which find touched files via `select(input_file_name()).distinct()`.
+          if (plan.exists(node =>
+              node.expressions.exists(_.exists {
+                case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength =>
+                  true
+                case _ => false
+              }))) {
+            return withInfo(
+              scanExec,
+              "Native Delta scan is not compatible with input_file_name, " +
+                "input_file_block_start, or input_file_block_length")
+          }
           return nativeDeltaScan(session, scanExec, r, hadoopConfOrNull = null)
             .getOrElse(scanExec)
         }
