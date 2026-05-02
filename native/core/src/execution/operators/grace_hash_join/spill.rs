@@ -253,10 +253,8 @@ impl ExecutionPlan for SpillReaderExec {
                 ) {
                     Ok(r) => r,
                     Err(e) => {
-                        let _ = tx.blocking_send(Err(DataFusionError::ArrowError(
-                            Box::new(e),
-                            None,
-                        )));
+                        let _ =
+                            tx.blocking_send(Err(DataFusionError::ArrowError(Box::new(e), None)));
                         return;
                     }
                 };
@@ -265,10 +263,8 @@ impl ExecutionPlan for SpillReaderExec {
                     let batch = match batch_result {
                         Ok(b) => b,
                         Err(e) => {
-                            let _ = tx.blocking_send(Err(DataFusionError::ArrowError(
-                                Box::new(e),
-                                None,
-                            )));
+                            let _ = tx
+                                .blocking_send(Err(DataFusionError::ArrowError(Box::new(e), None)));
                             return;
                         }
                     };
@@ -394,9 +390,7 @@ impl ExecutionPlan for StreamSourceExec {
 // ---------------------------------------------------------------------------
 
 /// Read record batches from a finished spill file.
-pub(super) fn read_spilled_batches(
-    spill_file: &RefCountedTempFile,
-) -> DFResult<Vec<RecordBatch>> {
+pub(super) fn read_spilled_batches(spill_file: &RefCountedTempFile) -> DFResult<Vec<RecordBatch>> {
     let file = File::open(spill_file.path())
         .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
     let reader = BufReader::with_capacity(SPILL_IO_BUFFER_SIZE, file);

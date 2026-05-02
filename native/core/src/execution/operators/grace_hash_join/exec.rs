@@ -44,9 +44,9 @@ use tokio::sync::mpsc;
 
 use super::metrics::GraceHashJoinMetrics;
 use super::partition::{
-    buffer_build_optimistic, finish_spill_writers, merge_finished_partitions,
-    partition_build_side, partition_from_buffer, partition_probe_side, sub_partition_batches,
-    BuildBufferResult, FinishedPartition, HashPartition, ScratchSpace,
+    buffer_build_optimistic, finish_spill_writers, merge_finished_partitions, partition_build_side,
+    partition_from_buffer, partition_probe_side, sub_partition_batches, BuildBufferResult,
+    FinishedPartition, HashPartition, ScratchSpace,
 };
 use super::spill::{read_spilled_batches, SpillReaderExec, StreamSourceExec};
 use super::{JoinOnRef, DEFAULT_NUM_PARTITIONS, MAX_RECURSION_DEPTH, TARGET_PARTITION_BUILD_SIZE};

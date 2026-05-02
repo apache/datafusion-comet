@@ -1712,8 +1712,7 @@ impl PhysicalPlanner {
                     // concurrent tasks. Divide it by `spark.executor.cores` so each
                     // task's fast-path hash table stays within its fair share and N
                     // concurrent tasks don't collectively exceed the configured budget.
-                    let executor_cores =
-                        self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
+                    let executor_cores = self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
                     let total_fast_path_threshold = self
                         .spark_conf
                         .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 64 * 1024 * 1024);

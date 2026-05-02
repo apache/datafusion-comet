@@ -29,12 +29,13 @@ Supports all join types: Inner, Left, Right, Full, LeftSemi, LeftAnti, LeftMark,
 
 ## Configuration
 
-| Config Key                                           | Type    | Default    | Description                                                |
-| ---------------------------------------------------- | ------- | ---------- | ---------------------------------------------------------- |
-| `spark.comet.exec.replaceSortMergeJoin`              | boolean | `false`    | Replace SortMergeJoin with ShuffledHashJoin (enables GHJ)  |
-| `spark.comet.exec.replaceSortMergeJoin.maxBuildSize` | long    | `104857600`  | Max build-side bytes for SMJ replacement. `-1` = no limit  |
-| `spark.comet.exec.graceHashJoin.numPartitions`       | int     | `16`         | Number of hash partitions (buckets)                        |
-| `spark.comet.exec.graceHashJoin.fastPathThreshold`   | int     | `67108864`   | Per-task fast-path budget in bytes                         |
+| Config Key                                               | Type    | Default     | Description                                                |
+| -------------------------------------------------------- | ------- | ----------- | ---------------------------------------------------------- |
+| `spark.comet.exec.replaceSortMergeJoin`                  | boolean | `false`     | Replace SortMergeJoin with ShuffledHashJoin (enables GHJ)  |
+| `spark.comet.exec.replaceSortMergeJoin.maxBuildSize`     | long    | `104857600` | Max build-side bytes for SMJ replacement. `-1` = no limit  |
+| `spark.comet.exec.graceHashJoin.numPartitions`           | int     | `16`        | Number of hash partitions (buckets)                        |
+| `spark.comet.exec.graceHashJoin.fastPathThreshold`       | long    | `67108864`  | Executor-wide fast-path budget in bytes (divided by cores) |
+| `spark.comet.exec.graceHashJoin.maxConcurrentPartitions` | int     | `2`         | Max partitions joined in parallel during Phase 3           |
 
 ### SMJ Replacement Guard
 
