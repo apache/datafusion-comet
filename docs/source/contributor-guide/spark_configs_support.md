@@ -37,9 +37,12 @@ The status column uses these values:
 
 ## Audited Configurations
 
-| Config                               | Default     | Status                  | Affected expressions / operators                                                                                                                                | Spark Versions | Date       |
-| ------------------------------------ | ----------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | ---------- |
-| `spark.sql.legacy.timeParserPolicy`  | `EXCEPTION` | Falls back (see notes)  | `date_format`, `from_unixtime`, `unix_timestamp`, `to_unix_timestamp`, `to_timestamp`, `to_timestamp_ntz`, `to_date`, `try_to_timestamp` (Spark 4+)              | 3.4.3, 3.5.8, 4.0.1 | 2026-05-02 |
+- `spark.sql.legacy.timeParserPolicy`
+  - Default: `EXCEPTION`
+  - Status: Falls back (see notes)
+  - Affected expressions: `date_format`, `from_unixtime`, `unix_timestamp`, `to_unix_timestamp`, `to_timestamp`, `to_timestamp_ntz`, `to_date`, `try_to_timestamp` (Spark 4+)
+  - Spark versions checked: 3.4.3, 3.5.8, 4.0.1
+  - Date: 2026-05-02
 
 ## Audit Notes
 
