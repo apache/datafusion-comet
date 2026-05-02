@@ -201,7 +201,7 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.
 index ceece28..057cc18 100644
 --- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
 +++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
-@@ -43,6 +43,20 @@ trait DeltaHiveTest extends SparkFunSuite with BeforeAndAfterAll { self: DeltaSQ
+@@ -43,6 +43,17 @@ trait DeltaHiveTest extends SparkFunSuite with BeforeAndAfterAll { self: DeltaSQ
      conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[DeltaCatalog].getName)
      conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
        classOf[DeltaSparkSessionExtension].getName)
@@ -216,9 +216,6 @@ index ceece28..057cc18 100644
 +    conf.set("spark.comet.explainFallback.enabled", "true")
 +    conf.set("spark.memory.offHeap.enabled", "true")
 +    conf.set("spark.memory.offHeap.size", "10g")
-+    // Disable Delta's test-only data-file name prefix (see DeltaSQLCommandTest
-+    // for the full rationale). DV prefix is intentionally left at its default.
-+    conf.set("spark.databricks.delta.testOnly.dataFileNamePrefix", "")
      _sc = new SparkContext("local", this.getClass.getName, conf)
      _hiveContext = new TestHiveContext(_sc)
      _session = _hiveContext.sparkSession
@@ -226,7 +223,7 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLComman
 index cb28a4f..1113ffc 100644
 --- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
 +++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
-@@ -35,5 +35,26 @@ trait DeltaSQLCommandTest extends SharedSparkSession {
+@@ -35,5 +35,16 @@ trait DeltaSQLCommandTest extends SharedSparkSession {
          classOf[DeltaSparkSessionExtension].getName)
        .set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key,
          classOf[DeltaCatalog].getName)
@@ -241,16 +238,6 @@ index cb28a4f..1113ffc 100644
 +      .set("spark.comet.explainFallback.enabled", "true")
 +      .set("spark.memory.offHeap.enabled", "true")
 +      .set("spark.memory.offHeap.size", "10g")
-+      // Disable Delta's test-only DATA-FILE name prefix. By default Delta's
-+      // test harness prepends `test%file%prefix-` to data-file names to exercise
-+      // its own URL-encoded-path handling, but the `%` chars round-trip badly
-+      // through several path-parsing code paths (our native Delta scan AND
-+      // Delta's own `getTouchedFile` lookup on MERGE/UPDATE/DELETE), producing
-+      // spurious `DELTA_FILE_TO_OVERWRITE_NOT_FOUND` errors that do not reflect
-+      // a real bug. Same approach Comet's in-tree `CometDeltaTestBase` takes.
-+      // The DV-file prefix is left at its default — overriding it to "" would
-+      // break golden DV fixtures whose on-disk filenames include the prefix.
-+      .set("spark.databricks.delta.testOnly.dataFileNamePrefix", "")
    }
  }
 diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/TestsStatistics.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/TestsStatistics.scala
@@ -305,20 +292,3 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/perf/OptimizeGenera
      }.getOrElse(Nil)
    }
 
-diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLTestUtils.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLTestUtils.scala
---- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLTestUtils.scala
-+++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLTestUtils.scala
-@@ -29,7 +29,12 @@ trait DeltaSQLTestUtils extends SQLTestUtils {
-    * 2. Allow creating paths with special characters for better test coverage.
-    */
-
--  protected val defaultTempDirPrefix: String = "spark%dir%prefix"
-+  // Delta's test harness uses `spark%dir%prefix` to exercise URL-encoding in path
-+  // handling. Comet's scan path round-trips file paths through `URI.create` /
-+  // `Path.from_url_path`, where the embedded `%` chars decode back as something
-+  // other than the literal directory name -- streaming sources end up with 0 rows
-+  // and partitioned reads can hit FileNotFound. Use a plain prefix instead.
-+  protected val defaultTempDirPrefix: String = "spark-dir-prefix"
-
-   override protected def withTempDir(f: File => Unit): Unit = {
-     withTempDir(prefix = defaultTempDirPrefix)(f)
