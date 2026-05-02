@@ -117,11 +117,42 @@ object DeltaReflection extends Logging {
   def extractTableRoot(relation: HadoopFsRelation): Option[String] = {
     try {
       val roots = relation.location.rootPaths
-      roots.headOption.map(_.toUri.toString)
+      roots.headOption.map(pathToSingleEncodedUri)
     } catch {
       case e: Exception =>
         logWarning(s"Failed to extract Delta table root path: ${e.getMessage}")
         None
+    }
+  }
+
+  /**
+   * Convert a Hadoop `Path` to a single-URI-encoded string suitable for
+   * `Url::parse` on the native side. Hadoop's `Path` stores its inner URI in
+   * one of two forms:
+   *
+   *   - URI form: the path string was constructed from already-encoded input
+   *     (e.g. `file:/T/spark%25dir-uuid` representing a literal `spark%dir`).
+   *     `Path.toString` returns the single-encoded URI; `Path.toUri.toString`
+   *     re-encodes (`%25` -> `%2525`) -- double-encoding that breaks the
+   *     native scan.
+   *   - Literal form: the path string contains literal characters that need
+   *     encoding (e.g. `file:/T/spark%dir-uuid` where `%dir` is not a valid
+   *     URL escape). `Path.toString` returns the unencoded literal;
+   *     `Path.toUri.toString` returns single-encoded URI form.
+   *
+   * Detect which form we have by trying to parse `toString` as a URI. If it
+   * parses cleanly, the Path was already URI form and `toString` is the
+   * correct single-encoded representation. If parsing throws (because the
+   * unencoded `%` chars are invalid escapes), fall back to `toUri.toString`
+   * which will perform the encoding.
+   */
+  private def pathToSingleEncodedUri(p: org.apache.hadoop.fs.Path): String = {
+    val raw = p.toString
+    try {
+      java.net.URI.create(raw)
+      raw
+    } catch {
+      case _: IllegalArgumentException => p.toUri.toString
     }
   }
 
@@ -316,7 +347,8 @@ object DeltaReflection extends Logging {
     cls.contains("TahoeBatchFileIndex") ||
     cls.contains("CdcAddFileIndex") ||
     cls.contains("TahoeRemoveFileIndex") ||
-    cls.contains("TahoeChangeFileIndex")
+    cls.contains("TahoeChangeFileIndex") ||
+    cls.contains("PreparedDeltaFileIndex")
   }
 
   /**
