@@ -423,11 +423,20 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // Set up logical links
       newPlan = newPlan.transform {
         case op: CometExec =>
-          if (op.originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
+          // Don't unset on a missing originalPlan link: AQE's
+          // `setLogicalLinkForNewQueryStage` walks the subtree and asserts
+          // SOMETHING has a link. If we unset here AND the wrapping exchange
+          // also has none, the join + column-mapping case (where
+          // EnsureRequirements injects a fresh exchange and Comet then wraps
+          // the scan beneath it) crashes the whole query with
+          // `java.lang.AssertionError`. Fall back to a descendant link
+          // instead, mirroring what the exchange branches below do.
+          if (op.originalPlan.logicalLink.isDefined) {
             op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+          } else {
+            op.collectFirst {
+              case p if p.logicalLink.isDefined => p.logicalLink.get
+            }.foreach(op.setLogicalLink)
           }
           op
         case op: CometShuffleExchangeExec =>
