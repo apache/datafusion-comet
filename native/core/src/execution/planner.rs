@@ -1715,7 +1715,7 @@ impl PhysicalPlanner {
                     let executor_cores = self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
                     let total_fast_path_threshold = self
                         .spark_conf
-                        .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 64 * 1024 * 1024);
+                        .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 512 * 1024 * 1024);
                     let fast_path_threshold = total_fast_path_threshold / executor_cores;
                     let max_concurrent_partitions = self
                         .spark_conf

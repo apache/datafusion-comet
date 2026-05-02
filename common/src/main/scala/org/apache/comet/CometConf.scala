@@ -317,7 +317,7 @@ object CometConf extends ShimCometConf {
           "Larger values risk OOM because HashJoinExec creates non-spillable hash tables.")
       .longConf
       .checkValue(v => v >= 0, "The fast path threshold must be non-negative.")
-      .createWithDefault(64L * 1024 * 1024) // 64 MB
+      .createWithDefault(512L * 1024 * 1024) // 512 MB
 
   val COMET_EXEC_GRACE_HASH_JOIN_MAX_CONCURRENT_PARTITIONS: ConfigEntry[Int] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.graceHashJoin.maxConcurrentPartitions")

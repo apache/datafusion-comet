@@ -740,27 +740,9 @@ fn join_with_spilled_probe(
     // Skip if build side is empty and join type requires it
     let build_empty = build_batches.is_empty();
     let skip = match join_type {
-        JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti => {
-            if build_left {
-                build_empty
-            } else {
-                false // probe emptiness unknown without reading
-            }
-        }
-        JoinType::Left | JoinType::LeftMark => {
-            if build_left {
-                build_empty
-            } else {
-                false
-            }
-        }
-        JoinType::Right => {
-            if !build_left {
-                build_empty
-            } else {
-                false
-            }
-        }
+        JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti if build_left => build_empty,
+        JoinType::Left | JoinType::LeftMark if build_left => build_empty,
+        JoinType::Right if !build_left => build_empty,
         _ => false,
     };
     if skip {
@@ -1077,7 +1059,7 @@ fn repartition_and_join(
     )?;
 
     // Recursively join each sub-partition
-    for (build_part, probe_part) in build_sub.into_iter().zip(probe_sub.into_iter()) {
+    for (build_part, probe_part) in build_sub.into_iter().zip(probe_sub) {
         join_partition_recursive(
             build_part,
             probe_part,

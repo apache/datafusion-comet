@@ -27,7 +27,7 @@ use std::sync::Arc;
 use ahash::RandomState;
 use arrow::array::UInt32Array;
 use arrow::compute::take;
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::Result as DFResult;
@@ -242,8 +242,8 @@ pub(super) async fn buffer_build_optimistic(
     reservation: &mut MemoryReservation,
     metrics: &GraceHashJoinMetrics,
 ) -> DFResult<BuildBufferResult> {
+    let schema = input.schema();
     let mut batches = Vec::new();
-    let mut total_bytes = 0usize;
 
     while let Some(batch) = input.next().await {
         let batch = batch?;
@@ -254,6 +254,10 @@ pub(super) async fn buffer_build_optimistic(
         metrics.build_input_batches.add(1);
         metrics.build_input_rows.add(batch.num_rows());
 
+        // Per-batch `get_array_memory_size` is safe to use for `try_grow`
+        // because overestimating just makes us more conservative with memory
+        // pressure — it can only force us into the fallback path, never into
+        // a spurious OOM.
         let batch_size = batch.get_array_memory_size();
 
         if reservation.try_grow(batch_size).is_err() {
@@ -263,11 +267,94 @@ pub(super) async fn buffer_build_optimistic(
             return Ok(BuildBufferResult::NeedPartition(batches, input));
         }
 
-        total_bytes += batch_size;
         batches.push(batch);
     }
 
-    Ok(BuildBufferResult::Complete(batches, total_bytes))
+    // Compute a size estimate for the fast-path threshold check from schema +
+    // row count instead of `get_array_memory_size`. The latter reports the
+    // full underlying buffer for every zero-copy slice (common after shuffle),
+    // so a 49 MB build can look like 97 MB and spuriously fail the threshold.
+    let actual_bytes = approximate_memory_size(&batches, &schema);
+    Ok(BuildBufferResult::Complete(batches, actual_bytes))
+}
+
+/// Approximate in-memory size of a collection of record batches using the
+/// schema's per-column byte widths and a row count.
+///
+/// Used instead of `batch.get_array_memory_size()` for the fast-path threshold
+/// decision because the Arrow helper reports the full underlying buffer size
+/// for every zero-copy slice, inflating the number by the number of slices
+/// when batches come out of a shuffle read. A row-count × row-width estimate
+/// has no such cross-slice double-counting. It is approximate for
+/// variable-width columns (strings, binary) — we pick a conservative 32 bytes
+/// per row — but good enough to gate the coarse threshold check.
+fn approximate_memory_size(batches: &[RecordBatch], schema: &Schema) -> usize {
+    let row_size = approximate_row_size(schema);
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    total_rows * row_size
+}
+
+fn approximate_row_size(schema: &Schema) -> usize {
+    schema
+        .fields()
+        .iter()
+        .map(|f| approximate_type_size(f.data_type()))
+        .sum()
+}
+
+fn approximate_type_size(dt: &DataType) -> usize {
+    match dt {
+        DataType::Null => 0,
+        DataType::Boolean => 1,
+        DataType::Int8 | DataType::UInt8 => 1,
+        DataType::Int16 | DataType::UInt16 | DataType::Float16 => 2,
+        DataType::Int32
+        | DataType::UInt32
+        | DataType::Float32
+        | DataType::Date32
+        | DataType::Time32(_) => 4,
+        DataType::Int64
+        | DataType::UInt64
+        | DataType::Float64
+        | DataType::Date64
+        | DataType::Time64(_)
+        | DataType::Timestamp(_, _)
+        | DataType::Duration(_)
+        | DataType::Interval(_) => 8,
+        DataType::Decimal32(_, _) => 4,
+        DataType::Decimal64(_, _) => 8,
+        DataType::Decimal128(_, _) => 16,
+        DataType::Decimal256(_, _) => 32,
+        DataType::FixedSizeBinary(n) => *n as usize,
+        // Variable-width: pick a conservative average. Exact strings would
+        // need a scan over the offset buffer; good enough for a threshold
+        // gate that is itself a heuristic.
+        DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::Utf8
+        | DataType::LargeUtf8
+        | DataType::Utf8View => 32,
+        DataType::List(f)
+        | DataType::LargeList(f)
+        | DataType::ListView(f)
+        | DataType::LargeListView(f)
+        | DataType::FixedSizeList(f, _) => 4 + approximate_type_size(f.data_type()),
+        DataType::Struct(fields) => fields
+            .iter()
+            .map(|f| approximate_type_size(f.data_type()))
+            .sum(),
+        DataType::Map(f, _) => 8 + approximate_type_size(f.data_type()),
+        DataType::Dictionary(key, value) => {
+            approximate_type_size(key) + approximate_type_size(value)
+        }
+        DataType::Union(fields, _) => fields
+            .iter()
+            .map(|(_, f)| approximate_type_size(f.data_type()))
+            .max()
+            .unwrap_or(8),
+        DataType::RunEndEncoded(_, values) => approximate_type_size(values.data_type()),
+    }
 }
 
 /// Partition already-buffered build batches into the partition structure.
@@ -814,4 +901,71 @@ pub(super) fn sub_partition_batches(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    /// approximate_memory_size must be insensitive to zero-copy slicing -
+    /// a batch sliced into N pieces should report the same total as the
+    /// unsliced parent. A naive sum of get_array_memory_size would
+    /// inflate the number by N because each slice reports the full buffer.
+    #[test]
+    fn approximate_memory_size_is_slice_invariant() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let values: Vec<i32> = (0..1000).collect();
+        let parent = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(values))],
+        )
+        .unwrap();
+
+        // 1000 rows * 4 bytes/row = 4000
+        let parent_est = approximate_memory_size(std::slice::from_ref(&parent), &schema);
+        assert_eq!(parent_est, 4000);
+
+        let slices = vec![
+            parent.slice(0, 250),
+            parent.slice(250, 250),
+            parent.slice(500, 250),
+            parent.slice(750, 250),
+        ];
+        let sliced_est = approximate_memory_size(&slices, &schema);
+        assert_eq!(sliced_est, parent_est);
+
+        // Show the contrast with the naive per-batch get_array_memory_size sum.
+        let naive: usize = slices
+            .iter()
+            .flat_map(|b| b.columns().iter())
+            .map(|c| c.to_data().get_array_memory_size())
+            .sum();
+        assert!(
+            naive > parent_est * 2,
+            "naive sum inflates with slices (got {naive}, parent {parent_est})"
+        );
+    }
+
+    #[test]
+    fn approximate_memory_size_sums_independent_batches() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let mk = |start: i32| {
+            let arr = Int32Array::from((start..start + 100).collect::<Vec<_>>());
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(arr)]).unwrap()
+        };
+        let batches = vec![mk(0), mk(100), mk(200)];
+        // 3 * 100 rows * 4 bytes = 1200
+        assert_eq!(approximate_memory_size(&batches, &schema), 1200);
+    }
+
+    #[test]
+    fn approximate_memory_size_handles_strings() {
+        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
+        let arr = StringArray::from(vec!["a"; 100]);
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(arr)]).unwrap();
+        // 100 rows * 32 bytes/row (heuristic) = 3200
+        assert_eq!(approximate_memory_size(&[batch], &schema), 3200);
+    }
 }
