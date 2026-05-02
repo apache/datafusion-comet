@@ -88,9 +88,17 @@ fn spark_decimal_div_internal(
         arrow::compute::kernels::arity::try_binary(left, right, |l, r| {
             let l = BigInt::from(l) * &l_mul;
             let r = BigInt::from(r) * &r_mul;
-            if eval_mode == EvalMode::Ansi && is_integral_div && r.is_zero() {
+            // Previously this check included `&& is_integral_div`, so regular decimal `/`
+            // silently returned 0 for a zero divisor in ANSI mode instead of throwing.
+            // Spark throws DIVIDE_BY_ZERO for both `/` and `div` when ANSI is enabled, so
+            // the `is_integral_div` guard was wrong and has been removed.
+            if eval_mode == EvalMode::Ansi && r.is_zero() {
                 return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
             }
+            // Non-ANSI: zero divisors have already been replaced with null by the
+            // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
+            // `try_binary` will never invoke this closure for a zero `r` in legacy/try mode.
+            // The fallback `zero.clone()` is therefore unreachable in practice.
             let div = if r.eq(&zero) { zero.clone() } else { &l / &r };
             let res = if is_integral_div {
                 div
@@ -107,9 +115,17 @@ fn spark_decimal_div_internal(
         arrow::compute::kernels::arity::try_binary(left, right, |l, r| {
             let l = l * l_mul;
             let r = r * r_mul;
-            if eval_mode == EvalMode::Ansi && is_integral_div && r.is_zero() {
+            // Previously this check included `&& is_integral_div`, so regular decimal `/`
+            // silently returned 0 for a zero divisor in ANSI mode instead of throwing.
+            // Spark throws DIVIDE_BY_ZERO for both `/` and `div` when ANSI is enabled, so
+            // the `is_integral_div` guard was wrong and has been removed.
+            if eval_mode == EvalMode::Ansi && r == 0 {
                 return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
             }
+            // Non-ANSI: zero divisors have already been replaced with null by the
+            // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
+            // `try_binary` will never invoke this closure for a zero `r` in legacy/try mode.
+            // The fallback `0` is therefore unreachable in practice.
             let div = if r == 0 { 0 } else { l / r };
             let res = if is_integral_div {
                 div

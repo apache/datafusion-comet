@@ -30,18 +30,28 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
   pull_request:
     paths-ignore:
       - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -55,6 +65,10 @@ on:
 env:
   RUST_VERSION: stable
   RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
 
 jobs:
 
@@ -89,7 +103,7 @@ jobs:
           cd native
           cargo build --profile ci
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Upload native library
         uses: actions/upload-artifact@v7
@@ -112,7 +126,6 @@ jobs:
     needs: build-native
     strategy:
       matrix:
-        os: [ubuntu-24.04]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -121,24 +134,24 @@ jobs:
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
-        # Test combinations:
-        # - auto scan: all Spark versions (3.4, 3.5, 4.0)
-        # - native_iceberg_compat: Spark 3.5 only
+        # Since 4f5eaf0, auto mode uses native_datafusion for V1 scans,
+        # so we only need to test with auto.
         config:
           - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'native_datafusion'}
-          - {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
-        # Skip sql_hive-1 for Spark 4.0 due to https://github.com/apache/datafusion-comet/issues/2946
-        exclude:
-          - config: {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
-            module: {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
+          - {spark-short: '4.0', spark-full: '4.0.2', java: 17, scan-impl: 'auto'}
+          - {spark-short: '4.0', spark-full: '4.0.2', java: 21, scan-impl: 'auto'}
+          - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
       fail-fast: false
     name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
-    runs-on: ${{ matrix.os }}
+    # Hive tests stay on the standard GitHub-hosted runner: HiveSparkSubmitSuite
+    # relies on an Ivy 'local-m2-cache' resolver that the runs-on.com
+    # ubuntu24-full-x64 image does not provide, so spark-submit fails there.
+    runs-on: ${{ startsWith(matrix.module.name, 'sql_hive') && 'ubuntu-24.04' || (github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest') }}
     container:
       image: amd64/rust
     steps:
+      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
       - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -161,12 +174,20 @@ jobs:
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
-            build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+            build/sbt -Dsbt.log.noformat=true -mem 6144 ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
           fi
         env:
           LC_ALL: "C.UTF-8"
+          # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
+          # build_java21.yml and build_java25.yml set this same env var to
+          # process-isolate the V1/V2 Parquet and Orc source suites because
+          # they exhibit cross-suite resource interactions (file-stream and
+          # thread leaks) under the newer JDKs. project/SparkBuild.scala
+          # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
+          # listed suite. Empty value is a safe no-op.
+          DEDICATED_JVM_SBT_TESTS: ${{ matrix.config.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v7

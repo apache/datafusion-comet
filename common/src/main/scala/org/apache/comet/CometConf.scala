@@ -140,7 +140,7 @@ object CometConf extends ShimCometConf {
           "Iceberg tables are read directly through native execution, bypassing Spark's " +
           "DataSource V2 API for better performance.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
@@ -222,31 +222,28 @@ object CometConf extends ShimCometConf {
 
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
-      .category(CATEGORY_TESTING)
+      .category(CATEGORY_EXEC)
       .doc(
         "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
-          "Arrow format.  This is an experimental feature and has known issues with " +
-          "non-UTC timezones.")
+          "Arrow format.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_CONVERT_FROM_JSON_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.json.enabled")
-      .category(CATEGORY_TESTING)
+      .category(CATEGORY_EXEC)
       .doc(
         "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
-          "Arrow format. This is an experimental feature and has known issues with " +
-          "non-UTC timezones.")
+          "Arrow format.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_CONVERT_FROM_CSV_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.csv.enabled")
-      .category(CATEGORY_TESTING)
+      .category(CATEGORY_EXEC)
       .doc(
         "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
-          "Arrow format. This is an experimental feature and has known issues with " +
-          "non-UTC timezones.")
+          "Arrow format.")
       .booleanConf
       .createWithDefault(false)
 
@@ -365,6 +362,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SHUFFLE_DIRECT_READ_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.directRead.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When enabled, native operators that consume shuffle output will read " +
+          "compressed shuffle blocks directly in native code, bypassing Arrow FFI. " +
+          "Applies to both native shuffle and JVM columnar shuffle. " +
+          "Requires spark.comet.exec.shuffle.enabled to be true.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .category(CATEGORY_SHUFFLE)
     .doc(
@@ -452,6 +460,31 @@ object CometConf extends ShimCometConf {
         v => v >= 0,
         "The maximum number of columns to hash for round robin partitioning must be non-negative.")
       .createWithDefault(0)
+
+  val COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.convertFromSparkPlan.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When enabled, Comet will convert a Spark `ShuffleExchangeExec` to a Comet columnar " +
+          "shuffle even when its child is a non-Comet (Spark) plan. Disable to leave such " +
+          "shuffles as native Spark shuffles, restricting Comet shuffle to cases where the " +
+          "child is already a Comet plan.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.revertRedundantColumnar.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` " +
+          "back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet " +
+          "hash aggregate operators. This avoids a redundant " +
+          "row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either " +
+          "side can consume columnar output. Disable to keep Comet columnar shuffle even in " +
+          "that case, which preserves Comet's off-heap shuffle memory accounting at the cost of " +
+          "the extra conversion.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
@@ -580,13 +613,6 @@ object CometConf extends ShimCometConf {
     .doubleConf
     .createWithDefault(1.0)
 
-  val COMET_DPP_FALLBACK_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.dppFallback.enabled")
-      .category(CATEGORY_EXEC)
-      .doc("Whether to fall back to Spark for queries that use DPP.")
-      .booleanConf
-      .createWithDefault(true)
-
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
       .category(CATEGORY_EXEC)
@@ -655,13 +681,6 @@ object CometConf extends ShimCometConf {
         "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
           "why a query stage cannot be executed natively. Set this to false to " +
           "reduce the amount of logging.")
-      .booleanConf
-      .createWithDefault(false)
-
-  val COMET_PARQUET_ENABLE_DIRECT_BUFFER: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.enable.directBuffer")
-      .category(CATEGORY_PARQUET)
-      .doc("Whether to use Java direct byte buffer when reading Parquet.")
       .booleanConf
       .createWithDefault(false)
 
@@ -773,22 +792,22 @@ object CometConf extends ShimCometConf {
 
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
-      .category(CATEGORY_TESTING)
+      .category(CATEGORY_EXEC)
       .doc("Whether to enable Spark to Arrow columnar conversion. When this is turned on, " +
         "Comet will convert operators in " +
         "`spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before " +
-        "processing. This is an experimental feature and has known issues with non-UTC timezones.")
+        "processing.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
     conf("spark.comet.sparkToColumnar.supportedOperatorList")
-      .category(CATEGORY_TESTING)
+      .category(CATEGORY_EXEC)
       .doc("A comma-separated list of operators that will be converted to Arrow columnar " +
         s"format when `${COMET_SPARK_TO_ARROW_ENABLED.key}` is true.")
       .stringConf
       .toSequence
-      .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan"))
+      .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan,OneRowRelation"))
 
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
@@ -827,6 +846,20 @@ object CometConf extends ShimCometConf {
         " metrics will be updated upon task completion.")
       .longConf
       .createWithDefault(3000L)
+
+  val COMET_METRICS_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.metrics.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to enable Comet metrics reporting through Spark's external monitoring system. " +
+          "When enabled, Comet exposes metrics such as native operators, Spark operators, " +
+          "queries planned, transitions, and acceleration ratio. These metrics can be " +
+          "visualized through tools like Grafana when a metrics sink (e.g., Prometheus) is " +
+          "configured. Disabled by default because Spark plan traversal adds overhead and " +
+          "metrics require a sink to be useful. " +
+          "This config must be set before the SparkSession is created to take effect.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 

@@ -207,6 +207,12 @@ impl AggregateUDFImpl for AvgDecimal {
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
         avg_return_type(self.name(), &arg_types[0])
     }
+
+    fn is_nullable(&self) -> bool {
+        // In Spark, Sum.nullable and Average.nullable both return true irrespective of ANSI mode.
+        // AvgDecimal is always nullable because overflows can cause null values.
+        true
+    }
 }
 
 /// An accumulator to compute the average for decimals
@@ -498,7 +504,7 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&arrow::array::BooleanArray>,
+        opt_filter: Option<&arrow::array::BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 1, "single argument to update_batch");
@@ -511,12 +517,17 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         ensure_bit_capacity(&mut self.is_not_null, total_num_groups);
 
         let iter = group_indices.iter().zip(data.iter());
-        if values.null_count() == 0 {
+        if opt_filter.is_none() && values.null_count() == 0 {
             for (&group_index, &value) in iter {
                 self.update_single(group_index, value)?;
             }
         } else {
             for (idx, (&group_index, &value)) in iter.enumerate() {
+                if let Some(f) = opt_filter {
+                    if !f.is_valid(idx) || !f.value(idx) {
+                        continue;
+                    }
+                }
                 if values.is_null(idx) {
                     continue;
                 }

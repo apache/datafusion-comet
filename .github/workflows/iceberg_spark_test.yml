@@ -30,18 +30,28 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
   pull_request:
     paths-ignore:
       - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -49,11 +59,14 @@ on:
 env:
   RUST_VERSION: stable
   RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
 
 jobs:
   # Build native library once and share with all test jobs
   build-native:
-    if: contains(github.event.pull_request.title, '[iceberg]')
     name: Build Native Library
     runs-on: ubuntu-24.04
     container:
@@ -83,7 +96,7 @@ jobs:
         run: |
           cd native && cargo build --profile ci
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Save Cargo cache
         uses: actions/cache/save@v5
@@ -102,9 +115,8 @@ jobs:
           path: native/target/ci/libcomet.so
           retention-days: 1
 
-  iceberg-spark-rust:
+  iceberg-spark:
     needs: build-native
-    if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -113,7 +125,7 @@ jobs:
         spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
         scala-version: ['2.13']
       fail-fast: false
-    name: iceberg-spark-rust/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    name: iceberg-spark/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -135,10 +147,10 @@ jobs:
         run: |
           ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
-        uses: ./.github/actions/setup-iceberg-rust-builder
+        uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-      - name: Run Iceberg Spark tests (Rust)
+      - name: Run Iceberg Spark tests
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
@@ -146,9 +158,8 @@ jobs:
             :iceberg-spark:iceberg-spark-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
             -Pquick=true -x javadoc
 
-  iceberg-spark-extensions-rust:
+  iceberg-spark-extensions:
     needs: build-native
-    if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -157,7 +168,7 @@ jobs:
         spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
         scala-version: ['2.13']
       fail-fast: false
-    name: iceberg-spark-extensions-rust/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    name: iceberg-spark-extensions/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -179,10 +190,10 @@ jobs:
         run: |
           ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
-        uses: ./.github/actions/setup-iceberg-rust-builder
+        uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-      - name: Run Iceberg Spark extensions tests (Rust)
+      - name: Run Iceberg Spark extensions tests
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
@@ -190,9 +201,8 @@ jobs:
             :iceberg-spark:iceberg-spark-extensions-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
             -Pquick=true -x javadoc
 
-  iceberg-spark-runtime-rust:
+  iceberg-spark-runtime:
     needs: build-native
-    if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -201,7 +211,7 @@ jobs:
         spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
         scala-version: ['2.13']
       fail-fast: false
-    name: iceberg-spark-runtime-rust/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    name: iceberg-spark-runtime/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -223,10 +233,10 @@ jobs:
         run: |
           ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
-        uses: ./.github/actions/setup-iceberg-rust-builder
+        uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-      - name: Run Iceberg Spark runtime tests (Rust)
+      - name: Run Iceberg Spark runtime tests
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups

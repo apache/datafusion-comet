@@ -43,12 +43,12 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.{Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.parquet.Native
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -113,6 +113,11 @@ case class CometScanRule(session: SparkSession)
     val fullPlan = plan
 
     def transformScan(scanNode: SparkPlan): SparkPlan = scanNode match {
+      // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep a peer scan
+      // Spark-native for canonical symmetry in SMJ self-joins (SPARK-32509).
+      case scan if scan.getTagValue(CometScanRule.SKIP_COMET_SCAN_TAG).isDefined =>
+        withInfo(scan, "AQE DPP region fallback (Spark < 3.5)")
+
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withInfo(scan, "Comet Scan is not enabled")
 
@@ -139,9 +144,17 @@ case class CometScanRule(session: SparkSession)
 
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
 
-    if (COMET_DPP_FALLBACK_ENABLED.get() &&
-      scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-      return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+    // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so
+    // CometPlanAdaptiveDynamicPruningFilters cannot run. Fall back this scan to Spark so that
+    // Spark's PlanAdaptiveDynamicPruningFilters handles the SAB natively. Comet's narrower
+    // CometSpark34AqeDppFallbackRule (queryStagePrepRule on 3.4) then tags any matching BHJ's
+    // build-side broadcast so Spark's rule can match it via sameResult. See
+    // CometSpark34AqeDppFallbackRule's class docstring.
+    //
+    // On 3.5+, CometPlanAdaptiveDynamicPruningFilters rewrites SABs directly and this fallback
+    // is not needed.
+    if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
+      return withInfo(scanExec, "AQE Dynamic Partition Pruning requires Spark 3.5+")
     }
 
     scanExec.relation match {
@@ -167,11 +180,7 @@ case class CometScanRule(session: SparkSession)
         }
 
         COMET_NATIVE_SCAN_IMPL.get() match {
-          case SCAN_AUTO =>
-            // TODO add support for native_datafusion in the future
-            nativeIcebergCompatScan(session, scanExec, r, hadoopConf)
-              .getOrElse(scanExec)
-          case SCAN_NATIVE_DATAFUSION =>
+          case SCAN_AUTO | SCAN_NATIVE_DATAFUSION =>
             nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_ICEBERG_COMPAT =>
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
@@ -188,6 +197,12 @@ case class CometScanRule(session: SparkSession)
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
       hadoopConf: Configuration): Option[SparkPlan] = {
+    if (!COMET_EXEC_ENABLED.get()) {
+      withInfo(
+        scanExec,
+        s"$SCAN_NATIVE_DATAFUSION scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+      return None
+    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
@@ -221,22 +236,6 @@ case class CometScanRule(session: SparkSession)
       ParquetUtils.hasFieldIds(scanExec.requiredSchema)) {
       withInfo(scanExec, "Native DataFusion scan does not support Parquet field ID matching")
       return None
-    }
-    // Case-insensitive mode with duplicate field names produces different errors
-    // in DataFusion vs Spark, so fall back to avoid incompatible error messages
-    if (!session.sessionState.conf.caseSensitiveAnalysis) {
-      val schemas = Seq(scanExec.requiredSchema, r.dataSchema)
-      for (schema <- schemas) {
-        val fieldNames =
-          schema.fieldNames.map(_.toLowerCase(java.util.Locale.ROOT))
-        if (fieldNames.length != fieldNames.distinct.length) {
-          withInfo(
-            scanExec,
-            "Native DataFusion scan does not support " +
-              "duplicate field names in case-insensitive mode")
-          return None
-        }
-      }
     }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
       return None
@@ -303,36 +302,7 @@ case class CometScanRule(session: SparkSession)
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
-      // Iceberg scan - patched version implementing SupportsComet interface
-      case s: SupportsComet if !COMET_ICEBERG_NATIVE_ENABLED.get() =>
-        val fallbackReasons = new ListBuffer[String]()
-
-        if (!s.isCometEnabled) {
-          fallbackReasons += "Comet extension is not enabled for " +
-            s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
-        }
-
-        val schemaSupported =
-          CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
-
-        if (!schemaSupported) {
-          fallbackReasons += "Comet extension is not enabled for " +
-            s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
-        }
-
-        if (s.isCometEnabled && schemaSupported) {
-          // When reading from Iceberg, we automatically enable type promotion
-          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
-          // When reading from Iceberg, we automatically disable native columnar to row
-          SQLConf.get.setConfString(COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key, "false")
-          CometBatchScanExec(
-            scanExec.clone().asInstanceOf[BatchScanExec],
-            runtimeFilters = scanExec.runtimeFilters)
-        } else {
-          withInfos(scanExec, fallbackReasons.toSet)
-        }
-
-      // Iceberg scan - detected by class name (works with unpatched Iceberg)
+      // Iceberg scan - detected by class name
       case _
           if scanExec.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
@@ -443,8 +413,11 @@ case class CometScanRule(session: SparkSession)
         // Check if table uses a FileIO implementation compatible with iceberg-rust
 
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
+          case Some(fileIO)
+              if fileIO.getClass.getName == "org.apache.iceberg.inmemory.InMemoryFileIO" =>
+            fallbackReasons += "InMemoryFileIO is not supported by Comet's native reader"
+            false
           case Some(_) =>
-            // InMemoryFileIO is now supported with table location fallback for REST catalogs
             true
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
@@ -690,6 +663,21 @@ case class CometScanRule(session: SparkSession)
   private def isDynamicPruningFilter(e: Expression): Boolean =
     e.exists(_.isInstanceOf[PlanExpression[_]])
 
+  /**
+   * Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP.
+   *
+   * Non-AQE DPP (PlanDynamicPruningFilters) runs before Comet rules and produces
+   * SubqueryBroadcastExec/SubqueryExec which Spark's execution framework resolves. AQE DPP
+   * (PlanAdaptiveDynamicPruningFilters) runs after Comet rules and searches for
+   * BroadcastHashJoinExec. It doesn't recognize Comet operators, so it can't create DPP filters
+   * correctly.
+   */
+  private def isAqeDynamicPruningFilter(e: Expression): Boolean =
+    e.exists {
+      case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
+      case _ => false
+    }
+
   private def isSchemaSupported(
       scanExec: FileSourceScanExec,
       scanImpl: String,
@@ -739,6 +727,13 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
         // we don't need specific support for collation in scans, but this
         // is a convenient place to force the whole query to fall back to Spark for now
         false
+      case s: StructType if isVariantStruct(s) =>
+        // Spark 4.0's PushVariantIntoScan rewrites a VariantType column into a struct of typed
+        // fields plus per-field VariantMetadata, expecting the scan to honor Parquet variant
+        // shredding semantics. Comet's native scans don't, so fall back to Spark.
+        fallbackReasons +=
+          s"Unsupported $name of type VariantType (shredded; not supported by $scanImpl scan)"
+        false
       case s: StructType if s.fields.isEmpty =>
         false
       case _ =>
@@ -748,6 +743,15 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
 }
 
 object CometScanRule extends Logging {
+
+  /**
+   * Tag set on a scan (`FileSourceScanExec` or `BatchScanExec`) that should be left as a plain
+   * Spark scan rather than converted to a Comet scan. Written by
+   * [[CometSpark34AqeDppFallbackRule]] on Spark < 3.5. See that rule's class docstring for the
+   * rationale.
+   */
+  val SKIP_COMET_SCAN_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
+    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
 
   /**
    * Validating object store configs can cause requests to be made to S3 APIs (such as when

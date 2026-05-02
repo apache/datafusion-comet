@@ -17,15 +17,15 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# SQL File Tests
+# Comet SQL Tests
 
 `CometSqlFileTestSuite` is a test suite that automatically discovers `.sql` test files and
 runs each query through both Spark and Comet, comparing results. This provides a lightweight
-way to add expression and operator test coverage without writing Scala test code.
+way to add expression and operator test coverage without writing Comet Scala Tests.
 
 ## Running the tests
 
-Run all SQL file tests:
+Run all Comet SQL Tests:
 
 ```shell
 ./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
@@ -76,8 +76,6 @@ A test file consists of SQL comments, directives, statements, and queries separa
 lines. Here is a minimal example:
 
 ```sql
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_abs(v double) USING parquet
 
@@ -106,15 +104,18 @@ Runs the entire file once per combination of values. Multiple `ConfigMatrix` lin
 cross product of all combinations.
 
 ```sql
--- ConfigMatrix: parquet.enable.dictionary=false,true
+-- ConfigMatrix: spark.sql.optimizer.inSetConversionThreshold=100,0
 ```
 
 This generates two test cases:
 
 ```
-sql-file: expressions/cast/cast.sql [parquet.enable.dictionary=false]
-sql-file: expressions/cast/cast.sql [parquet.enable.dictionary=true]
+sql-file: expressions/conditional/in_set.sql [spark.sql.optimizer.inSetConversionThreshold=100]
+sql-file: expressions/conditional/in_set.sql [spark.sql.optimizer.inSetConversionThreshold=0]
 ```
+
+Only add a `ConfigMatrix` directive when there is a real reason to run the test under
+multiple configurations. Do not add `ConfigMatrix` directives speculatively.
 
 #### `MinSparkVersion`
 
@@ -223,12 +224,9 @@ SELECT array(1, 2, 3)[10]
 
 2. Add the Apache license header as a SQL comment.
 
-3. Add a `ConfigMatrix` directive if the test should run with multiple Parquet configurations.
-   Most expression tests use:
-
-   ```sql
-   -- ConfigMatrix: parquet.enable.dictionary=false,true
-   ```
+3. Add a `ConfigMatrix` directive only if the test needs to run under multiple configurations
+   (e.g., testing behavior that varies with a specific Spark config). Do not add `ConfigMatrix`
+   directives speculatively.
 
 4. Create tables and insert test data using `statement` blocks. Include edge cases such as
    `NULL`, boundary values, and negative numbers.

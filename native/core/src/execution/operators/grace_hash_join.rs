@@ -175,17 +175,17 @@ impl SpillWriter {
 struct SpillReaderExec {
     spill_file: RefCountedTempFile,
     schema: SchemaRef,
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
 }
 
 impl SpillReaderExec {
     fn new(spill_file: RefCountedTempFile, schema: SchemaRef) -> Self {
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
             datafusion::physical_plan::execution_plan::EmissionType::Incremental,
             datafusion::physical_plan::execution_plan::Boundedness::Bounded,
-        );
+        ));
         Self {
             spill_file,
             schema,
@@ -224,7 +224,7 @@ impl ExecutionPlan for SpillReaderExec {
         Ok(self)
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
@@ -334,17 +334,17 @@ impl ExecutionPlan for SpillReaderExec {
 struct StreamSourceExec {
     stream: Mutex<Option<SendableRecordBatchStream>>,
     schema: SchemaRef,
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
 }
 
 impl StreamSourceExec {
     fn new(stream: SendableRecordBatchStream, schema: SchemaRef) -> Self {
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
             datafusion::physical_plan::execution_plan::EmissionType::Incremental,
             datafusion::physical_plan::execution_plan::Boundedness::Bounded,
-        );
+        ));
         Self {
             stream: Mutex::new(Some(stream)),
             schema,
@@ -389,7 +389,7 @@ impl ExecutionPlan for StreamSourceExec {
         Ok(self)
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
@@ -487,7 +487,7 @@ pub struct GraceHashJoinExec {
     /// Output schema
     schema: SchemaRef,
     /// Plan properties cache
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -517,6 +517,7 @@ impl GraceHashJoinExec {
             None,
             PartitionMode::CollectLeft,
             NullEquality::NullEqualsNothing,
+            false,
         )?;
         let (schema, cache) = if build_left {
             (hash_join.schema(), hash_join.properties().clone())
@@ -598,7 +599,7 @@ impl ExecutionPlan for GraceHashJoinExec {
         )?))
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
@@ -1103,6 +1104,7 @@ fn execute_hash_join(
             None,
             PartitionMode::CollectLeft,
             NullEquality::NullEqualsNothing,
+            false,
         )?;
         hash_join.execute(0, context_for_join_output(context))
     } else {
@@ -1115,6 +1117,7 @@ fn execute_hash_join(
             None,
             PartitionMode::CollectLeft,
             NullEquality::NullEqualsNothing,
+            false,
         )?);
         let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
         swapped.execute(0, context_for_join_output(context))

@@ -22,13 +22,21 @@ package org.apache.comet.exec
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetWriter
+import org.apache.parquet.hadoop.api.WriteSupport
+import org.apache.parquet.hadoop.api.WriteSupport.WriteContext
+import org.apache.parquet.io.api.RecordConsumer
+import org.apache.parquet.schema.MessageTypeParser
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -58,6 +66,42 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           checkSparkAnswer(df)
         }
       }
+    }
+  }
+
+  test("native reader duplicate fields in case-insensitive mode") {
+    withTempPath { path =>
+      // Write parquet with columns A, B, b (B and b are duplicates case-insensitively)
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        spark
+          .range(5)
+          .selectExpr("id as A", "id as B", "id as b")
+          .write
+          .mode("overwrite")
+          .parquet(path.toString)
+      }
+      val tbl = s"dup_fields_${System.currentTimeMillis()}"
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        sql(s"create table $tbl (A long, B long) using parquet options (path '${path}')")
+      }
+      // In case-insensitive mode, selecting B should fail because both B and b match
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+        val e = intercept[Exception] {
+          sql(s"select B from $tbl").collect()
+        }
+        assert(
+          e.getMessage.contains("duplicate field") ||
+            e.getMessage.contains("Found duplicate field") ||
+            (e.getCause != null && e.getCause.getMessage.contains("duplicate field")) ||
+            (e.getCause != null && e.getCause.getMessage.contains("Found duplicate field")),
+          s"Expected duplicate field error, got: ${e.getMessage}")
+      }
+      // In case-sensitive mode, selecting B should work fine
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        val df = sql(s"select A from $tbl")
+        assert(df.collect().length == 5)
+      }
+      sql(s"drop table if exists $tbl")
     }
   }
 
@@ -257,8 +301,8 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   test("native reader - read a STRUCT subfield - field from second") {
     testSingleLineQuery(
       """
-          |select 1 a, named_struct('a', 1, 'b', 'n') c0
-          |""".stripMargin,
+        |select 1 a, named_struct('a', 1, 'b', 'n') c0
+        |""".stripMargin,
       "select c0.b from tbl")
   }
 
@@ -345,6 +389,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("native reader - select struct field with user defined schema") {
+    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     // extract existing A column
     var readSchema = new StructType().add(
       "c0",
@@ -562,8 +607,112 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   test("native reader - support ARRAY literal nested ARRAY fields") {
     testSingleLineQuery(
       """
-          |select 1 a
-          |""".stripMargin,
+        |select 1 a
+        |""".stripMargin,
       "select array(array(1, 2, null), array(), array(10), null, array(null)) from tbl")
   }
+
+  // Regression test found during DataFusion 53 upgrade (PR #3629).
+  // Spark's SchemaPruningSuite tests (e.g. "select a single complex field array
+  // and in clause", "select explode of nested field of array of struct") were
+  // failing because wrap_all_type_mismatches in Comet's schema adapter looked up
+  // the logical field by column index instead of by name. Filter expressions
+  // built against the pruned required_schema had "friends" at index 0, but the
+  // full logical_file_schema had "id: Int32" at index 0.
+  test("native reader - nested schema pruning with array of struct and filter") {
+    testSingleLineQuery(
+      """
+        |select
+        |  0 as id,
+        |  named_struct('first', 'Jane', 'middle', 'X.', 'last', 'Doe') as name,
+        |  '123 Main Street' as address,
+        |  1 as pets,
+        |  array(
+        |    named_struct('first', 'Susan', 'middle', 'Z.', 'last', 'Smith')
+        |  ) as friends
+        |union all
+        |select
+        |  1 as id,
+        |  named_struct('first', 'John', 'middle', 'Y.', 'last', 'Doe') as name,
+        |  '321 Wall Street' as address,
+        |  3 as pets,
+        |  array(
+        |    named_struct('first', 'Alice', 'middle', 'A.', 'last', 'Jones')
+        |  ) as friends
+        |""".stripMargin,
+      "select friends.middle from tbl where friends.first[0] = 'Susan'")
+  }
+
+  // SPARK-39393: bare "repeated int32" (protobuf-style, no wrapping list group)
+  // should be readable without crashing on missing def levels.
+  // SPARK-39393: Parquet does not support predicate pushdown on repeated columns.
+  // A bare "repeated int32 f" (protobuf-style, no wrapping LIST group) must not
+  // have IsNotNull pushed into the Parquet reader. Comet filters these out in
+  // CometScanExec.supportedDataFilters so the predicate is evaluated after
+  // reading. Without that, DataFusion's list predicate pushdown would push
+  // IsNotNull as a RowFilter, triggering an arrow-rs ListArrayReader crash.
+  test("native reader - read bare repeated primitive field") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "protobuf-parquet").toString
+      val schema =
+        """message protobuf_style {
+          |  repeated int32 f;
+          |}
+        """.stripMargin
+
+      writeDirect(
+        path,
+        schema,
+        { rc =>
+          rc.startMessage()
+          rc.startField("f", 0)
+          rc.addInteger(1)
+          rc.addInteger(2)
+          rc.endField("f", 0)
+          rc.endMessage()
+        })
+
+      // Read without filter
+      checkAnswer(spark.read.parquet(dir.getCanonicalPath), Seq(Row(Seq(1, 2))))
+
+      // Read with isnotnull filter — the filter should not be pushed down into
+      // the Parquet reader for repeated primitive fields (SPARK-39393), but the
+      // query should still return correct results by evaluating the filter after
+      // reading.
+      checkAnswer(
+        spark.read.parquet(dir.getCanonicalPath).filter("isnotnull(f)"),
+        Seq(Row(Seq(1, 2))))
+    }
+  }
+
+  /** Write a Parquet file using a raw RecordConsumer for full schema control. */
+  private def writeDirect(
+      path: String,
+      schema: String,
+      recordWriters: (RecordConsumer => Unit)*): Unit = {
+    val messageType = MessageTypeParser.parseMessageType(schema)
+    val writeSupport = new DirectWriteSupport(messageType)
+    class Builder extends ParquetWriter.Builder[RecordConsumer => Unit, Builder](new Path(path)) {
+      override def getWriteSupport(conf: Configuration): WriteSupport[RecordConsumer => Unit] =
+        writeSupport
+      override def self(): Builder = this
+    }
+    val writer = new Builder().build()
+    try recordWriters.foreach(writer.write)
+    finally writer.close()
+  }
+}
+
+private class DirectWriteSupport(schema: org.apache.parquet.schema.MessageType)
+    extends WriteSupport[RecordConsumer => Unit] {
+  private var recordConsumer: RecordConsumer = _
+
+  override def init(configuration: Configuration): WriteContext =
+    new WriteContext(schema, java.util.Collections.emptyMap())
+
+  override def write(recordWriter: RecordConsumer => Unit): Unit =
+    recordWriter(recordConsumer)
+
+  override def prepareForWrite(rc: RecordConsumer): Unit =
+    this.recordConsumer = rc
 }

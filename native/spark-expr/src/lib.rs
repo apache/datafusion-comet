@@ -57,6 +57,8 @@ pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
 
 mod conditional_funcs;
 mod conversion_funcs;
+mod map_funcs;
+pub use map_funcs::spark_map_sort;
 mod math_funcs;
 mod nondetermenistic_funcs;
 
@@ -71,16 +73,17 @@ pub use comet_scalar_funcs::{
 };
 pub use csv_funcs::*;
 pub use datetime_funcs::{
-    SparkDateDiff, SparkDateTrunc, SparkHour, SparkMakeDate, SparkMinute, SparkSecond,
-    SparkUnixTimestamp, TimestampTruncExpr,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkHour, SparkHoursTransform,
+    SparkMakeDate, SparkMinute, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp,
+    TimestampTruncExpr,
 };
-pub use error::{SparkError, SparkErrorWithContext, SparkResult};
+pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
     create_modulo_expr, create_negate_expr, spark_ceil, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_make_decimal, spark_round, spark_unhex,
-    spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
+    spark_decimal_integral_div, spark_floor, spark_log, spark_make_decimal, spark_round,
+    spark_unhex, spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
     NormalizeNaNAndZero, WideDecimalBinaryExpr, WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};

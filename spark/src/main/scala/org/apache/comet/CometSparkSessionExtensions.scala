@@ -32,13 +32,55 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
-import org.apache.comet.rules.{CometExecRule, CometScanRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
  * CometDriverPlugin will register an instance of this class with Spark.
  *
- * This class is responsible for injecting Comet rules and extensions into Spark.
+ * Comet rules are injected into Spark's rule pipeline at several extension points. The execution
+ * order differs between AQE and non-AQE paths:
+ *
+ * Non-AQE (QueryExecution.preparations):
+ * {{{
+ *   1. PlanDynamicPruningFilters    -- Spark creates non-AQE DPP (SubqueryBroadcastExec)
+ *   2. PlanSubqueries               -- Spark creates SubqueryExec for scalar subqueries
+ *   3. EnsureRequirements            -- Spark inserts shuffles/sorts
+ *   4. ApplyColumnarRulesAndInsertTransitions:
+ *      a. preColumnarTransitions:   CometScanRule, CometExecRule
+ *         - CometExecRule.convertSubqueryBroadcasts converts SubqueryBroadcastExec to
+ *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
+ *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
+ *      c. postColumnarTransitions:  EliminateRedundantTransitions
+ *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
+ * }}}
+ *
+ * AQE (AdaptiveSparkPlanExec, Spark 3.5+):
+ * {{{
+ *   Initial plan:
+ *     PlanAdaptiveSubqueries:       creates SubqueryAdaptiveBroadcastExec (SAB) for AQE DPP
+ *     queryStagePreparationRules:   CometScanRule, CometExecRule
+ *       - CometExecRule.convertSubqueryBroadcasts wraps SABs in
+ *         CometSubqueryAdaptiveBroadcastExec to prevent Spark's
+ *         PlanAdaptiveDynamicPruningFilters from replacing DPP with Literal.TrueLiteral
+ *
+ *   Per stage (optimizeQueryStage + postStageCreationRules):
+ *     1. queryStageOptimizerRules:
+ *        a. PlanAdaptiveDynamicPruningFilters (Spark) -- skips wrapped SABs
+ *        b. ReuseAdaptiveSubquery (Spark)
+ *        c. CometPlanAdaptiveDynamicPruningFilters   -- converts wrapped SABs to
+ *           CometSubqueryBroadcastExec with BroadcastQueryStageExec for broadcast reuse
+ *        d. CometReuseSubquery                       -- deduplicates converted subqueries
+ *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
+ *        a. preColumnarTransitions: CometScanRule, CometExecRule (no-ops, already converted)
+ *        b. insertTransitions
+ *        c. postColumnarTransitions: EliminateRedundantTransitions
+ * }}}
+ *
+ * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
+ * and CometPlanAdaptiveDynamicPruningFilters/CometReuseSubquery are not registered. AQE DPP scans
+ * fall back to Spark so that Spark's PlanAdaptiveDynamicPruningFilters handles them natively
+ * (with DPP).
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
@@ -47,8 +89,14 @@ class CometSparkSessionExtensions
   override def apply(extensions: SparkSessionExtensions): Unit = {
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
+    // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
+    // Registered before CometScanRule/CometExecRule so tags are in place when conversion runs.
+    // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
+    injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
+    injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
@@ -132,6 +180,14 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
 
+  def isSpark41Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "4.1"
+  }
+
+  def isSpark42Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "4.2"
+  }
+
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
    * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
@@ -200,22 +256,29 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Attaches explain information to a TreeNode, rolling up the corresponding information tags
-   * from any child nodes. For now, we are using this to attach the reasons why certain Spark
-   * operators or expressions are disabled.
+   * Record a fallback reason on a `TreeNode` (a Spark operator or expression) explaining why
+   * Comet cannot accelerate it. Reasons recorded here are surfaced in extended explain output
+   * (see `ExtendedExplainInfo`) and, when `COMET_LOG_FALLBACK_REASONS` is enabled, logged as
+   * warnings. The reasons are also rolled up from child nodes so that the operator that remains
+   * in the Spark plan carries the reasons from its converted-away subtree.
+   *
+   * Call this in any code path where Comet decides not to convert a given node - serde `convert`
+   * methods returning `None`, unsupported data types, disabled configs, etc. Do not use this for
+   * informational messages that are not fallback reasons: anything tagged here is treated by the
+   * rules as a signal that the node falls back to Spark.
    *
    * @param node
-   *   The node to attach the explain information to. Typically a SparkPlan
+   *   The Spark operator or expression that is falling back to Spark.
    * @param info
-   *   Information text. Optional, may be null or empty. If not provided, then only information
-   *   from child nodes will be included.
+   *   The fallback reason. Optional, may be null or empty - pass empty only when the call is used
+   *   purely to roll up reasons from `exprs`.
    * @param exprs
-   *   Child nodes. Information attached in these nodes will be be included in the information
-   *   attached to @node
+   *   Child nodes whose own fallback reasons should be rolled up into `node`. Pass the
+   *   sub-expressions or child operators whose failure caused `node` to fall back.
    * @tparam T
-   *   The type of the TreeNode. Typically SparkPlan, AggregateExpression, or Expression
+   *   The type of the TreeNode. Typically `SparkPlan`, `AggregateExpression`, or `Expression`.
    * @return
-   *   The node with information (if any) attached
+   *   `node` with fallback reasons attached (as a side effect on its tag map).
    */
   def withInfo[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
     // support existing approach of passing in multiple infos in a newline-delimited string
@@ -228,22 +291,24 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Attaches explain information to a TreeNode, rolling up the corresponding information tags
-   * from any child nodes. For now, we are using this to attach the reasons why certain Spark
-   * operators or expressions are disabled.
+   * Record one or more fallback reasons on a `TreeNode` and roll up reasons from any child nodes.
+   * This is the set-valued form of [[withInfo]]; see that overload for the full contract.
+   *
+   * Reasons are accumulated (never overwritten) on the node's `EXTENSION_INFO` tag and are
+   * surfaced in extended explain output. When `COMET_LOG_FALLBACK_REASONS` is enabled, each new
+   * reason is also emitted as a warning.
    *
    * @param node
-   *   The node to attach the explain information to. Typically a SparkPlan
+   *   The Spark operator or expression that is falling back to Spark.
    * @param info
-   *   Information text. May contain zero or more strings. If not provided, then only information
-   *   from child nodes will be included.
+   *   The fallback reasons for this node. May be empty when the call is used purely to roll up
+   *   child reasons.
    * @param exprs
-   *   Child nodes. Information attached in these nodes will be be included in the information
-   *   attached to @node
+   *   Child nodes whose own fallback reasons should be rolled up into `node`.
    * @tparam T
-   *   The type of the TreeNode. Typically SparkPlan, AggregateExpression, or Expression
+   *   The type of the TreeNode. Typically `SparkPlan`, `AggregateExpression`, or `Expression`.
    * @return
-   *   The node with information (if any) attached
+   *   `node` with fallback reasons attached (as a side effect on its tag map).
    */
   def withInfos[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
     if (CometConf.COMET_LOG_FALLBACK_REASONS.get()) {
@@ -259,25 +324,27 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Attaches explain information to a TreeNode, rolling up the corresponding information tags
-   * from any child nodes
+   * Roll up fallback reasons from `exprs` onto `node` without adding a new reason of its own. Use
+   * this when a parent operator is itself falling back and wants to preserve the reasons recorded
+   * on its child expressions/operators so they appear together in explain output.
    *
    * @param node
-   *   The node to attach the explain information to. Typically a SparkPlan
+   *   The parent operator or expression falling back to Spark.
    * @param exprs
-   *   Child nodes. Information attached in these nodes will be be included in the information
-   *   attached to @node
+   *   Child nodes whose fallback reasons should be aggregated onto `node`.
    * @tparam T
-   *   The type of the TreeNode. Typically SparkPlan, AggregateExpression, or Expression
+   *   The type of the TreeNode. Typically `SparkPlan`, `AggregateExpression`, or `Expression`.
    * @return
-   *   The node with information (if any) attached
+   *   `node` with the rolled-up reasons attached (as a side effect on its tag map).
    */
   def withInfo[T <: TreeNode[_]](node: T, exprs: T*): T = {
     withInfos(node, Set.empty, exprs: _*)
   }
 
   /**
-   * Checks whether a TreeNode has any explain information attached
+   * True if any fallback reason has been recorded on `node` (via [[withInfo]] / [[withInfos]]).
+   * Callers that need to short-circuit when a prior rule pass has already decided a node falls
+   * back can use this as the sticky signal.
    */
   def hasExplainInfo(node: TreeNode[_]): Boolean = {
     node.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.nonEmpty)

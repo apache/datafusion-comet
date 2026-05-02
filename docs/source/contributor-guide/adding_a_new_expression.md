@@ -25,7 +25,7 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 ## Finding an Expression to Add
 
-You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](https://github.com/apache/datafusion-comet/blob/main/docs/spark_expressions_support.md) to see which expressions are not yet supported.
+You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](spark_expressions_support.md) to see which expressions are not yet supported.
 
 ## Implementing the Expression
 
@@ -70,10 +70,12 @@ object CometUnhex extends CometExpressionSerde[Unhex] {
 }
 ```
 
-The `CometExpressionSerde` trait provides three methods you can override:
+The `CometExpressionSerde` trait provides several methods you can override:
 
 - `convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr]` - **Required**. Converts the Spark expression to protobuf. Return `None` if the expression cannot be converted.
-- `getSupportLevel(expr: T): SupportLevel` - Optional. Returns the level of support for the expression. See "Using getSupportLevel" section below for details.
+- `getSupportLevel(expr: T): SupportLevel` - Optional. Returns the [support level](#support-levels) for the expression at planning time, based on a specific expression instance. See [Using getSupportLevel](#using-getsupportlevel) below for details.
+- `getIncompatibleReasons(): Seq[String]` - Optional. Returns reasons why this expression may produce different results than Spark. Used to generate the Compatibility Guide. See [Documenting Incompatible and Unsupported Reasons](#documenting-incompatible-and-unsupported-reasons) below.
+- `getUnsupportedReasons(): Seq[String]` - Optional. Returns reasons why this expression may not be supported by Comet (for example, unsupported data types or format strings). Used to generate the Compatibility Guide. See [Documenting Incompatible and Unsupported Reasons](#documenting-incompatible-and-unsupported-reasons) below.
 - `getExprConfigName(expr: T): String` - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.
 
 For simple scalar functions that map directly to a DataFusion function, you can use the built-in `CometScalarFunction` implementation:
@@ -81,6 +83,40 @@ For simple scalar functions that map directly to a DataFusion function, you can 
 ```scala
 classOf[Cos] -> CometScalarFunction("cos")
 ```
+
+#### When to set the return type explicitly
+
+`CometScalarFunction(name)` and the lower-level `scalarFunctionExprToProto(name, args)` helper both produce a protobuf `ScalarFunc` message **without** a `return_type` field. That is fine when the function name does not collide with a DataFusion built-in, or when it does collide and the Spark and DataFusion versions take the same arity and types. In that case the native planner consults DataFusion's UDF registry only to resolve the return type, then swaps in Comet's UDF for execution.
+
+It is **not** fine when the Spark function and the DataFusion built-in differ in arity or input types. The native planner calls `coerce_types` and `return_field_from_args` on DataFusion's UDF before Comet's UDF is selected, and a signature mismatch fails the query at execution time with an error like:
+
+```
+org.apache.comet.CometNativeException: Error from DataFusion:
+Function 'levenshtein' expects 2 arguments but received 3.
+```
+
+The classic case is `levenshtein`. Spark accepts an optional 3rd `threshold` argument, DataFusion's built-in is 2-arg only, so the 3-arg form fails native execution unless the serde sets the return type explicitly. Other names that exist in both engines with potentially different signatures include `concat`, `coalesce`, `sha2`, and `regexp_replace`. If you are adding a function whose name is shared with `datafusion-functions`, check the upstream signature before deciding how to serialize.
+
+To avoid the registry lookup, write a custom `CometExpressionSerde` and use `scalarFunctionExprToProtoWithReturnType`, passing the Spark expression's declared `dataType`:
+
+```scala
+object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
+  override def convert(
+      expr: Levenshtein,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "levenshtein",
+      expr.dataType,
+      false,
+      childExprs: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
+```
+
+When the return type is set on the proto, the native planner skips the registry lookup entirely and routes straight to the Comet UDF registered in `create_comet_physical_fun_with_eval_mode`.
 
 #### Registering the Expression Handler
 
@@ -101,6 +137,16 @@ A few things to note:
 - `scalarFunctionExprToProtoWithReturnType` is for scalar functions that need to return type information. Your expression may use a different method depending on the type of expression.
 - Use helper methods like `createBinaryExpr` and `createUnaryExpr` from `QueryPlanSerde` for common expression patterns.
 
+#### Support Levels
+
+The `SupportLevel` sealed trait has three possible values:
+
+- **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases unlikely to affect most users. This is the default if you don't override `getSupportLevel`.
+- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can differ from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
+- **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. Spark will fall back to its native execution.
+
+All three accept an optional `notes` parameter to provide additional context that is logged for debugging.
+
 #### Using getSupportLevel
 
 The `getSupportLevel` method allows you to control whether an expression should be executed by Comet based on various conditions such as data types, parameter values, or other expression-specific constraints. This is particularly useful when:
@@ -108,14 +154,6 @@ The `getSupportLevel` method allows you to control whether an expression should 
 1. Your expression only supports specific data types
 2. Your expression has known incompatibilities with Spark's behavior
 3. Your expression has edge cases that aren't yet supported
-
-The method returns one of three `SupportLevel` values:
-
-- **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases that are unlikely to be an issue for most users. This is the default if you don't override `getSupportLevel`.
-- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can be different from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
-- **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. The expression will not be used and Spark will fall back to its native execution.
-
-All three support levels accept an optional `notes` parameter to provide additional context about the support level.
 
 ##### Examples
 
@@ -208,17 +246,74 @@ When the query planner encounters an expression:
 
 Any notes provided will be logged to help with debugging and understanding why an expression was not used.
 
+#### Documenting Incompatible and Unsupported Reasons
+
+In addition to `getSupportLevel`, which governs runtime planning decisions, the serde trait exposes two static documentation methods:
+
+- `getIncompatibleReasons(): Seq[String]` - Reasons the expression may produce different results than Spark.
+- `getUnsupportedReasons(): Seq[String]` - Reasons the expression, or certain usages of it, may not be supported by Comet.
+
+These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages under `docs/source/user-guide/latest/compatibility/expressions/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`). Each reason is rendered as a bullet in the corresponding page.
+
+Key differences from `getSupportLevel`:
+
+- **No expression instance.** Both methods take no arguments, so they describe the expression in general rather than a specific call site. Use `getSupportLevel` for checks that depend on data types, argument values, or other per-instance details.
+- **Markdown-friendly.** Each returned string is written to a Markdown document, so you can embed backticks, links, and line breaks. Keep each reason self-contained, since they are rendered as separate bullets.
+- **Regenerated by CI.** The lists are collected by `GenerateDocs` and published by CI on every merge to `main`. The generated Markdown is not committed to the repo, so you do not need to regenerate or commit it yourself. The reasons do not have to match the `notes` passed to `Compatible`, `Incompatible`, or `Unsupported`, but keeping them consistent avoids confusing users.
+
+##### Example: Incompatibility note
+
+```scala
+object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Does not support `+Infinity` and `-Infinity` for numeric types (float, double)." +
+      " (https://github.com/apache/datafusion-comet/issues/3016)")
+
+  override def getSupportLevel(expr: StructsToJson): SupportLevel =
+    Incompatible(
+      Some(
+        "Does not support Infinity/-Infinity for numeric types" +
+          " (https://github.com/apache/datafusion-comet/issues/3016)"))
+
+  // ... convert ...
+}
+```
+
+##### Example: Unsupported note
+
+```scala
+object CometSortArray extends CometExpressionSerde[SortArray] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Nested arrays with `Struct` or `Null` child values are not supported natively and will" +
+      " fall back to Spark.")
+
+  // ... convert ...
+}
+```
+
+##### Example: Enumerating supported values
+
+When the expression only supports a known set of argument values, build the reason from that set so the documentation stays in sync with the code:
+
+```scala
+override def getUnsupportedReasons(): Seq[String] = Seq(
+  "Only the following formats are supported:" +
+    supportedFormats.keys.toSeq.sorted
+      .map(k => s"`$k`")
+      .mkString("\n  - ", "\n  - ", ""))
+```
+
 #### Adding Spark-side Tests for the New Expression
 
-It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a SQL test file using the SQL file test framework. This approach is simpler than writing Scala test code and makes it easy to cover many input combinations and edge cases.
+It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a Comet SQL Test. This approach is simpler than writing Comet Scala Tests and makes it easy to cover many input combinations and edge cases.
 
-##### Writing a SQL test file
+##### Writing a Comet SQL Test
 
 Create a `.sql` file under the appropriate subdirectory in `spark/src/test/resources/sql-tests/expressions/` (e.g., `string/`, `math/`, `array/`). The file should create a table with test data, then run queries that exercise the expression. Here is an example for the `unhex` expression:
 
 ```sql
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_unhex(col string) USING parquet
 
@@ -252,17 +347,17 @@ Run the test with:
 ./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite unhex" -Dtest=none
 ```
 
-For full documentation on the test file format — including directives like `ConfigMatrix`, query modes like `spark_answer_only` and `tolerance`, handling known bugs with `ignore(...)`, and tips for writing thorough tests — see the [SQL File Tests](sql-file-tests.md) guide.
+For full documentation on the test file format, including directives like `ConfigMatrix`, query modes like `spark_answer_only` and `tolerance`, handling known bugs with `ignore(...)`, and tips for writing thorough tests, see the [Comet SQL Tests](sql-file-tests.md) guide.
 
 ##### Tips
 
-- **Cover both column references and literals.** Comet often uses different code paths for each. The SQL file test suite automatically disables constant folding, so all-literal queries are evaluated natively.
+- **Cover both column references and literals.** Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated natively.
 - **Include edge cases** such as `NULL`, empty strings, boundary values, `NaN`, and multibyte UTF-8 characters.
 - **Keep one file per expression** to make failures easy to locate.
 
-##### Scala tests (alternative)
+##### Comet Scala Tests (alternative)
 
-For cases that require programmatic setup or custom assertions beyond what SQL files support, you can also add Scala test cases in `CometExpressionSuite` using the `checkSparkAnswerAndOperator` method:
+For cases that require programmatic setup or custom assertions beyond what SQL files support, you can also add Comet Scala Tests in `CometExpressionSuite` using the `checkSparkAnswerAndOperator` method:
 
 ```scala
 test("unhex") {
@@ -286,7 +381,7 @@ test("unhex") {
 }
 ```
 
-When writing Scala tests with literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:
+When writing Comet Scala Tests with literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:
 
 ```scala
 test("my_func with literals") {

@@ -22,11 +22,18 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.Files
 
+import scala.collection.mutable
+import scala.jdk.CollectionConverters._
+
+import org.apache.spark.CometListenerBusUtils
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.iceberg.RESTCatalogHelper
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
@@ -541,6 +548,69 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         checkIcebergNativeScan("SELECT * FROM test_cat.db.positional_delete_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.positional_delete_test")
+      }
+    }
+  }
+
+  test("bytes_scanned includes delete file I/O") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.delete_bytes_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark
+          .range(1000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .coalesce(1)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.delete_bytes_test")
+
+        // Scan before deletes: data files only
+        val dfBefore = spark.sql("SELECT * FROM test_cat.db.delete_bytes_test")
+        val scanBefore = dfBefore.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+          .head
+        dfBefore.collect()
+        val bytesBefore = scanBefore.metrics("bytes_scanned").value
+        assert(bytesBefore > 0, s"bytes_scanned before deletes should be > 0, got $bytesBefore")
+
+        // Create position delete files
+        spark.sql("DELETE FROM test_cat.db.delete_bytes_test WHERE id < 100")
+
+        // Scan after deletes: data files + delete files
+        val dfAfter = spark.sql("SELECT * FROM test_cat.db.delete_bytes_test")
+        val scanAfter = dfAfter.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+          .head
+        dfAfter.collect()
+        val bytesAfter = scanAfter.metrics("bytes_scanned").value
+
+        assert(
+          bytesAfter > bytesBefore,
+          s"bytes_scanned should increase after deletes: before=$bytesBefore, after=$bytesAfter")
+
+        spark.sql("DROP TABLE test_cat.db.delete_bytes_test")
       }
     }
   }
@@ -1442,6 +1512,9 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
         assert(metrics("output_rows").value == 10000)
         assert(metrics("num_splits").value > 0)
+        assert(
+          metrics("bytes_scanned").value > 0,
+          "bytes_scanned should be > 0 after reading data files")
         // ImmutableSQLMetric prevents these from being reset to 0 after execution
         assert(
           metrics("totalDataManifest").value > 0,
@@ -2242,7 +2315,164 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     }
   }
 
+  // Regression test for https://github.com/apache/datafusion-comet/issues/3856
+  // Fixed in https://github.com/apache/iceberg-rust/pull/2301
+  test("migration - INT96 timestamp") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
+        import org.apache.spark.sql.functions.monotonically_increasing_id
+        import org.apache.spark.sql.types._
+
+        val dataPath = s"${warehouseDir.getAbsolutePath}/int96_data"
+        val numRows = 50
+        val r = new scala.util.Random(42)
+
+        // Exercise INT96 coercion in flat columns, structs, arrays, and maps
+        val fuzzSchema = StructType(
+          Seq(
+            StructField("ts", TimestampType, nullable = true),
+            StructField("value", DoubleType, nullable = true),
+            StructField(
+              "ts_struct",
+              StructType(
+                Seq(
+                  StructField("inner_ts", TimestampType, nullable = true),
+                  StructField("inner_val", DoubleType, nullable = true))),
+              nullable = true),
+            StructField(
+              "ts_array",
+              ArrayType(TimestampType, containsNull = true),
+              nullable = true),
+            StructField("ts_map", MapType(IntegerType, TimestampType), nullable = true)))
+
+        // Default FuzzDataGenerator baseDate is year 3333, outside the i64 nanosecond
+        // range (~1677-2262). This triggers the INT96 overflow bug if coercion is missing.
+        val dataGenOptions = DataGenOptions(allowNull = false)
+        val fuzzDf =
+          FuzzDataGenerator.generateDataFrame(r, spark, fuzzSchema, numRows, dataGenOptions)
+
+        val df = fuzzDf.withColumn("id", monotonically_increasing_id())
+
+        // Write Parquet with INT96 timestamps
+        withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          df.write.mode("overwrite").parquet(dataPath)
+        }
+
+        // Verify all timestamp columns in the Parquet file use INT96
+        val parquetFiles = new java.io.File(dataPath)
+          .listFiles()
+          .filter(f => f.getName.endsWith(".parquet"))
+        assert(parquetFiles.nonEmpty, "Expected at least one Parquet file")
+
+        val parquetFile = parquetFiles.head
+        val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
+            new org.apache.hadoop.fs.Path(parquetFile.getAbsolutePath),
+            spark.sessionState.newHadoopConf()))
+        try {
+          val parquetSchema = reader.getFooter.getFileMetaData.getSchema
+          val int96Columns = parquetSchema.getColumns.asScala
+            .filter(_.getPrimitiveType.getPrimitiveTypeName ==
+              org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT96)
+            .map(_.getPath.mkString("."))
+          // Expect INT96 for: ts, ts_struct.inner_ts, ts_array.list.element, ts_map.value
+          assert(
+            int96Columns.size >= 4,
+            s"Expected at least 4 INT96 columns but found ${int96Columns.size}: ${int96Columns.mkString(", ")}")
+        } finally {
+          reader.close()
+        }
+
+        // Create an unpartitioned Iceberg table and import the Parquet files
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+        spark.sql("""
+          CREATE TABLE test_cat.db.int96_test (
+            ts TIMESTAMP,
+            value DOUBLE,
+            ts_struct STRUCT<inner_ts: TIMESTAMP, inner_val: DOUBLE>,
+            ts_array ARRAY<TIMESTAMP>,
+            ts_map MAP<INT, TIMESTAMP>,
+            id BIGINT
+          ) USING iceberg
+        """)
+
+        try {
+          val tableUtilClass = Class.forName("org.apache.iceberg.spark.SparkTableUtil")
+          val sparkCatalog = spark.sessionState.catalogManager
+            .catalog("test_cat")
+            .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+          val ident =
+            org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "int96_test")
+          val sparkTable = sparkCatalog
+            .loadTable(ident)
+            .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+          val table = sparkTable.table()
+
+          val stagingDir = s"${warehouseDir.getAbsolutePath}/staging"
+
+          spark.sql(s"""CREATE TABLE parquet_temp USING parquet LOCATION '$dataPath'""")
+          val sourceIdent = new org.apache.spark.sql.catalyst.TableIdentifier("parquet_temp")
+
+          val importMethod = tableUtilClass.getMethod(
+            "importSparkTable",
+            classOf[org.apache.spark.sql.SparkSession],
+            classOf[org.apache.spark.sql.catalyst.TableIdentifier],
+            classOf[org.apache.iceberg.Table],
+            classOf[String])
+          importMethod.invoke(null, spark, sourceIdent, table, stagingDir)
+
+          val distinctCount = spark
+            .sql("SELECT COUNT(DISTINCT id) FROM test_cat.db.int96_test")
+            .collect()(0)
+            .getLong(0)
+          assert(
+            distinctCount == numRows,
+            s"Expected $numRows distinct IDs but got $distinctCount")
+
+          // Spark's Iceberg reader returns null for INT96 timestamps inside structs,
+          // so we can't use checkIcebergNativeScan (which compares against Spark) for
+          // ts_struct. Instead, compare Comet's read against the raw Parquet source.
+          checkIcebergNativeScan(
+            "SELECT id, ts, value, ts_array, ts_map FROM test_cat.db.int96_test ORDER BY id")
+          checkIcebergNativeScan("SELECT id, ts FROM test_cat.db.int96_test ORDER BY id")
+          checkIcebergNativeScan("SELECT id, ts_array FROM test_cat.db.int96_test ORDER BY id")
+          checkIcebergNativeScan("SELECT id, ts_map FROM test_cat.db.int96_test ORDER BY id")
+
+          // Validate ts_struct against raw Parquet since Spark's Iceberg reader can't read it
+          val icebergStructDf = spark
+            .sql("SELECT id, ts_struct FROM test_cat.db.int96_test ORDER BY id")
+            .collect()
+          val parquetStructDf = spark.read
+            .parquet(dataPath)
+            .select("id", "ts_struct")
+            .orderBy("id")
+            .collect()
+          assert(
+            icebergStructDf.sameElements(parquetStructDf),
+            "ts_struct mismatch between Comet Iceberg read and raw Parquet")
+
+          spark.sql("DROP TABLE test_cat.db.int96_test")
+          spark.sql("DROP TABLE parquet_temp")
+        } catch {
+          case _: ClassNotFoundException =>
+            cancel("SparkTableUtil not available")
+        }
+      }
+    }
+  }
+
   test("REST catalog with native Iceberg scan") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withRESTCatalog { (restUri, _, warehouseDir) =>
@@ -2518,6 +2748,189 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         """)
 
         spark.sql("DROP TABLE test_cat.db.geolocation_trips")
+      }
+    }
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/3860
+  // Fixed in https://github.com/apache/iceberg-rust/pull/2307
+  test("filter with nested types in migrated table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val dataPath = s"${warehouseDir.getAbsolutePath}/nested_data"
+
+        // Write Parquet WITHOUT Iceberg (simulates pre-migration data)
+        // id is last so its leaf index is after all nested type leaves
+        spark
+          .sql("""
+          SELECT
+            named_struct('age', id * 10, 'score', id * 1.5) AS info,
+            array(id, id + 1) AS tags,
+            map('key', id) AS props,
+            id
+          FROM range(10)
+        """)
+          .write
+          .parquet(dataPath)
+
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+        spark.sql("""
+          CREATE TABLE test_cat.db.nested_migrate (
+            info STRUCT<age: BIGINT, score: DOUBLE>,
+            tags ARRAY<BIGINT>,
+            props MAP<STRING, BIGINT>,
+            id BIGINT
+          ) USING iceberg
+        """)
+
+        try {
+          val tableUtilClass = Class.forName("org.apache.iceberg.spark.SparkTableUtil")
+          val sparkCatalog = spark.sessionState.catalogManager
+            .catalog("test_cat")
+            .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+          val ident =
+            org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "nested_migrate")
+          val sparkTable = sparkCatalog
+            .loadTable(ident)
+            .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+          val table = sparkTable.table()
+
+          val stagingDir = s"${warehouseDir.getAbsolutePath}/staging"
+          spark.sql(s"""CREATE TABLE parquet_temp USING parquet LOCATION '$dataPath'""")
+          val sourceIdent = new org.apache.spark.sql.catalyst.TableIdentifier("parquet_temp")
+
+          val importMethod = tableUtilClass.getMethod(
+            "importSparkTable",
+            classOf[org.apache.spark.sql.SparkSession],
+            classOf[org.apache.spark.sql.catalyst.TableIdentifier],
+            classOf[org.apache.iceberg.Table],
+            classOf[String])
+          importMethod.invoke(null, spark, sourceIdent, table, stagingDir)
+
+          // Select only flat columns to avoid Spark's Iceberg reader returning
+          // null for struct fields in migrated tables (separate Spark bug)
+          checkIcebergNativeScan("SELECT id FROM test_cat.db.nested_migrate ORDER BY id")
+
+          // Filter on root column with nested types in migrated table:
+          // Parquet files lack Iceberg field IDs, so iceberg-rust falls back to
+          // name mapping where column_map resolution was broken for nested types
+          checkIcebergNativeScan(
+            "SELECT id FROM test_cat.db.nested_migrate WHERE id > 5 ORDER BY id")
+
+          spark.sql("DROP TABLE test_cat.db.nested_migrate")
+          spark.sql("DROP TABLE parquet_temp")
+        } catch {
+          case _: ClassNotFoundException =>
+            cancel("SparkTableUtil not available")
+        }
+      }
+    }
+  }
+
+  test("task-level inputMetrics.bytesRead is populated for Iceberg native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.task_metrics_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark
+          .range(10000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .repartition(5)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.task_metrics_test")
+
+        val bytesReadValues = mutable.ArrayBuffer.empty[Long]
+        val recordsReadValues = mutable.ArrayBuffer.empty[Long]
+
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val im = taskEnd.taskMetrics.inputMetrics
+            if (im.bytesRead > 0) {
+              bytesReadValues.synchronized {
+                bytesReadValues += im.bytesRead
+                recordsReadValues += im.recordsRead
+              }
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        try {
+          val query = "SELECT * FROM test_cat.db.task_metrics_test"
+
+          // Same drain-run-drain pattern as CometTaskMetricsSuite's shuffle test
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+          // Baseline: iceberg-Java scan (Comet native disabled)
+          withSQLConf(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "false") {
+            bytesReadValues.clear()
+            recordsReadValues.clear()
+            spark.sql(query).collect()
+            CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+          }
+          val sparkBytes = bytesReadValues.sum
+          val sparkRecords = recordsReadValues.sum
+
+          // Comet native Iceberg scan
+          bytesReadValues.clear()
+          recordsReadValues.clear()
+          val df = spark.sql(query)
+
+          val scanNodes = df.queryExecution.executedPlan
+            .collectLeaves()
+            .collect { case s: CometIcebergNativeScanExec => s }
+          assert(scanNodes.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+
+          df.collect()
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+          val cometBytes = bytesReadValues.sum
+          val cometRecords = recordsReadValues.sum
+
+          // Both paths should report metrics
+          assert(sparkBytes > 0, s"Spark bytesRead should be > 0, got $sparkBytes")
+          assert(sparkRecords > 0, s"Spark recordsRead should be > 0, got $sparkRecords")
+          assert(cometBytes > 0, s"Comet bytesRead should be > 0, got $cometBytes")
+          assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
+
+          assert(
+            cometRecords == sparkRecords,
+            s"recordsRead mismatch: comet=$cometRecords, spark=$sparkRecords")
+
+          // SQL-level metric should match task-level metric
+          val sqlBytes = scanNodes.head.metrics("bytes_scanned").value
+          assert(
+            sqlBytes == cometBytes,
+            s"SQL bytes_scanned ($sqlBytes) should match task bytesRead ($cometBytes)")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+          spark.sql("DROP TABLE test_cat.db.task_metrics_test")
+        }
       }
     }
   }

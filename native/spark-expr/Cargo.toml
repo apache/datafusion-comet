@@ -33,9 +33,9 @@ datafusion = { workspace = true }
 chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = { workspace = true }
+# preserve_order: needed for get_json_object to match Spark's JSON key ordering
+serde_json = { version = "1.0", features = ["preserve_order"] }
+datafusion-comet-common = { workspace = true }
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
@@ -111,4 +111,8 @@ harness = false
 
 [[bench]]
 name = "cast_non_int_numeric_timestamp"
+harness = false
+
+[[bench]]
+name = "map_sort"
 harness = false
