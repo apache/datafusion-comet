@@ -46,6 +46,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
   private val supportedCompressionCodes = Set("none", "snappy", "lz4", "zstd")
 
+  private val supportedFilesystemProtocols = Set("file", "hdfs", "s3a")
+
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
 
@@ -58,9 +60,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case cmd: InsertIntoHadoopFsRelationCommand =>
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
-            if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
-                .startsWith("hdfs:")) {
-              return Unsupported(Some("Supported output filesystems: local, HDFS"))
+            if (!isSupportedFilesystemProtocol(cmd.outputPath.toString)) {
+              return Unsupported(Some("Supported output filesystems: local, HDFS, S3"))
             }
 
             if (cmd.bucketSpec.isDefined) {
@@ -202,6 +203,11 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       }
 
     CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
+  }
+
+  private def isSupportedFilesystemProtocol(outputPath: String) = {
+    supportedFilesystemProtocols
+      .exists(protocol => outputPath.startsWith(s"${protocol}:"))
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {

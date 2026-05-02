@@ -372,6 +372,11 @@ pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>)
     }
 }
 
+pub fn is_s3_scheme(url: &Url) -> bool {
+    let scheme = url.scheme();
+    scheme == "s3a"
+}
+
 // Creates an HDFS object store from a URL using the native HDFS implementation
 #[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
 fn create_hdfs_object_store(
@@ -396,6 +401,16 @@ pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, objec
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
 
+    opendal::Operator::new(builder)
+        .map_err(|error| object_store::Error::Generic {
+            store: "hdfs-opendal",
+            source: error.into(),
+        })
+        .map(|op| op.finish())
+}
+
+pub(crate) fn create_s3_operator(url: &Url) -> Result<opendal::Operator, object_store::Error> {
+    let builder = opendal::services::S3::default();
     opendal::Operator::new(builder)
         .map_err(|error| object_store::Error::Generic {
             store: "hdfs-opendal",

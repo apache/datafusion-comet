@@ -32,7 +32,7 @@ use opendal::Operator;
 use std::io::Cursor;
 
 use crate::execution::shuffle::CompressionCodec;
-use crate::parquet::parquet_support::is_hdfs_scheme;
+use crate::parquet::parquet_support::{is_hdfs_scheme, is_s3_scheme};
 #[cfg(feature = "hdfs-opendal")]
 use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
 use arrow::datatypes::{Schema, SchemaRef};
@@ -335,6 +335,8 @@ impl ParquetWriterExec {
                     "HDFS support is not enabled. Rebuild with the 'hdfs-opendal' feature.".into(),
                 ))
             }
+        } else if is_s3_scheme(&url) {
+
         } else if output_file_path.starts_with("file://")
             || output_file_path.starts_with("file:")
             || !output_file_path.contains("://")
