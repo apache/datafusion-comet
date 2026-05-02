@@ -309,7 +309,6 @@ object CometShuffleExchangeExec
    */
   private def nativeShuffleFailureReasons(s: ShuffleExchangeExec): Seq[String] = {
     val conf = SQLConf.get
-    val strictFloatingPoint = CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get(conf)
 
     /**
      * Determine which data types are supported as partition columns in native shuffle.
@@ -331,26 +330,6 @@ object CometShuffleExchangeExec
         // https://github.com/apache/datafusion-comet/issues/3079
         // Decimals with precision > 18 require Java BigDecimal conversion before hashing
         // d.precision <= 18
-        true
-      case _ =>
-        false
-    }
-
-    /**
-     * Determine which data types are supported as partition columns in native shuffle.
-     *
-     * For RangePartitioning this defines the key that determines how data should be collocated
-     * for operations like `orderBy`, `repartitionByRange`. Native code does not support sorting
-     * complex types.
-     */
-    def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
-      // Collated strings require collation-aware ordering; Comet only compares raw bytes.
-      case st: StringType if isStringCollationType(st) => false
-      case _: FloatType | _: DoubleType =>
-        !strictFloatingPoint
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-          _: DecimalType | _: DateType =>
         true
       case _ =>
         false
@@ -413,6 +392,28 @@ object CometShuffleExchangeExec
       case SinglePartition =>
       // we already checked that the input types are supported
       case RangePartitioning(orderings, _) =>
+        val strictFloatingPoint = CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get(conf)
+
+        /**
+         * Determine which data types are supported as partition columns in native shuffle.
+         *
+         * For RangePartitioning this defines the key that determines how data should be
+         * collocated for operations like `orderBy`, `repartitionByRange`. Native code does not
+         * support sorting complex types.
+         */
+        def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
+          // Collated strings require collation-aware ordering; Comet only compares raw bytes.
+          case st: StringType if isStringCollationType(st) => false
+          case _: FloatType | _: DoubleType =>
+            !strictFloatingPoint
+          case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+              _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+              _: DecimalType | _: DateType =>
+            true
+          case _ =>
+            false
+        }
+
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
           reasons +=
             s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled"

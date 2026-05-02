@@ -281,6 +281,16 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  private val floatingPointRangePartitionData: Seq[(Double, Int)] = (0 until 100).map { i =>
+    val doubleValue = i % 4 match {
+      case 0 => Double.NaN
+      case 1 => -0.0d
+      case 2 => 0.0d
+      case _ => i.toDouble
+    }
+    (doubleValue, i)
+  }
+
   test("range partitioning on floating-point falls back when strictFloatingPoint=true") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
@@ -288,16 +298,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       // Bypass the CometSortOrder-level Incompatible check so that only
       // supportedRangePartitioningDataType is exercised as the guard.
       CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true") {
-      val data = (0 until 100).map { i =>
-        val doubleValue = i % 4 match {
-          case 0 => Double.NaN
-          case 1 => -0.0d
-          case 2 => 0.0d
-          case _ => i.toDouble
-        }
-        (doubleValue, i)
-      }
-      withParquetTable(data, "tbl") {
+      withParquetTable(floatingPointRangePartitionData, "tbl") {
         Seq(("FLOAT", "FloatType"), ("DOUBLE", "DoubleType")).foreach {
           case (sqlType, sparkType) =>
             val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
@@ -316,16 +317,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false") {
-      val data = (0 until 100).map { i =>
-        val doubleValue = i % 4 match {
-          case 0 => Double.NaN
-          case 1 => -0.0d
-          case 2 => 0.0d
-          case _ => i.toDouble
-        }
-        (doubleValue, i)
-      }
-      withParquetTable(data, "tbl") {
+      withParquetTable(floatingPointRangePartitionData, "tbl") {
         Seq("FLOAT", "DOUBLE").foreach { sqlType =>
           val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
             .repartitionByRange(4, $"c")
