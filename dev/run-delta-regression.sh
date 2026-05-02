@@ -66,12 +66,34 @@ echo "  Comet root    : $COMET_ROOT"
 echo "=========================================="
 
 # Step 1: build + install Comet to local Maven repo for the target Spark profile.
+#
+# `FAST=1` skips plugin checks that aren't relevant during iteration:
+#   - drop `-Prelease` (no source/javadoc/scaladoc jars, no GPG prep)
+#   - skip spotless check (run `mvn spotless:apply` manually before commit)
+#   - skip Apache RAT license header check
+#   - skip javadoc / scaladoc generation
+#   - skip source jar packaging
+# Together these save ~60-120s per iteration on this hardware. The canonical
+# (no-FAST) invocation still runs the full lifecycle so CI parity is preserved.
 echo
 echo "[1/4] Building and installing Comet (spark-$SPARK_SHORT)..."
 cd "$COMET_ROOT"
-./mvnw install -Prelease -DskipTests -Pspark-"$SPARK_SHORT"
+if [[ -n "${FAST:-}" ]]; then
+  echo "  FAST=1: skipping spotless/RAT/javadoc/source-jar plugins"
+  ./mvnw install -DskipTests -Pspark-"$SPARK_SHORT" \
+    -Dspotless.check.skip=true \
+    -Drat.skip=true \
+    -Dmaven.javadoc.skip=true \
+    -Dmaven.source.skip=true
+else
+  ./mvnw install -Prelease -DskipTests -Pspark-"$SPARK_SHORT"
+fi
 
 # Step 2: clone Delta (or reuse existing checkout).
+#
+# `git clean -fd` here is intentional and cheap (sub-second): it removes
+# untracked files left from the previous diff apply but respects gitignore,
+# so Delta's `target/` (and SBT's zinc cache inside it) is preserved.
 echo
 echo "[2/4] Cloning Delta $DELTA_VERSION..."
 if [[ -d "$DELTA_WORKDIR/.git" ]]; then
