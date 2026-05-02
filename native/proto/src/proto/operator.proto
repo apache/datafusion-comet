@@ -293,6 +293,12 @@ message DeltaScanCommon {
   // per-task `base_row_id` / `default_row_commit_version` fields instead.
   optional string materialized_row_id_column_name = 14;
   optional string materialized_row_commit_version_column_name = 15;
+  // Mirrors `spark.sql.files.ignoreMissingFiles`. When true, the native scan
+  // catches per-file FileNotFound errors lazily at open time and produces an
+  // empty stream for that file rather than aborting the stage. No extra IO is
+  // done up-front -- the open attempt is exactly the one we'd do anyway, only
+  // the error handling differs.
+  bool ignore_missing_files = 16;
 }
 
 // Per-partition Delta scan: references common data plus the subset of file

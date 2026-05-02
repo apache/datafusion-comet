@@ -1231,6 +1231,7 @@ impl PhysicalPlanner {
                     common.case_sensitive,
                     self.session_ctx(),
                     common.encryption_enabled,
+                    false, // ignore_missing_files: NativeScan path; not yet wired here
                 )?;
                 Ok((
                     vec![],
@@ -1501,6 +1502,7 @@ impl PhysicalPlanner {
                     common.case_sensitive,
                     self.session_ctx(),
                     false, // encryption_enabled: Phase beyond 1
+                    common.ignore_missing_files,
                 )?;
 
                 // Wrap in a DV filter whenever any partition has a DV. When none

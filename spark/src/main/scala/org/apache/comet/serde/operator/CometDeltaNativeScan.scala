@@ -92,22 +92,9 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       return None
     }
 
-    // Native parquet reader does not honour `spark.sql.files.ignoreMissingFiles` --
-    // a missing file aborts the stage with `SparkFileNotFoundException` instead of
-    // being skipped. Decline acceleration when this conf is on so vanilla Spark+Delta
-    // applies the skip behaviour the test asserts. Mirrors the same gate in
-    // `CometNativeScan`. Fixes DeltaSuite SC-8810 family ("skip deleted file",
-    // "skip multiple deleted files", and "skipping deleted file still throws on
-    // corrupted file").
-    if (SQLConf.get.ignoreMissingFiles ||
-      relation.options.get("ignoremissingfiles").contains("true")) {
-      import org.apache.comet.CometSparkSessionExtensions.withInfo
-      withInfo(
-        scan,
-        "Native Delta scan disabled because spark.sql.files.ignoreMissingFiles is " +
-          "enabled (native parquet reader does not skip missing files).")
-      return None
-    }
+    val ignoreMissingFiles =
+      SQLConf.get.ignoreMissingFiles ||
+        relation.options.get("ignoremissingfiles").contains("true")
 
     // Cloud storage options, keyed identically to NativeScan. Kernel's DefaultEngine picks
     // up aws_* / azure_* keys; anything else is ignored on the native side (for now).
@@ -380,6 +367,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
     commonBuilder.setSnapshotVersion(taskList.getSnapshotVersion)
     commonBuilder.setSessionTimezone(scan.conf.sessionLocalTimeZone)
     commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+    commonBuilder.setIgnoreMissingFiles(ignoreMissingFiles)
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_DELTA_DATA_FILE_CONCURRENCY_LIMIT.get())
 

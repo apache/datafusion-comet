@@ -145,6 +145,7 @@ async fn delta_end_to_end_read_unpartitioned() {
         true, // case_sensitive
         &session_ctx,
         false, // encryption_enabled
+        false, // ignore_missing_files
     )
     .expect("init_datasource_exec should succeed for a simple Delta-like read");
 

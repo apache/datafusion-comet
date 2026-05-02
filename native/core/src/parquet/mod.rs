@@ -22,6 +22,7 @@ pub use mutable_vector::*;
 
 #[macro_use]
 pub mod util;
+pub mod ignore_missing_file_source;
 pub mod parquet_exec;
 pub mod parquet_read_cached_factory;
 pub mod parquet_support;
@@ -513,6 +514,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             case_sensitive != JNI_FALSE,
             session_ctx,
             encryption_enabled,
+            false, // ignore_missing_files: not wired through this JNI entrypoint
         )?;
 
         let partition_index: usize = 0;
