@@ -111,18 +111,29 @@ impl SpillWriter {
 // SpillReaderExec: streaming ExecutionPlan for reading spill files
 // ---------------------------------------------------------------------------
 
-/// An ExecutionPlan that streams record batches from an Arrow IPC spill file.
-/// Used during the join phase so that spilled probe data is read on-demand
-/// instead of loaded entirely into memory.
+/// An `ExecutionPlan` that streams record batches from zero or more in-memory
+/// batches followed by zero or more Arrow IPC spill files. Used during the
+/// join phase so that spilled probe data is read on-demand instead of loaded
+/// entirely into memory.
+///
+/// All sources are concatenated into a single output stream with the same
+/// sub-batch coalescing applied uniformly.
 #[derive(Debug)]
 pub(super) struct SpillReaderExec {
-    spill_file: RefCountedTempFile,
+    /// Batches held in memory, emitted first.
+    initial_batches: Vec<RecordBatch>,
+    /// Spill files read sequentially after `initial_batches`.
+    spill_files: Vec<RefCountedTempFile>,
     schema: SchemaRef,
     cache: Arc<PlanProperties>,
 }
 
 impl SpillReaderExec {
-    pub(super) fn new(spill_file: RefCountedTempFile, schema: SchemaRef) -> Self {
+    pub(super) fn new(
+        initial_batches: Vec<RecordBatch>,
+        spill_files: Vec<RefCountedTempFile>,
+        schema: SchemaRef,
+    ) -> Self {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
@@ -130,7 +141,8 @@ impl SpillReaderExec {
             datafusion::physical_plan::execution_plan::Boundedness::Bounded,
         ));
         Self {
-            spill_file,
+            initial_batches,
+            spill_files,
             schema,
             cache,
         }
@@ -178,10 +190,10 @@ impl ExecutionPlan for SpillReaderExec {
     ) -> DFResult<SendableRecordBatchStream> {
         let stream_schema = Arc::clone(&self.schema);
         let coalesce_schema = Arc::clone(&self.schema);
-        let path = self.spill_file.path().to_path_buf();
-        // Move the spill file handle into the blocking closure to keep
-        // the temp file alive until the reader is done.
-        let spill_file_handle = self.spill_file.clone();
+        let initial_batches = self.initial_batches.clone();
+        // Clone the file handles so the blocking task owns references that
+        // keep the temp files alive until reading completes.
+        let spill_files: Vec<RefCountedTempFile> = self.spill_files.to_vec();
 
         // Use a channel so file I/O runs on a blocking thread and doesn't
         // block the async executor. This lets select_all interleave multiple
@@ -189,63 +201,89 @@ impl ExecutionPlan for SpillReaderExec {
         let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(4);
 
         tokio::task::spawn_blocking(move || {
-            let _keep_alive = spill_file_handle;
-            let file = match File::open(&path) {
-                Ok(f) => f,
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(DataFusionError::Execution(format!(
-                        "Failed to open spill file: {e}"
-                    ))));
-                    return;
-                }
-            };
-            let reader = match StreamReader::try_new(
-                BufReader::with_capacity(SPILL_IO_BUFFER_SIZE, file),
-                None,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(DataFusionError::ArrowError(Box::new(e), None)));
-                    return;
-                }
-            };
-
-            // Coalesce small sub-batches into larger ones to reduce per-batch
-            // overhead in the downstream hash join.
+            // Small sub-batches (~1000-row inputs split N ways produce ~1000/N
+            // row sub-batches) are coalesced into ~SPILL_READ_COALESCE_TARGET
+            // row batches to reduce per-batch overhead in the downstream join.
             let mut pending: Vec<RecordBatch> = Vec::new();
             let mut pending_rows = 0usize;
 
-            for batch_result in reader {
-                let batch = match batch_result {
-                    Ok(b) => b,
-                    Err(e) => {
-                        let _ =
-                            tx.blocking_send(Err(DataFusionError::ArrowError(Box::new(e), None)));
-                        return;
+            // Closure-free helper would complicate borrowing; inline the flush.
+            macro_rules! flush_if_ready {
+                () => {
+                    if pending_rows >= SPILL_READ_COALESCE_TARGET {
+                        let merged = if pending.len() == 1 {
+                            Ok(pending.pop().unwrap())
+                        } else {
+                            concat_batches(&coalesce_schema, &pending)
+                                .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+                        };
+                        pending.clear();
+                        pending_rows = 0;
+                        if tx.blocking_send(merged).is_err() {
+                            return;
+                        }
                     }
                 };
+            }
+
+            // Emit any in-memory batches first, applying the same coalescing.
+            for batch in initial_batches {
                 if batch.num_rows() == 0 {
                     continue;
                 }
                 pending_rows += batch.num_rows();
                 pending.push(batch);
-
-                if pending_rows >= SPILL_READ_COALESCE_TARGET {
-                    let merged = if pending.len() == 1 {
-                        Ok(pending.pop().unwrap())
-                    } else {
-                        concat_batches(&coalesce_schema, &pending)
-                            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
-                    };
-                    pending.clear();
-                    pending_rows = 0;
-                    if tx.blocking_send(merged).is_err() {
-                        return;
-                    }
-                }
+                flush_if_ready!();
             }
 
-            // Flush remaining
+            // Then read each spill file sequentially.
+            for spill_file in &spill_files {
+                let file = match File::open(spill_file.path()) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(DataFusionError::Execution(format!(
+                            "Failed to open spill file: {e}"
+                        ))));
+                        return;
+                    }
+                };
+                let reader = match StreamReader::try_new(
+                    BufReader::with_capacity(SPILL_IO_BUFFER_SIZE, file),
+                    None,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(DataFusionError::ArrowError(
+                            Box::new(e),
+                            None,
+                        )));
+                        return;
+                    }
+                };
+
+                for batch_result in reader {
+                    let batch = match batch_result {
+                        Ok(b) => b,
+                        Err(e) => {
+                            let _ = tx.blocking_send(Err(DataFusionError::ArrowError(
+                                Box::new(e),
+                                None,
+                            )));
+                            return;
+                        }
+                    };
+                    if batch.num_rows() == 0 {
+                        continue;
+                    }
+                    pending_rows += batch.num_rows();
+                    pending.push(batch);
+                    flush_if_ready!();
+                }
+            }
+            // Keep the temp files alive until the reader is done.
+            drop(spill_files);
+
+            // Flush any remaining buffered batches.
             if !pending.is_empty() {
                 let merged = if pending.len() == 1 {
                     Ok(pending.pop().unwrap())

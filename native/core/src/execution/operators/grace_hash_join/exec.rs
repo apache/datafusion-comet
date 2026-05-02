@@ -823,28 +823,14 @@ fn join_with_spilled_probe(
     // Build side: StreamSourceExec to avoid BatchSplitStream splitting
     let build_source = memory_source_exec(build_data, build_schema)?;
 
-    // Probe side: streaming from spill file(s).
-    // With a single spill file and no in-memory batches, use the streaming
-    // SpillReaderExec. Otherwise read eagerly since the merged group sizes
-    // are bounded by TARGET_PARTITION_BUILD_SIZE.
-    let probe_source: Arc<dyn ExecutionPlan> =
-        if probe_spill_files.len() == 1 && probe_in_memory.is_empty() {
-            Arc::new(SpillReaderExec::new(
-                probe_spill_files.into_iter().next().unwrap(),
-                Arc::clone(probe_schema),
-            ))
-        } else {
-            let mut probe_batches = probe_in_memory;
-            for spill_file in &probe_spill_files {
-                probe_batches.extend(read_spilled_batches(spill_file)?);
-            }
-            let probe_data = if probe_batches.is_empty() {
-                vec![RecordBatch::new_empty(Arc::clone(probe_schema))]
-            } else {
-                vec![concat_batches(probe_schema, &probe_batches)?]
-            };
-            memory_source_exec(probe_data, probe_schema)?
-        };
+    // Probe side: streamed from spill files with any in-memory batches
+    // prepended. `SpillReaderExec` handles both sources uniformly so we
+    // never fall back to eagerly materializing a merged group's probe data.
+    let probe_source: Arc<dyn ExecutionPlan> = Arc::new(SpillReaderExec::new(
+        probe_in_memory,
+        probe_spill_files,
+        Arc::clone(probe_schema),
+    ));
 
     // HashJoinExec expects left=build in CollectLeft mode
     let (left_source, right_source) = if build_left {
@@ -855,14 +841,8 @@ fn join_with_spilled_probe(
 
     info!(
         "GraceHashJoin: SPILLED PROBE PATH creating HashJoinExec, \
-         build_left={}, build_size={}, probe_source={}",
-        build_left,
-        build_size,
-        if probe_spill_files_count == 1 {
-            "SpillReaderExec"
-        } else {
-            "StreamSourceExec"
-        },
+         build_left={}, build_size={}, probe_spill_files={}",
+        build_left, build_size, probe_spill_files_count,
     );
 
     let stream = execute_hash_join(

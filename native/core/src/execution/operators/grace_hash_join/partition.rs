@@ -45,12 +45,23 @@ use super::PROBE_PROGRESS_MILESTONE_ROWS;
 
 /// Random state for hashing join keys into partitions. Uses fixed seeds
 /// different from DataFusion's HashJoinExec to avoid correlation.
-/// The `recursion_level` is XORed into the seed so that recursive
-/// repartitioning uses different hash functions at each level.
+///
+/// Each recursion level must produce a well-separated distribution so that
+/// rows which collided at level `N` scatter across sub-partitions at level
+/// `N+1`. A naïve `seed ^ recursion_level` only flips a few low bits between
+/// adjacent levels — ahash's multiply-rotate mixer can produce correlated
+/// outputs from such similar seeds, which would undermine the recursion
+/// depth limit for skewed data.
+///
+/// We mix the level through the golden-ratio constant (the FxHash seed,
+/// 2^64 / phi) so successive levels produce seeds that differ in roughly
+/// half their bits.
 fn partition_random_state(recursion_level: usize) -> RandomState {
+    const PHI64: u64 = 0x9E3779B97F4A7C15;
+    let mix = (recursion_level as u64).wrapping_mul(PHI64);
     RandomState::with_seeds(
-        0x517cc1b727220a95 ^ (recursion_level as u64),
-        0x3a8b7c9d1e2f4056,
+        0x517cc1b727220a95 ^ mix,
+        0x3a8b7c9d1e2f4056 ^ mix.rotate_left(32),
         0,
         0,
     )

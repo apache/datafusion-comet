@@ -1702,15 +1702,22 @@ impl PhysicalPlanner {
                     use crate::execution::spark_config::{
                         SparkConfig, COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD,
                         COMET_GRACE_HASH_JOIN_MAX_CONCURRENT_PARTITIONS,
-                        COMET_GRACE_HASH_JOIN_NUM_PARTITIONS,
+                        COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, SPARK_EXECUTOR_CORES,
                     };
 
                     let num_partitions = self
                         .spark_conf
                         .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
-                    let fast_path_threshold = self
+                    // The fast-path threshold is the *executor-wide* budget across all
+                    // concurrent tasks. Divide it by `spark.executor.cores` so each
+                    // task's fast-path hash table stays within its fair share and N
+                    // concurrent tasks don't collectively exceed the configured budget.
+                    let executor_cores =
+                        self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
+                    let total_fast_path_threshold = self
                         .spark_conf
                         .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 64 * 1024 * 1024);
+                    let fast_path_threshold = total_fast_path_threshold / executor_cores;
                     let max_concurrent_partitions = self
                         .spark_conf
                         .get_usize(COMET_GRACE_HASH_JOIN_MAX_CONCURRENT_PARTITIONS, 2);
