@@ -20,11 +20,11 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper}
-import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 
 /**
@@ -34,29 +34,28 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
  */
 object RewriteJoin extends JoinSelectionHelper {
 
-  private def getSmjBuildSide(join: SortMergeJoinExec): Option[BuildSide] = {
+  /**
+   * Choose the build side for the hash join. GHJ supports all join types with either build side,
+   * but we must respect ShuffledHashJoinExec's constraints since the Spark node is validated
+   * before CometExecRule replaces it with GraceHashJoinExec.
+   */
+  private def getSmjBuildSide(join: SortMergeJoinExec): BuildSide = {
     val leftBuildable = canBuildShuffledHashJoinLeft(join.joinType)
     val rightBuildable = canBuildShuffledHashJoinRight(join.joinType)
-    if (!leftBuildable && !rightBuildable) {
-      return None
-    }
-    if (!leftBuildable) {
-      return Some(BuildRight)
-    }
-    if (!rightBuildable) {
-      return Some(BuildLeft)
-    }
-    val side = join.logicalLink
+    val preferred = join.logicalLink
       .flatMap {
         case join: Join => Some(getOptimalBuildSide(join))
         case _ => None
       }
-      .getOrElse {
-        // If smj has no logical link, or its logical link is not a join,
-        // then we always choose left as build side.
-        BuildLeft
-      }
-    Some(side)
+      .getOrElse(BuildLeft)
+    // Use the preferred side if allowed, otherwise use whichever side Spark allows
+    (preferred, leftBuildable, rightBuildable) match {
+      case (BuildLeft, true, _) => BuildLeft
+      case (BuildRight, _, true) => BuildRight
+      case (_, true, _) => BuildLeft
+      case (_, _, true) => BuildRight
+      case _ => BuildLeft // should not happen
+    }
   }
 
   private def removeSort(plan: SparkPlan) = plan match {
@@ -64,28 +63,47 @@ object RewriteJoin extends JoinSelectionHelper {
     case _ => plan
   }
 
+  /**
+   * Returns true if the build side is small enough to benefit from hash join over sort-merge
+   * join. When both sides are large, SMJ's streaming merge on pre-sorted data can outperform hash
+   * join's per-task hash table construction.
+   */
+  private def buildSideSmallEnough(smj: SortMergeJoinExec, buildSide: BuildSide): Boolean = {
+    val maxBuildSize = CometConf.COMET_REPLACE_SMJ_MAX_BUILD_SIZE.get()
+    if (maxBuildSize <= 0) {
+      return true // no limit
+    }
+    smj.logicalLink match {
+      case Some(join: Join) =>
+        val buildSize = buildSide match {
+          case BuildLeft => join.left.stats.sizeInBytes
+          case BuildRight => join.right.stats.sizeInBytes
+        }
+        buildSize <= maxBuildSize
+      case _ =>
+        true // no stats available, allow the rewrite
+    }
+  }
+
   def rewrite(plan: SparkPlan): SparkPlan = plan match {
     case smj: SortMergeJoinExec =>
-      getSmjBuildSide(smj) match {
-        case Some(BuildRight) if smj.joinType == LeftAnti || smj.joinType == LeftSemi =>
-          // LeftAnti https://github.com/apache/datafusion-comet/issues/457
-          // LeftSemi https://github.com/apache/datafusion-comet/issues/2667
-          withInfo(
-            smj,
-            "Cannot rewrite SortMergeJoin to HashJoin: " +
-              s"BuildRight with ${smj.joinType} is not supported")
-          plan
-        case Some(buildSide) =>
-          ShuffledHashJoinExec(
-            smj.leftKeys,
-            smj.rightKeys,
-            smj.joinType,
-            buildSide,
-            smj.condition,
-            removeSort(smj.left),
-            removeSort(smj.right),
-            smj.isSkewJoin)
-        case _ => plan
+      val buildSide = getSmjBuildSide(smj)
+      if (!buildSideSmallEnough(smj, buildSide)) {
+        withInfo(
+          smj,
+          "Cannot rewrite SortMergeJoin to HashJoin: " +
+            "build side exceeds spark.comet.exec.replaceSortMergeJoin.maxBuildSize")
+        plan
+      } else {
+        ShuffledHashJoinExec(
+          smj.leftKeys,
+          smj.rightKeys,
+          smj.joinType,
+          buildSide,
+          smj.condition,
+          removeSort(smj.left),
+          removeSort(smj.right),
+          smj.isSkewJoin)
       }
     case _ => plan
   }

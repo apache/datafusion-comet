@@ -30,6 +30,8 @@ mod iceberg_scan;
 mod parquet_writer;
 pub use parquet_writer::ParquetWriterExec;
 mod csv_scan;
+mod grace_hash_join;
+pub use grace_hash_join::GraceHashJoinExec;
 pub mod projection;
 mod scan;
 mod shuffle_scan;
