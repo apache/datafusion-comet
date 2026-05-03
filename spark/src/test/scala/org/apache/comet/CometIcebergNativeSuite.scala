@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.CometIcebergNativeScanExec
+import org.apache.spark.sql.comet.{CometFilterExec, CometIcebergNativeScanExec}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
@@ -71,6 +71,23 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     assert(
       icebergScans.length == 1,
       s"Expected exactly 1 CometIcebergNativeScanExec but found ${icebergScans.length}. Plan:\n$cometPlan")
+  }
+
+  /**
+   * Verifies query correctness, exactly one CometIcebergNativeScanExec, and at least one
+   * CometFilterExec in the plan. Used for non-identity transform residual tests where
+   * iceberg-rust skips row-group filtering and CometFilter applies the predicate post-scan.
+   */
+  private def checkIcebergNativeScanWithFilter(query: String): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(query)
+    val icebergScans = collectIcebergNativeScans(cometPlan)
+    assert(
+      icebergScans.length == 1,
+      s"Expected exactly 1 CometIcebergNativeScanExec but found ${icebergScans.length}. Plan:\n$cometPlan")
+    val filters = collect(cometPlan) { case f: CometFilterExec => f }
+    assert(
+      filters.nonEmpty,
+      s"Expected CometFilterExec for post-scan filtering but found none. Plan:\n$cometPlan")
   }
 
   test("create and query simple Iceberg table with Hadoop catalog") {
@@ -2511,6 +2528,323 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     }
   }
 
+  // Tests for non-identity transform residuals feature
+  // These tests verify that native Iceberg scans work when residual expressions
+  // contain non-identity transforms (truncate, bucket, year, month, day, hour).
+  // Previously these would fall back to Spark, but now they're supported with
+  // post-scan filtering via CometFilter.
+
+  test("non-identity transform residual - truncate transform allows native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by truncate transform
+        // When filtering by exact value (e.g., name = 'alpha_1'), Iceberg creates
+        // a residual expression because truncate(5, name) can't fully evaluate this
+        spark.sql("""
+          CREATE TABLE test_cat.db.truncate_residual_test (
+            id INT,
+            name STRING
+          ) USING iceberg
+          PARTITIONED BY (truncate(5, name))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.truncate_residual_test VALUES
+          (1, 'alpha_1'), (2, 'alpha_2'), (3, 'alpha_3'),
+          (4, 'bravo_1'), (5, 'bravo_2'), (6, 'charlie_1')
+        """)
+
+        // This filter creates a residual with truncate transform
+        // The partition can narrow down to 'alpha' prefix, but exact match
+        // requires post-scan filtering
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.truncate_residual_test WHERE name = 'alpha_2' ORDER BY id")
+
+        // Verify correct results
+        val result = spark
+          .sql("SELECT * FROM test_cat.db.truncate_residual_test WHERE name = 'alpha_2'")
+          .collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 2, s"Expected id=2, got ${result(0).getInt(0)}")
+
+        spark.sql("DROP TABLE test_cat.db.truncate_residual_test")
+      }
+    }
+  }
+
+  test("non-identity transform residual - bucket transform allows native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by bucket transform
+        // When filtering by exact id value, Iceberg creates a residual expression
+        // because bucket(4, id) maps multiple ids to the same bucket
+        spark.sql("""
+          CREATE TABLE test_cat.db.bucket_residual_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (bucket(4, id))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.bucket_residual_test
+          SELECT id, CAST(id * 1.5 AS DOUBLE) as value
+          FROM range(100)
+        """)
+
+        // This filter creates a residual with bucket transform
+        // The partition pruning uses bucket hash, but exact id match
+        // requires post-scan filtering
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.bucket_residual_test WHERE id = 42 ORDER BY id")
+
+        // Verify correct results
+        val result =
+          spark.sql("SELECT * FROM test_cat.db.bucket_residual_test WHERE id = 42").collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 42, s"Expected id=42, got ${result(0).getInt(0)}")
+
+        spark.sql("DROP TABLE test_cat.db.bucket_residual_test")
+      }
+    }
+  }
+
+  test("non-identity transform residual - year transform allows native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by year transform
+        // When filtering by exact date, Iceberg creates a residual expression
+        // because year(event_date) groups all dates in a year together
+        spark.sql("""
+          CREATE TABLE test_cat.db.year_residual_test (
+            id INT,
+            event_date DATE,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (year(event_date))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.year_residual_test VALUES
+          (1, DATE '2023-01-15', 'jan'),
+          (2, DATE '2023-06-20', 'jun'),
+          (3, DATE '2023-12-25', 'dec'),
+          (4, DATE '2024-01-10', 'new_year'),
+          (5, DATE '2024-07-04', 'july')
+        """)
+
+        // This filter creates a residual with year transform
+        // Partition pruning narrows to 2023, but exact date match
+        // requires post-scan filtering
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.year_residual_test WHERE event_date = DATE '2023-06-20'")
+
+        // Verify correct results
+        val result = spark
+          .sql(
+            "SELECT * FROM test_cat.db.year_residual_test WHERE event_date = DATE '2023-06-20'")
+          .collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 2, s"Expected id=2, got ${result(0).getInt(0)}")
+        assert(
+          result(0).getString(2) == "jun",
+          s"Expected data='jun', got ${result(0).getString(2)}")
+
+        spark.sql("DROP TABLE test_cat.db.year_residual_test")
+      }
+    }
+  }
+
+  test("non-identity transform residual - month transform allows native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by month transform
+        // When filtering by exact date, Iceberg creates a residual expression
+        // because months(event_date) groups all dates in a month together
+        spark.sql("""
+          CREATE TABLE test_cat.db.month_residual_test (
+            id INT,
+            event_date DATE,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (months(event_date))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.month_residual_test VALUES
+          (1, DATE '2023-06-01', 'first'),
+          (2, DATE '2023-06-15', 'mid'),
+          (3, DATE '2023-06-30', 'last'),
+          (4, DATE '2023-07-05', 'july'),
+          (5, DATE '2023-05-20', 'may')
+        """)
+
+        // This filter creates a residual with month transform
+        // Partition pruning narrows to June 2023, but exact date match
+        // requires post-scan filtering
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.month_residual_test WHERE event_date = DATE '2023-06-15'")
+
+        // Verify correct results
+        val result = spark
+          .sql(
+            "SELECT * FROM test_cat.db.month_residual_test WHERE event_date = DATE '2023-06-15'")
+          .collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 2, s"Expected id=2, got ${result(0).getInt(0)}")
+        assert(
+          result(0).getString(2) == "mid",
+          s"Expected data='mid', got ${result(0).getString(2)}")
+
+        spark.sql("DROP TABLE test_cat.db.month_residual_test")
+      }
+    }
+  }
+
+  test("non-identity transform residual - day transform allows native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by day transform
+        // When filtering by exact timestamp, Iceberg creates a residual expression
+        // because days(event_time) groups all timestamps in a day together
+        spark.sql("""
+          CREATE TABLE test_cat.db.day_residual_test (
+            id INT,
+            event_time TIMESTAMP,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (days(event_time))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.day_residual_test VALUES
+          (1, TIMESTAMP '2023-06-15 08:00:00', 'morning'),
+          (2, TIMESTAMP '2023-06-15 14:30:00', 'afternoon'),
+          (3, TIMESTAMP '2023-06-15 22:45:00', 'evening'),
+          (4, TIMESTAMP '2023-06-16 10:00:00', 'next_day'),
+          (5, TIMESTAMP '2023-06-14 18:00:00', 'prev_day')
+        """)
+
+        // This filter creates a residual with day transform
+        // Partition pruning narrows to June 15, but exact timestamp match
+        // requires post-scan filtering
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.day_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:00'")
+
+        // Verify correct results
+        val result = spark
+          .sql("SELECT * FROM test_cat.db.day_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:00'")
+          .collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 2, s"Expected id=2, got ${result(0).getInt(0)}")
+        assert(
+          result(0).getString(2) == "afternoon",
+          s"Expected data='afternoon', got ${result(0).getString(2)}")
+
+        spark.sql("DROP TABLE test_cat.db.day_residual_test")
+      }
+    }
+  }
+
+  test("non-identity transform residual - hour transform allows native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by hour transform
+        // When filtering by exact timestamp with seconds, Iceberg creates a residual
+        // because hours(event_time) groups all timestamps in an hour together
+        spark.sql("""
+          CREATE TABLE test_cat.db.hour_residual_test (
+            id INT,
+            event_time TIMESTAMP,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (hours(event_time))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.hour_residual_test VALUES
+          (1, TIMESTAMP '2023-06-15 14:10:30', 'early'),
+          (2, TIMESTAMP '2023-06-15 14:30:45', 'mid'),
+          (3, TIMESTAMP '2023-06-15 14:55:15', 'late'),
+          (4, TIMESTAMP '2023-06-15 15:05:00', 'next_hour'),
+          (5, TIMESTAMP '2023-06-15 13:50:00', 'prev_hour')
+        """)
+
+        // This filter creates a residual with hour transform
+        // Partition pruning narrows to hour 14 (2pm), but exact timestamp
+        // with seconds requires post-scan filtering
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.hour_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:45'")
+
+        // Verify correct results
+        val result = spark
+          .sql("SELECT * FROM test_cat.db.hour_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:45'")
+          .collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 2, s"Expected id=2, got ${result(0).getInt(0)}")
+        assert(
+          result(0).getString(2) == "mid",
+          s"Expected data='mid', got ${result(0).getString(2)}")
+
+        spark.sql("DROP TABLE test_cat.db.hour_residual_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
@@ -2755,6 +3089,17 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
   // Regression test for https://github.com/apache/datafusion-comet/issues/3860
   // Fixed in https://github.com/apache/iceberg-rust/pull/2307
   test("filter with nested types in migrated table") {
+  // =========================================================================
+  // Additional integration tests for non-identity transform residuals
+  // =========================================================================
+
+  // Test A: Non-identity transform with delete files must fall back to Spark.
+  // When the table has a non-identity partition transform (truncate) AND MOR delete
+  // files are present, the native Iceberg scan must fall back to Spark to ensure
+  // correct delete processing. Detection uses PartitionSpec inspection.
+  // Uses truncate(3, name) so the query and deleted row share the same partition
+  // (truncate(3, 'alpha') = truncate(3, 'alpine') = 'alp').
+  test("non-identity transform residual - falls back with delete files present") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -2832,11 +3177,66 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           case _: ClassNotFoundException =>
             cancel("SparkTableUtil not available")
         }
+        spark.sql("""
+          CREATE TABLE test_cat.db.truncate_delete_fallback (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (truncate(3, name))
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.truncate_delete_fallback VALUES
+          (1, 'alpha', 10.0), (2, 'alpine', 20.0), (3, 'bravo', 30.0),
+          (4, 'bridge', 40.0), (5, 'charlie', 50.0), (6, 'cherry', 60.0)
+        """)
+
+        // Delete 'alpine' which shares truncate(3)='alp' partition with 'alpha'.
+        spark.sql("DELETE FROM test_cat.db.truncate_delete_fallback WHERE name = 'alpine'")
+
+        // Query with filter. Because the table has truncate transform AND delete files,
+        // native scan must fall back to Spark.
+        val query =
+          "SELECT * FROM test_cat.db.truncate_delete_fallback WHERE name = 'alpha' ORDER BY id"
+        val (_, cometPlan) = checkSparkAnswer(query)
+
+        // Assert fallback: no CometIcebergNativeScanExec in plan
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(
+          icebergScans.isEmpty,
+          "Expected fallback to Spark (no CometIcebergNativeScanExec) when " +
+            s"non-identity transform has delete files. Plan:\n$cometPlan")
+
+        // Verify correct results: only 'alpha' returned, 'alpine' is deleted
+        val result = spark.sql(query).collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 1, s"Expected id=1, got ${result(0).getInt(0)}")
+        assert(result(0).getString(1) == "alpha")
+
+        // Verify 'alpine' is truly gone from broader query
+        val allResult = spark
+          .sql("SELECT * FROM test_cat.db.truncate_delete_fallback ORDER BY id")
+          .collect()
+        assert(allResult.length == 5, s"Expected 5 rows after delete, got ${allResult.length}")
+        assert(
+          !allResult.exists(_.getString(1) == "alpine"),
+          "Deleted row 'alpine' should not appear in results")
+
+        spark.sql("DROP TABLE test_cat.db.truncate_delete_fallback")
       }
     }
   }
 
   test("task-level inputMetrics.bytesRead is populated for Iceberg native scan") {
+  // Test B: Composite transforms - table partitioned by two non-identity transforms.
+  // Verifies native scan works when filtering on columns involved in multiple transforms.
+  test("non-identity transform residual - composite bucket and truncate transforms") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -2931,6 +3331,334 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           spark.sparkContext.removeSparkListener(listener)
           spark.sql("DROP TABLE test_cat.db.task_metrics_test")
         }
+          CREATE TABLE test_cat.db.composite_transform (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (bucket(4, id), truncate(3, name))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.composite_transform VALUES
+          (1, 'alpha', 10.0), (2, 'alpha', 20.0), (3, 'bravo', 30.0),
+          (4, 'bravo', 40.0), (5, 'charlie', 50.0), (6, 'delta', 60.0),
+          (10, 'alpha', 70.0), (20, 'bravo', 80.0), (30, 'charlie', 90.0)
+        """)
+
+        // Filter on both partition columns creates residuals for both transforms
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.composite_transform " +
+            "WHERE id = 3 AND name = 'bravo' ORDER BY id")
+
+        // Verify correct results
+        val result = spark
+          .sql("SELECT * FROM test_cat.db.composite_transform " +
+            "WHERE id = 3 AND name = 'bravo'")
+          .collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 3)
+        assert(result(0).getString(1) == "bravo")
+
+        // Filter on only one of the two transform columns
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.composite_transform WHERE name = 'alpha' ORDER BY id")
+
+        val result2 = spark
+          .sql("SELECT * FROM test_cat.db.composite_transform WHERE name = 'alpha'")
+          .collect()
+        assert(result2.length == 3, s"Expected 3 rows for 'alpha', got ${result2.length}")
+
+        spark.sql("DROP TABLE test_cat.db.composite_transform")
+      }
+    }
+  }
+
+  // Test C: Range filters on non-identity transforms.
+  // Range predicates (>, <, BETWEEN) produce different residual expression shapes
+  // compared to equality filters.
+  test("non-identity transform residual - range filters on bucket and day transforms") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Range filter on bucket-partitioned int column
+        spark.sql("""
+          CREATE TABLE test_cat.db.bucket_range (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (bucket(4, id))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.bucket_range
+          SELECT id, CAST(id * 2.5 AS DOUBLE) as value
+          FROM range(100)
+        """)
+
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.bucket_range WHERE id > 10 AND id < 20 ORDER BY id")
+
+        val rangeResult = spark
+          .sql("SELECT * FROM test_cat.db.bucket_range WHERE id > 10 AND id < 20")
+          .collect()
+        assert(
+          rangeResult.length == 9,
+          s"Expected 9 rows for id in (11..19), got ${rangeResult.length}")
+
+        spark.sql("DROP TABLE test_cat.db.bucket_range")
+
+        // Range filter on day-partitioned timestamp column
+        spark.sql("""
+          CREATE TABLE test_cat.db.day_range (
+            id INT,
+            event_time TIMESTAMP,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (days(event_time))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.day_range VALUES
+          (1, TIMESTAMP '2023-06-15 08:00:00', 'a'),
+          (2, TIMESTAMP '2023-06-15 12:00:00', 'b'),
+          (3, TIMESTAMP '2023-06-15 18:00:00', 'c'),
+          (4, TIMESTAMP '2023-06-16 09:00:00', 'd'),
+          (5, TIMESTAMP '2023-06-16 15:00:00', 'e'),
+          (6, TIMESTAMP '2023-06-17 10:00:00', 'f')
+        """)
+
+        // Range within a single day creates a residual because days() groups
+        // all timestamps in a day together
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.day_range " +
+            "WHERE event_time > TIMESTAMP '2023-06-15 10:00:00' " +
+            "AND event_time < TIMESTAMP '2023-06-15 20:00:00' ORDER BY id")
+
+        val dayRangeResult = spark
+          .sql(
+            "SELECT * FROM test_cat.db.day_range " +
+              "WHERE event_time > TIMESTAMP '2023-06-15 10:00:00' " +
+              "AND event_time < TIMESTAMP '2023-06-15 20:00:00'")
+          .collect()
+        assert(
+          dayRangeResult.length == 2,
+          s"Expected 2 rows (ids 2,3), got ${dayRangeResult.length}")
+
+        spark.sql("DROP TABLE test_cat.db.day_range")
+      }
+    }
+  }
+
+  // Test D: Aggregates with non-identity transform residuals.
+  // Ensures the CometFilter + aggregation pipeline works end-to-end
+  // when post-scan filtering is required.
+  test("non-identity transform residual - aggregates with bucket transform") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.bucket_agg (
+            id INT,
+            category STRING,
+            amount DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (bucket(4, id))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.bucket_agg VALUES
+          (1, 'A', 10.0), (1, 'A', 20.0), (1, 'B', 30.0),
+          (2, 'A', 40.0), (2, 'B', 50.0),
+          (3, 'A', 60.0), (3, 'C', 70.0),
+          (5, 'B', 80.0), (5, 'C', 90.0),
+          (10, 'A', 100.0)
+        """)
+
+        // Aggregate with filter that creates a bucket residual
+        checkIcebergNativeScanWithFilter(
+          "SELECT COUNT(*), SUM(amount) FROM test_cat.db.bucket_agg WHERE id = 1")
+
+        val aggResult = spark
+          .sql("SELECT COUNT(*), SUM(amount) FROM test_cat.db.bucket_agg WHERE id = 1")
+          .collect()
+        assert(aggResult(0).getLong(0) == 3, s"Expected count=3, got ${aggResult(0).getLong(0)}")
+        assert(
+          aggResult(0).getDouble(1) == 60.0,
+          s"Expected sum=60.0, got ${aggResult(0).getDouble(1)}")
+
+        // GROUP BY with filter
+        checkIcebergNativeScanWithFilter(
+          "SELECT category, SUM(amount) FROM test_cat.db.bucket_agg " +
+            "WHERE id IN (1, 2) GROUP BY category ORDER BY category")
+
+        val groupResult = spark
+          .sql("SELECT category, SUM(amount) FROM test_cat.db.bucket_agg " +
+            "WHERE id IN (1, 2) GROUP BY category ORDER BY category")
+          .collect()
+        assert(groupResult.length == 2, s"Expected 2 groups, got ${groupResult.length}")
+        // Category A: 10+20+40=70, Category B: 30+50=80
+        assert(groupResult(0).getString(0) == "A")
+        assert(groupResult(0).getDouble(1) == 70.0)
+        assert(groupResult(1).getString(0) == "B")
+        assert(groupResult(1).getDouble(1) == 80.0)
+
+        spark.sql("DROP TABLE test_cat.db.bucket_agg")
+      }
+    }
+  }
+
+  // Test E: Compound predicates (OR/AND) with non-identity transform residuals.
+  // OR predicates across different truncate groups produce more complex residual shapes.
+  test("non-identity transform residual - compound OR and AND predicates") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.truncate_compound (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (truncate(5, name))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.truncate_compound VALUES
+          (1, 'alpha_1', 10.0), (2, 'alpha_2', 20.0), (3, 'alpha_3', 30.0),
+          (4, 'bravo_1', 40.0), (5, 'bravo_2', 50.0),
+          (6, 'charlie_1', 60.0), (7, 'charlie_2', 70.0),
+          (8, 'delta_1', 80.0)
+        """)
+
+        // OR across different truncate groups
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.truncate_compound " +
+            "WHERE name = 'alpha_1' OR name = 'bravo_1' ORDER BY id")
+
+        val orResult = spark
+          .sql("SELECT * FROM test_cat.db.truncate_compound " +
+            "WHERE name = 'alpha_1' OR name = 'bravo_1'")
+          .collect()
+        assert(orResult.length == 2, s"Expected 2 rows for OR, got ${orResult.length}")
+        assert(orResult.map(_.getInt(0)).sorted.toSeq == Seq(1, 4))
+
+        // AND with mixed columns
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.truncate_compound " +
+            "WHERE name = 'alpha_2' AND value > 15.0 ORDER BY id")
+
+        val andResult = spark
+          .sql("SELECT * FROM test_cat.db.truncate_compound " +
+            "WHERE name = 'alpha_2' AND value > 15.0")
+          .collect()
+        assert(andResult.length == 1, s"Expected 1 row for AND, got ${andResult.length}")
+        assert(andResult(0).getInt(0) == 2)
+
+        // OR within the same truncate group
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.truncate_compound " +
+            "WHERE name = 'alpha_1' OR name = 'alpha_3' ORDER BY id")
+
+        val sameGroupResult = spark
+          .sql("SELECT * FROM test_cat.db.truncate_compound " +
+            "WHERE name = 'alpha_1' OR name = 'alpha_3'")
+          .collect()
+        assert(
+          sameGroupResult.length == 2,
+          s"Expected 2 rows for same-group OR, got ${sameGroupResult.length}")
+
+        spark.sql("DROP TABLE test_cat.db.truncate_compound")
+      }
+    }
+  }
+
+  // Test F: Year transform with DATE type (not just TIMESTAMP).
+  // The existing year transform test uses TIMESTAMP. This verifies DATE columns
+  // also produce correct residuals with the years() transform.
+  test("non-identity transform residual - year transform with date type") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.year_date_residual (
+            id INT,
+            event_date DATE,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (years(event_date))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.year_date_residual VALUES
+          (1, DATE '2022-03-15', 'spring_22'),
+          (2, DATE '2022-07-20', 'summer_22'),
+          (3, DATE '2022-11-05', 'fall_22'),
+          (4, DATE '2023-01-10', 'winter_23'),
+          (5, DATE '2023-06-25', 'summer_23'),
+          (6, DATE '2024-02-14', 'winter_24')
+        """)
+
+        // Exact date match creates a residual because years() groups all dates
+        // in a year together
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.year_date_residual " +
+            "WHERE event_date = DATE '2022-07-20'")
+
+        val exactResult = spark
+          .sql("SELECT * FROM test_cat.db.year_date_residual " +
+            "WHERE event_date = DATE '2022-07-20'")
+          .collect()
+        assert(exactResult.length == 1, s"Expected 1 row, got ${exactResult.length}")
+        assert(exactResult(0).getInt(0) == 2)
+        assert(exactResult(0).getString(2) == "summer_22")
+
+        // Range within a year creates a residual
+        checkIcebergNativeScanWithFilter(
+          "SELECT * FROM test_cat.db.year_date_residual " +
+            "WHERE event_date >= DATE '2022-06-01' AND event_date <= DATE '2022-12-31' " +
+            "ORDER BY id")
+
+        val rangeResult = spark
+          .sql("SELECT * FROM test_cat.db.year_date_residual " +
+            "WHERE event_date >= DATE '2022-06-01' AND event_date <= DATE '2022-12-31'")
+          .collect()
+        assert(rangeResult.length == 2, s"Expected 2 rows (ids 2,3), got ${rangeResult.length}")
+        assert(rangeResult.map(_.getInt(0)).sorted.toSeq == Seq(2, 3))
+
+        spark.sql("DROP TABLE test_cat.db.year_date_residual")
       }
     }
   }
