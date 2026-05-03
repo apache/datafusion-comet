@@ -33,7 +33,7 @@ import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, LongType, StringType, StructType}
+import org.apache.spark.sql.types.{IntegerType, LongType, NullType, StringType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
@@ -726,6 +726,53 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       // Mirror the toggles in Spark's `vectorized reader: missing all struct fields` test in
       // ParquetIOSuite, including off-heap on/off and the explicit nested-column vectorized
       // reader flag. We've seen CI fail on the off-heap branch when the on-heap branch passes.
+      for {
+        offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
+      } withSQLConf(
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
+        "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
+        val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("issue #4136: struct with only NullType fields in file (SPARK-54220)") {
+    // The upstream SPARK-54220 test writes `Tuple1((null, null))` which is inferred as a struct
+    // of NullType fields on disk; reading with a schema that asks for Int/String on top of
+    // NullType fails at parquet decode time because Spark encodes NullType as
+    // `BOOLEAN + LogicalType::Unknown` but parquet-rs only accepts `INT32 + Unknown`. See
+    // #4199 for the upstream compatibility gap.
+    assume(
+      false,
+      "Skipped until parquet-rs accepts BOOLEAN + Unknown for NullType " +
+        "(https://github.com/apache/datafusion-comet/issues/4199)")
+
+    val tableSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_1", NullType)
+        .add("_2", NullType),
+      nullable = true)
+
+    val readSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_3", IntegerType, nullable = true)
+        .add("_4", StringType, nullable = true),
+      nullable = true)
+
+    val data =
+      java.util.Arrays.asList(Row(Row(null, null)), Row(Row(null, null)), Row(null))
+
+    withTempPath { path =>
+      spark
+        .createDataFrame(data, tableSchema)
+        .write
+        .parquet(path.getCanonicalPath)
+
       for {
         offheapEnabled <- Seq("true", "false")
         legacy <- Seq("true", "false")

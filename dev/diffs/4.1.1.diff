@@ -2993,7 +2993,7 @@ index 6b73cc8618d..624694916fb 100644
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 3072657a095..3ea9b8543a9 100644
+index 3072657a095..6b5b9103363 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -40,6 +40,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
@@ -3004,7 +3004,17 @@ index 3072657a095..3ea9b8543a9 100644
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow, UnsafeRow}
  import org.apache.spark.sql.catalyst.util.{DateTimeConstants, DateTimeUtils}
-@@ -1282,7 +1283,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -953,7 +954,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+     }
+   }
+ 
+-  test("SPARK-54220: vectorized reader: missing all struct fields, struct with NullType only") {
++  test("SPARK-54220: vectorized reader: missing all struct fields, struct with NullType only",
++      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4199")) {
+     val data = Seq(
+       Tuple1((null, null)),
+       Tuple1((null, null)),
+@@ -1282,7 +1284,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -3014,7 +3024,7 @@ index 3072657a095..3ea9b8543a9 100644
      val data = (1 to 4).map(i => Tuple1(i.toString))
      val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
  
-@@ -1567,7 +1569,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1567,7 +1570,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
