@@ -515,15 +515,11 @@ case class CometScanRule(session: SparkSession)
     }
     val hadoopConf = Option(hadoopConfOrNull).getOrElse(
       r.sparkSession.sessionState.newHadoopConfWithOptions(r.options))
-    // Parquet encryption: the Delta native scan path does not currently thread
-    // `broadcastedHadoopConfForEncryption` / `encryptedFilePaths` through to
-    // `CometExecRDD` the way `CometNativeScanExec` does, so any encrypted read
-    // would fail at decrypt time. Fall back to Spark+Delta whenever encryption
-    // is enabled, regardless of whether the config is otherwise supported.
-    if (encryptionEnabled(hadoopConf)) {
-      withInfo(
-        scanExec,
-        "Native Delta scan does not yet wire Parquet encryption through to executors")
+    // Parquet encryption: validate the config the same way `nativeDataFusionScan`
+    // does. The encryption hadoop conf and per-file encrypted-paths list are
+    // threaded through to `CometExecRDD` from `CometDeltaNativeScanExec.doExecuteColumnar`.
+    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
+      withInfo(scanExec, s"$SCAN_NATIVE_DELTA_COMPAT does not support encryption config")
       return None
     }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DELTA_COMPAT, r)) {

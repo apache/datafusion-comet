@@ -104,8 +104,7 @@ case class CometDeltaNativeScanExec(
     }
   }
 
-  private def packTasks(
-      tasks: Seq[OperatorOuterClass.DeltaScanTask])
+  private def packTasks(tasks: Seq[OperatorOuterClass.DeltaScanTask])
       : Seq[Seq[OperatorOuterClass.DeltaScanTask]] = {
     val conf = originalPlan.relation.sparkSession.sessionState.conf
     val openCostInBytes = conf.filesOpenCostInBytes
@@ -263,6 +262,23 @@ case class CometDeltaNativeScanExec(
     // materialised (the lazy `planningPerPartitionBytes` was computed before AQE ran). When DPP
     // is absent or was already resolved at planning time, the two arrays are identical.
     val execPerPartitionBytes = buildPerPartitionBytes()
+    // Mirror `CometNativeScanExec`'s encryption wiring: when parquet encryption is
+    // enabled on the table's hadoop conf, broadcast the conf to executors and
+    // gather every input file path (so the parquet reader can decrypt per file).
+    val sparkSession = originalPlan.relation.sparkSession
+    val hadoopConf = sparkSession.sessionState
+      .newHadoopConfWithOptions(originalPlan.relation.options)
+    val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
+      if (org.apache.comet.parquet.CometParquetUtils.encryptionEnabled(hadoopConf)) {
+        val broadcastedConf = sparkSession.sparkContext
+          .broadcast(new org.apache.spark.util.SerializableConfiguration(hadoopConf))
+        val paths = execPerPartitionBytes.flatMap { bytes =>
+          OperatorOuterClass.DeltaScan.parseFrom(bytes).getTasksList.asScala.map(_.getFilePath)
+        }.toSeq
+        (Some(broadcastedConf), paths)
+      } else {
+        (None, Seq.empty[String])
+      }
     val baseRDD = CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
@@ -272,7 +288,9 @@ case class CometDeltaNativeScanExec(
       numPartitions = execPerPartitionBytes.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty)
+      subqueries = Seq.empty,
+      broadcastedHadoopConfForEncryption = broadcastedHadoopConfForEncryption,
+      encryptedFilePaths = encryptedFilePaths)
 
     // InputFileBlockHolder for downstream `input_file_name()` is populated in
     // `CometExecRDD.setInputFileForDeltaScan` so it also fires when this scan
