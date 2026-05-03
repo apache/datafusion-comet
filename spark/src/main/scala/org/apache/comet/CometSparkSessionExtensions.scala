@@ -92,7 +92,16 @@ class CometSparkSessionExtensions
               try {
                 session.sessionState.conf.getConfString(confKey, null) != null
               } catch { case scala.util.control.NonFatal(_) => false }
-            if (!userSet &&
+            // Don't auto-flip on derived sessions (`spark.newSession`). The user/test
+            // may have set the conf on the *parent* session, which the new session does
+            // NOT inherit. Auto-flipping the child would silently override what the
+            // user requested for the SparkContext as a whole. Detect: if a default
+            // SparkSession exists and is different from this one, this is a derived
+            // session and we leave its conf alone. (For the default session itself,
+            // the auto-flip is the right behavior.)
+            val isDerivedSession =
+              SparkSession.getDefaultSession.exists(_ ne session)
+            if (!userSet && !isDerivedSession &&
               CometConf.COMET_DELTA_NATIVE_ENABLED.get(session.sessionState.conf) &&
               planHasDeltaScan(plan) &&
               !planReferencesIsRowDeleted(plan)) {

@@ -102,6 +102,13 @@ if [[ -d "$DELTA_WORKDIR/.git" ]]; then
   git fetch --depth 1 origin "refs/tags/v$DELTA_VERSION:refs/tags/v$DELTA_VERSION" 2>/dev/null || true
   git checkout -f "v$DELTA_VERSION"
   git clean -fd
+  # Nuke the spark-warehouse so suite state from prior runs doesn't pollute
+  # tests that don't fully clean up after themselves -- e.g. the negative-test
+  # cases in DeltaColumnDefaultsInsertSuite leave a stale `_delta_log/` dir at
+  # the warehouse path of `createTableWithDefaultFeatureNotEnabled`. The dir
+  # is gitignored so `git clean -fd` doesn't touch it. `target/` (sbt zinc
+  # cache) is preserved.
+  rm -rf spark/spark-warehouse
 else
   rm -rf "$DELTA_WORKDIR"
   git clone --depth 1 --branch "v$DELTA_VERSION" https://github.com/delta-io/delta.git "$DELTA_WORKDIR"
