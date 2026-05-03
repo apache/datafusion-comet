@@ -152,9 +152,10 @@ pub fn plan_delta_scan_with_predicate(
     let mut unsupported_features: Vec<String> = Vec::new();
     let props = snapshot.table_properties();
     // columnMapping is now handled by Phase 4 — no longer a fallback trigger.
-    if props.enable_type_widening == Some(true) {
-        unsupported_features.push("typeWidening".to_string());
-    }
+    // typeWidening: DataFusion's parquet schema adapter handles widening reads
+    // (parquet stores the file's original type; the adapter casts to the table's
+    // current widened type at read time). Removed from the gate; verified by
+    // TypeWidening{TableFeature,Metadata,...}Suite in the Delta regression.
     if props.enable_row_tracking == Some(true) {
         unsupported_features.push("rowTracking".to_string());
     }
