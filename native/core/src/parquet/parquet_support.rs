@@ -292,13 +292,12 @@ fn parquet_convert_struct_to_struct(
             // Spark 4.1+). Legacy mode marks the whole column null; the new default
             // preserves the file's parent-row nullness so non-null parents materialize
             // as a struct of all-null fields.
-            let nulls = if field_overlap
-                || !parquet_options.return_null_struct_if_all_fields_missing
-            {
-                array.nulls().cloned()
-            } else {
-                Some(NullBuffer::new_null(array.len()))
-            };
+            let nulls =
+                if field_overlap || !parquet_options.return_null_struct_if_all_fields_missing {
+                    array.nulls().cloned()
+                } else {
+                    Some(NullBuffer::new_null(array.len()))
+                };
 
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
