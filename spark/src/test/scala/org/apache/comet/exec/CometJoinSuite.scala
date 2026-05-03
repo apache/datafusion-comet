@@ -459,9 +459,9 @@ class CometJoinSuite extends CometTestBase {
       withParquetTable((0 until 100).map(i => (i, i % 5)), "small_tbl") {
         withParquetTable((0 until 10000).map(i => (i, i + 2)), "large_tbl") {
           val query =
-            s"""SELECT /*+ BROADCAST(a) */ *
-               |FROM (SELECT /*+ REBALANCE(_1) */ * FROM small_tbl) a
-               |JOIN large_tbl b ON a._1 = b._1""".stripMargin
+            """SELECT /*+ BROADCAST(a) */ *
+              |FROM (SELECT /*+ REBALANCE(_1) */ * FROM small_tbl) a
+              |JOIN large_tbl b ON a._1 = b._1""".stripMargin
 
           val (_, cometPlan) = checkSparkAnswerAndOperator(
             sql(query),
