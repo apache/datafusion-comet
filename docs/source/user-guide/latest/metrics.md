@@ -75,18 +75,9 @@ Spark 4.1 changed its own parquet reader to pre-open the `SeekableInputStream` a
 footer outside the `FileScanRDD.compute()` thread. Spark's `inputMetrics.bytesRead` is updated
 from a Hadoop FileSystem thread-local byte counter that only captures reads on the
 `compute()` thread, so reads serviced by the pre-opened stream's internal buffer go uncounted.
-The magnitude of the under-count scales with how much of the file is pre-buffered relative to
-the file size:
-
-| File size                      | Spark 4.1 bytesRead vs actual                          | Comet / Spark ratio |
-| ------------------------------ | ------------------------------------------------------ | ------------------- |
-| Tiny (KB; whole file buffered) | Near 0                                                 | 10-15×              |
-| Small (MB)                     | Significant under-count                                | 2-5×                |
-| Medium / Large (10+ MB)        | Subsequent row-group reads cross buffer; mostly counted | Closer to 1×        |
-
-Unit tests that write a few hundred rows to parquet hit the worst case and see the largest
-discrepancy. Production workloads with realistic file sizes typically see the smallest
-discrepancy.
+The under-count is largest when the file fits in the pre-fetched buffer (tiny files, unit test
+sizes) and shrinks as files grow large enough that subsequent row-group reads cross the buffer
+and trigger fresh FS reads on the `compute()` thread.
 
 This is purely an observability difference: `inputMetrics.bytesRead` is reported to listeners
 and the Spark UI but is not consumed by the planner, the optimizer, or AQE, so the discrepancy
