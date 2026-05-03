@@ -535,24 +535,23 @@ index ed182322aec..1ae6afa686a 100644
            spark.range(100).write.saveAsTable(s"$dbName.$table2Name")
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala
-index 93ff7becaec..796d482cf19 100644
+index 93ff7becaec..87537a25b3b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala
-@@ -23,10 +23,12 @@ import java.util.Locale
+@@ -23,10 +23,11 @@ import java.util.Locale
  import org.apache.spark.sql.catalyst.optimizer.RemoveNoopUnion
  import org.apache.spark.sql.catalyst.plans.logical.Union
  import org.apache.spark.sql.catalyst.plans.physical.UnknownPartitioning
 +import org.apache.spark.sql.comet.CometUnionExec
-+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
  import org.apache.spark.sql.execution.{SparkPlan, UnionExec}
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 -import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
-+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
++import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.{ExamplePoint, ExamplePointUDT, SharedSparkSession, SQLTestData}
-@@ -1519,11 +1521,12 @@ class DataFrameSetOperationsSuite extends QueryTest
+@@ -1519,11 +1520,12 @@ class DataFrameSetOperationsSuite extends QueryTest
        val union = df1.repartition($"a").union(df2.repartition($"a"))
        val unionExec = union.queryExecution.executedPlan.collect {
          case u: UnionExec => u
@@ -566,7 +565,7 @@ index 93ff7becaec..796d482cf19 100644
        }
        assert(shuffle.size == 1)
  
-@@ -1554,11 +1557,12 @@ class DataFrameSetOperationsSuite extends QueryTest
+@@ -1554,11 +1556,12 @@ class DataFrameSetOperationsSuite extends QueryTest
          val union = df1.repartition($"a").union(df2.repartition($"d"))
          val unionExec = union.queryExecution.executedPlan.collect {
            case u: UnionExec => u
@@ -580,7 +579,7 @@ index 93ff7becaec..796d482cf19 100644
          }
          assert(shuffle.size == 1)
  
-@@ -1573,10 +1577,10 @@ class DataFrameSetOperationsSuite extends QueryTest
+@@ -1573,10 +1576,10 @@ class DataFrameSetOperationsSuite extends QueryTest
          // Avoid unnecessary shuffle if union output partitioning is enabled
          val shuffledUnion = union.repartition($"a")
          val shuffleNumBefore = union.queryExecution.executedPlan.collect {
@@ -593,7 +592,7 @@ index 93ff7becaec..796d482cf19 100644
          }
  
          if (enabled) {
-@@ -1605,6 +1609,7 @@ class DataFrameSetOperationsSuite extends QueryTest
+@@ -1605,6 +1608,7 @@ class DataFrameSetOperationsSuite extends QueryTest
          val union = df1.repartitionByRange($"a").union(df2.repartitionByRange($"d"))
          val unionExec = union.queryExecution.executedPlan.collect {
            case u: UnionExec => u
