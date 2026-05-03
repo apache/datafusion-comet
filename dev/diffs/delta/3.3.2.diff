@@ -379,3 +379,19 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaErrorsSuite.sc
 +      response.contains("HTTP/1.1 302") || response.contains("HTTP/2 302") ||
 +      response.contains("HTTP/1.1 308") || response.contains("HTTP/2 308")
    }
+
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
+@@ -1490,5 +1490,10 @@ class DeltaSuite extends QueryTest
+         val thrown = intercept[SparkException] {
+           data.toDF().collect()
+         }
+-        assert(thrown.getMessage.contains(THROWS_ON_CORRUPTED_FILE_ERROR_MSG))
++        // Comet regression: Spark's parquet reader rejects a truncated file with
++        // "is not a Parquet file"; DataFusion / object_store rejects it with
++        // "Generic LocalFileSystem error: Requested range was invalid". Both
++        // indicate the same corruption -- accept either.
++        assert(thrown.getMessage.contains(THROWS_ON_CORRUPTED_FILE_ERROR_MSG) ||
++          thrown.getMessage.contains("Requested range was invalid"))
+       }
