@@ -64,3 +64,35 @@ Here is a guide to some of the native metrics.
 | `ipc_time`        | Time to encode batches in IPC format and compress using ZSTD. |
 | `mempool_time`    | Time interacting with memory pool.                            |
 | `write_time`      | Time spent writing bytes to disk.                             |
+
+## Task-Level Input Metrics on Spark 4.1+
+
+Comet's native scans set `inputMetrics.bytesRead` to the actual file IO performed by the
+DataFusion parquet reader (`bytes_scanned`). This is the truthful number you would see at the
+filesystem layer.
+
+Spark 4.1 changed its own parquet reader to pre-open the `SeekableInputStream` and read the file
+footer outside the `FileScanRDD.compute()` thread. Spark's `inputMetrics.bytesRead` is updated
+from a Hadoop FileSystem thread-local byte counter that only captures reads on the
+`compute()` thread, so reads serviced by the pre-opened stream's internal buffer go uncounted.
+The magnitude of the under-count scales with how much of the file is pre-buffered relative to
+the file size:
+
+| File size                      | Spark 4.1 bytesRead vs actual                          | Comet / Spark ratio |
+| ------------------------------ | ------------------------------------------------------ | ------------------- |
+| Tiny (KB; whole file buffered) | Near 0                                                 | 10-15×              |
+| Small (MB)                     | Significant under-count                                | 2-5×                |
+| Medium / Large (10+ MB)        | Subsequent row-group reads cross buffer; mostly counted | Closer to 1×        |
+
+Unit tests that write a few hundred rows to parquet hit the worst case and see the largest
+discrepancy. Production workloads with realistic file sizes typically see the smallest
+discrepancy.
+
+This is purely an observability difference: `inputMetrics.bytesRead` is reported to listeners
+and the Spark UI but is not consumed by the planner, the optimizer, or AQE, so the discrepancy
+does not affect query plans, partitioning, or correctness. Records read (`recordsRead`) is
+unaffected and remains exactly equal between Comet and Spark.
+
+If you compare Comet's `bytesRead` against vanilla Spark's on Spark 4.1+ (via the Spark UI or
+the REST API), expect Comet's number to be substantially larger for small files, and closer to
+Spark's for large files. Comet's value reflects what the storage layer actually delivered.
