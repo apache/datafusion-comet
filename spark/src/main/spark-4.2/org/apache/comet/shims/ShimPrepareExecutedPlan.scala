@@ -19,25 +19,14 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.execution.{SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec}
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 
-trait ShimSubqueryBroadcast {
-
-  def getSubqueryBroadcastIndices(sab: SubqueryAdaptiveBroadcastExec): Seq[Int] = {
-    Seq(sab.index)
-  }
-
-  def getSubqueryBroadcastExecIndices(sub: SubqueryBroadcastExec): Seq[Int] = {
-    Seq(sub.index)
-  }
-
-  def createSubqueryBroadcastExec(
-      name: String,
-      indices: Seq[Int],
-      buildKeys: Seq[Expression],
-      child: SparkPlan): SubqueryBroadcastExec = {
-    assert(indices.length == 1, s"Multi-index DPP not supported on Spark 3.4: indices=$indices")
-    SubqueryBroadcastExec(name, indices.head, buildKeys, child)
+trait ShimPrepareExecutedPlan {
+  def shimPrepareExecutedPlan(
+      adaptivePlan: AdaptiveSparkPlanExec,
+      plan: LogicalPlan): SparkPlan = {
+    QueryExecution.prepareExecutedPlan(plan, adaptivePlan.context)
   }
 }

@@ -190,8 +190,82 @@ class CometJoinSuite extends CometTestBase {
           val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
           checkSparkAnswerAndOperator(df8)
 
-          // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
-          // left.join(right, left("_2") === right("_1"), "leftanti")
+          val df9 = left.join(right, left("_2") === right("_1"), "leftanti")
+          checkSparkAnswerAndOperator(df9)
+        }
+      }
+    }
+  }
+
+  test("BroadcastHashJoin with LeftAnti and NOT IN subquery (null-aware)") {
+    withSQLConf(
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760") {
+      // Right side has no NULL: regular anti-semantics
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, i + 100)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Right side contains NULL: null-aware should suppress all left rows
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, 2), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Left side has NULL values: NOT IN filters them out (NULL vs anything is NULL)
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((2, 100), (4, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Empty subquery: NOT IN against an empty set returns all left rows, including NULL probe.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq.empty[(Integer, Int)], "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Both sides have NULL keys: probe-side NULL and build-side NULL on the same query.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
+  test("BroadcastHashJoin with LeftAnti (non-null-aware)") {
+    withSQLConf(
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, i + 100)), "tbl_b") {
+          // BROADCAST(tbl_b) forces tbl_b as build-right side
+          val df = sql(
+            "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b " +
+              "ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // With NULL values on both sides - non-null-aware semantics: NULL keys don't match anything
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql(
+            "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b " +
+              "ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
