@@ -374,12 +374,24 @@ object DeltaReflection extends Logging {
    */
   def extractBatchAddFiles(location: Any): Option[Seq[ExtractedAddFile]] = {
     try {
-      // Prefer matchingFiles(Seq.empty, Seq.empty) — it returns CDC-augmented
+      // PreparedDeltaFileIndex carries the pre-skipped scan result -- using
+      // `matchingFiles(Nil, Nil)` on it falls into Delta's "Reselecting files
+      // to query" branch (different filter set) and returns the FULL snapshot
+      // of files (no stats-based skipping), which breaks tests like
+      // StatsCollectionSuite "gather stats" that expect file-level pruning.
+      // Read `preparedScan.files` directly to honour the prepared skipping.
+      val preparedFiles: Option[AnyRef] =
+        if (location.getClass.getName.contains("PreparedDeltaFileIndex")) {
+          findAccessor(location, Seq("preparedScan"))
+            .flatMap(ps => findAccessor(ps, Seq("files")))
+        } else None
+      // Prefer matchingFiles(Seq.empty, Seq.empty) -- it returns CDC-augmented
       // AddFiles on CDC indexes and the plain list on TahoeBatchFileIndex.
       // Fall back to the raw `addFiles`/`filesList` accessors for indexes that
       // don't expose a no-arg-safe matchingFiles.
-      val addFilesOpt =
-        callMatchingFiles(location).orElse(findAccessor(location, Seq("addFiles", "filesList")))
+      val addFilesOpt = preparedFiles
+        .orElse(callMatchingFiles(location))
+        .orElse(findAccessor(location, Seq("addFiles", "filesList")))
       addFilesOpt.flatMap { addFilesAny =>
         val seq = addFilesAny match {
           case s: scala.collection.Seq[_] => s
