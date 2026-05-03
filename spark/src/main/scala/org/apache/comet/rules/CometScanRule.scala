@@ -525,6 +525,51 @@ case class CometScanRule(session: SparkSession)
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DELTA_COMPAT, r)) {
       return None
     }
+    // Mirror the gate in `nativeDataFusionScan`. When the user enables parquet
+    // field-ID-based reads, we must use Spark's parquet reader. DataFusion's
+    // parquet path doesn't honour `parquet.field.id` for column resolution.
+    // See https://github.com/apache/datafusion-comet/issues/4189.
+    if (session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
+      ParquetUtils.hasFieldIds(scanExec.requiredSchema)) {
+      withInfo(scanExec, s"$SCAN_NATIVE_DELTA_COMPAT does not support Parquet field ID matching")
+      return None
+    }
+    // Delta column-mapping `id` mode relies on parquet field-ID matching for
+    // rename-detection semantics (see DeltaColumnMappingSuite "explicit id
+    // matching"). Comet resolves columns by name, so id-mode reads silently
+    // return wrong data when the file's stored field-ID and the metadata's
+    // field-ID disagree. Decline so vanilla Spark+Delta handles it. Tracking:
+    // https://github.com/apache/datafusion-comet/issues/4189.
+    val cmMode = DeltaReflection
+      .extractMetadataConfiguration(r)
+      .flatMap(_.get("delta.columnMapping.mode"))
+    if (cmMode.exists(_.equalsIgnoreCase("id"))) {
+      withInfo(
+        scanExec,
+        s"$SCAN_NATIVE_DELTA_COMPAT does not support Delta column-mapping 'id' mode " +
+          "(parquet field-ID resolution required)")
+      return None
+    }
+    // CM-name-mode stale-snapshot guard. When the user disables the
+    // schema-on-read check, Delta tolerates a DataFrame analysed against an
+    // older snapshot reading a table that has since been overwritten with
+    // new physical column names; vanilla returns NULL for the renamed
+    // columns. Comet's path uses physical names captured from the cached
+    // FileIndex's snapshot, which still match the (still-on-disk) original
+    // parquet file, so the read returns the ORIGINAL data instead of nulls.
+    // Decline whenever this conf is off + table is CM-name-mode. Triggered
+    // by `DeltaColumnMappingSuite "column mapping batch scan should detect
+    // physical name changes"`.
+    if (cmMode.exists(_.equalsIgnoreCase("name")) &&
+      !session.sessionState.conf
+        .getConfString("spark.databricks.delta.checkLatestSchemaOnRead", "true")
+        .equalsIgnoreCase("true")) {
+      withInfo(
+        scanExec,
+        s"$SCAN_NATIVE_DELTA_COMPAT declines CM-name reads when " +
+          "checkLatestSchemaOnRead is disabled (potential stale-snapshot read)")
+      return None
+    }
 
     // All Delta pre-materialised file indexes are handled natively now:
     //   - `TahoeBatchFileIndex`: MERGE/UPDATE/DELETE post-join rewrites.

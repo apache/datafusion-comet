@@ -308,6 +308,24 @@ object DeltaReflection extends Logging {
   }
 
   /**
+   * Read the LATEST committed version from the relation's underlying `DeltaLog`, via reflection
+   * so we keep zero compile-time dep on spark-delta. Returns `None` when the relation isn't
+   * backed by a Delta log (or reflection fails).
+   */
+  def extractLatestSnapshotVersion(relation: HadoopFsRelation): Option[Long] = {
+    try {
+      val deltaLogObj = findAccessor(relation.location, Seq("deltaLog")).orNull
+      if (deltaLogObj == null) return None
+      // `deltaLog.update()` returns the latest Snapshot; `snapshot.version` is a Long.
+      val updated = invokeNoArg(deltaLogObj, "update").orNull
+      if (updated == null) return None
+      longMember(updated, "version")
+    } catch {
+      case _: Exception => None
+    }
+  }
+
+  /**
    * Convert a Delta partition value string to a Catalyst-internal representation. Delta stores
    * partition values as strings in add actions; this converts them to the correct type for
    * predicate evaluation.
