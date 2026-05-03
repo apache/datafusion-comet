@@ -83,6 +83,43 @@ case class CometDeltaNativeScanExec(
     OperatorOuterClass.DeltaScanTaskList.parseFrom(taskListBytes).getTasksList.asScala.toSeq
 
   /**
+   * Synthesise a `Seq[FilePartition]` from this scan's tasks, with each task becoming one
+   * `PartitionedFile` carrying its partition values as an `InternalRow`. Delta tests (e.g.
+   * `DeltaSinkSuite`) inspect `executedPlan.collect[DataSourceScanExec]` and read
+   * `inputRDDs.head.asInstanceOf[FileScanRDD].filePartitions` to verify partition pruning; those
+   * tests find nothing under Comet because we replace the scan with this exec. The test diff in
+   * `dev/diffs/delta/<version>.diff` patches the helper to fall back to this accessor, so the
+   * same partition-pruning assertions pass against Comet's scan.
+   */
+  def synthesizedFilePartitions: Seq[org.apache.spark.sql.execution.datasources.FilePartition] = {
+    if (allTasks.isEmpty) return Nil
+    val sessionTz = java.time.ZoneId.of(SQLConf.get.sessionLocalTimeZone)
+    val files = allTasks.zipWithIndex.map { case (task, _) =>
+      val pvRow = InternalRow.fromSeq(partitionSchema.fields.toSeq.map { f =>
+        val proto = task.getPartitionValuesList.asScala.find(_.getName == f.name)
+        val s = if (proto.exists(_.hasValue)) Some(proto.get.getValue) else None
+        org.apache.comet.delta.DeltaReflection.castPartitionString(s, f.dataType, sessionTz)
+      })
+      val sparkPath =
+        org.apache.spark.paths.SparkPath.fromUrlString(task.getFilePath)
+      org.apache.spark.sql.execution.datasources.PartitionedFile(
+        partitionValues = pvRow,
+        filePath = sparkPath,
+        start = if (task.hasByteRangeStart) task.getByteRangeStart else 0L,
+        length = {
+          if (task.hasByteRangeStart && task.hasByteRangeEnd) {
+            task.getByteRangeEnd - task.getByteRangeStart
+          } else task.getFileSize
+        },
+        modificationTime = 0L,
+        fileSize = task.getFileSize)
+    }
+    files.zipWithIndex.map { case (pf, i) =>
+      org.apache.spark.sql.execution.datasources.FilePartition(i, Array(pf))
+    }
+  }
+
+  /**
    * Build per-partition bytes from the current DPP-pruned task list. DPP filters that are still
    * `SubqueryAdaptiveBroadcastExec` placeholders at planning time materialise lazily once AQE
    * runs the broadcast; by recomputing this at `doExecuteColumnar` (rather than memoising the

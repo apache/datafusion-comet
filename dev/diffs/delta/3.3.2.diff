@@ -324,3 +324,44 @@ diff --git a/spark/src/test/scala-spark-3.5/shims/MergeIntoMetricsShims.scala b/
 +  // MergeIntoMetricsBase.scala explicitly anticipates 1 or 2 across versions.
 +  val DELETE_WITH_DUPLICATE_NUM_TARGET_FILES_ADDED_NON_PARTITIONED_NO_CDF = 2
  }
+
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/IdentityColumnAdmissionSuite.scala b/spark/src/test/scala/org/apache/spark/sql/delta/IdentityColumnAdmissionSuite.scala
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/IdentityColumnAdmissionSuite.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/IdentityColumnAdmissionSuite.scala
+@@ -271,6 +271,11 @@ trait IdentityColumnAdmissionSuiteBase
+       withTempDir { checkpointDir =>
+         val ex = intercept[StreamingQueryException] {
+           val stream = MemoryStream[Int]
++          // Comet regression: pre-populate MemoryStream BEFORE start. With
++          // `Trigger.AvailableNow`, only data present at trigger time is processed;
++          // data added after `start()` is not picked up before the query exits.
++          // Without this the query exits with no rows and no expected exception.
++          stream.addData(1 to 10)
+           val q = stream
+             .toDF
+             .map(_ => Tuple2(1L, 1))
+@@ -281,7 +286,6 @@ trait IdentityColumnAdmissionSuiteBase
+             .option("checkpointLocation", checkpointDir.getCanonicalPath)
+             .trigger(Trigger.AvailableNow)
+             .start(path)
+-          stream.addData(1 to 10)
+           q.processAllAvailable()
+           q.stop()
+         }
+
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSinkSuite.scala b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSinkSuite.scala
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSinkSuite.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSinkSuite.scala
+@@ -259,6 +259,12 @@ class DeltaSinkSuite extends StreamTest with DeltaSQLCommandTest with DeltaSinkS
+           val filePartitions = df.queryExecution.executedPlan.collect {
+             case scan: DataSourceScanExec if scan.inputRDDs().head.isInstanceOf[FileScanRDD] =>
+               scan.inputRDDs().head.asInstanceOf[FileScanRDD].filePartitions
++            // Comet regression: Comet's planner replaces `DataSourceScanExec` with
++            // `CometDeltaNativeScanExec`. The Comet exec exposes a synthesised
++            // `FilePartition` list derived from its task list, with the same per-file
++            // partition_values; the assertions below work the same way.
++            case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec =>
++              c.synthesizedFilePartitions
+           }.flatten
+           if (filePartitions.isEmpty) {
+             fail(s"No FileScan in query\n${df.queryExecution}")
