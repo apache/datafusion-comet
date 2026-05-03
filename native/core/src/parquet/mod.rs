@@ -438,6 +438,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     session_timezone: JString,
     batch_size: jint,
     case_sensitive: jboolean,
+    return_null_struct_if_all_fields_missing: jboolean,
     object_store_options: JObject,
     key_unwrapper_obj: JObject,
     metrics_node: JObject,
@@ -511,6 +512,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             None,
             session_timezone.as_str(),
             case_sensitive != JNI_FALSE,
+            return_null_struct_if_all_fields_missing != JNI_FALSE,
             session_ctx,
             encryption_enabled,
         )?;

@@ -159,6 +159,11 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   protected boolean isCaseSensitive;
   protected boolean useFieldId;
   protected boolean ignoreMissingIds;
+  // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+  // missing in the Parquet file, true returns the entire struct as null (legacy
+  // pre-4.1 behavior); false preserves the parent struct's nullness from the file
+  // so non-null parents materialize as a struct of all-null fields.
+  protected boolean returnNullStructIfAllFieldsMissing = true;
   protected StructType partitionSchema;
   protected InternalRow partitionValues;
   protected PartitionedFile file;
@@ -278,6 +283,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       boolean useFieldId,
       boolean ignoreMissingIds,
       boolean useLegacyDateTimestamp,
+      boolean returnNullStructIfAllFieldsMissing,
       StructType partitionSchema,
       InternalRow partitionValues,
       Map<String, SQLMetric> metrics,
@@ -290,6 +296,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.useFieldId = useFieldId;
     this.ignoreMissingIds = ignoreMissingIds;
     this.useLegacyDateTimestamp = useLegacyDateTimestamp;
+    this.returnNullStructIfAllFieldsMissing = returnNullStructIfAllFieldsMissing;
     this.partitionSchema = partitionSchema;
     this.partitionValues = partitionValues;
     this.file = inputSplit;
@@ -578,6 +585,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               timeZoneId,
               batchSize,
               caseSensitive,
+              returnNullStructIfAllFieldsMissing,
               objectStoreOptions,
               keyUnwrapper,
               metricsNode);

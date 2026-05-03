@@ -33,7 +33,7 @@ import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.{IntegerType, LongType, StringType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
@@ -682,6 +682,53 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       checkAnswer(
         spark.read.parquet(dir.getCanonicalPath).filter("isnotnull(f)"),
         Seq(Row(Seq(1, 2))))
+    }
+  }
+
+  test("issue #4136: struct with all requested fields missing in file") {
+    // SPARK-53535 (Spark 4.1) added LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING.
+    // With the new default (false), Spark's vectorized reader appends a "marker" leaf field to
+    // the Parquet read schema so it can distinguish a null parent row from a non-null parent
+    // whose requested fields are all missing from the file, then truncates the marker out of
+    // the ColumnarBatch. Comet's native scans don't implement this, so they conflate the two
+    // cases and return Row(null) for non-null parents.
+    assume(
+      isSpark41Plus,
+      "LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING was introduced in Spark 4.1")
+
+    val tableSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_1", IntegerType)
+        .add("_2", StringType),
+      nullable = true)
+
+    // Read schema requests _3, _4 — fields that don't exist in the file's _1 struct.
+    val readSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_3", IntegerType, nullable = true)
+        .add("_4", LongType, nullable = true),
+      nullable = true)
+
+    val data = java.util.Arrays.asList(
+      Row(Row(1, "a")), // non-null parent, requested fields missing in file
+      Row(Row(2, null)), // non-null parent, requested fields missing in file
+      Row(null) // null parent
+    )
+
+    withTempPath { path =>
+      spark
+        .createDataFrame(data, tableSchema)
+        .write
+        .parquet(path.getCanonicalPath)
+
+      Seq("true", "false").foreach { legacy =>
+        withSQLConf("spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy) {
+          val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+          checkSparkAnswer(df)
+        }
+      }
     }
   }
 
