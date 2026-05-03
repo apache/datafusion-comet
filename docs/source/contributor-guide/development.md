@@ -276,6 +276,78 @@ Comet uses generated source files that are too large for IntelliJ's default size
 by going to `Help -> Edit Custom Properties...`. For example, adding `idea.max.intellisense.filesize=16384` increases the file
 size limit to 16 MB.
 
+#### Working with Spark 4.x profiles in IntelliJ IDEA
+
+Spark 4.x requires JDK 17 and Scala 2.13. When switching an existing IntelliJ project from the
+default Spark 3.x setup to a Spark 4.x profile, it is usually best to re-import the Maven project
+from a clean IntelliJ configuration:
+
+1. Close the IntelliJ project.
+2. Delete the `.idea` directory from the repository root.
+3. Make sure `protoc` is available. On macOS, install it with `brew install protobuf`; on Linux,
+   install `protobuf-compiler` or the equivalent package for your distribution.
+4. Make sure `JAVA_HOME` points to JDK 17. On macOS, you can select it with:
+
+   ```sh
+   export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+   export PATH="$JAVA_HOME/bin:$PATH"
+   ```
+
+   On Apple Silicon, the selected JDK architecture must match the native Rust target. Verify that
+   `file "$JAVA_HOME/lib/server/libjvm.dylib"` reports `arm64`.
+
+5. Build the profile once from the command line so generated sources and native artifacts are in
+   place:
+
+   ```sh
+   PROFILES="-Pspark-4.0" make release
+   ```
+
+   The `spark-4.0` profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
+   `PROFILES="-Pspark-4.0 -Pscala-2.13 -Pjdk17" make release`.
+
+   The Maven profile is named `jdk17` in this project.
+
+   If the native build previously used a different JDK, clear Cargo's cached JNI link path before
+   rebuilding:
+
+   ```sh
+   cd native && cargo clean -p hdfs-sys --release
+   ```
+
+6. Open the repository root as a new project in IntelliJ IDEA.
+7. In the Maven tool window, enable the `spark-4.0` and `jdk17` profiles. Disable conflicting Spark
+   version profiles such as `spark-3.4` or `spark-3.5` if IntelliJ selected them.
+8. Re-import or reload the Maven project.
+9. Build the project in IntelliJ.
+
+When running tests from IntelliJ on JDK 17, add the same VM options that Maven uses through the
+root `pom.xml`'s `extraJavaTestArgs` property:
+
+```text
+-XX:+IgnoreUnrecognizedVMOptions
+--add-opens=java.base/java.lang=ALL-UNNAMED
+--add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+--add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+--add-opens=java.base/java.io=ALL-UNNAMED
+--add-opens=java.base/java.net=ALL-UNNAMED
+--add-opens=java.base/java.nio=ALL-UNNAMED
+--add-opens=java.base/java.util=ALL-UNNAMED
+--add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED
+--add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+--add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+--add-opens=java.base/sun.security.action=ALL-UNNAMED
+--add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+-Djdk.reflect.useDirectMethodHandle=false
+```
+
+If IntelliJ still resolves Spark 3.x dependencies or reports shim source errors after switching
+profiles, repeat the clean import steps above. Maven profile state is cached in the IntelliJ
+project files, and stale profile selections are a common cause of mixed Spark 3.x and Spark 4.x
+source roots.
+
 ### CLion
 
 First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
