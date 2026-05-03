@@ -312,7 +312,7 @@ from a clean IntelliJ configuration:
    rebuilding:
 
    ```sh
-   cd native && cargo clean -p hdfs-sys --release
+   cd native && cargo clean
    ```
 
 6. Open the repository root as a new project in IntelliJ IDEA.
