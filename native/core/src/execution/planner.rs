@@ -150,6 +150,25 @@ struct JoinParameters {
     pub join_type: DFJoinType,
 }
 
+/// If `expr` evaluates to `Timestamp(_, Some(_))` against `schema`, wrap it in a
+/// metadata-only cast to `Timestamp(_, None)`. This is required because
+/// DataFusion's `SortMergeJoinExec` comparator only supports timezone-less
+/// timestamp types, while Spark's `TimestampType` serializes as
+/// `Timestamp(µs, "UTC")`. The cast preserves ordering on the same time unit.
+fn strip_timestamp_tz(
+    expr: Arc<dyn PhysicalExpr>,
+    schema: &Schema,
+) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+    match expr.data_type(schema)? {
+        DataType::Timestamp(unit, Some(_)) => Ok(Arc::new(CastExpr::new(
+            expr,
+            DataType::Timestamp(unit, None),
+            None,
+        ))),
+        _ => Ok(expr),
+    }
+}
+
 #[derive(Default)]
 pub struct BinaryExprOptions {
     pub is_integral_div: bool,
@@ -1649,10 +1668,23 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                let left_schema = left.schema();
+                let right_schema = right.schema();
+                let join_on = join_params
+                    .join_on
+                    .into_iter()
+                    .map(|(l, r)| {
+                        Ok((
+                            strip_timestamp_tz(l, left_schema.as_ref())?,
+                            strip_timestamp_tz(r, right_schema.as_ref())?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, ExecutionError>>()?;
+
                 let join = Arc::new(SortMergeJoinExec::try_new(
                     Arc::clone(&left),
                     Arc::clone(&right),
-                    join_params.join_on,
+                    join_on,
                     join_params.join_filter,
                     join_params.join_type,
                     sort_options,
