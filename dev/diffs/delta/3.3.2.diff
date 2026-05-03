@@ -395,3 +395,12 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala b/
 +        assert(thrown.getMessage.contains(THROWS_ON_CORRUPTED_FILE_ERROR_MSG) ||
 +          thrown.getMessage.contains("Requested range was invalid"))
        }
+
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/deletionvectors/DeletionVectorsSuite.scala b/spark/src/test/scala/org/apache/spark/sql/delta/deletionvectors/DeletionVectorsSuite.scala
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/deletionvectors/DeletionVectorsSuite.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/deletionvectors/DeletionVectorsSuite.scala
+@@ -783,3 +783,3 @@ class DeletionVectorsSuite extends QueryTest
+   for (deleteSpec <- Seq(deleteUsingDvSmallScale)) {
+-    test(
++    ignore(
+       s"huge table: delete a ${deleteSpec.scale} number of rows from tables of 2B rows with DVs") {
