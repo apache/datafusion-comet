@@ -20,7 +20,7 @@ use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
 use std::{any::Any, sync::Arc};
 
 use crate::bloom_filter::spark_bloom_filter;
-use crate::bloom_filter::spark_bloom_filter::SparkBloomFilter;
+use crate::bloom_filter::spark_bloom_filter::{SparkBloomFilter, SparkBloomFilterVersion};
 
 use arrow::array::ArrayRef;
 use arrow::array::BinaryArray;
@@ -37,6 +37,10 @@ pub struct BloomFilterAgg {
     signature: Signature,
     num_items: i32,
     num_bits: i32,
+    /// Output serialization version. Spark <= 4.0 only knows V1; Spark 4.1+'s
+    /// `BloomFilter.create` defaults to V2, so the JVM serde sets this to V2 on
+    /// 4.1+ to keep `bloom_filter_agg` byte-equivalent with Spark's aggregator.
+    version: SparkBloomFilterVersion,
 }
 
 #[inline]
@@ -54,6 +58,7 @@ impl BloomFilterAgg {
         num_items: Arc<dyn PhysicalExpr>,
         num_bits: Arc<dyn PhysicalExpr>,
         data_type: DataType,
+        version: SparkBloomFilterVersion,
     ) -> Self {
         assert!(matches!(data_type, DataType::Binary));
         Self {
@@ -70,6 +75,7 @@ impl BloomFilterAgg {
             ),
             num_items: extract_i32_from_literal(num_items),
             num_bits: extract_i32_from_literal(num_bits),
+            version,
         }
     }
 }
@@ -92,10 +98,13 @@ impl AggregateUDFImpl for BloomFilterAgg {
     }
 
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::new(SparkBloomFilter::from((
+        Ok(Box::new(SparkBloomFilter::new(
+            self.version,
             spark_bloom_filter::optimal_num_hash_functions(self.num_items, self.num_bits),
             self.num_bits,
-        ))))
+            // Spark's BloomFilterAggregate always uses BloomFilterImplV2.DEFAULT_SEED (= 0).
+            0,
+        )))
     }
 
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {

@@ -2827,7 +2827,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("bloom_filter_agg") {
-    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
     spark.sessionState.functionRegistry.registerFunction(
       funcId_bloom_filter_agg,

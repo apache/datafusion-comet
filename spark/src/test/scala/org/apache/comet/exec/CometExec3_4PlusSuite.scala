@@ -33,7 +33,7 @@ import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.util.sketch.BloomFilter
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 
 /**
  * This test suite contains tests for only Spark 3.4+.
@@ -163,7 +163,6 @@ class CometExec3_4PlusSuite extends CometTestBase {
   }
 
   test("test BloomFilterMightContain from random input") {
-    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     val (longs, bfBytes) = bloomFilterFromRandomInput(10000, 10000)
     val table = "test"
 
