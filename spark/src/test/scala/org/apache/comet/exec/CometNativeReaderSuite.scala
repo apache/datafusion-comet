@@ -723,11 +723,18 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         .write
         .parquet(path.getCanonicalPath)
 
-      Seq("true", "false").foreach { legacy =>
-        withSQLConf("spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy) {
-          val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
-          checkSparkAnswer(df)
-        }
+      // Mirror the toggles in Spark's `vectorized reader: missing all struct fields` test in
+      // ParquetIOSuite, including off-heap on/off and the explicit nested-column vectorized
+      // reader flag. We've seen CI fail on the off-heap branch when the on-heap branch passes.
+      for {
+        offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
+      } withSQLConf(
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
+        "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
+        val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+        checkSparkAnswer(df)
       }
     }
   }
