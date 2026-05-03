@@ -96,14 +96,45 @@ case class CometDeltaNativeScanExec(
     if (tasks.isEmpty) {
       Array.empty[Array[Byte]]
     } else {
-      tasks.map { task =>
-        OperatorOuterClass.DeltaScan
-          .newBuilder()
-          .addTasks(task)
-          .build()
-          .toByteArray
+      packTasks(tasks).map { group =>
+        val builder = OperatorOuterClass.DeltaScan.newBuilder()
+        group.foreach(builder.addTasks)
+        builder.build().toByteArray
       }.toArray
     }
+  }
+
+  private def packTasks(
+      tasks: Seq[OperatorOuterClass.DeltaScanTask])
+      : Seq[Seq[OperatorOuterClass.DeltaScanTask]] = {
+    val conf = originalPlan.relation.sparkSession.sessionState.conf
+    val openCostInBytes = conf.filesOpenCostInBytes
+    val maxPartitionBytes = conf.filesMaxPartitionBytes
+    val minPartitionNum = conf.filesMinPartitionNum
+      .getOrElse(originalPlan.relation.sparkSession.sparkContext.defaultParallelism)
+    def taskSize(t: OperatorOuterClass.DeltaScanTask): Long = {
+      if (t.hasByteRangeStart && t.hasByteRangeEnd) {
+        math.max(0L, t.getByteRangeEnd - t.getByteRangeStart)
+      } else t.getFileSize
+    }
+    val totalBytes = tasks.map(t => taskSize(t) + openCostInBytes).sum
+    val bytesPerCore = totalBytes / math.max(1, minPartitionNum)
+    val msb = math.min(maxPartitionBytes, math.max(openCostInBytes, bytesPerCore))
+    val out = scala.collection.mutable.ArrayBuffer[Seq[OperatorOuterClass.DeltaScanTask]]()
+    val current = scala.collection.mutable.ArrayBuffer[OperatorOuterClass.DeltaScanTask]()
+    var currentSize = 0L
+    tasks.foreach { task =>
+      val size = taskSize(task)
+      if (currentSize + size > msb && current.nonEmpty) {
+        out += current.toList
+        current.clear()
+        currentSize = 0L
+      }
+      current += task
+      currentSize += size + openCostInBytes
+    }
+    if (current.nonEmpty) out += current.toList
+    out.toSeq
   }
 
   // Planning-time snapshot used by metrics, sourceKey derivations, and `numPartitions`.
