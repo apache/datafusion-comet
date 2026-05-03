@@ -102,8 +102,11 @@ two places:
     was enabled at create time (or that have been backfilled) carry
     the values inline; the materialised physical column name is in
     `Metadata.configuration` under the
-    `materializedRowIdColumnName` / `materializedRowCommitVersionColumnName`
-    properties.
+    `delta.rowTracking.materializedRowIdColumnName` /
+    `delta.rowTracking.materializedRowCommitVersionColumnName`
+    properties (constants exposed as
+    `DeltaReflection.MaterializedRowIdColumnProp` /
+    `MaterializedRowCommitVersionColumnProp`).
   - **Synthesised** as `baseRowId + parquet_row_index` (for `row_id`)
     or `defaultRowCommitVersion` (for `row_commit_version`). These
     per-file constants live on the `AddFile` action in the log.

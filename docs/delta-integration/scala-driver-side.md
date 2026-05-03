@@ -113,7 +113,16 @@ surfaces, so:
     `org.apache.spark.sql.delta.DeltaParquetFileFormat` plus subclass
     check (catches `DeletionVectorBoundFileFormat`).
   - `extractTableRoot(relation)` — pulls the URI out of the
-    `HadoopFsRelation`'s `location.rootPaths.head.toUri`.
+    `HadoopFsRelation`'s `location.rootPaths.head` via
+    `pathToSingleEncodedUri`. The encoder uses `Path.toUri.toString`
+    (the *full*, `%`-double-encoded URI form) rather than
+    `Path.toString` (the once-decoded form). This matters for Delta
+    tests whose temp-dir prefix is the literal `spark%dir%prefix`:
+    Spark's actual on-disk dir is `spark%25dir%25prefix-uuid` (with
+    `%25` four chars literal), so the URI must double-encode to
+    `spark%2525dir%2525prefix-uuid` for the native side's
+    percent-decode to recover the literal name. The double encoding is
+    a no-op for ordinary table paths.
   - `extractSnapshotSchema(relation)` / `extractSnapshotVersion(relation)`
     / `extractMetadataConfiguration(relation)` — reflection into Delta's
     `TahoeFileIndex.snapshotAtAnalysis` (or `getSnapshot`, depending on
