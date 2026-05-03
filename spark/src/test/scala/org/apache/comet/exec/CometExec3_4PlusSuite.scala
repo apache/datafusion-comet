@@ -163,6 +163,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
   }
 
   test("test BloomFilterMightContain from random input") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val (longs, bfBytes) = bloomFilterFromRandomInput(10000, 10000)
     val table = "test"
 
