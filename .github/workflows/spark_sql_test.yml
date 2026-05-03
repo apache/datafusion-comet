@@ -126,7 +126,6 @@ jobs:
     needs: build-native
     strategy:
       matrix:
-        os: [ubuntu-24.04]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -142,12 +141,17 @@ jobs:
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
           - {spark-short: '4.0', spark-full: '4.0.2', java: 17, scan-impl: 'auto'}
           - {spark-short: '4.0', spark-full: '4.0.2', java: 21, scan-impl: 'auto'}
+          - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
       fail-fast: false
     name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
-    runs-on: ${{ matrix.os }}
+    # Hive tests stay on the standard GitHub-hosted runner: HiveSparkSubmitSuite
+    # relies on an Ivy 'local-m2-cache' resolver that the runs-on.com
+    # ubuntu24-full-x64 image does not provide, so spark-submit fails there.
+    runs-on: ${{ startsWith(matrix.module.name, 'sql_hive') && 'ubuntu-24.04' || (github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest') }}
     container:
       image: amd64/rust
     steps:
+      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
       - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -170,7 +174,7 @@ jobs:
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
-            build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+            build/sbt -Dsbt.log.noformat=true -mem 6144 ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
           fi
