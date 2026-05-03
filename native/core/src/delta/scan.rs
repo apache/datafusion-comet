@@ -149,16 +149,19 @@ pub fn plan_delta_scan_with_predicate(
     //   - `in_commit_timestamps`: regular reads work fine
     //   - `iceberg_compat_v1/v2`: doesn't change Delta read correctness
     //   - `append_only`: write-side constraint, reads are unaffected
-    let mut unsupported_features: Vec<String> = Vec::new();
+    let unsupported_features: Vec<String> = Vec::new();
     let props = snapshot.table_properties();
     // columnMapping is now handled by Phase 4 — no longer a fallback trigger.
     // typeWidening: DataFusion's parquet schema adapter handles widening reads
     // (parquet stores the file's original type; the adapter casts to the table's
     // current widened type at read time). Removed from the gate; verified by
     // TypeWidening{TableFeature,Metadata,...}Suite in the Delta regression.
-    if props.enable_row_tracking == Some(true) {
-        unsupported_features.push("rowTracking".to_string());
-    }
+    // rowTracking: tables with `enable_row_tracking=true` are scannable
+    // natively. Queries that explicitly select `_metadata.row_id` /
+    // `_metadata.row_commit_version` are handled in CometScanRule's
+    // `applyRowTrackingRewrite` (it rewrites the scan to read the materialized
+    // physical column, or declines when no materialized name is available).
+    // No need to gate the whole table's scan path here.
 
     // Phase 4: extract logical→physical column name mapping from schema metadata.
     // For column_mapping_mode = id or name, each StructField carries a
