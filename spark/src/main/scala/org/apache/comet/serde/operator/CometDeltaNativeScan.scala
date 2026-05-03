@@ -226,31 +226,13 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
             return None
         }
       } else {
-        // Conservative DV guard for non-batch indexes (TahoeLogFileIndex,
-        // PreparedDeltaFileIndex, ...). Kernel path does apply DVs at read time via
-        // DeltaDvFilterExec, which is correct for standalone SELECTs. But when an
-        // UPDATE / DELETE / MERGE command's INTERNAL read runs through Comet for a
-        // DV-enabled table and Delta's post-read logic expects to see ALL rows (to
-        // then apply its own DV mechanism), our DV-applying read silently skips
-        // rows the command expected -- producing wrong final table state.
-        //
-        // `matchingFiles(Nil, Nil)` is cheap for the PreparedDeltaFileIndex case
-        // because the scan result is already materialised. For TahoeLogFileIndex we
-        // prefer not to probe (expensive); relying on the Delta-PreprocessTableWithDVs
-        // wrapper being detected upstream in CometScanRule.scanBelowFallsBackForDvs.
-        val preparedHasDv =
-          relation.location.getClass.getName.contains("PreparedDeltaFileIndex") &&
-            DeltaReflection
-              .extractBatchAddFiles(relation.location)
-              .exists(_.exists(_.hasDeletionVector))
-        if (preparedHasDv) {
-          import org.apache.comet.CometSparkSessionExtensions.withInfo
-          withInfo(
-            scan,
-            "Native Delta scan falls back for PreparedDeltaFileIndex with " +
-              "deletion vectors (Delta's DV-aware internal reads need vanilla Spark).")
-          return None
-        }
+        // Non-batch indexes (TahoeLogFileIndex, ...). DV-bearing
+        // PreparedDeltaFileIndex is now classified as a batch index above
+        // (see `isBatchFileIndex`), so its DV-fallback case is already
+        // handled by the `case Some(_)` arm at the top of this match. For
+        // remaining non-batch indexes the Delta-PreprocessTableWithDVs
+        // wrapper detection upstream in `CometScanRule.scanBelowFallsBackForDvs`
+        // is responsible for keeping DV-aware internal reads on vanilla.
         try {
           nativeLib.planDeltaScan(
             tableRoot,
