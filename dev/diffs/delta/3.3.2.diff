@@ -365,3 +365,17 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSinkSuite.scal
            }.flatten
            if (filePartitions.isEmpty) {
              fail(s"No FileScan in query\n${df.queryExecution}")
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaErrorsSuite.scala b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaErrorsSuite.scala
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaErrorsSuite.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaErrorsSuite.scala
+@@ -139,3 +139,9 @@ trait DeltaErrorsSuiteBase
+   def checkIfValidResponse(url: String, response: String): Boolean = {
+-    response.contains("HTTP/1.1 200 OK") || response.contains("HTTP/2 200")
++    // Comet regression: also accept 3xx redirects as valid. The Delta docs
++    // site moved `/latest/<page>` to `/<page>` post Delta 3.3.2's release;
++    // the URLs in DeltaErrors still point at the old paths and now 301.
++    response.contains("HTTP/1.1 200 OK") || response.contains("HTTP/2 200") ||
++      response.contains("HTTP/1.1 301") || response.contains("HTTP/2 301") ||
++      response.contains("HTTP/1.1 302") || response.contains("HTTP/2 302") ||
++      response.contains("HTTP/1.1 308") || response.contains("HTTP/2 308")
+   }
