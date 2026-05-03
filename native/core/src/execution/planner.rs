@@ -3346,6 +3346,33 @@ fn parse_delta_partition_scalar(
         DataType::Timestamp(unit, tz_opt) => {
             use chrono::{DateTime, NaiveDateTime, TimeZone};
             use chrono_tz::Tz;
+            // TIMESTAMP_NTZ (`Timestamp(_, None)`): the partition value is wall-clock
+            // time with no zone. Arrow stores it as micros-since-epoch interpreted as
+            // UTC, so parse the naive datetime and treat it as UTC. Don't apply the
+            // session TZ adjustment that the regular Timestamp branch below uses (that
+            // shifts wall-clock time by the session offset, which would be 8h off for
+            // PST/PDT and break DeltaTimestampNTZSuite).
+            if tz_opt.is_none() {
+                let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
+                    .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
+                    .map_err(|e| format!("cannot parse TIMESTAMP_NTZ '{s}': {e}"))?;
+                let micros = chrono::Utc.from_utc_datetime(&naive).timestamp_micros();
+                return Ok(match unit {
+                    arrow::datatypes::TimeUnit::Microsecond => {
+                        ScalarValue::TimestampMicrosecond(Some(micros), None)
+                    }
+                    arrow::datatypes::TimeUnit::Millisecond => {
+                        ScalarValue::TimestampMillisecond(Some(micros / 1_000), None)
+                    }
+                    arrow::datatypes::TimeUnit::Nanosecond => ScalarValue::TimestampNanosecond(
+                        Some(micros.saturating_mul(1_000)),
+                        None,
+                    ),
+                    arrow::datatypes::TimeUnit::Second => {
+                        ScalarValue::TimestampSecond(Some(micros / 1_000_000), None)
+                    }
+                });
+            }
             // Delta pattern variants we have to support:
             //   - naive: "yyyy-MM-dd HH:mm:ss[.S]" (written in session TZ)
             //   - with offset: "yyyy-MM-dd HH:mm:ss[.S] +HHMM" (CDC metadata columns)
