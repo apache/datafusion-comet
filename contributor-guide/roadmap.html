@@ -495,6 +495,29 @@ repository. Comet is migrating its expression implementations to that crate so t
 DataFusion-based projects, tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2084">#2084</a>. Improvements to core DataFusion operators (joins, aggregates,
 window) made in support of Comet also benefit the wider ecosystem.</p>
 </section>
+<section id="spillable-hash-join">
+<h2>Spillable Hash Join<a class="headerlink" href="#spillable-hash-join" title="Link to this heading">#</a></h2>
+<p>Comet’s native hash join currently requires the build side to fit entirely in memory. Adding spill-to-disk
+support will allow Comet to handle larger joins without falling back to Spark, improving both reliability and
+performance for memory-intensive workloads.</p>
+</section>
+<section id="java-scala-columnar-and-arrow-udf-support">
+<h2>Java/Scala Columnar and Arrow UDF Support<a class="headerlink" href="#java-scala-columnar-and-arrow-udf-support" title="Link to this heading">#</a></h2>
+<p>Spark users frequently define custom UDFs in Java or Scala. Comet currently falls back to Spark when a query
+contains a JVM UDF. Adding support for calling Java/Scala UDFs that operate on columnar Arrow data directly
+from native execution will reduce fallbacks and allow more queries to run end-to-end in Comet.</p>
+</section>
+<section id="memory-management-improvements">
+<h2>Memory Management Improvements<a class="headerlink" href="#memory-management-improvements" title="Link to this heading">#</a></h2>
+<p>Comet coordinates memory between the JVM and native Rust execution through a custom memory pool. Improving
+memory accounting, reservation strategies, and spill integration will reduce out-of-memory errors and allow
+Comet to make better use of available resources, especially in multi-query and multi-task environments.</p>
+</section>
+<section id="prepare-for-1-0-0-release">
+<h2>Prepare for 1.0.0 Release<a class="headerlink" href="#prepare-for-1-0-0-release" title="Link to this heading">#</a></h2>
+<p>The project is working toward a 1.0.0 release. This effort includes finalizing configuration options,
+resolving known correctness issues, and improving documentation. Progress is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4082">#4082</a>.</p>
+</section>
 <section id="native-parquet-writes">
 <h2>Native Parquet Writes<a class="headerlink" href="#native-parquet-writes" title="Link to this heading">#</a></h2>
 <p>Comet has experimental support for native Parquet writes via <code class="docutils literal notranslate"><span class="pre">InsertIntoHadoopFsRelationCommand</span></code>, currently
