@@ -292,3 +292,18 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/perf/OptimizeGenera
      }.getOrElse(Nil)
    }
 
+
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
+@@ -117,6 +117,10 @@ class DeltaSuite extends QueryTest
+       val query = spark.read.format("delta").load(testPath).where("part = 1")
+       val fileScans = query.queryExecution.executedPlan.collect {
+         case f: FileSourceScanExec => f
++        // Comet regression: Comet's planner replaces `FileSourceScanExec` with
++        // `CometDeltaNativeScanExec`. The collect's return type LUBs to
++        // `SparkPlan`; `numFiles` is aliased on the Comet exec's metrics.
++        case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec => c
+       }
+ 
+       // Force the query to read files and generate metrics

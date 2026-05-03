@@ -247,7 +247,11 @@ case class CometDeltaNativeScanExec(
       dvFiles.set(taskList.getTasksList.asScala.count(!_.getDeletedRowIndexesList.isEmpty).toLong)
       sparkContext.register(dvFiles, "files with deletion vectors")
 
-      Map("total_files" -> totalFiles, "dv_files" -> dvFiles)
+      // `numFiles` alias mirrors Spark's `FileSourceScanExec` metric name so
+      // tests like DeltaSuite.scala "query with predicates should skip
+      // partitions" -- which read `metrics.get("numFiles")` to verify
+      // partition skipping -- find the same value on Comet's scan exec.
+      Map("total_files" -> totalFiles, "numFiles" -> totalFiles, "dv_files" -> dvFiles)
     } else {
       Map.empty[String, SQLMetric]
     }
