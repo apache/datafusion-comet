@@ -144,6 +144,7 @@ Body: a markdown report with these sections, in this order:
 
    The issue number (not the title) is the link target. The title is plain
    text. If there are no area labels, write `Area labels: none`.
+
 3. **Escalations to consider** (omit section if empty) — bullet per issue with
    the same `<title> ([#N](url))` form, plus a sub-bullet explaining the
    trigger from the guide.
