@@ -519,6 +519,15 @@ Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will
 written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
 October 15, 1582.</p></li>
 </ul>
+<p>The following shared limitation raises an error at scan time rather than falling back to Spark:</p>
+<ul class="simple">
+<li><p>Invalid UTF-8 bytes in <code class="docutils literal notranslate"><span class="pre">STRING</span></code> columns. Spark permits arbitrary byte sequences in a <code class="docutils literal notranslate"><span class="pre">STRING</span></code>
+column (for example from <code class="docutils literal notranslate"><span class="pre">CAST(X'C1'</span> <span class="pre">AS</span> <span class="pre">STRING)</span></code>), but Comet’s native execution path is built on
+Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose <code class="docutils literal notranslate"><span class="pre">STRING</span></code> column contains
+non-UTF-8 bytes fails with <code class="docutils literal notranslate"><span class="pre">Parquet</span> <span class="pre">error:</span> <span class="pre">encountered</span> <span class="pre">non</span> <span class="pre">UTF-8</span> <span class="pre">data</span></code>. Disable Comet for the
+query, or cast the column to <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> before persisting, if you need to preserve non-UTF-8 bytes.
+See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4121">#4121</a>.</p></li>
+</ul>
 </section>
 <section id="native-datafusion-limitations">
 <h2><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> Limitations<a class="headerlink" href="#native-datafusion-limitations" title="Link to this heading">#</a></h2>

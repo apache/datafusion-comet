@@ -503,6 +503,19 @@ support. Non-default collated strings are not yet supported by Comet and will fa
 <p>Spark 4.1 support is experimental and intended for development and testing only. It should not be used
 in production.</p>
 </div>
+<section id="id1">
+<h3>Known Limitations<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">NullType</span></code> columns in Parquet files</strong>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4199">#4199</a>): Spark encodes a <code class="docutils literal notranslate"><span class="pre">NullType</span></code>
+column as a Parquet <code class="docutils literal notranslate"><span class="pre">BOOLEAN</span></code> physical type annotated with <code class="docutils literal notranslate"><span class="pre">LogicalType::Unknown</span></code>. The Rust
+<code class="docutils literal notranslate"><span class="pre">parquet</span></code> crate that Comet depends on accepts <code class="docutils literal notranslate"><span class="pre">Unknown</span></code> only when paired with <code class="docutils literal notranslate"><span class="pre">INT32</span></code> and rejects
+any other physical type with <code class="docutils literal notranslate"><span class="pre">Parquet</span> <span class="pre">error:</span> <span class="pre">Cannot</span> <span class="pre">annotate</span> <span class="pre">Unknown</span> <span class="pre">from</span> <span class="pre">BOOLEAN</span> <span class="pre">for</span> <span class="pre">field</span> <span class="pre">'&lt;name&gt;'</span></code>.
+Any attempt to read a Parquet file that contains a <code class="docutils literal notranslate"><span class="pre">NullType</span></code> column fails at decode time before
+Comet’s scan runs. Workaround: project the column away, cast it to a concrete type before
+persisting, or read the file with Comet disabled for that query.</p></li>
+</ul>
+</section>
 </section>
 <section id="spark-4-2-experimental">
 <h2>Spark 4.2 (Experimental)<a class="headerlink" href="#spark-4-2-experimental" title="Link to this heading">#</a></h2>
