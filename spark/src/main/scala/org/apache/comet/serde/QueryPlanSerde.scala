@@ -36,6 +36,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions._
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
@@ -459,13 +460,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           if (ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f)) else None
         }
         if (fieldIds.exists(_.isDefined)) {
+          // Emit one FieldMetadata entry per nested field, parallel to field_names. Entries
+          // for fields without an ID are empty so the slot index stays aligned.
           fieldIds.foreach { idOpt =>
             val metaBuilder = Types.DataType.FieldMetadata.newBuilder()
-            // Use arrow-rs's metadata key (`parquet::arrow::PARQUET_FIELD_ID_META_KEY`).
-            // Spark's local key is `parquet.field.id`; we translate at the proto boundary so
-            // the native side matches the same key it gets from arrow-rs.
             idOpt.foreach { id =>
-              metaBuilder.putMetadata("PARQUET:field_id", id.toString)
+              metaBuilder.putMetadata(CometParquetUtils.PARQUET_FIELD_ID_META_KEY, id.toString)
             }
             struct.addFieldMetadata(metaBuilder.build())
           }

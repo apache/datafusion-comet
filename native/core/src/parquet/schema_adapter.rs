@@ -30,6 +30,7 @@ use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
     PhysicalExprAdapterFactory,
 };
+use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -59,11 +60,7 @@ impl SparkPhysicalExprAdapterFactory {
     }
 }
 
-/// Field metadata key arrow-rs uses to carry Parquet field IDs through to the
-/// Arrow schema (`PARQUET:field_id`). Mirrors `ParquetUtils.FIELD_ID_METADATA_KEY`
-/// on the JVM side.
-const PARQUET_FIELD_ID_META_KEY: &str = "PARQUET:field_id";
-
+/// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
 fn parse_field_id(field: &Field) -> Option<i32> {
     field
         .metadata()
@@ -91,9 +88,9 @@ fn remap_physical_schema(
 ) -> (SchemaRef, HashMap<String, String>) {
     let should_match_by_id = use_field_id && schema_has_field_ids(logical_schema);
 
-    // Pre-build a lookup from id -> first matching logical field (Spark surfaces a
-    // duplicate-ID error during `clipParquetGroupFields`; we follow a similar shape but
-    // raise it lazily during `rewrite` if a duplicate is actually referenced).
+    // Pre-build id -> first matching logical field. Spark surfaces a duplicate-ID error
+    // during `clipParquetGroupFields`; we follow the same first-wins shape and would raise
+    // a similar error lazily during `rewrite` if a duplicate is referenced.
     let id_to_logical: HashMap<i32, &FieldRef> = if should_match_by_id {
         let mut map = HashMap::new();
         for lf in logical_schema.fields() {
@@ -131,9 +128,8 @@ fn remap_physical_schema(
                 }
             }
 
-            // Case-insensitive name match. Skip logical fields that have IDs when the
-            // schema is ID-bearing — Spark's `matchIdField` does not fall through to a
-            // name match for ID-bearing logical fields.
+            // Name match. Spark's `matchIdField` does not fall through to a name match for
+            // ID-bearing logical fields, so skip those when the schema is ID-bearing.
             if !case_sensitive {
                 let logical_field = logical_schema.fields().iter().find(|lf| {
                     let lf_has_id = should_match_by_id && parse_field_id(lf).is_some();

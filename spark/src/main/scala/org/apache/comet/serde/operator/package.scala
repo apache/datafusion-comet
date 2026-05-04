@@ -24,15 +24,10 @@ import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.types.{StructField, StructType}
 
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 package object operator {
-
-  // Metadata key arrow-rs writes when it lifts Parquet field IDs into the Arrow schema
-  // (`parquet::arrow::PARQUET_FIELD_ID_META_KEY`). Spark's local key is `parquet.field.id`
-  // (`ParquetUtils.FIELD_ID_METADATA_KEY`); we translate at the proto boundary so the native
-  // side matches the same key it gets from arrow-rs.
-  private val PARQUET_FIELD_ID_META_KEY = "PARQUET:field_id"
 
   def schema2Proto(fields: Array[StructField]): Array[OperatorOuterClass.SparkStructField] = {
     val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
@@ -43,7 +38,7 @@ package object operator {
       fieldBuilder.clearMetadata()
       if (ParquetUtils.hasFieldId(field)) {
         fieldBuilder.putMetadata(
-          PARQUET_FIELD_ID_META_KEY,
+          CometParquetUtils.PARQUET_FIELD_ID_META_KEY,
           ParquetUtils.getFieldId(field).toString)
       }
       fieldBuilder.build()
