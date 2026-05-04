@@ -79,6 +79,10 @@ pub struct SparkParquetOptions {
     pub use_legacy_date_timestamp_or_ntz: bool,
     // Whether schema field names are case sensitive
     pub case_sensitive: bool,
+    /// When true, resolve fields by parquet.field.id metadata instead of name
+    /// (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`). Only takes effect
+    /// when both physical and logical fields actually carry IDs.
+    pub use_field_id: bool,
 }
 
 impl SparkParquetOptions {
@@ -91,6 +95,7 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            use_field_id: false,
         }
     }
 
@@ -103,6 +108,7 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            use_field_id: false,
         }
     }
 }
@@ -243,9 +249,27 @@ fn parquet_convert_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            // if dest and target schemas has any column in common
-            let mut field_overlap = false;
-            // TODO some of this logic may be specific to converting Parquet to Spark
+            // Match `from` (file) fields to `to` (logical) fields. Mirrors Spark's
+            // `clipParquetGroupFields`: when the logical struct carries `parquet.field.id`
+            // metadata anywhere in its fields, prefer ID match for ID-bearing logical
+            // fields; non-ID-bearing logical fields fall back to name match. When no
+            // logical field carries an ID, fall back to name match across the board.
+            let should_match_by_id =
+                parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
+
+            // ID -> from-index, built only when ID matching is in play.
+            let from_id_to_index: HashMap<i32, usize> = if should_match_by_id {
+                let mut map = HashMap::new();
+                for (i, field) in from_fields.iter().enumerate() {
+                    if let Some(id) = field_id(field) {
+                        map.entry(id).or_insert(i);
+                    }
+                }
+                map
+            } else {
+                HashMap::new()
+            };
+
             let mut field_name_to_index_map = HashMap::new();
             for (i, field) in from_fields.iter().enumerate() {
                 if parquet_options.case_sensitive {
@@ -255,27 +279,44 @@ fn parquet_convert_struct_to_struct(
                 }
             }
             assert_eq!(field_name_to_index_map.len(), from_fields.len());
+
+            let mut field_overlap = false;
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
             for i in 0..to_fields.len() {
-                // Fields in the to_type schema may not exist in the from_type schema
-                // i.e. the required schema may have fields that the file does not
-                // have
-                let key = if parquet_options.case_sensitive {
-                    to_fields[i].name().clone()
+                let to_field = &to_fields[i];
+                let from_index = if should_match_by_id {
+                    if let Some(id) = field_id(to_field) {
+                        // Logical field carries an ID: ID-only match (Spark treats
+                        // missing ID match as a missing column).
+                        from_id_to_index.get(&id).copied()
+                    } else {
+                        // Logical field has no ID: name match.
+                        let key = if parquet_options.case_sensitive {
+                            to_field.name().clone()
+                        } else {
+                            to_field.name().to_lowercase()
+                        };
+                        field_name_to_index_map.get(&key).copied()
+                    }
                 } else {
-                    to_fields[i].name().to_lowercase()
+                    let key = if parquet_options.case_sensitive {
+                        to_field.name().clone()
+                    } else {
+                        to_field.name().to_lowercase()
+                    };
+                    field_name_to_index_map.get(&key).copied()
                 };
-                if field_name_to_index_map.contains_key(&key) {
-                    let from_index = field_name_to_index_map[&key];
+
+                if let Some(from_index) = from_index {
                     let cast_field = parquet_convert_array(
                         Arc::clone(array.column(from_index)),
-                        to_fields[i].data_type(),
+                        to_field.data_type(),
                         parquet_options,
                     )?;
                     cast_fields.push(cast_field);
                     field_overlap = true;
                 } else {
-                    cast_fields.push(new_null_array(to_fields[i].data_type(), array.len()));
+                    cast_fields.push(new_null_array(to_field.data_type(), array.len()));
                 }
             }
 
@@ -295,6 +336,14 @@ fn parquet_convert_struct_to_struct(
         }
         _ => unreachable!(),
     }
+}
+
+/// Read the Parquet field id stored under arrow-rs's `PARQUET:field_id` field metadata key.
+fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
+    field
+        .metadata()
+        .get("PARQUET:field_id")
+        .and_then(|v| v.parse::<i32>().ok())
 }
 
 /// Cast a map type to another map type. The same as arrow-cast except we recursively call our own

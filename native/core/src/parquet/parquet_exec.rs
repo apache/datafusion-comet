@@ -73,13 +73,15 @@ pub(crate) fn init_datasource_exec(
     case_sensitive: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
+    use_field_id: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, spark_parquet_options) = get_options(
+    let (table_parquet_options, mut spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
         &object_store_url,
         encryption_enabled,
     );
+    spark_parquet_options.use_field_id = use_field_id;
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full

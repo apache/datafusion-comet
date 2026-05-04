@@ -74,6 +74,9 @@ message SparkStructField {
   string name = 1;
   spark.spark_expression.DataType data_type = 2;
   bool nullable = 3;
+  // Spark field metadata. Currently used to carry parquet.field.id through
+  // to the native side. Empty when not needed.
+  map<string, string> metadata = 4;
 }
 
 message Scan {
@@ -107,6 +110,12 @@ message NativeScanCommon {
   bool encryption_enabled = 11;
   string source = 12;
   repeated spark.spark_expression.DataType fields = 13;
+  // True when spark.sql.parquet.fieldId.read.enabled is set and the requested
+  // schema actually carries parquet.field.id metadata. When false the native
+  // scan keeps its existing name-based path with no extra work.
+  bool use_field_id = 14;
+  // True when spark.sql.parquet.fieldId.read.ignoreMissing is set.
+  bool ignore_missing_field_id = 15;
 }
 
 message NativeScan {

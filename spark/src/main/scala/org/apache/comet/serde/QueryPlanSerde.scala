@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -453,6 +454,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         struct.addAllFieldNames(fieldNames)
         struct.addAllFieldDatatypes(fieldDatatypes.map(_.get).asJava)
         struct.addAllFieldNullable(fieldNullable)
+
+        val fieldIds = s.fields.map { f =>
+          if (ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f)) else None
+        }
+        if (fieldIds.exists(_.isDefined)) {
+          fieldIds.foreach { idOpt =>
+            val metaBuilder = Types.DataType.FieldMetadata.newBuilder()
+            // Use arrow-rs's metadata key (`parquet::arrow::PARQUET_FIELD_ID_META_KEY`).
+            // Spark's local key is `parquet.field.id`; we translate at the proto boundary so
+            // the native side matches the same key it gets from arrow-rs.
+            idOpt.foreach { id =>
+              metaBuilder.putMetadata("PARQUET:field_id", id.toString)
+            }
+            struct.addFieldMetadata(metaBuilder.build())
+          }
+        }
 
         info.setStruct(struct)
         builder.setTypeInfo(info.build()).build()
