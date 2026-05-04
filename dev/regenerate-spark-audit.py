@@ -25,6 +25,8 @@ and writes them into the marker block of dev/spark-commit-audit.md.
 Idempotent: existing verdicts and prose notes are preserved by short hash.
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import re
@@ -112,3 +114,109 @@ def replace_block(body: str, lines: list[str]) -> str:
     else:
         block_body = "\n"
     return before + BEGIN_MARKER + block_body + END_MARKER + after
+
+
+def enumerate_spark_commits(token: str, limit: int | None = None) -> list[dict]:
+    """Enumerate in-scope Spark master commits since branch-4.2 was cut.
+
+    Returns a list of {short, date, subject} dicts in chronological order.
+    """
+    from github import Github  # local import keeps the script importable without PyGithub installed
+
+    gh = Github(token)
+    repo = gh.get_repo("apache/spark")
+
+    # Resolve the branch-4.2 cut point as the merge base of master and branch-4.2.
+    print("Resolving branch-4.2 merge base...", file=sys.stderr)
+    cmp = repo.compare("branch-4.2", "master")
+    base_sha = cmp.merge_base_commit.sha
+    print(f"merge base: {base_sha}", file=sys.stderr)
+
+    # Walk master commits that touch sql/, newest first, until we hit the merge base.
+    print("Listing sql/ commits on master...", file=sys.stderr)
+    paginated = repo.get_commits(sha="master", path="sql/")
+
+    candidates: list = []
+    seen = 0
+    for c in paginated:
+        if c.sha == base_sha:
+            break
+        seen += 1
+        if limit is not None and seen > limit:
+            break
+        candidates.append(c)
+
+    print(f"fetched {len(candidates)} candidate commits", file=sys.stderr)
+
+    # Filter by in-scope file paths. This is N extra API calls (one per commit).
+    out: list[dict] = []
+    for i, c in enumerate(candidates):
+        if i % 50 == 0:
+            print(f"filtering {i}/{len(candidates)}...", file=sys.stderr)
+        files = [f.filename for f in c.files]
+        if not is_in_scope(files):
+            continue
+        date_str = c.commit.author.date.strftime("%Y-%m-%d")
+        subject = c.commit.message.split("\n", 1)[0]
+        out.append(
+            {
+                "short": c.sha[:8],
+                "date": date_str,
+                "subject": subject,
+            }
+        )
+
+    # Reverse to chronological order (oldest first).
+    out.reverse()
+    return out
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the merged block to stdout instead of writing the file",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="only consider the most recent N candidate commits (for testing)",
+    )
+    parser.add_argument(
+        "--audit-log",
+        default=os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "spark-commit-audit.md"
+        ),
+        help="path to the audit log file (default: dev/spark-commit-audit.md)",
+    )
+    args = parser.parse_args()
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("GITHUB_TOKEN environment variable is required", file=sys.stderr)
+        return 2
+
+    with open(args.audit_log, "r", encoding="utf-8") as f:
+        body = f.read()
+    existing = parse_existing_block(body)
+    print(f"existing entries: {len(existing)}", file=sys.stderr)
+
+    commits = enumerate_spark_commits(token, limit=args.limit)
+    print(f"in-scope commits: {len(commits)}", file=sys.stderr)
+
+    merged = merge_lines(commits, existing)
+    new_body = replace_block(body, merged)
+
+    if args.dry_run:
+        sys.stdout.write(new_body)
+    else:
+        with open(args.audit_log, "w", encoding="utf-8") as f:
+            f.write(new_body)
+        print(f"wrote {args.audit_log} ({len(merged)} entries)", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
