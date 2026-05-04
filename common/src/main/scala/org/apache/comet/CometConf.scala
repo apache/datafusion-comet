@@ -383,6 +383,44 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_REPLACE_SMJ_MAX_BUILD_SIZE: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin.maxBuildSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Upper bound on the build-side stats.sizeInBytes for the SMJ-to-ShuffledHashJoin " +
+          "rewrite. When `0` (the default), the limit is derived at plan time from " +
+          "spark.memory.offHeap.size / spark.executor.cores scaled by " +
+          s"`${COMET_EXEC_CONFIG_PREFIX}.replaceSortMergeJoin.memoryFraction`. " +
+          "When positive, used as an absolute byte cap. When `-1`, the check is disabled " +
+          "and every SortMergeJoin is rewritten regardless of size (may OOM). " +
+          s"Only consulted when `${COMET_EXEC_CONFIG_PREFIX}.replaceSortMergeJoin` is true.")
+      .longConf
+      .createWithDefault(0L)
+
+  val COMET_REPLACE_SMJ_MEMORY_FRACTION: ConfigEntry[Double] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin.memoryFraction")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Fraction of the per-task off-heap memory share allowed for a single hash-join " +
+          "build side when deriving the max-build-size automatically. The derived budget is " +
+          "`offHeap.size / executor.cores * memoryFraction / hashTableOverhead`. Only used " +
+          s"when `${COMET_EXEC_CONFIG_PREFIX}.replaceSortMergeJoin.maxBuildSize` is `0`.")
+      .doubleConf
+      .checkValue(v => v > 0.0 && v <= 1.0, "Memory fraction must be in (0.0, 1.0]")
+      .createWithDefault(0.25)
+
+  val COMET_REPLACE_SMJ_HASH_TABLE_OVERHEAD: ConfigEntry[Double] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin.hashTableOverhead")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Multiplier applied to the raw build-side byte size to estimate hash-table memory " +
+          "when deriving the max-build-size automatically. Larger values are more " +
+          "conservative. Hash tables with bucket chains and hash-value storage typically " +
+          "need 2-4x the raw data size.")
+      .doubleConf
+      .checkValue(v => v >= 1.0, "Hash table overhead multiplier must be >= 1.0")
+      .createWithDefault(3.0)
+
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
       .category(CATEGORY_SHUFFLE)
