@@ -83,7 +83,24 @@ case class CometIcebergNativeScanExec(
    * both sides.
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    CometIcebergNativeScan.serializePartitions(originalPlan, output, nativeIcebergScanMetadata)
+    // Rebuild originalPlan with the current top-level runtimeFilters before serializing.
+    // Spark's PlanAdaptiveDynamicPruningFilters and our transformExpressionsUp passes rewrite
+    // the top-level `runtimeFilters` (visible via productIterator), but `originalPlan` is
+    // @transient and not touched by transformAllExpressions. serializePartitions reads runtime
+    // filters via originalPlan.inputRDD → filteredPartitions, so an out-of-sync originalPlan
+    // would re-translate the original (unresolved) InSubqueryExec and throw "no subquery
+    // result". This makes the top-level runtimeFilters the single source of truth at
+    // serialization time.
+    val effectiveOriginalPlan =
+      if (originalPlan != null && originalPlan.runtimeFilters != runtimeFilters) {
+        originalPlan.copy(runtimeFilters = runtimeFilters)
+      } else {
+        originalPlan
+      }
+    CometIcebergNativeScan.serializePartitions(
+      effectiveOriginalPlan,
+      output,
+      nativeIcebergScanMetadata)
   }
 
   def commonData: Array[Byte] = serializedPartitionData._1

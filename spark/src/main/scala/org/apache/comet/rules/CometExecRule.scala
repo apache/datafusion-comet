@@ -411,26 +411,13 @@ case class CometExecRule(session: SparkSession)
    * BroadcastQueryStageExec.
    */
   private def convertSubqueryBroadcasts(plan: SparkPlan): SparkPlan = {
-    val rewritten = plan.transformExpressionsUp { case inSub: InSubqueryExec =>
+    // CometIcebergNativeScanExec.runtimeFilters is a top-level constructor field visible to
+    // productIterator, so transformExpressionsUp rewrites it directly. The wrapped @transient
+    // originalPlan still holds the pre-rewrite runtimeFilters; we don't sync it here because
+    // CometIcebergNativeScanExec.serializedPartitionData rebuilds originalPlan from the
+    // top-level runtimeFilters at serialization time (single source of truth).
+    plan.transformExpressionsUp { case inSub: InSubqueryExec =>
       rewriteInSubqueryPlan(inSub)
-    }
-    // CometIcebergNativeScanExec carries `runtimeFilters` as a top-level constructor field
-    // (visible via productIterator) AND mirrors them inside `@transient originalPlan`.
-    // transformExpressionsUp above rewrites the top-level field but doesn't touch originalPlan.
-    // serializePartitions reads filters via originalPlan.inputRDD → filteredPartitions, so we
-    // must keep them in sync. Rebuild originalPlan with the new runtimeFilters; they share the
-    // same InSubqueryExec instances so DPP resolution via Spark's standard waitForSubqueries
-    // (triggered by ensureSubqueriesResolved) populates values visible on both sides.
-    rewritten match {
-      case ibg: CometIcebergNativeScanExec
-          if ibg.originalPlan != null
-            && ibg.runtimeFilters != ibg.originalPlan.runtimeFilters =>
-        val newOriginal = ibg.originalPlan.copy(runtimeFilters = ibg.runtimeFilters)
-        ibg.originalPlan.logicalLink.foreach(newOriginal.setLogicalLink)
-        val newScan = ibg.copy(originalPlan = newOriginal)
-        ibg.logicalLink.foreach(newScan.setLogicalLink)
-        newScan
-      case other => other
     }
   }
 

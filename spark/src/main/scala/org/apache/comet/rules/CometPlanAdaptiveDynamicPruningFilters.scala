@@ -121,20 +121,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
       stagePlan: SparkPlan): CometIcebergNativeScanExec = {
     val newFilters = ibgScan.runtimeFilters.map(f => convertFilter(f, stagePlan))
     if (newFilters == ibgScan.runtimeFilters) return ibgScan
-    // Keep originalPlan.runtimeFilters in sync with the top-level field. They share the same
-    // InSubqueryExec instances, so values resolved through Spark's standard waitForSubqueries
-    // (triggered by ensureSubqueriesResolved before commonData is read) are visible on both
-    // sides — the wrapper for plan-tree walks, originalPlan for serializePartitions's call to
-    // inputRDD → filteredPartitions.
-    val newOriginal =
-      if (ibgScan.originalPlan != null) {
-        val updated = ibgScan.originalPlan.copy(runtimeFilters = newFilters)
-        ibgScan.originalPlan.logicalLink.foreach(updated.setLogicalLink)
-        updated
-      } else {
-        ibgScan.originalPlan
-      }
-    val newScan = ibgScan.copy(runtimeFilters = newFilters, originalPlan = newOriginal)
+    // Top-level runtimeFilters is the single source of truth.
+    // CometIcebergNativeScanExec.serializedPartitionData rebuilds originalPlan from the top-level
+    // field at serialization time, so we don't need to sync originalPlan.runtimeFilters here.
+    val newScan = ibgScan.copy(runtimeFilters = newFilters)
     ibgScan.logicalLink.foreach(newScan.setLogicalLink)
     newScan
   }
