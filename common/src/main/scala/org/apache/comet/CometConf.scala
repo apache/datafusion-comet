@@ -568,16 +568,29 @@ object CometConf extends ShimCometConf {
     .doubleConf
     .createWithDefault(10.0)
 
-  val COMET_EXCHANGE_SIZE_MULTIPLIER: ConfigEntry[Double] = conf(
-    "spark.comet.shuffle.sizeInBytesMultiplier")
+  val COMET_EXCHANGE_SIZE_MULTIPLIER: ConfigEntry[Double] =
+    conf("spark.comet.shuffle.sizeInBytesMultiplier")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Comet shuffle uses Arrow columnar format which is more compact than Spark's UnsafeRow " +
+          "format. This causes Spark's AQE to underestimate shuffle data sizes, potentially " +
+          "choosing suboptimal join strategies (e.g. broadcast instead of sort-merge). " +
+          "This multiplier is applied to the reported shuffle data size to compensate. " +
+          "Only used when spark.comet.shuffle.sizeInBytesMultiplier.dynamic is false.")
+      .doubleConf
+      .createWithDefault(2.0)
+
+  val COMET_EXCHANGE_SIZE_MULTIPLIER_DYNAMIC: ConfigEntry[Boolean] = conf(
+    "spark.comet.shuffle.sizeInBytesMultiplier.dynamic")
     .category(CATEGORY_SHUFFLE)
     .doc(
-      "Comet reports smaller sizes for shuffle due to using Arrow's columnar memory format " +
-        "and this can result in Spark choosing a different join strategy due to the estimated " +
-        "size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to " +
-        "avoid regressions in join strategy.")
-    .doubleConf
-    .createWithDefault(1.0)
+      "When true, Comet estimates the size multiplier dynamically based on the shuffle " +
+        "output schema rather than using the static spark.comet.shuffle.sizeInBytesMultiplier " +
+        "value. The dynamic estimate accounts for per-column type widths to approximate " +
+        "how much larger the data would be in Spark's UnsafeRow format compared to Arrow " +
+        "columnar format.")
+    .booleanConf
+    .createWithDefault(false)
 
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")

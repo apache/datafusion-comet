@@ -132,8 +132,12 @@ case class CometShuffleExchangeExec(
     new CometShuffledBatchRDD(shuffleDependency, readMetrics, partitionSpecs)
 
   override def runtimeStatistics: Statistics = {
-    val dataSize =
-      metrics("dataSize").value * Math.max(CometConf.COMET_EXCHANGE_SIZE_MULTIPLIER.get(conf), 1)
+    val multiplier = if (CometConf.COMET_EXCHANGE_SIZE_MULTIPLIER_DYNAMIC.get(conf)) {
+      CometShuffleExchangeExec.estimateUnsafeRowMultiplier(child.output)
+    } else {
+      Math.max(CometConf.COMET_EXCHANGE_SIZE_MULTIPLIER.get(conf), 1)
+    }
+    val dataSize = metrics("dataSize").value * multiplier
     val rowCount = metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN).value
     Statistics(dataSize.toLong, Some(rowCount))
   }
@@ -233,6 +237,53 @@ object CometShuffleExchangeExec
     with ShimCometShuffleExchangeExec
     with CometTypeShim
     with SQLConfHelper {
+
+  /**
+   * Estimates the ratio of Spark UnsafeRow size to Arrow columnar size for a given schema.
+   *
+   * UnsafeRow uses 8 bytes per field (fixed-width region) regardless of actual type width, plus
+   * per-row overhead for null bitset and header. Arrow columnar uses the actual type width and
+   * amortizes per-column overhead across the batch. This method returns the estimated ratio so
+   * that Arrow-reported shuffle sizes can be scaled to approximate what Spark would report.
+   */
+  def estimateUnsafeRowMultiplier(fields: Seq[Attribute]): Double = {
+    val numFields = fields.size
+    if (numFields == 0) return 1.0
+
+    // UnsafeRow per-row: 4 bytes header + null bitset (8-byte aligned) + 8 bytes per field
+    val unsafeRowBytesPerRow =
+      4.0 + math.ceil(numFields / 64.0) * 8.0 + 8.0 * numFields
+
+    // Arrow per-value: actual type width (null bitmap overhead is negligible at batch sizes)
+    val arrowBytesPerRow = fields.map { attr =>
+      arrowTypeWidth(attr.dataType)
+    }.sum
+
+    val ratio = if (arrowBytesPerRow > 0) {
+      unsafeRowBytesPerRow / arrowBytesPerRow
+    } else {
+      2.0
+    }
+
+    Math.max(ratio, 1.0)
+  }
+
+  private def arrowTypeWidth(dataType: DataType): Double = dataType match {
+    case BooleanType => 0.125 // 1 bit
+    case ByteType => 1.0
+    case ShortType => 2.0
+    case IntegerType | FloatType | DateType => 4.0
+    case LongType | DoubleType | TimestampType | TimestampNTZType => 8.0
+    case _: DecimalType => 16.0
+    // Strings/binary: Arrow uses 4-byte offset + data; UnsafeRow uses 8-byte pointer + data.
+    // Use 8.0 as estimated average Arrow cost (4 offset + ~4 avg data bytes).
+    case StringType | BinaryType => 8.0
+    case ArrayType(elementType, _) => arrowTypeWidth(elementType) + 4.0 // offset array
+    case MapType(keyType, valueType, _) =>
+      arrowTypeWidth(keyType) + arrowTypeWidth(valueType) + 4.0
+    case s: StructType => s.fields.map(f => arrowTypeWidth(f.dataType)).sum
+    case _ => 8.0
+  }
 
   override def getSupportLevel(op: ShuffleExchangeExec): SupportLevel = {
     if (shuffleSupported(op).isDefined) Compatible() else Unsupported()
