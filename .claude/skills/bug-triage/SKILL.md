@@ -56,9 +56,11 @@ file an empty summary issue and do not modify any labels.
 For each issue, review the title and body and determine:
 
 1. **Priority label** (exactly one): apply the decision tree from the guide.
-   - `priority:critical` if it could produce silent wrong results
+   - `priority:critical` for correctness issues (silent wrong results, data
+     corruption) and security vulnerabilities
    - `priority:high` for crashes, panics, segfaults, NPEs on supported paths
-   - `priority:medium` for functional bugs / perf regressions with workarounds
+   - `priority:medium` for functional bugs / performance regressions with
+     workarounds
    - `priority:low` for test-only, CI flakes, tooling, cosmetic
 2. **Area labels** (zero or more): from the area table in the guide
    (`area:writer`, `area:shuffle`, `area:aggregation`, `area:scan`,
@@ -127,15 +129,32 @@ Body: a markdown report with these sections, in this order:
    - Link to `docs/source/contributor-guide/bug_triage.md`
    - Note that labels have already been applied; the reviewer should spot-check
      and close this issue when satisfied
-2. **Triaged** — table with one row per issue:
-   - Issue (linked, e.g., `#1234`)
-   - Priority applied
-   - Area labels applied
-   - `good first issue`? (yes/no)
-   - One-sentence rationale tying the call to the guide
-3. **Escalations to consider** (omit section if empty)
-4. **Skipped — needs more info** (omit if empty)
-5. **Failed to label** (omit if empty) — issue number plus the `gh` error
+2. **Triaged** — one subsection per priority, ordered highest priority first
+   (`priority:critical`, then `priority:high`, then `priority:medium`, then
+   `priority:low`). Omit any subsection whose count is zero. Do **not** use a
+   markdown table anywhere in this section; use nested bullet lists only.
+
+   Within each subsection, one top-level bullet per issue:
+
+   ```
+   ### priority:critical
+
+   - <issue title> ([#1234](https://github.com/apache/datafusion-comet/issues/1234))
+     - Area labels: `area:expressions`, `area:scan`
+     - good first issue: no
+     - Rationale: one sentence tying the call to the guide
+   ```
+
+   The issue number (not the title) is the link target. The title is plain
+   text. If there are no area labels, write `Area labels: none`.
+3. **Escalations to consider** (omit section if empty) — bullet per issue with
+   the same `<title> ([#N](url))` form, plus a sub-bullet explaining the
+   trigger from the guide.
+4. **Skipped — needs more info** (omit if empty) — bullet per issue with the
+   same `<title> ([#N](url))` form, plus a sub-bullet explaining what is
+   missing.
+5. **Failed to label** (omit if empty) — bullet per issue with the same
+   `<title> ([#N](url))` form, plus a sub-bullet quoting the `gh` error.
 
 File the issue with `gh`. Use a temp file for the body to keep quoting sane:
 
@@ -159,7 +178,8 @@ Report back:
 3. Number skipped (needs more info) and number failed
 4. URL of the new summary issue
 
-Do not paste the full triage table back into the chat; it is in the issue.
+Do not paste the full per-issue listing back into the chat; it is in the
+summary issue.
 
 ## What This Skill Must Not Do
 
