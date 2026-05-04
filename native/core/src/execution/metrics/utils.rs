@@ -45,11 +45,6 @@ pub(crate) fn update_comet_metric(
 pub(crate) fn to_native_metric_node(
     spark_plan: &Arc<SparkPlan>,
 ) -> Result<NativeMetricNode, CometError> {
-    let mut native_metric_node = NativeMetricNode {
-        metrics: HashMap::new(),
-        children: Vec::new(),
-    };
-
     let node_metrics = if spark_plan.additional_native_plans.is_empty() {
         spark_plan.native_plan.metrics()
     } else {
@@ -68,18 +63,24 @@ pub(crate) fn to_native_metric_node(
         Some(metrics.aggregate_by_name())
     };
 
-    // add metrics
-    node_metrics
-        .unwrap_or_default()
-        .iter()
-        .map(|m| m.value())
-        .map(|m| (m.name(), m.as_usize() as i64))
-        .for_each(|(name, value)| {
-            native_metric_node.metrics.insert(name.to_string(), value);
-        });
+    let children = spark_plan.children();
+    let mut native_metric_node = NativeMetricNode {
+        // Most operator metric maps are well under 20 entries (e.g. hash-join: 9,
+        // native-scan: ~20). Pre-sizing to 16 avoids the default-capacity rehash.
+        metrics: HashMap::with_capacity(16),
+        children: Vec::with_capacity(children.len()),
+    };
 
-    // add children
-    for child_plan in spark_plan.children() {
+    if let Some(metrics) = node_metrics {
+        for m in metrics.iter() {
+            let value = m.value();
+            native_metric_node
+                .metrics
+                .insert(value.name().to_string(), value.as_usize() as i64);
+        }
+    }
+
+    for child_plan in children {
         let child_node = to_native_metric_node(child_plan)?;
         native_metric_node.children.push(child_node);
     }
