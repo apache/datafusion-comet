@@ -31,4 +31,6 @@ preserved on re-run.
 ## Commits
 
 <!-- BEGIN AUDIT LIST -->
+- `84d9c842` 2026-05-02 [needs-triage] [SPARK-56686][FOLLOWUP][SQL] Mark CDC streaming rewrite via attribute metadata
+- `ae5c075a` 2026-05-04 [needs-triage] [SPARK-56711][SQL] Restrict CDC `_commit_version` column to LongType or StringType
 <!-- END AUDIT LIST -->
