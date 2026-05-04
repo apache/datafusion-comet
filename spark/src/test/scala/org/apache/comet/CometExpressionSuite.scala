@@ -2998,7 +2998,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
         SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
-        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString) {
+        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString,
+        // SPARK-53535 (Spark 4.1+) flipped the default to "false", which preserves the parent
+        // struct's nullness so non-null parents materialise as Row(Row(null, null)). This test
+        // asserts the legacy "all missing fields => null struct" answer, so pin the conf to
+        // "true" to keep the expectation valid on both 3.x/4.0 and 4.1+. The non-legacy
+        // behaviour is covered separately by `issue #4136` in CometNativeReaderSuite.
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> "true") {
         val data = Seq(Tuple1((1, "a")), Tuple1((2, null)), Tuple1(null))
 
         val readSchema = new StructType().add(

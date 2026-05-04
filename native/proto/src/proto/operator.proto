@@ -107,6 +107,11 @@ message NativeScanCommon {
   bool encryption_enabled = 11;
   string source = 12;
   repeated spark.spark_expression.DataType fields = 13;
+  // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+  // missing in the Parquet file, true returns the entire struct as null (legacy
+  // pre-4.1 behavior); false preserves the parent struct's nullness from the file
+  // so non-null parents return a struct of all-null fields.
+  bool return_null_struct_if_all_fields_missing = 14;
 }
 
 message NativeScan {

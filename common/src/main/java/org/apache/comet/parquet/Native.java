@@ -226,6 +226,7 @@ public final class Native extends NativeBase {
       String sessionTimezone,
       int batchSize,
       boolean caseSensitive,
+      boolean returnNullStructIfAllFieldsMissing,
       Map<String, String> objectStoreOptions,
       CometFileKeyUnwrapper keyUnwrapper,
       Object metricsNode);

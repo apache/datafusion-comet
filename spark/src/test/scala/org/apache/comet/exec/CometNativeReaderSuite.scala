@@ -33,7 +33,7 @@ import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.{IntegerType, LongType, NullType, StringType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
@@ -389,7 +389,6 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("native reader - select struct field with user defined schema") {
-    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     // extract existing A column
     var readSchema = new StructType().add(
       "c0",
@@ -682,6 +681,107 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       checkAnswer(
         spark.read.parquet(dir.getCanonicalPath).filter("isnotnull(f)"),
         Seq(Row(Seq(1, 2))))
+    }
+  }
+
+  test("issue #4136: struct with all requested fields missing in file") {
+    // SPARK-53535 (Spark 4.1) added LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING.
+    // With the new default (false), Spark's vectorized reader appends a "marker" leaf field to
+    // the Parquet read schema so it can distinguish a null parent row from a non-null parent
+    // whose requested fields are all missing from the file, then truncates the marker out of
+    // the ColumnarBatch. Comet's native scans don't implement this, so they conflate the two
+    // cases and return Row(null) for non-null parents.
+    assume(
+      isSpark41Plus,
+      "LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING was introduced in Spark 4.1")
+
+    val tableSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_1", IntegerType)
+        .add("_2", StringType),
+      nullable = true)
+
+    // Read schema requests _3, _4 — fields that don't exist in the file's _1 struct.
+    val readSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_3", IntegerType, nullable = true)
+        .add("_4", LongType, nullable = true),
+      nullable = true)
+
+    val data = java.util.Arrays.asList(
+      Row(Row(1, "a")), // non-null parent, requested fields missing in file
+      Row(Row(2, null)), // non-null parent, requested fields missing in file
+      Row(null) // null parent
+    )
+
+    withTempPath { path =>
+      spark
+        .createDataFrame(data, tableSchema)
+        .write
+        .parquet(path.getCanonicalPath)
+
+      // Mirror the toggles in Spark's `vectorized reader: missing all struct fields` test in
+      // ParquetIOSuite, including off-heap on/off and the explicit nested-column vectorized
+      // reader flag. We've seen CI fail on the off-heap branch when the on-heap branch passes.
+      for {
+        offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
+      } withSQLConf(
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
+        "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
+        val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("issue #4136: struct with only NullType fields in file (SPARK-54220)") {
+    // The upstream SPARK-54220 test writes `Tuple1((null, null))` which is inferred as a struct
+    // of NullType fields on disk; reading with a schema that asks for Int/String on top of
+    // NullType fails at parquet decode time because Spark encodes NullType as
+    // `BOOLEAN + LogicalType::Unknown` but parquet-rs only accepts `INT32 + Unknown`. See
+    // #4199 for the upstream compatibility gap.
+    assume(
+      false,
+      "Skipped until parquet-rs accepts BOOLEAN + Unknown for NullType " +
+        "(https://github.com/apache/datafusion-comet/issues/4199)")
+
+    val tableSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_1", NullType)
+        .add("_2", NullType),
+      nullable = true)
+
+    val readSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_3", IntegerType, nullable = true)
+        .add("_4", StringType, nullable = true),
+      nullable = true)
+
+    val data =
+      java.util.Arrays.asList(Row(Row(null, null)), Row(Row(null, null)), Row(null))
+
+    withTempPath { path =>
+      spark
+        .createDataFrame(data, tableSchema)
+        .write
+        .parquet(path.getCanonicalPath)
+
+      for {
+        offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
+      } withSQLConf(
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
+        "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
+        val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+        checkSparkAnswer(df)
+      }
     }
   }
 

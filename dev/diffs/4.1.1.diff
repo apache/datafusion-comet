@@ -3017,7 +3017,7 @@ index 6b73cc8618d..624694916fb 100644
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 3072657a095..b2293ccab17 100644
+index 3072657a095..6b5b9103363 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -40,6 +40,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
@@ -3028,57 +3028,17 @@ index 3072657a095..b2293ccab17 100644
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow, UnsafeRow}
  import org.apache.spark.sql.catalyst.util.{DateTimeConstants, DateTimeUtils}
-@@ -765,7 +766,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("vectorized reader: missing all struct fields") {
-+  test("vectorized reader: missing all struct fields",
-+      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4136")) {
-     for {
-       offheapEnabled <- Seq(true, false)
-       returnNullStructIfAllFieldsMissing <- Seq(true, false)
-@@ -803,7 +805,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-53535: vectorized reader: missing all struct fields, struct with complex fields") {
-+  test("SPARK-53535: vectorized reader: missing all struct fields, struct with complex fields",
-+      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4136")) {
-     val data = Seq(
-       Row(Row(Seq(11, 12, null, 14), Row("21", 22), Row(true)), 100),
-       Row(Row(Seq(11, 12, null, 14), Row("21", 22), Row(false)), 100),
-@@ -858,7 +861,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-53535: vectorized reader: missing all struct fields, struct with map field only") {
-+  test("SPARK-53535: vectorized reader: missing all struct fields, struct with map field only",
-+      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4136")) {
-     val data = Seq(
-       Row(Row(Map("key1" -> 1)), 100),
-       Row(Row(Map("key2" -> 2)), 100),
-@@ -903,7 +907,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-   }
- 
-   test("SPARK-53535: vectorized reader: missing all struct fields, " +
--      "struct with cheap map and more expensive array field") {
-+      "struct with cheap map and more expensive array field",
-+      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4136")) {
-     val data = Seq(
-       Row(Row(Map(false -> Row("expensive", 1)), Seq("test1")), 100),
-       Row(Row(Map(true -> Row("expensive", 2)), Seq("test2")), 100),
-@@ -953,7 +958,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -953,7 +954,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
 -  test("SPARK-54220: vectorized reader: missing all struct fields, struct with NullType only") {
 +  test("SPARK-54220: vectorized reader: missing all struct fields, struct with NullType only",
-+      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4136")) {
++      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4199")) {
      val data = Seq(
        Tuple1((null, null)),
        Tuple1((null, null)),
-@@ -1282,7 +1288,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1282,7 +1284,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -3088,7 +3048,7 @@ index 3072657a095..b2293ccab17 100644
      val data = (1 to 4).map(i => Tuple1(i.toString))
      val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
  
-@@ -1567,7 +1574,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1567,7 +1570,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  

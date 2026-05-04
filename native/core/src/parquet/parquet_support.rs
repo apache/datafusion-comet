@@ -79,6 +79,11 @@ pub struct SparkParquetOptions {
     pub use_legacy_date_timestamp_or_ntz: bool,
     // Whether schema field names are case sensitive
     pub case_sensitive: bool,
+    /// SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+    /// missing in the Parquet file, true returns the entire struct as null (pre-4.1
+    /// legacy behavior); false preserves the parent struct's nullness from the file
+    /// so non-null parents return a struct of all-null fields.
+    pub return_null_struct_if_all_fields_missing: bool,
 }
 
 impl SparkParquetOptions {
@@ -91,6 +96,7 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            return_null_struct_if_all_fields_missing: true,
         }
     }
 
@@ -103,6 +109,7 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            return_null_struct_if_all_fields_missing: true,
         }
     }
 }
@@ -279,13 +286,18 @@ fn parquet_convert_struct_to_struct(
                 }
             }
 
-            // If target schema doesn't contain any of the existing fields
-            // mark such a column in array as NULL
-            let nulls = if field_overlap {
-                array.nulls().cloned()
-            } else {
-                Some(NullBuffer::new_null(array.len()))
-            };
+            // When the file's struct contains none of the requested fields, the
+            // returned validity buffer depends on Spark's
+            // `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing` (SPARK-53535,
+            // Spark 4.1+). Legacy mode marks the whole column null; the new default
+            // preserves the file's parent-row nullness so non-null parents materialize
+            // as a struct of all-null fields.
+            let nulls =
+                if field_overlap || !parquet_options.return_null_struct_if_all_fields_missing {
+                    array.nulls().cloned()
+                } else {
+                    Some(NullBuffer::new_null(array.len()))
+                };
 
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
