@@ -76,3 +76,25 @@ def is_in_scope(file_paths: list[str]) -> bool:
             continue
         return True
     return False
+
+
+def merge_lines(commits: list[dict], existing: dict[str, str]) -> list[str]:
+    """Merge a chronological commit list with existing audit lines.
+
+    Existing entries are emitted verbatim. Commits not in the existing map
+    get a fresh [needs-triage] line. Output preserves the order of `commits`.
+    """
+    result: list[str] = []
+    for commit in commits:
+        short = commit["short"]
+        if short in existing:
+            result.append(existing[short])
+        else:
+            result.append(
+                format_new_line(
+                    short_hash=short,
+                    date=commit["date"],
+                    subject=commit["subject"],
+                )
+            )
+    return result

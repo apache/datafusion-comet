@@ -108,5 +108,39 @@ class IsInScopeTest(unittest.TestCase):
         self.assertFalse(rsa.is_in_scope([]))
 
 
+class MergeTest(unittest.TestCase):
+    def test_preserves_existing_and_appends_new(self):
+        existing = {
+            "abcd1234": "- `abcd1234` 2026-01-15 [relevant] SPARK-1: Foo. comet#5023",
+        }
+        commits = [
+            {"short": "abcd1234", "date": "2026-01-15", "subject": "SPARK-1: Foo"},
+            {"short": "def56789", "date": "2026-01-16", "subject": "SPARK-2: Bar"},
+        ]
+        result = rsa.merge_lines(commits, existing)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(
+            result[0],
+            "- `abcd1234` 2026-01-15 [relevant] SPARK-1: Foo. comet#5023",
+        )
+        self.assertEqual(
+            result[1],
+            "- `def56789` 2026-01-16 [needs-triage] SPARK-2: Bar",
+        )
+
+    def test_chronological_order(self):
+        existing: dict[str, str] = {}
+        commits = [
+            {"short": "11111111", "date": "2026-01-01", "subject": "X"},
+            {"short": "22222222", "date": "2026-01-02", "subject": "Y"},
+            {"short": "33333333", "date": "2026-01-03", "subject": "Z"},
+        ]
+        result = rsa.merge_lines(commits, existing)
+        self.assertEqual(len(result), 3)
+        self.assertIn("11111111", result[0])
+        self.assertIn("22222222", result[1])
+        self.assertIn("33333333", result[2])
+
+
 if __name__ == "__main__":
     unittest.main()
