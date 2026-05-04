@@ -314,12 +314,14 @@ impl PhysicalPlanner {
                         DataType::Int64 => ScalarValue::Int64(None),
                         DataType::Float32 => ScalarValue::Float32(None),
                         DataType::Float64 => ScalarValue::Float64(None),
-                        DataType::Utf8 => ScalarValue::Utf8(None),
+                        DataType::Utf8 => ScalarValue::Utf8View(None),
+                        DataType::Utf8View => ScalarValue::Utf8View(None),
                         DataType::Date32 => ScalarValue::Date32(None),
                         DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
                             ScalarValue::TimestampMicrosecond(None, timezone)
                         }
                         DataType::Binary => ScalarValue::Binary(None),
+                        DataType::BinaryView => ScalarValue::BinaryView(None),
                         DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
                         DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
                         DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
@@ -359,8 +361,8 @@ impl PhysicalPlanner {
                         },
                         Value::FloatVal(value) => ScalarValue::Float32(Some(*value)),
                         Value::DoubleVal(value) => ScalarValue::Float64(Some(*value)),
-                        Value::StringVal(value) => ScalarValue::Utf8(Some(value.clone())),
-                        Value::BytesVal(value) => ScalarValue::Binary(Some(value.clone())),
+                        Value::StringVal(value) => ScalarValue::Utf8View(Some(value.clone())),
+                        Value::BytesVal(value) => ScalarValue::BinaryView(Some(value.clone())),
                         Value::DecimalVal(value) => {
                             let big_integer = BigInt::from_signed_bytes_be(value);
                             let integer = big_integer.to_i128().ok_or_else(|| {
@@ -2750,29 +2752,6 @@ impl PhysicalPlanner {
             Arc::new(Field::new(fun_name, data_type.clone(), true)),
             Arc::new(ConfigOptions::default()),
         ));
-
-        // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
-        // time (apache/datafusion#20045). Comet does not yet support view types, so
-        // cast the result back to the non-view variant.
-        let scalar_expr = match data_type {
-            DataType::Utf8View => Arc::new(CastExpr::new(
-                scalar_expr,
-                DataType::Utf8,
-                Some(CastOptions {
-                    safe: false,
-                    ..Default::default()
-                }),
-            )) as Arc<dyn PhysicalExpr>,
-            DataType::BinaryView => Arc::new(CastExpr::new(
-                scalar_expr,
-                DataType::Binary,
-                Some(CastOptions {
-                    safe: false,
-                    ..Default::default()
-                }),
-            )) as Arc<dyn PhysicalExpr>,
-            _ => scalar_expr,
-        };
 
         Ok(scalar_expr)
     }

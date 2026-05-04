@@ -692,11 +692,17 @@ macro_rules! create_hashes_internal {
                 DataType::Utf8 => {
                     $crate::hash_array!(StringArray, col, $hashes_buffer, $hash_method);
                 }
+                DataType::Utf8View => {
+                    $crate::hash_array!(StringViewArray, col, $hashes_buffer, $hash_method);
+                }
                 DataType::LargeUtf8 => {
                     $crate::hash_array!(LargeStringArray, col, $hashes_buffer, $hash_method);
                 }
                 DataType::Binary => {
                     $crate::hash_array!(BinaryArray, col, $hashes_buffer, $hash_method);
+                }
+                DataType::BinaryView => {
+                    $crate::hash_array!(BinaryViewArray, col, $hashes_buffer, $hash_method);
                 }
                 DataType::LargeBinary => {
                     $crate::hash_array!(LargeBinaryArray, col, $hashes_buffer, $hash_method);

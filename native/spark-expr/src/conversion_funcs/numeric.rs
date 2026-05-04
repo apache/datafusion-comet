@@ -21,7 +21,7 @@ use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Decimal128Builder, Float32Array,
     Float64Array, GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array,
-    OffsetSizeTrait, PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
+    OffsetSizeTrait, PrimitiveArray, StringBuilder, StringViewBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{
     i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType, Decimal128Type, Float32Type,
@@ -42,6 +42,7 @@ pub(crate) fn is_df_cast_from_int_spark_compatible(to_type: &DataType) -> bool {
             | DataType::Float32
             | DataType::Float64
             | DataType::Utf8
+            | DataType::Utf8View
     )
 }
 
@@ -77,6 +78,7 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             // arm in cast_array that applies Java BigDecimal.toString() (scientific notation
             // for values where adjusted_exponent < -6, e.g. "0E-18" for zero with scale=18).
             | DataType::Utf8
+            | DataType::Utf8View
     )
     // Note: Boolean is intentionally absent. Decimal-to-boolean uses a dedicated
     // spark_cast_decimal_to_boolean function (in cast.rs) that checks the raw i128
@@ -212,6 +214,29 @@ macro_rules! cast_whole_num_to_binary {
 
         let len = input_arr.len();
         let mut builder = BinaryBuilder::with_capacity(len, len * $byte_size);
+
+        for i in 0..input_arr.len() {
+            if input_arr.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(input_arr.value(i).to_be_bytes());
+            }
+        }
+
+        Ok(Arc::new(builder.finish()) as ArrayRef)
+    }};
+}
+
+#[macro_export]
+macro_rules! cast_whole_num_to_binary_view {
+    ($array:expr, $primitive_type:ty, $byte_size:expr) => {{
+        let input_arr = $array
+            .as_any()
+            .downcast_ref::<$primitive_type>()
+            .ok_or_else(|| SparkError::Internal("Expected numeric array".to_string()))?;
+
+        let len = input_arr.len();
+        let mut builder = arrow::array::BinaryViewBuilder::with_capacity(len);
 
         for i in 0..input_arr.len() {
             if input_arr.is_null(i) {
@@ -661,6 +686,87 @@ where
     OffsetSize: OffsetSizeTrait,
 {
     cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize)
+}
+
+fn spark_format_float<F: num::Float + std::fmt::Display + std::fmt::UpperExp>(
+    value: F,
+    lower_bound: F,
+    upper_bound: F,
+) -> String {
+    if value == F::infinity() {
+        return "Infinity".to_string();
+    }
+    if value == F::neg_infinity() {
+        return "-Infinity".to_string();
+    }
+    if (value.abs() < upper_bound && value.abs() >= lower_bound) || value.abs() == F::zero() {
+        let trailing_zero = if value.fract() == F::zero() { ".0" } else { "" };
+        format!("{value}{trailing_zero}")
+    } else if value.abs() >= upper_bound || value.abs() < lower_bound {
+        let formatted = format!("{value:E}");
+        if formatted.contains('.') {
+            formatted
+        } else {
+            let parts: Vec<&str> = formatted.split('E').collect();
+            format!("{}.0E{}", parts[0], parts[1])
+        }
+    } else {
+        value.to_string()
+    }
+}
+
+pub(crate) fn spark_cast_float64_to_utf8view(
+    from: &dyn Array,
+    _eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    let array = from.as_any().downcast_ref::<Float64Array>().unwrap();
+    let mut builder = StringViewBuilder::with_capacity(array.len());
+    for opt_val in array.iter() {
+        match opt_val {
+            Some(value) => {
+                builder.append_value(spark_format_float(value, 0.001_f64, 10000000.0_f64))
+            }
+            None => builder.append_null(),
+        }
+    }
+    Ok(Arc::new(builder.finish()))
+}
+
+pub(crate) fn spark_cast_float32_to_utf8view(
+    from: &dyn Array,
+    _eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    let array = from.as_any().downcast_ref::<Float32Array>().unwrap();
+    let mut builder = StringViewBuilder::with_capacity(array.len());
+    for opt_val in array.iter() {
+        match opt_val {
+            Some(value) => {
+                builder.append_value(spark_format_float(value, 0.001_f32, 10000000.0_f32))
+            }
+            None => builder.append_null(),
+        }
+    }
+    Ok(Arc::new(builder.finish()))
+}
+
+pub(crate) fn cast_decimal128_to_utf8view(array: &ArrayRef, scale: i8) -> SparkResult<ArrayRef> {
+    let decimal_array = array
+        .as_any()
+        .downcast_ref::<Decimal128Array>()
+        .expect("Expected a Decimal128Array");
+    let mut builder = StringViewBuilder::with_capacity(decimal_array.len());
+    let mut buf = String::with_capacity(40);
+    for opt_val in decimal_array.iter() {
+        match opt_val {
+            None => builder.append_null(),
+            Some(unscaled) => {
+                buf.clear();
+                decimal128_to_java_string(unscaled, scale, &mut buf);
+                builder.append_value(&buf);
+            }
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
 fn cast_int_to_decimal128_internal<T>(

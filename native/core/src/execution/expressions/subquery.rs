@@ -175,6 +175,16 @@ impl PhysicalExpr for Subquery {
                         .unwrap();
                     Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(string))))
                 }
+                DataType::Utf8View => {
+                    let string = jni_static_call!(env,
+                        comet_exec.get_string(self.exec_context_id, self.id) -> StringWrapper
+                    )?;
+
+                    let string = JString::from_raw(env, string.get().as_raw())
+                        .try_to_string(env)
+                        .unwrap();
+                    Ok(ColumnarValue::Scalar(ScalarValue::Utf8View(Some(string))))
+                }
                 DataType::Binary => {
                     let bytes = jni_static_call!(env,
                         comet_exec.get_binary(self.exec_context_id, self.id) -> BinaryWrapper
@@ -183,6 +193,15 @@ impl PhysicalExpr for Subquery {
                     let slice = env.convert_byte_array(bytes).unwrap();
 
                     Ok(ColumnarValue::Scalar(ScalarValue::Binary(Some(slice))))
+                }
+                DataType::BinaryView => {
+                    let bytes = jni_static_call!(env,
+                        comet_exec.get_binary(self.exec_context_id, self.id) -> BinaryWrapper
+                    )?;
+                    let bytes = JByteArray::from_raw(env, bytes.get().as_raw());
+                    let slice = env.convert_byte_array(bytes).unwrap();
+
+                    Ok(ColumnarValue::Scalar(ScalarValue::BinaryView(Some(slice))))
                 }
                 _ => internal_err!("Unsupported scalar subquery data type {:?}", self.data_type),
             }

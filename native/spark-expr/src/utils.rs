@@ -75,7 +75,9 @@ pub fn array_with_timezone(
         DataType::Timestamp(TimeUnit::Millisecond, None) => {
             assert!(!timezone.is_empty());
             match to_type {
-                Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
+                Some(DataType::Utf8) | Some(DataType::Utf8View) | Some(DataType::Date32) => {
+                    Ok(array)
+                }
                 Some(DataType::Timestamp(_, Some(target_tz))) => {
                     // Interpret NTZ as local time in session TZ; annotate output with target TZ
                     // so the result has the exact annotation the caller expects.
@@ -101,7 +103,9 @@ pub fn array_with_timezone(
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             assert!(!timezone.is_empty());
             match to_type {
-                Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
+                Some(DataType::Utf8) | Some(DataType::Utf8View) | Some(DataType::Date32) => {
+                    Ok(array)
+                }
                 Some(DataType::Timestamp(_, Some(target_tz))) => {
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
                 }
@@ -118,7 +122,9 @@ pub fn array_with_timezone(
         DataType::Timestamp(_, None) => {
             assert!(!timezone.is_empty());
             match to_type {
-                Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
+                Some(DataType::Utf8) | Some(DataType::Utf8View) | Some(DataType::Date32) => {
+                    Ok(array)
+                }
                 Some(DataType::Timestamp(_, Some(target_tz))) => {
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
                 }
@@ -138,7 +144,7 @@ pub fn array_with_timezone(
             let array_with_timezone = array.clone().with_timezone(timezone.clone());
             let array = Arc::new(array_with_timezone) as ArrayRef;
             match to_type {
-                Some(DataType::Utf8) | Some(DataType::Date32) => {
+                Some(DataType::Utf8) | Some(DataType::Utf8View) | Some(DataType::Date32) => {
                     pre_timestamp_cast(array, timezone)
                 }
                 _ => Ok(array),
@@ -150,7 +156,7 @@ pub fn array_with_timezone(
             let array_with_timezone = array.clone().with_timezone(timezone.clone());
             let array = Arc::new(array_with_timezone) as ArrayRef;
             match to_type {
-                Some(DataType::Utf8) | Some(DataType::Date32) => {
+                Some(DataType::Utf8) | Some(DataType::Utf8View) | Some(DataType::Date32) => {
                     pre_timestamp_cast(array, timezone)
                 }
                 _ => Ok(array),
