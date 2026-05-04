@@ -116,7 +116,10 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.overflowInIntegralDivideError(context.headOption.orNull))
 
       case "DecimalSumOverflow" =>
-        Some(QueryExecutionErrors.overflowInSumOfDecimalError(context.headOption.orNull, ""))
+        val functionName = params.get("functionName").map(_.toString).getOrElse("sum")
+        Some(
+          QueryExecutionErrors
+            .overflowInSumOfDecimalError(context.headOption.orNull, s"try_$functionName"))
 
       case "NumericValueOutOfRange" =>
         val decimal = Decimal(params("value").toString)

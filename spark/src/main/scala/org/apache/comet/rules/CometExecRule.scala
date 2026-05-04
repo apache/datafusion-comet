@@ -53,7 +53,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.ShimSubqueryBroadcast
+import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
 
 object CometExecRule {
 
@@ -544,6 +544,10 @@ case class CometExecRule(session: SparkSession)
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
+
+    // Comet does not support structured streaming. Fall back to Spark for any plan that
+    // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).
+    if (ShimCometStreaming.isStreamingPlan(plan)) return plan
 
     if (!CometConf.COMET_EXEC_ENABLED.get(conf)) {
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
