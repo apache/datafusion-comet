@@ -206,21 +206,21 @@ case class CometPlanner(session: SparkSession) extends Rule[SparkPlan] with Logg
    * Reconcile each Comet operator's `logicalLink` with its `originalPlan.logicalLink`. For every
    * `CometExec` / `CometShuffleExchangeExec` / `CometBroadcastExchangeExec`:
    *   - if `originalPlan.logicalLink.isDefined`, copy that link onto the Comet operator.
-   *   - if `originalPlan.logicalLink.isEmpty`, explicitly UNSET both `LOGICAL_PLAN_TAG` and
+   *   - if `originalPlan.logicalLink.isEmpty`, explicitly unset both `LOGICAL_PLAN_TAG` and
    *     `LOGICAL_PLAN_INHERITED_TAG` on the Comet operator.
    *
-   * The UNSET branch is the load-bearing one. Spark's `SparkPlan.setLogicalLink` recurses into
+   * The unset branch is the load-bearing one. Spark's `SparkPlan.setLogicalLink` recurses into
    * children, writing `LOGICAL_PLAN_INHERITED_TAG` on every descendant that lacks its own
    * `LOGICAL_PLAN_TAG` (recursion stops at descendants that already have a tag of their own).
    * Phase 3 sets logical links bottom-up while emitting, so when the parent join emits and calls
    * `setLogicalLink`, propagation reaches a `CometShuffleExchangeExec` whose source Spark
-   * exchange had no logical link of its own. The exchange now carries an INHERITED link that
+   * exchange had no logical link of its own. The exchange now carries an inherited link that
    * points at the parent join's logical node rather than its own (stage-boundary) logical node.
    *
    * Why it matters: AQE's `AdaptiveSparkPlanExec.replaceWithQueryStagesInLogicalPlan` walks the
    * current physical plan and, for each materialized query stage, locates a physical match for
    * the stage's logical node via `physicalNode.logicalLink.exists(logicalNode.eq)`. A stale
-   * INHERITED link makes `collectFirst` pick the wrong physical node (typically a Comet operator
+   * inherited link makes `collectFirst` pick the wrong physical node (typically a Comet operator
    * far above the stage) and that whole subtree becomes a `LogicalQueryStage`. On re-planning via
    * `LogicalQueryStageStrategy`, the captured physical subtree is returned verbatim, so the
    * already-Comet ancestor survives a re-plan that would otherwise produce a fresh Spark plan.
@@ -229,7 +229,7 @@ case class CometPlanner(session: SparkSession) extends Rule[SparkPlan] with Logg
    * converted to rows using CometColumnarToRow"`): second `df.collect` with
    * `COMET_EXEC_ENABLED=false` is supposed to produce Spark BHJ over a reused materialized
    * `CometBroadcastExchange` query stage. Without this pass, the inner `CometSortMergeJoin` from
-   * the first collect survives via `LogicalQueryStage` (the stale INHERITED link routes the wrap
+   * the first collect survives via `LogicalQueryStage` (the stale inherited link routes the wrap
    * to the SMJ instead of the shuffle stage), and the outer broadcast gets re-planned as a fresh
    * Spark `BroadcastExchange` instead of reusing the Comet one. Mirrors the post-conversion "Set
    * up logical links" pass in legacy `CometExecRule` (rules/CometExecRule.scala). Run after Phase
