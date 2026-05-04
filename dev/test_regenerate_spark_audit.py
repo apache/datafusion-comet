@@ -58,5 +58,55 @@ class ParseExistingTest(unittest.TestCase):
             rsa.parse_existing_block("no markers here")
 
 
+class FormatNewLineTest(unittest.TestCase):
+    def test_basic(self):
+        line = rsa.format_new_line(
+            short_hash="abcd1234",
+            date="2026-01-15",
+            subject="SPARK-1: Add foo",
+        )
+        self.assertEqual(
+            line,
+            "- `abcd1234` 2026-01-15 [needs-triage] SPARK-1: Add foo",
+        )
+
+    def test_truncates_long_subject(self):
+        long_subject = "A" * 300
+        line = rsa.format_new_line(
+            short_hash="abcd1234",
+            date="2026-01-15",
+            subject=long_subject,
+        )
+        self.assertLessEqual(len(line), 250)
+        self.assertTrue(line.endswith("..."))
+
+
+class IsInScopeTest(unittest.TestCase):
+    def test_pure_sql_core(self):
+        self.assertTrue(rsa.is_in_scope(["sql/core/src/main/scala/Foo.scala"]))
+
+    def test_pure_connect(self):
+        self.assertFalse(rsa.is_in_scope(["sql/connect/server/src/Bar.scala"]))
+
+    def test_pure_thriftserver(self):
+        self.assertFalse(rsa.is_in_scope(["sql/hive-thriftserver/src/Baz.scala"]))
+
+    def test_mixed_sql_and_connect(self):
+        self.assertTrue(
+            rsa.is_in_scope(
+                [
+                    "sql/connect/server/src/Bar.scala",
+                    "sql/catalyst/src/main/scala/Qux.scala",
+                ]
+            )
+        )
+
+    def test_no_sql_paths(self):
+        self.assertFalse(rsa.is_in_scope(["core/src/main/scala/Z.scala"]))
+
+    def test_empty(self):
+        self.assertFalse(rsa.is_in_scope([]))
+
+
 if __name__ == "__main__":
     unittest.main()

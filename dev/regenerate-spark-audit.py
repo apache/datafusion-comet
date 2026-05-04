@@ -53,3 +53,26 @@ def parse_existing_block(body: str) -> dict[str, str]:
         if m:
             result[m.group(1)] = line
     return result
+
+
+MAX_SUBJECT_LEN = 200
+
+
+def format_new_line(*, short_hash: str, date: str, subject: str) -> str:
+    """Format a fresh [needs-triage] entry."""
+    if len(subject) > MAX_SUBJECT_LEN:
+        subject = subject[: MAX_SUBJECT_LEN - 3] + "..."
+    return f"- `{short_hash}` {date} [needs-triage] {subject}"
+
+
+def is_in_scope(file_paths: list[str]) -> bool:
+    """True when the commit touches sql/ outside of connect/thriftserver."""
+    for path in file_paths:
+        if not path.startswith("sql/"):
+            continue
+        if path.startswith("sql/connect/"):
+            continue
+        if path.startswith("sql/hive-thriftserver/"):
+            continue
+        return True
+    return False
