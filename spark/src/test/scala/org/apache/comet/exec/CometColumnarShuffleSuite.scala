@@ -721,6 +721,26 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
+  test("columnar shuffle encode_time metric should be tracked (issue-1212)") {
+    // Use enough rows so encode time is measurably > 0
+    withParquetTable((0 until 1000).map(i => (i, (i + 1).toLong)), "tbl") {
+      val shuffled = sql("SELECT * FROM tbl").repartition(10, $"_1")
+      shuffled.collect()
+
+      val metrics = find(shuffled.queryExecution.executedPlan) {
+        case _: CometShuffleExchangeExec => true
+        case _ => false
+      }.map(_.metrics).get
+
+      assert(
+        metrics.contains("encode_time"),
+        "encode_time metric must exist in CometColumnarExchange")
+      assert(
+        metrics("encode_time").value > 0,
+        s"encode_time should be > 0 for columnar shuffle, got ${metrics("encode_time").value}")
+    }
+  }
+
   test("columnar shuffle on null struct fields") {
     withTempDir { dir =>
       val testData = "{}\n"

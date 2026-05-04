@@ -51,6 +51,9 @@ public interface CometShuffleExternalSorter {
   /** Returns the checksums for each partition. */
   long[] getChecksums();
 
+  /** Returns total encode + compression time in nanoseconds accumulated across all spills. */
+  long getEncodeNanos();
+
   /** Sort and spill the current records in response to memory pressure. */
   void spill() throws IOException;
 

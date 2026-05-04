@@ -241,6 +241,9 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           metrics,
           dep.rangePartitionBounds)
       case bypassMergeSortHandle: CometBypassMergeSortShuffleHandle[K @unchecked, V @unchecked] =>
+        val bypassDep =
+          bypassMergeSortHandle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
+        val bypassEncodeMetric = bypassDep.shuffleWriteMetrics.get("encode_time").orNull
         new CometBypassMergeSortShuffleWriter(
           env.blockManager,
           context.taskMemoryManager(),
@@ -249,8 +252,12 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           mapId,
           env.conf,
           metrics,
-          shuffleExecutorComponents)
+          shuffleExecutorComponents,
+          bypassEncodeMetric)
       case unsafeShuffleHandle: CometSerializedShuffleHandle[K @unchecked, V @unchecked] =>
+        val unsafeDep =
+          unsafeShuffleHandle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
+        val unsafeEncodeMetric = unsafeDep.shuffleWriteMetrics.get("encode_time").orNull
         new CometUnsafeShuffleWriter(
           env.blockManager,
           context.taskMemoryManager(),
@@ -259,7 +266,8 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           context,
           env.conf,
           metrics,
-          shuffleExecutorComponents)
+          shuffleExecutorComponents,
+          unsafeEncodeMetric)
       case _ =>
         // It is a Spark shuffle dependency, so we use Spark Sort Shuffle Writer.
         sortShuffleManager.getWriter(handle, mapId, context, metrics)
