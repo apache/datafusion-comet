@@ -40,6 +40,7 @@ Comet SQL Tests <sql-file-tests.md>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
 Bug Triage <bug_triage>
+Spark Commit Audit <spark_commit_audit>
 Roadmap <roadmap.md>
 Release Process <release_process>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>
