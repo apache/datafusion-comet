@@ -370,6 +370,7 @@ jobs:
               org.apache.spark.sql.comet.CometTaskMetricsSuite
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
+              org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.comet.objectstore.NativeConfigSuite
           - name: "expressions"
             value: |
