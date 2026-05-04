@@ -21,22 +21,76 @@ use crate::partitioners::PartitionedBatchIterator;
 use crate::writers::buf_batch_writer::BufBatchWriter;
 use datafusion::common::DataFusionError;
 use datafusion::execution::disk_manager::RefCountedTempFile;
-use datafusion::execution::runtime_env::RuntimeEnv;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 
-/// A temporary disk file for spilling a partition's intermediate shuffle data.
-struct SpillFile {
-    temp_file: RefCountedTempFile,
-    file: File,
+/// The byte range of a single partition's data within a combined spill file.
+#[derive(Debug, Clone)]
+pub(crate) struct PartitionSpillRange {
+    pub offset: u64,
+    pub length: u64,
 }
 
-/// Manages encoding and optional disk spilling for a single shuffle partition.
+/// Represents a single spill file that contains data from multiple partitions.
+/// Data is written sequentially ordered by partition ID. Each partition's byte
+/// range is tracked in `partition_ranges` so it can be read back during merge.
+pub(crate) struct SpillInfo {
+    /// The temporary file handle -- kept alive to prevent cleanup until we are done.
+    _temp_file: RefCountedTempFile,
+    /// Path to the spill file on disk.
+    path: std::path::PathBuf,
+    /// Byte range for each partition. None means the partition had no data in this spill.
+    pub partition_ranges: Vec<Option<PartitionSpillRange>>,
+}
+
+impl SpillInfo {
+    pub(crate) fn new(
+        temp_file: RefCountedTempFile,
+        partition_ranges: Vec<Option<PartitionSpillRange>>,
+    ) -> Self {
+        let path = temp_file.path().to_path_buf();
+        Self {
+            _temp_file: temp_file,
+            path,
+            partition_ranges,
+        }
+    }
+
+    /// Copy the data for `partition_id` using a pre-opened file handle.
+    /// Avoids repeated File::open() calls when iterating over partitions.
+    /// Returns the number of bytes copied.
+    pub(crate) fn copy_partition_with_handle(
+        &self,
+        partition_id: usize,
+        spill_file: &mut File,
+        output: &mut impl Write,
+    ) -> datafusion::common::Result<u64> {
+        if let Some(ref range) = self.partition_ranges[partition_id] {
+            if range.length == 0 {
+                return Ok(0);
+            }
+            spill_file.seek(SeekFrom::Start(range.offset))?;
+            let mut limited = Read::take(spill_file, range.length);
+            let copied = std::io::copy(&mut limited, output)?;
+            Ok(copied)
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Open the spill file for reading. The returned handle can be reused
+    /// across multiple copy_partition_with_handle() calls.
+    pub(crate) fn open_for_read(&self) -> datafusion::common::Result<File> {
+        File::open(&self.path).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to open spill file for reading: {e}"))
+        })
+    }
+}
+
+/// Manages encoding for a single shuffle partition. Does not own any spill file --
+/// spill files are managed at the repartitioner level as combined SpillInfo objects.
 pub(crate) struct PartitionWriter {
-    /// Spill file for intermediate shuffle output for this partition. Each spill event
-    /// will append to this file and the contents will be copied to the shuffle file at
-    /// the end of processing.
-    spill_file: Option<SpillFile>,
-    /// Writer that performs encoding and compression
+    /// Writer that performs encoding and compression.
     shuffle_block_writer: ShuffleBlockWriter,
 }
 
@@ -45,51 +99,25 @@ impl PartitionWriter {
         shuffle_block_writer: ShuffleBlockWriter,
     ) -> datafusion::common::Result<Self> {
         Ok(Self {
-            spill_file: None,
             shuffle_block_writer,
         })
     }
 
-    fn ensure_spill_file_created(
-        &mut self,
-        runtime: &RuntimeEnv,
-    ) -> datafusion::common::Result<()> {
-        if self.spill_file.is_none() {
-            // Spill file is not yet created, create it
-            let spill_file = runtime
-                .disk_manager
-                .create_tmp_file("shuffle writer spill")?;
-            let spill_data = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(spill_file.path())
-                .map_err(|e| {
-                    DataFusionError::Execution(format!("Error occurred while spilling {e}"))
-                })?;
-            self.spill_file = Some(SpillFile {
-                temp_file: spill_file,
-                file: spill_data,
-            });
-        }
-        Ok(())
-    }
-
-    pub(crate) fn spill(
+    /// Encode and write a partition's batches to the provided writer.
+    /// Returns the number of bytes written.
+    pub(crate) fn write_to<W: Write>(
         &mut self,
         iter: &mut PartitionedBatchIterator,
-        runtime: &RuntimeEnv,
+        writer: &mut W,
         metrics: &ShufflePartitionerMetrics,
         write_buffer_size: usize,
         batch_size: usize,
     ) -> datafusion::common::Result<usize> {
         if let Some(batch) = iter.next() {
-            self.ensure_spill_file_created(runtime)?;
-
             let total_bytes_written = {
                 let mut buf_batch_writer = BufBatchWriter::new(
                     &mut self.shuffle_block_writer,
-                    &mut self.spill_file.as_mut().unwrap().file,
+                    writer,
                     write_buffer_size,
                     batch_size,
                 );
@@ -106,21 +134,9 @@ impl PartitionWriter {
                 buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
                 bytes_written
             };
-
             Ok(total_bytes_written)
         } else {
             Ok(0)
         }
-    }
-
-    pub(crate) fn path(&self) -> Option<&std::path::Path> {
-        self.spill_file
-            .as_ref()
-            .map(|spill_file| spill_file.temp_file.path())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn has_spill_file(&self) -> bool {
-        self.spill_file.is_some()
     }
 }
