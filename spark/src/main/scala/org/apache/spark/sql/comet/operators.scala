@@ -43,7 +43,7 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -1350,6 +1350,13 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
+  private def containsMapType(dt: DataType): Boolean = dt match {
+    case _: MapType => true
+    case StructType(fields) => fields.exists(f => containsMapType(f.dataType))
+    case ArrayType(elementType, _) => containsMapType(elementType)
+    case _ => false
+  }
+
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -1380,12 +1387,8 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (groupingExpressions.exists(expr =>
-        expr.dataType match {
-          case _: MapType => true
-          case _ => false
-        })) {
-      withInfo(aggregate, "Grouping on map types is not supported")
+    if (groupingExpressions.exists(expr => containsMapType(expr.dataType))) {
+      withInfo(aggregate, "Grouping on map-containing types is not supported")
       return None
     }
 

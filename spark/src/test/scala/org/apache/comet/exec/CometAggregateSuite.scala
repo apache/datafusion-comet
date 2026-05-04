@@ -408,6 +408,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("grouping on struct containing map should fallback to Spark") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      val query =
+        """SELECT col1.data['key']
+          |FROM VALUES
+          |  (NAMED_STRUCT('data', MAP('key', 'value', 'num', '42'))),
+          |  (NAMED_STRUCT('data', MAP('key', 'other', 'num', '7')))
+          |t (col1)
+          |GROUP BY col1
+          |HAVING col1.data['num'] IS NOT NULL
+          |ORDER BY col1.data['key']
+          |""".stripMargin
+
+      val (_, cometPlan) =
+        checkSparkAnswerAndFallbackReason(
+          query,
+          "Grouping on map-containing types is not supported")
+
+      assert(
+        stripAQEPlan(cometPlan).collect { case s: CometHashAggregateExec => s }.isEmpty,
+        "Expected aggregate to fall back to Spark for grouping on Struct(Map(...))")
+    }
+  }
+
   test("simple SUM, COUNT, MIN, MAX, AVG with non-distinct + null group keys") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
@@ -2057,6 +2083,21 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   def getNumCometHashAggregate(df: DataFrame): Int = {
     val sparkPlan = stripAQEPlan(df.queryExecution.executedPlan)
     sparkPlan.collect { case s: CometHashAggregateExec => s }.size
+  }
+
+  test("group by array of map falls back to Spark (issue #4123)") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      checkSparkAnswerAndFallbackReason(
+        """SELECT a, COUNT(*)
+          |FROM VALUES
+          |  (ARRAY(MAP('x', 10))),
+          |  (ARRAY(MAP('y', 20))),
+          |  (ARRAY(MAP('x', 10)))
+          |t (a)
+          |GROUP BY a
+          |""".stripMargin,
+        "Grouping on map-containing types is not supported")
+    }
   }
 
 }
