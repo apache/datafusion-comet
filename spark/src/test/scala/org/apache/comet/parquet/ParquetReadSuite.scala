@@ -1534,10 +1534,16 @@ abstract class ParquetReadSuite extends CometTestBase {
           .write
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
-        val cause = intercept[SparkException] {
-          spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
-        }.getCause
-        assert(cause.getMessage.contains("Found duplicate field(s)"))
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        // Spark 3.x wraps the error in SparkException; Spark 4.x throws SparkRuntimeException
+        // directly. checkSparkAnswerMaybeThrows asserts both sides throw and gives us the raw
+        // Throwables to message-match against, version-agnostic.
+        checkSparkAnswerMaybeThrows(df) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(sparkExc.getMessage.contains("Found duplicate field(s)"))
+            assert(cometExc.getMessage.contains("Found duplicate field(s)"))
+          case other => fail(s"Expected duplicate-field error from both sides, got $other")
+        }
       }
     }
   }
@@ -1563,14 +1569,19 @@ abstract class ParquetReadSuite extends CometTestBase {
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
 
-        val cause = intercept[SparkException] {
-          spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
-        }.getCause
-        assert(cause.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerMaybeThrows(df) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(
+              sparkExc.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
+            assert(
+              cometExc.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
+          case other => fail(s"Expected missing-field-ids error from both sides, got $other")
+        }
 
         withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
-          val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
-          checkSparkAnswerAndOperator(df)
+          val ignoredDf = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+          checkSparkAnswerAndOperator(ignoredDf)
         }
       }
     }
