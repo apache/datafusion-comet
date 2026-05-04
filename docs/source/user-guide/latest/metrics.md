@@ -64,3 +64,26 @@ Here is a guide to some of the native metrics.
 | `ipc_time`        | Time to encode batches in IPC format and compress using ZSTD. |
 | `mempool_time`    | Time interacting with memory pool.                            |
 | `write_time`      | Time spent writing bytes to disk.                             |
+
+## Task-Level Input Metrics on Spark 4.1+
+
+Comet's native scans set `inputMetrics.bytesRead` to the actual file IO performed by the
+DataFusion parquet reader (`bytes_scanned`). This is the truthful number you would see at the
+filesystem layer.
+
+Spark 4.1 changed its own parquet reader to pre-open the `SeekableInputStream` and read the file
+footer outside the `FileScanRDD.compute()` thread. Spark's `inputMetrics.bytesRead` is updated
+from a Hadoop FileSystem thread-local byte counter that only captures reads on the
+`compute()` thread, so reads serviced by the pre-opened stream's internal buffer go uncounted.
+The under-count is largest when the file fits in the pre-fetched buffer (tiny files, unit test
+sizes) and shrinks as files grow large enough that subsequent row-group reads cross the buffer
+and trigger fresh FS reads on the `compute()` thread.
+
+This is purely an observability difference: `inputMetrics.bytesRead` is reported to listeners
+and the Spark UI but is not consumed by the planner, the optimizer, or AQE, so the discrepancy
+does not affect query plans, partitioning, or correctness. Records read (`recordsRead`) is
+unaffected and remains exactly equal between Comet and Spark.
+
+If you compare Comet's `bytesRead` against vanilla Spark's on Spark 4.1+ (via the Spark UI or
+the REST API), expect Comet's number to be substantially larger for small files, and closer to
+Spark's for large files. Comet's value reflects what the storage layer actually delivered.
