@@ -74,7 +74,11 @@ build_native() {
     cd native && cargo build && cd ..
 }
 
-# Regenerate golden files for a specific Spark version
+# Regenerate golden files for a specific Spark version. CometPlanStabilitySuite's
+# afterAll() prunes any query directory whose contents match what its fallback
+# chain resolves to, so each version-suffixed directory ends up with only the
+# queries whose plans diverge from the previous tier. The base (3.4) profile has
+# no fallback chain, so the prune is a no-op there.
 regenerate_golden_files() {
     local spark_version=$1
 

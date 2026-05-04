@@ -1710,15 +1710,28 @@ trait CometHashJoin {
       return None
     }
 
-    if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
-      // https://github.com/apache/datafusion-comet/issues/457
-      withInfo(join, "BuildRight with LeftAnti is not supported")
-      return None
+    // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
+    val isNullAwareAntiJoin = join match {
+      case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
+      case _ => false
     }
 
     val joinKeys = join.leftKeys ++ join.rightKeys
     if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
       withInfo(join, "unsupported non-default collated string join keys")
+      return None
+    }
+
+    // Spark's BroadcastHashJoinExec.scala enforces these invariants for null-aware anti-join
+    // at construction. Verify them defensively so that, if Spark ever loosens them, we fall
+    // back to Spark with a clear message instead of failing in DataFusion.
+    if (isNullAwareAntiJoin &&
+      (join.leftKeys.length != 1 || join.rightKeys.length != 1 ||
+        join.joinType != LeftAnti || join.buildSide != BuildRight ||
+        join.condition.isDefined)) {
+      withInfo(
+        join,
+        "null-aware anti-join requires single-column LeftAnti BuildRight with no condition")
       return None
     }
 
@@ -1760,6 +1773,7 @@ trait CometHashJoin {
         .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
         .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
         else OperatorOuterClass.BuildSide.BuildRight)
+        .setNullAwareAntiJoin(isNullAwareAntiJoin)
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {

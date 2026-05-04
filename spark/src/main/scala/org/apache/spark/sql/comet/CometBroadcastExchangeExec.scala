@@ -45,7 +45,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometRuntimeException, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
@@ -146,14 +146,16 @@ case class CometBroadcastExchangeExec(
           case ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _)
               if plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _) =>
-            throw new CometRuntimeException(
-              "Child of CometBroadcastExchangeExec should be CometExec, " +
-                s"but got: ${s.plan.getClass}")
           case _ =>
-            throw new CometRuntimeException(
-              "Child of CometBroadcastExchangeExec should be CometExec, " +
-                s"but got: ${child.getClass}")
+            // Non-Comet child (e.g., RowToColumnar -> LocalTableScan). Happens when
+            // AQE re-optimizes inside an ASPE and replaces the original Comet scan
+            // with a Spark-native node (e.g., empty broadcast triggers LocalTableScan).
+            logWarning(
+              "CometBroadcastExchangeExec child is not CometPlan: " +
+                s"${child.getClass.getSimpleName}. " +
+                "Wrapping in CometSparkToColumnarExec for Arrow serialization.")
+            val cometChild = CometSparkToColumnarExec(ColumnarToRowExec(child))
+            CometExec.getByteArrayRdd(cometChild).collect()
         }
 
         val numRows = countsAndBytes.map(_._1).sum
