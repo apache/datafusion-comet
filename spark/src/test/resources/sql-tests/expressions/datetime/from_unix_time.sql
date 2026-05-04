@@ -24,12 +24,12 @@ INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483
 query expect_fallback(not fully compatible with Spark)
 SELECT from_unixtime(t) FROM test_from_unix_time
 
-query expect_fallback(not fully compatible with Spark)
+query expect_fallback(Datetime pattern format: yyyy-MM-dd is unsupported)
 SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
 
 -- literal arguments
 query expect_fallback(not fully compatible with Spark)
 SELECT from_unixtime(0)
 
-query expect_fallback(not fully compatible with Spark)
+query expect_fallback(Datetime pattern format: yyyy-MM-dd is unsupported)
 SELECT from_unixtime(1718451045, 'yyyy-MM-dd')

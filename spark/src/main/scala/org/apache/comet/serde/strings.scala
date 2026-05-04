@@ -33,7 +33,7 @@ import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInter
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
-  override def getCompatibleNotes(): Seq[String] = Seq(
+  override def getIncompatibleReasons(): Seq[String] = Seq(
     "A negative argument for the number of times to repeat throws an exception" +
       " instead of returning an empty string as Spark does")
 
