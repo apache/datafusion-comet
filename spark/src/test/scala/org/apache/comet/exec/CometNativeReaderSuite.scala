@@ -389,7 +389,6 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("native reader - select struct field with user defined schema") {
-    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     // extract existing A column
     var readSchema = new StructType().add(
       "c0",
