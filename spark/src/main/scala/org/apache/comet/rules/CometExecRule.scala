@@ -411,61 +411,70 @@ case class CometExecRule(session: SparkSession)
    * BroadcastQueryStageExec.
    */
   private def convertSubqueryBroadcasts(plan: SparkPlan): SparkPlan = {
+    // CometIcebergNativeScanExec.runtimeFilters is a top-level constructor field visible to
+    // productIterator, so transformExpressionsUp rewrites it directly. The wrapped @transient
+    // originalPlan still holds the pre-rewrite runtimeFilters; we don't sync it here because
+    // CometIcebergNativeScanExec.serializedPartitionData rebuilds originalPlan from the
+    // top-level runtimeFilters at serialization time (single source of truth).
     plan.transformExpressionsUp { case inSub: InSubqueryExec =>
-      inSub.plan match {
-        case sub: SubqueryBroadcastExec =>
-          sub.child match {
-            case b: BroadcastExchangeExec =>
-              // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
-              // a Comet plan. Strip the row transition to get the columnar Comet plan.
-              val cometChild = b.child match {
-                case c2r: CometNativeColumnarToRowExec => c2r.child
-                case other => other
-              }
-              if (cometChild.isInstanceOf[CometNativeExec]) {
-                logInfo(
-                  "Converting SubqueryBroadcastExec to " +
-                    "CometSubqueryBroadcastExec for DPP exchange reuse")
-                val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
-                val cometSub = CometSubqueryBroadcastExec(
-                  sub.name,
-                  getSubqueryBroadcastExecIndices(sub),
-                  sub.buildKeys,
-                  cometBroadcast)
-                inSub.withNewPlan(cometSub)
-              } else {
-                inSub
-              }
-            case _ => inSub
-          }
-        case sab: SubqueryAdaptiveBroadcastExec if isSpark35Plus =>
-          // Wrap SABs to prevent Spark's PlanAdaptiveDynamicPruningFilters from
-          // converting them to Literal.TrueLiteral. Spark's rule pattern-matches for
-          // BroadcastHashJoinExec, which Comet replaced with CometBroadcastHashJoinExec.
-          // Without wrapping, DPP is disabled for both Comet native scans and non-Comet
-          // scans (e.g., V2 BatchScan). CometPlanAdaptiveDynamicPruningFilters
-          // (queryStageOptimizerRule, 3.5+) unwraps and converts them later.
-          //
-          // On Spark 3.4, injectQueryStageOptimizerRule is unavailable. The isSpark35Plus
-          // guard leaves SABs unwrapped; CometSpark34AqeDppFallbackRule then tags the
-          // matching BHJ's build broadcast so Spark's rule can match it natively.
-          assert(
-            sab.buildKeys.nonEmpty,
-            s"SubqueryAdaptiveBroadcastExec '${sab.name}' has empty buildKeys")
-          logInfo(
-            s"Wrapping SubqueryAdaptiveBroadcastExec '${sab.name}' in " +
-              "CometSubqueryAdaptiveBroadcastExec to preserve AQE DPP")
-          val indices = getSubqueryBroadcastIndices(sab)
-          val wrapped = CometSubqueryAdaptiveBroadcastExec(
-            sab.name,
-            indices,
-            sab.onlyInBroadcast,
-            sab.buildPlan,
-            sab.buildKeys,
-            sab.child)
-          inSub.withNewPlan(wrapped)
-        case _ => inSub
-      }
+      rewriteInSubqueryPlan(inSub)
+    }
+  }
+
+  private def rewriteInSubqueryPlan(inSub: InSubqueryExec): Expression = {
+    inSub.plan match {
+      case sub: SubqueryBroadcastExec =>
+        sub.child match {
+          case b: BroadcastExchangeExec =>
+            // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
+            // a Comet plan. Strip the row transition to get the columnar Comet plan.
+            val cometChild = b.child match {
+              case c2r: CometNativeColumnarToRowExec => c2r.child
+              case other => other
+            }
+            if (cometChild.isInstanceOf[CometNativeExec]) {
+              logInfo(
+                "Converting SubqueryBroadcastExec to " +
+                  "CometSubqueryBroadcastExec for DPP exchange reuse")
+              val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
+              val cometSub = CometSubqueryBroadcastExec(
+                sub.name,
+                getSubqueryBroadcastExecIndices(sub),
+                sub.buildKeys,
+                cometBroadcast)
+              inSub.withNewPlan(cometSub)
+            } else {
+              inSub
+            }
+          case _ => inSub
+        }
+      case sab: SubqueryAdaptiveBroadcastExec if isSpark35Plus =>
+        // Wrap SABs to prevent Spark's PlanAdaptiveDynamicPruningFilters from
+        // converting them to Literal.TrueLiteral. Spark's rule pattern-matches for
+        // BroadcastHashJoinExec, which Comet replaced with CometBroadcastHashJoinExec.
+        // Without wrapping, DPP is disabled for both Comet native scans and non-Comet
+        // scans (e.g., V2 BatchScan). CometPlanAdaptiveDynamicPruningFilters
+        // (queryStageOptimizerRule, 3.5+) unwraps and converts them later.
+        //
+        // On Spark 3.4, injectQueryStageOptimizerRule is unavailable. The isSpark35Plus
+        // guard leaves SABs unwrapped; CometSpark34AqeDppFallbackRule then tags the
+        // matching BHJ's build broadcast so Spark's rule can match it natively.
+        assert(
+          sab.buildKeys.nonEmpty,
+          s"SubqueryAdaptiveBroadcastExec '${sab.name}' has empty buildKeys")
+        logInfo(
+          s"Wrapping SubqueryAdaptiveBroadcastExec '${sab.name}' in " +
+            "CometSubqueryAdaptiveBroadcastExec to preserve AQE DPP")
+        val indices = getSubqueryBroadcastIndices(sab)
+        val wrapped = CometSubqueryAdaptiveBroadcastExec(
+          sab.name,
+          indices,
+          sab.onlyInBroadcast,
+          sab.buildPlan,
+          sab.buildKeys,
+          sab.child)
+        inSub.withNewPlan(wrapped)
+      case _ => inSub
     }
   }
 
