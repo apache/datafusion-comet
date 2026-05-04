@@ -80,6 +80,12 @@ requires `spark.comet.exec.enabled=true` because the scan node must be wrapped b
 - Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
   are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
   matching Spark's behavior.
+- `TimestampNTZType` columns, by default. Parquet files may contain INT96 timestamps (`TimestampType`/LTZ)
+  which the `native_datafusion` scan cannot distinguish from `TimestampNTZType` after Parquet schema coercion,
+  potentially returning incorrect timestamp values. When `spark.comet.scan.timestampNTZSafetyCheck=true`
+  (default), the scan falls back to Spark for `TimestampNTZ` columns. Set to `false` if your Parquet files
+  do not contain INT96 timestamps being read as `TimestampNTZ`. See
+  [issue #3720](https://github.com/apache/datafusion-comet/issues/3720) for more details.
 
 ## `native_iceberg_compat` Limitations
 

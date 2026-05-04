@@ -796,6 +796,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_PARQUET_TIMESTAMP_NTZ_CHECK: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.timestampNTZSafetyCheck")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Parquet files may contain INT96 timestamps (TimestampType/LTZ) which the " +
+          "native_datafusion scan cannot distinguish from TimestampNTZType after Parquet " +
+          "schema coercion. When this config is true (default), the native_datafusion scan " +
+          "falls back to Spark for TimestampNTZ columns to avoid silently returning incorrect " +
+          "timestamp values. Set to false to allow native execution if you know your Parquet " +
+          "files do not contain INT96 timestamps being read as TimestampNTZ. See " +
+          s"https://github.com/apache/datafusion-comet/issues/3720 for details. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_EXEC_STRICT_FLOATING_POINT: ConfigEntry[Boolean] =
     conf("spark.comet.exec.strictFloatingPoint")
       .category(CATEGORY_EXEC)
