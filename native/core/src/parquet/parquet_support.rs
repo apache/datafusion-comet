@@ -84,6 +84,10 @@ pub struct SparkParquetOptions {
     /// (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`). Only takes effect
     /// when both physical and logical fields actually carry IDs.
     pub use_field_id: bool,
+    /// When false (Spark's default), reading a file that has no field ids while the
+    /// requested schema does carry ids raises a runtime error rather than silently
+    /// producing nulls (mirrors `spark.sql.parquet.fieldId.read.ignoreMissing`).
+    pub ignore_missing_field_id: bool,
 }
 
 impl SparkParquetOptions {
@@ -97,6 +101,7 @@ impl SparkParquetOptions {
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
             use_field_id: false,
+            ignore_missing_field_id: false,
         }
     }
 
@@ -110,6 +115,7 @@ impl SparkParquetOptions {
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
             use_field_id: false,
+            ignore_missing_field_id: false,
         }
     }
 }

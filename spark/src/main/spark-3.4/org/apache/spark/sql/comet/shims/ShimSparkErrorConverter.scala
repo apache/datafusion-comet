@@ -293,6 +293,26 @@ trait ShimSparkErrorConverter {
             params("requiredFieldName").toString,
             params("matchedOrcFields").toString))
 
+      case "DuplicateFieldByFieldId" =>
+        // Mirror Spark's `ParquetReadSupport.matchIdField` which calls
+        // `foundDuplicateFieldInFieldIdLookupModeError` when more than one Parquet field
+        // shares an id requested by the read schema.
+        Some(
+          QueryExecutionErrors.foundDuplicateFieldInFieldIdLookupModeError(
+            params("requiredId").toString.toInt,
+            params("matchedFields").toString))
+
+      case "ParquetMissingFieldIds" =>
+        // Mirror Spark's `ParquetReadSupport.inferSchema`, which throws a plain
+        // `RuntimeException` (not a SparkException) when the read schema requests field
+        // ids and the file carries none.
+        Some(
+          new RuntimeException(
+            "Spark read schema expects field Ids, but Parquet file schema doesn't " +
+              "contain any field Ids. Please remove the field ids from Spark schema or " +
+              "ignore missing ids by setting " +
+              "`spark.sql.parquet.fieldId.read.ignoreMissing = true`"))
+
       case "ParquetSchemaConvert" =>
         // Mirror Spark's FileScanRDD: wrap the SchemaColumnConvertNotSupportedException
         // in a SparkException whose message is "Parquet column cannot be converted in

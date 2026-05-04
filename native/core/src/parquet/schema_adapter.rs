@@ -85,12 +85,48 @@ fn remap_physical_schema(
     physical_schema: &SchemaRef,
     case_sensitive: bool,
     use_field_id: bool,
-) -> (SchemaRef, HashMap<String, String>) {
+    ignore_missing_field_id: bool,
+) -> DataFusionResult<(SchemaRef, HashMap<String, String>)> {
     let should_match_by_id = use_field_id && schema_has_field_ids(logical_schema);
 
-    // Pre-build id -> first matching logical field. Spark surfaces a duplicate-ID error
-    // during `clipParquetGroupFields`; we follow the same first-wins shape and would raise
-    // a similar error lazily during `rewrite` if a duplicate is referenced.
+    if should_match_by_id && !ignore_missing_field_id && !schema_has_field_ids(physical_schema) {
+        // Mirrors `ParquetReadSupport.inferSchema`'s eager check (Spark throws a runtime
+        // error rather than silently returning null columns).
+        return Err(DataFusionError::External(Box::new(
+            SparkError::ParquetMissingFieldIds,
+        )));
+    }
+
+    // Build id -> all matching physical field names. We need the full list so we can mirror
+    // Spark's `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" error when an ID-bearing
+    // logical field would resolve to more than one physical field.
+    let mut id_to_phys_names: HashMap<i32, Vec<String>> = HashMap::new();
+    if should_match_by_id {
+        for pf in physical_schema.fields() {
+            if let Some(id) = parse_field_id(pf) {
+                id_to_phys_names
+                    .entry(id)
+                    .or_default()
+                    .push(pf.name().clone());
+            }
+        }
+        for lf in logical_schema.fields() {
+            if let Some(id) = parse_field_id(lf) {
+                if let Some(matches) = id_to_phys_names.get(&id) {
+                    if matches.len() > 1 {
+                        return Err(DataFusionError::External(Box::new(
+                            SparkError::DuplicateFieldByFieldId {
+                                required_id: id,
+                                matched_fields: matches.join(", "),
+                            },
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    // Pre-build id -> first matching logical field for the per-physical rename pass below.
     let id_to_logical: HashMap<i32, &FieldRef> = if should_match_by_id {
         let mut map = HashMap::new();
         for lf in logical_schema.fields() {
@@ -102,6 +138,30 @@ fn remap_physical_schema(
     } else {
         HashMap::new()
     };
+
+    // Names of ID-bearing logical fields whose ID is not present in the file. Any physical
+    // field that shares one of these names must be renamed to something the
+    // `DefaultPhysicalExprAdapter` cannot name-match, otherwise the read would silently fall
+    // through to a name match. Spark's `matchIdField` solves the same problem with
+    // `generateFakeColumnName` (see `ParquetReadSupport.scala`).
+    let unmatched_id_logical_names: std::collections::HashSet<String> = if should_match_by_id {
+        logical_schema
+            .fields()
+            .iter()
+            .filter_map(|lf| {
+                parse_field_id(lf).and_then(|id| {
+                    if id_to_phys_names.contains_key(&id) {
+                        None
+                    } else {
+                        Some(lf.name().clone())
+                    }
+                })
+            })
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+    let mut fake_counter: usize = 0;
 
     let mut name_map: HashMap<String, String> = HashMap::new();
     let remapped_fields: Vec<FieldRef> = physical_schema
@@ -126,6 +186,21 @@ fn remap_physical_schema(
                         return Arc::clone(field);
                     }
                 }
+            }
+
+            // Block accidental name match for ID-bearing logical fields whose ID is missing
+            // from the file. Mirrors Spark's `generateFakeColumnName` in `matchIdField`.
+            if should_match_by_id
+                && unmatched_id_logical_names
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(field.name()))
+            {
+                fake_counter += 1;
+                let fake_name = format!("__comet_unmatched_field_id_{}", fake_counter);
+                return Arc::new(
+                    Field::new(fake_name, field.data_type().clone(), field.is_nullable())
+                        .with_metadata(field.metadata().clone()),
+                );
             }
 
             // Name match. Spark's `matchIdField` does not fall through to a name match for
@@ -154,7 +229,7 @@ fn remap_physical_schema(
         })
         .collect();
 
-    (Arc::new(Schema::new(remapped_fields)), name_map)
+    Ok((Arc::new(Schema::new(remapped_fields)), name_map))
 }
 
 /// Check if a specific column name has duplicate matches in the physical schema
@@ -200,7 +275,8 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                     &physical_file_schema,
                     self.parquet_options.case_sensitive,
                     self.parquet_options.use_field_id,
-                );
+                    self.parquet_options.ignore_missing_field_id,
+                )?;
                 (
                     remapped,
                     if logical_to_physical.is_empty() {

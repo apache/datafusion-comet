@@ -1512,6 +1512,69 @@ abstract class ParquetReadSuite extends CometTestBase {
       }
     }
   }
+
+  // Mirrors Spark ParquetFieldIdIOSuite.test("multiple id matches"). The native scan must
+  // reject reads where the file has more than one column matching a requested field id, the
+  // same way Spark's `matchIdField` raises foundDuplicateFieldInFieldIdLookupModeError.
+  test("native_datafusion: duplicate Parquet field ids raise a runtime error") {
+    val writeSchema = StructType(
+      Seq(
+        StructField("a", IntegerType, nullable = true, withId(1)),
+        StructField("rand1", StringType, nullable = true, withId(2)),
+        StructField("rand2", StringType, nullable = true, withId(1))))
+    val readSchema = StructType(Seq(StructField("a", IntegerType, nullable = true, withId(1))))
+    val writeData = Seq(Row(100, "text", "txt"), Row(200, "more", "mr"))
+
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+        val cause = intercept[SparkException] {
+          spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
+        }.getCause
+        assert(cause.getMessage.contains("Found duplicate field(s)"))
+      }
+    }
+  }
+
+  // Mirrors Spark ParquetFieldIdIOSuite.test("read parquet file without ids"). The native
+  // scan must raise when the read schema requests ids but the file has none, and must NULL
+  // (not error) when `spark.sql.parquet.fieldId.read.ignoreMissing` is true.
+  test("native_datafusion: missing Parquet field ids respects ignoreMissing") {
+    val writeSchema = StructType(
+      Seq(
+        StructField("a", IntegerType, nullable = true),
+        StructField("rand1", StringType, nullable = true)))
+    val readSchema = StructType(Seq(StructField("a", IntegerType, nullable = true, withId(1))))
+    val writeData = Seq(Row(100, "text"), Row(200, "more"))
+
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        val cause = intercept[SparkException] {
+          spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
+        }.getCause
+        assert(cause.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
+
+        withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
+          val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
 }
 
 class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
