@@ -35,8 +35,7 @@ import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, BroadcastPar
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -110,6 +109,12 @@ case class CometBroadcastExchangeExec(
   @transient
   private lazy val maxBroadcastRows = 512000000
 
+  private def getByteArrayRdd(plan: SparkPlan): RDD[(Long, ChunkedByteBuffer)] = {
+    plan.executeColumnar().mapPartitionsInternal { iter =>
+      Utils.serializeBatches(iter)
+    }
+  }
+
   def getNumPartitions(): Int = {
     child.executeColumnar().getNumPartitions
   }
@@ -123,32 +128,7 @@ case class CometBroadcastExchangeExec(
         setJobGroupOrTag(sparkContext, this)
         val beforeCollect = System.nanoTime()
 
-        val countsAndBytes = child match {
-          case c: CometPlan => CometExec.getByteArrayRdd(c).collect()
-          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _)
-              if s.plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
-          case s: ShuffleQueryStageExec if s.plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
-          case ReusedExchangeExec(_, plan) if plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case AQEShuffleReadExec(ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _), _)
-              if plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _)
-              if plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case _ =>
-            // Non-Comet child (e.g., RowToColumnar -> LocalTableScan). Happens when
-            // AQE re-optimizes inside an ASPE and replaces the original Comet scan
-            // with a Spark-native node (e.g., empty broadcast triggers LocalTableScan).
-            logWarning(
-              "CometBroadcastExchangeExec child is not CometPlan: " +
-                s"${child.getClass.getSimpleName}. " +
-                "Wrapping in CometSparkToColumnarExec for Arrow serialization.")
-            val cometChild = CometSparkToColumnarExec(ColumnarToRowExec(child))
-            CometExec.getByteArrayRdd(cometChild).collect()
-        }
+        val countsAndBytes = getByteArrayRdd(child).collect()
 
         val numRows = countsAndBytes.map(_._1).sum
         val input = countsAndBytes.iterator.map(countAndBytes => countAndBytes._2)
