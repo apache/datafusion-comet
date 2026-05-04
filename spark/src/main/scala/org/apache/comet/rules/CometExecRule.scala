@@ -259,7 +259,7 @@ case class CometExecRule(session: SparkSession)
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        convertToComet(scan, CometNativeScan).getOrElse(scan)
+        convertToComet(scan.wrapped, CometNativeScan).getOrElse(scan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
       // Only handle scans with native metadata; other scans fall through to isCometScan
@@ -535,6 +535,11 @@ case class CometExecRule(session: SparkSession)
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
+    assert(
+      !CometConf.COMET_USE_PLANNER.get(conf),
+      s"CometExecRule ran while ${CometConf.COMET_USE_PLANNER.key}=true. CometPlanner should " +
+        "be the sole rule on this path. Either COMET_USE_PLANNER was flipped after session " +
+        "creation or the legacy rule was registered by mistake.")
 
     if (!CometConf.COMET_EXEC_ENABLED.get(conf)) {
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle

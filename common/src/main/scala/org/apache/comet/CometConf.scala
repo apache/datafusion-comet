@@ -93,6 +93,17 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET", true)
 
+  val COMET_USE_PLANNER: ConfigEntry[Boolean] = conf("spark.comet.planner.enabled")
+    .category(CATEGORY_EXEC)
+    .doc(
+      "When true, Comet registers the single-rule CometPlanner in place of the legacy " +
+        "CometScanRule + CometExecRule pair. Default true. Flip to false to run the legacy " +
+        "path as a rollback. The choice is evaluated once at session extension injection, so " +
+        "changes after session creation do not switch rules. The selected rules assert on this " +
+        "flag at entry to surface configuration drift early.")
+    .booleanConf
+    .createWithDefault(true)
+
   val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
     .category(CATEGORY_SCAN)
     .doc(
