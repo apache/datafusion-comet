@@ -129,20 +129,26 @@ jobs:
       matrix:
         os: [macos-14]
 
-        # the goal with these profiles is to get coverage of all Java, Scala, and Spark
-        # versions without testing all possible combinations, which would be overkill
+        # macOS runs cover platform-specific concerns (native library loading, FFI,
+        # threading, shuffle on Apple Silicon) that are largely independent of the
+        # Spark/Scala/JDK version. Full matrix coverage already happens on Linux,
+        # so we run only the newest supported profile here.
         profile:
-          - name: "Spark 3.4, JDK 11, Scala 2.12"
-            java_version: "11"
-            maven_opts: "-Pspark-3.4 -Pscala-2.12"
-
-          - name: "Spark 3.5, JDK 17, Scala 2.13"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.13"
-
           - name: "Spark 4.0, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-4.0 -Pscala-2.13"
+
+          - name: "Spark 4.1, JDK 17, Scala 2.13"
+            java_version: "17"
+            # The spark-4.1 profile already pins Scala to 2.13.17 to match Spark 4.1.1's
+            # runtime; the scala-2.13 profile would override it back to 2.13.16 and break.
+            maven_opts: "-Pspark-4.1"
+
+          - name: "Spark 4.2, JDK 17, Scala 2.13"
+            java_version: "17"
+            # The spark-4.2 profile pins Scala to 2.13.18 to match Spark 4.2.0-preview4's
+            # runtime; the scala-2.13 profile would override it back to 2.13.16 and break.
+            maven_opts: "-Pspark-4.2"
 
         suite:
           - name: "fuzz"
@@ -274,6 +280,6 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           artifact_name: ${{ matrix.os }}-${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
-          suites: ${{ matrix.suite.name == 'sql' && matrix.profile.name == 'Spark 3.4, JDK 11, Scala 2.12' && '' || matrix.suite.value }}
+          suites: ${{ matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
           skip-native-build: true

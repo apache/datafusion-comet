@@ -167,3 +167,71 @@ git diff v3.5.6 > ../datafusion-comet/dev/diffs/3.5.6.diff
 The easiest way to run the tests is to create a PR against Comet and let CI run the tests. When working with a
 new Spark version, the `spark_sql_test.yaml` and `spark_sql_test_ansi.yaml` files will need updating with the
 new version.
+
+## Adding support for a new Spark major or minor version
+
+When the diff is for a brand-new minor (e.g. 4.0 to 4.1) or major version, the existing Comet `spark-X.Y` Maven
+profile will not match. Add a new profile alongside the existing ones in the root `pom.xml` and `spark/pom.xml`:
+
+- Root `pom.xml`: copy the existing `spark-4.0` profile, change `<spark.version>`, `<spark.version.short>`, and
+  match the Spark target's transitive dep versions (Spark's own `pom.xml` is the source of truth):
+  `<scala.version>`, `<parquet.version>`, `<slf4j.version>`. Set `<shims.majorVerSrc>spark-4.1</shims.majorVerSrc>`
+  and `<shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>`.
+- `spark/pom.xml`: copy the matching profile block for iceberg-spark-runtime and Jetty test deps. The
+  iceberg-spark-runtime artifact may not yet be published for a brand-new Spark minor — until it is, hardcode the
+  previous version's coordinate (e.g. `iceberg-spark-runtime-4.0_${scala.binary.version}` while running against
+  Spark 4.1 source).
+
+Then create a corresponding shim source tree by copying the previous version's:
+
+```shell
+cp -r spark/src/main/spark-4.0 spark/src/main/spark-4.1
+cp -r common/src/main/spark-4.0 common/src/main/spark-4.1
+```
+
+Build with `PROFILES="-Pspark-4.1" make release` (or `./mvnw install -Prelease -Pspark-4.1 -DskipTests
+-Dmaven.test.skip=true` to skip Comet's own test compile). Compile errors in the new shim tree will tell you
+exactly which Spark APIs moved between versions. Common patterns we have seen:
+
+- A field is renamed or moved into a wrapper struct. Add a helper method to `CometEvalModeUtil` (or other shim
+  utility object) and call it from the shared `spark/src/main/scala` code, with a per-profile implementation.
+  Example: in Spark 4.1 `Sum.evalMode` became `Sum.evalContext.evalMode`.
+- A `SQLConf` key changes shape (e.g. `stringConf` to `enumConf`). The shim trait is the natural place to
+  encapsulate the new return type.
+- A Spark constructor adds a new (optional) parameter that Java callers can't see via Scala default values.
+  Add a tiny non-versioned Scala wrapper in `spark/src/main/scala` that calls the Spark API; the Scala compiler
+  fills in the default per profile. Example: `MapStatusHelper.apply` for `MapStatus.apply`'s 4.1 `checksumVal`.
+- A reflective constructor lookup (`getDeclaredConstructors`) starts hitting "argument type mismatch" because a
+  parameter type widened/changed. Pass a value compatible with both old and new types (e.g. a
+  `ConcurrentHashMap` instead of `Collections.emptyMap()` after `IndexShuffleBlockResolver`'s third param became
+  `ConcurrentMap`).
+
+Once Comet builds for the new profile, the iceberg test artifact may eventually need an updated coordinate, and
+`spark/src/main/spark-X.Y` may diverge meaningfully from the previous version. Land the profile, then iterate.
+
+## Running tests locally against a patched Spark clone
+
+After applying the diff, run sbt from the patched Spark working tree. A few things that have caught us out:
+
+- **Skip Spark's scalastyle**: set `NOLINT_ON_COMPILE=true` (Spark's `SparkBuild.scala` checks this env var; our
+  CI workflow already sets it). Without this, modifications introduced by the diff can fail the strict
+  scalastyle check before any test runs.
+- **Pin a clean local Maven cache**: Coursier (sbt's resolver) treats a `.pom` file in `~/.m2` as proof the
+  artifact is fully present locally and stops looking remotely. If a previous Maven run only fetched POMs
+  (without JARs), Coursier will fail with `not found: ...some-artifact.jar` even though the file is on Maven
+  Central. The fast workaround is to point sbt at a fresh location:
+
+  ```shell
+  ./mvnw install -Prelease -DskipTests -Dmaven.test.skip=true -Pspark-4.1 \
+    -Dmaven.repo.local=/tmp/spark-m2-repo
+  cd ../apache-spark
+  NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true \
+    build/sbt -Dmaven.repo.local=/tmp/spark-m2-repo "sql/testOnly org.apache.spark.sql.MathFunctionsSuite"
+  ```
+
+  Make sure to install Comet into the same alternate repo so sbt can resolve it.
+
+- **Avoid `-DskipTests` alone for the install step** if you want to skip Comet's own test compile: it still
+  compiles tests and only skips execution. Pair it with `-Dmaven.test.skip=true`.
+- **Targeted suites first**: `MathFunctionsSuite` (~60 tests) is a quick smoke check that exercises Comet's
+  serde and shuffle paths without booting most of the SQL test infrastructure.

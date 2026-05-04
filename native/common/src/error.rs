@@ -187,6 +187,19 @@ pub enum SparkError {
         matched_fields: String,
     },
 
+    /// Schema mismatch when reading a Parquet column under a requested schema
+    /// that's incompatible with the physical column type. Translated by the JVM
+    /// shim into Spark's `SchemaColumnConvertNotSupportedException`. The
+    /// `file_path` may be empty when the rejection happens at planning time
+    /// (the schema adapter doesn't carry the file path).
+    #[error("Parquet column cannot be converted in file {file_path}. Column: [{column}], Expected: {spark_type}, Found: {physical_type}")]
+    ParquetSchemaConvert {
+        file_path: String,
+        column: String,
+        physical_type: String,
+        spark_type: String,
+    },
+
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
 
@@ -260,6 +273,7 @@ impl SparkError {
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
             SparkError::FileNotFound { .. } => "FileNotFound",
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
+            SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -470,6 +484,19 @@ impl SparkError {
                     "matchedOrcFields": matched_fields,
                 })
             }
+            SparkError::ParquetSchemaConvert {
+                file_path,
+                column,
+                physical_type,
+                spark_type,
+            } => {
+                serde_json::json!({
+                    "filePath": file_path,
+                    "column": column,
+                    "physicalType": physical_type,
+                    "sparkType": spark_type,
+                })
+            }
             SparkError::Arrow(e) => {
                 serde_json::json!({
                     "message": e.to_string(),
@@ -543,6 +570,11 @@ impl SparkError {
             // DuplicateFieldCaseInsensitive - converted to SparkRuntimeException by the shim
             SparkError::DuplicateFieldCaseInsensitive { .. } => {
                 "org/apache/spark/SparkRuntimeException"
+            }
+
+            // ParquetSchemaConvert - converted to SchemaColumnConvertNotSupportedException by the shim
+            SparkError::ParquetSchemaConvert { .. } => {
+                "org/apache/spark/sql/execution/datasources/SchemaColumnConvertNotSupportedException"
             }
 
             // Generic errors
@@ -623,6 +655,11 @@ impl SparkError {
 
             // Duplicate field in case-insensitive mode
             SparkError::DuplicateFieldCaseInsensitive { .. } => Some("_LEGACY_ERROR_TEMP_2093"),
+
+            // Parquet schema mismatch — translated to SchemaColumnConvertNotSupportedException
+            // by the JVM shim. The shim wraps it in the version-appropriate
+            // SparkException error class, so no error class is exposed here.
+            SparkError::ParquetSchemaConvert { .. } => None,
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,

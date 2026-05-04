@@ -20,17 +20,19 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType}
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -144,6 +146,29 @@ trait CometExprShim extends CommonStringExprs {
           case _ => None
         }
 
+      case ms: MapSort =>
+        val keyType = ms.dataType.asInstanceOf[MapType].keyType
+        if (!supportedScalarSortElementType(keyType)) {
+          withInfo(ms, s"MapSort on map with key type $keyType is not supported")
+          None
+        } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+          SupportLevel.containsFloatingPoint(keyType)) {
+          withInfo(
+            ms,
+            "MapSort on floating-point key is not 100% compatible with Spark, and Comet is " +
+              s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+              s"${CometConf.COMPAT_GUIDE}")
+          None
+        } else {
+          val childExpr = exprToProtoInternal(ms.child, inputs, binding)
+          val mapSortExpr = scalarFunctionExprToProtoWithReturnType(
+            "map_sort",
+            ms.dataType,
+            failOnError = false,
+            childExpr)
+          optExprWithInfo(mapSortExpr, ms, ms.child)
+        }
+
       case _ => None
     }
   }
@@ -155,4 +180,6 @@ object CometEvalModeUtil {
     case EvalMode.TRY => CometEvalMode.TRY
     case EvalMode.ANSI => CometEvalMode.ANSI
   }
+
+  def sumEvalMode(s: Sum): EvalMode.Value = s.evalMode
 }

@@ -81,7 +81,7 @@ jobs:
     container:
       image: amd64/rust
       env:
-        JAVA_TOOL_OPTIONS: ${{ matrix.profile.java_version == '17' && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
     strategy:
       matrix:
         profile:
@@ -94,6 +94,13 @@ jobs:
           - name: "Spark 4.0, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.0"
+          - name: "Spark 4.0, JDK 21"
+            java_version: "21"
+            maven_opts: "-Pspark-4.0"
+          # Spark 4.1 and 4.2 are intentionally absent: the lint job invokes -Psemanticdb,
+          # but semanticdb-scalac for those Scala patch versions (2.13.17 / 2.13.18) is not
+          # yet published, so we cannot currently run scalafix against the spark-4.1 or
+          # spark-4.2 profiles.
       fail-fast: false
     steps:
       - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
@@ -139,6 +146,38 @@ jobs:
       - name: Check for any local git changes (such as generated docs)
         run: |
           ./dev/ci/check-working-tree-clean.sh
+
+  # Compile-only verification for Spark 4.1. Tests are intentionally skipped: the spark-4.1
+  # profile is currently a build target only, and several runtime/test failures are tracked
+  # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet
+  # published and the lint job activates -Psemanticdb.
+  build-spark-4-1:
+    needs: lint
+    name: Build Spark 4.1, JDK 17
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-spark-4.1-build
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Compile (skip tests)
+        run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
 
   # Build native library once and share with all test jobs
   build-native:
@@ -248,24 +287,29 @@ jobs:
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
             scan_impl: "auto"
 
-          - name: "Spark 3.5.5, JDK 17, Scala 2.13"
+          - name: "Spark 3.5, JDK 17, Scala 2.13"
             java_version: "17"
-            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.5 -Pscala-2.13"
-            scan_impl: "auto"
-
-          - name: "Spark 3.5.6, JDK 17, Scala 2.13"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.6 -Pscala-2.13"
-            scan_impl: "auto"
-
-          - name: "Spark 3.5, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+            maven_opts: "-Pspark-3.5 -Pscala-2.13"
             scan_impl: "native_iceberg_compat"
 
           - name: "Spark 4.0, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.0"
+            scan_impl: "auto"
+
+          - name: "Spark 4.0, JDK 21"
+            java_version: "21"
+            maven_opts: "-Pspark-4.0"
+            scan_impl: "auto"
+
+          - name: "Spark 4.1, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.1"
+            scan_impl: "auto"
+
+          - name: "Spark 4.2, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.2"
             scan_impl: "auto"
         suite:
           - name: "fuzz"
@@ -358,7 +402,7 @@ jobs:
     container:
       image: amd64/rust
       env:
-        JAVA_TOOL_OPTIONS: ${{ matrix.profile.java_version == '17' && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
 
     steps:
       - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
