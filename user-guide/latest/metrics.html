@@ -563,6 +563,26 @@ logged for each native plan (and there is one plan per task, so this is very ver
 </div>
 </section>
 </section>
+<section id="task-level-input-metrics-on-spark-4-1">
+<h2>Task-Level Input Metrics on Spark 4.1+<a class="headerlink" href="#task-level-input-metrics-on-spark-4-1" title="Link to this heading">#</a></h2>
+<p>Comet’s native scans set <code class="docutils literal notranslate"><span class="pre">inputMetrics.bytesRead</span></code> to the actual file IO performed by the
+DataFusion parquet reader (<code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code>). This is the truthful number you would see at the
+filesystem layer.</p>
+<p>Spark 4.1 changed its own parquet reader to pre-open the <code class="docutils literal notranslate"><span class="pre">SeekableInputStream</span></code> and read the file
+footer outside the <code class="docutils literal notranslate"><span class="pre">FileScanRDD.compute()</span></code> thread. Spark’s <code class="docutils literal notranslate"><span class="pre">inputMetrics.bytesRead</span></code> is updated
+from a Hadoop FileSystem thread-local byte counter that only captures reads on the
+<code class="docutils literal notranslate"><span class="pre">compute()</span></code> thread, so reads serviced by the pre-opened stream’s internal buffer go uncounted.
+The under-count is largest when the file fits in the pre-fetched buffer (tiny files, unit test
+sizes) and shrinks as files grow large enough that subsequent row-group reads cross the buffer
+and trigger fresh FS reads on the <code class="docutils literal notranslate"><span class="pre">compute()</span></code> thread.</p>
+<p>This is purely an observability difference: <code class="docutils literal notranslate"><span class="pre">inputMetrics.bytesRead</span></code> is reported to listeners
+and the Spark UI but is not consumed by the planner, the optimizer, or AQE, so the discrepancy
+does not affect query plans, partitioning, or correctness. Records read (<code class="docutils literal notranslate"><span class="pre">recordsRead</span></code>) is
+unaffected and remains exactly equal between Comet and Spark.</p>
+<p>If you compare Comet’s <code class="docutils literal notranslate"><span class="pre">bytesRead</span></code> against vanilla Spark’s on Spark 4.1+ (via the Spark UI or
+the REST API), expect Comet’s number to be substantially larger for small files, and closer to
+Spark’s for large files. Comet’s value reflects what the storage layer actually delivered.</p>
+</section>
 </section>
 
 
