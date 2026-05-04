@@ -707,8 +707,7 @@ under the License.
     </profile>
 
     <profile>
-      <!-- WIP: Spark 4.2 preview support. Targets the 4.2.0-preview4 release; tests are not
-           wired up yet, this profile only aims to compile main sources. -->
+      <!-- Spark 4.2 preview support, targeting the 4.2.0-preview4 release. -->
       <id>spark-4.2</id>
       <properties>
         <scala.version>2.13.18</scala.version>
