@@ -1763,6 +1763,17 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                // Null-aware anti-join must run in CollectLeft mode. In Partitioned mode
+                // each partition only sees per-partition null/emptiness state, which can
+                // produce wrong NOT IN results across partitions. DataFusion's JoinSelection
+                // rewrites null-aware joins to CollectLeft for this reason, but Comet
+                // executes the physical plan directly so we must pick the mode here.
+                let partition_mode = if join.null_aware_anti_join {
+                    PartitionMode::CollectLeft
+                } else {
+                    PartitionMode::Partitioned
+                };
+
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
                     right,
@@ -1770,20 +1781,18 @@ impl PhysicalPlanner {
                     join_params.join_filter,
                     &join_params.join_type,
                     None,
-                    PartitionMode::Partitioned,
+                    partition_mode,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
-                    // null_aware is for null-aware anti joins (NOT IN subqueries).
-                    // NullEquality controls whether NULL = NULL in join keys generally,
-                    // while null_aware changes anti-join semantics so any NULL changes
-                    // the entire result. Spark doesn't use this path (it rewrites
-                    // EqualNullSafe at plan time), so false is correct.
-                    false,
+                    join.null_aware_anti_join,
                 )?);
 
-                // If the hash join is build right, we need to swap the left and right
-                if join.build_side == BuildSide::BuildLeft as i32 {
+                // If the hash join is build right, we need to swap the left and right.
+                // Exception: null-aware anti-join requires LeftAnti + build-right semantics
+                // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
+                // into RightAnti, which DataFusion rejects with null_aware=true.
+                if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
                     Ok((
                         scans,
                         shuffle_scans,
@@ -4113,6 +4122,7 @@ mod tests {
                 join_type: 0,
                 condition: None,
                 build_side: 0,
+                null_aware_anti_join: false,
             })),
         };
 
