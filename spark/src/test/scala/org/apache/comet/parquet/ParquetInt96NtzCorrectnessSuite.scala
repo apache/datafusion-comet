@@ -29,17 +29,44 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.CometConf
 
 /**
- * Demonstrates the correctness issue tracked in
+ * Verifies the safety fallback for the correctness issue tracked in
  * https://github.com/apache/datafusion-comet/issues/3720: when a Parquet file stores timestamps
  * as INT96 (Spark's TimestampType, UTC-adjusted local-time semantics) and the read schema
- * requests TimestampNTZ, the `native_datafusion` scan silently returns wall-clock values that
- * disagree with what was written. Spark itself raises (SPARK-36182) to prevent the silent
+ * requests TimestampNTZ, Comet's native scan silently returns wall-clock values that disagree
+ * with what was written. Spark itself raises (SPARK-36182) to prevent the silent
  * reinterpretation.
+ *
+ * The fallback rule (controlled by [[CometConf.COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED]], on
+ * by default) makes Comet defer to Spark for any Parquet scan whose schema contains TimestampNTZ,
+ * so users see Spark's safety error rather than silently corrupted data.
  */
 class ParquetInt96NtzCorrectnessSuite extends CometTestBase {
   import testImplicits._
 
-  test("INT96 TimestampType read as TimestampNTZ silently returns wrong values") {
+  test("Parquet TimestampNTZ scan falls back to Spark by default") {
+    val sessionTz = "America/Los_Angeles"
+    val written = "2020-01-01 12:00:00"
+
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> sessionTz,
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        Seq(Timestamp.valueOf(written)).toDF("ts").write.parquet(path)
+
+        // With the fallback enabled (default), Comet defers to Spark, which raises
+        // SPARK-36182 instead of silently returning the wrong wall-clock value.
+        intercept[SparkException] {
+          spark.read.schema("ts timestamp_ntz").parquet(path).collect()
+        }
+      }
+    }
+  }
+
+  test(
+    "INT96 TimestampType read as TimestampNTZ silently returns wrong values without fallback") {
     val sessionTz = "America/Los_Angeles"
     val written = "2020-01-01 12:00:00"
 
@@ -63,18 +90,20 @@ class ParquetInt96NtzCorrectnessSuite extends CometTestBase {
           }
         }
 
-        // native_datafusion does not refuse; it silently returns a value that
-        // disagrees with the wall-clock value originally written. This is the
-        // correctness issue the safety-check fallback is intended to prevent.
-        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+        // With the fallback disabled, native_datafusion does not refuse; it silently returns
+        // a value that disagrees with the wall-clock value originally written. This documents
+        // the underlying correctness issue that the fallback is intended to prevent.
+        withSQLConf(
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+          CometConf.COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED.key -> "false") {
           val rows = spark.read.schema("ts timestamp_ntz").parquet(path).collect()
           assert(rows.length == 1)
           val actual = rows.head.getAs[LocalDateTime](0)
           assert(
             actual != LocalDateTime.parse("2020-01-01T12:00:00"),
             s"native_datafusion returned the original wall-clock value $actual; " +
-              s"expected a silently-shifted value demonstrating the LTZ->NTZ " +
-              s"correctness divergence (issue #3720 / SPARK-36182).")
+              "expected a silently-shifted value demonstrating the LTZ->NTZ " +
+              "correctness divergence (issue #3720 / SPARK-36182).")
         }
       }
     }
