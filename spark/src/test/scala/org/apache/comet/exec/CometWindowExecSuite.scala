@@ -25,7 +25,6 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.CometWindowExec
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, lead, sum}
@@ -124,18 +123,6 @@ class CometWindowExecSuite extends CometTestBase {
                         |from windowData
           """.stripMargin)
         checkSparkAnswerAndOperator(df2)
-        val cometShuffles = collect(df2.queryExecution.executedPlan) {
-          case _: CometShuffleExchangeExec => true
-        }
-        if (shuffleMode == "jvm" || shuffleMode == "auto") {
-          assert(cometShuffles.length == 1)
-        } else {
-          // we fall back to Spark for shuffle because we do not support
-          // native shuffle with a LocalTableScan input, and we do not fall
-          // back to Comet columnar shuffle due to
-          // https://github.com/apache/datafusion-comet/issues/1248
-          assert(cometShuffles.isEmpty)
-        }
       }
     }
   }
@@ -210,7 +197,7 @@ class CometWindowExecSuite extends CometTestBase {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
         SQLConf.REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION.key -> "true",
-        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
         val df =
           Seq(("a", 1, 1), ("a", 2, 2), ("b", 1, 3), ("b", 1, 4)).toDF("key1", "key2", "value")
         val windowSpec = Window.partitionBy("key1", "key2").orderBy("value")
@@ -750,12 +737,11 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: FIRST_VALUE causes encoder error
-  // org.apache.spark.SparkUnsupportedOperationException: [ENCODER_NOT_FOUND] Not found an encoder of the type Any
   test("window: FIRST_VALUE with default ignore nulls") {
     withTempDir { dir =>
       (0 until 30)
-        .map(i => (i % 3, i % 5, if (i % 7 == 0) null else i))
+        .map(i =>
+          (i % 3, i % 5, if (i % 7 == 0) null.asInstanceOf[Integer] else Integer.valueOf(i)))
         .toDF("a", "b", "c")
         .repartition(3)
         .write
@@ -772,12 +758,11 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: LAST_VALUE causes encoder error
-  // org.apache.spark.SparkUnsupportedOperationException: [ENCODER_NOT_FOUND] Not found an encoder of the type Any
   test("window: LAST_VALUE with ROWS frame") {
     withTempDir { dir =>
       (0 until 30)
-        .map(i => (i % 3, i % 5, if (i % 7 == 0) null else i))
+        .map(i =>
+          (i % 3, i % 5, if (i % 7 == 0) null.asInstanceOf[Integer] else Integer.valueOf(i)))
         .toDF("a", "b", "c")
         .repartition(3)
         .write

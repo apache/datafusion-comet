@@ -2669,6 +2669,34 @@ impl PhysicalPlanner {
                 };
                 Ok(("sum".to_string(), vec![child]))
             }
+            Some(AggExprStruct::Avg(expr)) => {
+                // Mirrors the non-window Avg path: for non-decimal inputs cast to
+                // Float64 (Spark's Avg returns Double for numeric types). For decimal,
+                // pass the child through — DataFusion's `avg` UDAF accepts Decimal128.
+                // Note: Comet's `AvgDecimal` (with Spark-specific precision rules) isn't
+                // registered as a named UDAF, so decimal avg in windows uses
+                // DataFusion's default precision/scale handling.
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let child: Arc<dyn PhysicalExpr> = match datatype {
+                    DataType::Decimal128(_, _) => child,
+                    _ => Arc::new(CastExpr::new(child, DataType::Float64, None)),
+                };
+                Ok(("avg".to_string(), vec![child]))
+            }
+            Some(AggExprStruct::First(expr)) => {
+                // Spark's FIRST_VALUE → DataFusion's `first_value` UDAF. The UDAF handles
+                // ignore-nulls via the WindowExpr-level `ignore_nulls` flag, which the
+                // Scala side derives from First.ignoreNulls.
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                Ok(("first_value".to_string(), vec![child]))
+            }
+            Some(AggExprStruct::Last(expr)) => {
+                // Spark's LAST_VALUE → DataFusion's `last_value` UDAF. ignore-nulls is
+                // threaded through WindowExpr.ignore_nulls the same way as First.
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                Ok(("last_value".to_string(), vec![child]))
+            }
             other => Err(GeneralError(format!(
                 "{other:?} not supported for window function"
             ))),
