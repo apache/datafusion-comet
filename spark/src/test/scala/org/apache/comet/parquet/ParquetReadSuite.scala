@@ -1352,6 +1352,18 @@ abstract class ParquetReadSuite extends CometTestBase {
   private def withId(id: Int) =
     new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
 
+  // Spark 4.x wraps read errors in FAILED_READ_FILE.NO_HINT, so the underlying message
+  // is only reachable by walking the cause chain.
+  private def ˚causeChainContains(t: Throwable, needle: String): Boolean = {
+    var cur: Throwable = t
+    while (cur != null) {
+      val msg = cur.getMessage
+      if (msg != null && msg.contains(needle)) return true
+      cur = cur.getCause
+    }
+    false
+  }
+
   // Based on Spark ParquetIOSuite.test("vectorized reader: array of nested struct")
   test("array of nested struct with and without field id") {
     val nestedSchema = StructType(
@@ -1535,13 +1547,12 @@ abstract class ParquetReadSuite extends CometTestBase {
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
         val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
-        // Spark 3.x wraps the error in SparkException; Spark 4.x throws SparkRuntimeException
-        // directly. checkSparkAnswerMaybeThrows asserts both sides throw and gives us the raw
-        // Throwables to message-match against, version-agnostic.
+        // Spark 3.x wraps the underlying error one level deep in SparkException; Spark 4.x
+        // wraps it in FAILED_READ_FILE.NO_HINT. Walk the cause chain to stay version-agnostic.
         checkSparkAnswerMaybeThrows(df) match {
           case (Some(sparkExc), Some(cometExc)) =>
-            assert(sparkExc.getMessage.contains("Found duplicate field(s)"))
-            assert(cometExc.getMessage.contains("Found duplicate field(s)"))
+            assert(causeChainContains(sparkExc, "Found duplicate field(s)"))
+            assert(causeChainContains(cometExc, "Found duplicate field(s)"))
           case other => fail(s"Expected duplicate-field error from both sides, got $other")
         }
       }
@@ -1573,9 +1584,9 @@ abstract class ParquetReadSuite extends CometTestBase {
         checkSparkAnswerMaybeThrows(df) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(
-              sparkExc.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
+              causeChainContains(sparkExc, "Parquet file schema doesn't contain any field Ids"))
             assert(
-              cometExc.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
+              causeChainContains(cometExc, "Parquet file schema doesn't contain any field Ids"))
           case other => fail(s"Expected missing-field-ids error from both sides, got $other")
         }
 
