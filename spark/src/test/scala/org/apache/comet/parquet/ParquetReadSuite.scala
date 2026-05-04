@@ -1354,7 +1354,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
   // Spark 4.x wraps read errors in FAILED_READ_FILE.NO_HINT, so the underlying message
   // is only reachable by walking the cause chain.
-  private def ˚causeChainContains(t: Throwable, needle: String): Boolean = {
+  private def causeChainContains(t: Throwable, needle: String): Boolean = {
     var cur: Throwable = t
     while (cur != null) {
       val msg = cur.getMessage
