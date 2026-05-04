@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpExtract, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -347,6 +347,48 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
       exprToProtoInternal(expr.str, inputs, binding),
       exprToProtoInternal(expr.len, inputs, binding),
       exprToProtoInternal(expr.pad, inputs, binding))
+  }
+}
+
+object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
+
+  private val incompatReason: String =
+    "Uses Rust regexp engine, which has different behavior to Java regexp engine"
+  private val nonLiteralPatternReason: String =
+    "Only scalar regexp patterns are supported"
+  private val nonLiteralIdxReason: String =
+    "idx must be an integer literal"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(nonLiteralPatternReason, nonLiteralIdxReason)
+
+  override def getSupportLevel(expr: RegExpExtract): SupportLevel = {
+    if (!expr.regexp.isInstanceOf[Literal]) {
+      return Unsupported(Some(nonLiteralPatternReason))
+    }
+    if (!expr.idx.isInstanceOf[Literal]) {
+      return Unsupported(Some(nonLiteralIdxReason))
+    }
+    Incompatible(Some(incompatReason))
+  }
+
+  override def convert(
+      expr: RegExpExtract,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+    val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+    val idxExpr = exprToProtoInternal(expr.idx, inputs, binding)
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "regexp_extract",
+      expr.dataType,
+      failOnError = false,
+      subjectExpr,
+      patternExpr,
+      idxExpr)
+    optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.idx)
   }
 }
 
