@@ -243,7 +243,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val df = spark.read
           .parquet(path.toString)
           .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-          .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
+          .withColumn("idx", org.apache.spark.sql.functions.udf((_: Int) => 1).apply(col("_4")))
           .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
         checkSparkAnswerAndFallbackReasons(
           df.select("arrUnsupportedArgs"),

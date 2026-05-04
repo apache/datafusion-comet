@@ -392,6 +392,7 @@ jobs:
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
+              org.apache.comet.CometRegExpJvmSuite
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
