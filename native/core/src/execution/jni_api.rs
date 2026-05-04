@@ -62,6 +62,7 @@ use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
+use datafusion_spark::function::string::substring::SparkSubstring;
 use futures::poll;
 use futures::stream::StreamExt;
 use futures::FutureExt;
@@ -567,6 +568,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStrToMap::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
 }
 
 /// Prepares arrow arrays for output.

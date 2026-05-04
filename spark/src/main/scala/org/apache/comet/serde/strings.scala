@@ -103,28 +103,14 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
   }
 }
 
-object CometSubstring extends CometExpressionSerde[Substring] {
+object CometSubstring extends CometScalarFunction[Substring]("substring") {
 
-  override def convert(
-      expr: Substring,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    (expr.pos, expr.len) match {
-      case (Literal(pos, _), Literal(len, _)) =>
-        exprToProtoInternal(expr.str, inputs, binding) match {
-          case Some(strExpr) =>
-            val builder = ExprOuterClass.Substring.newBuilder()
-            builder.setChild(strExpr)
-            builder.setStart(pos.asInstanceOf[Int])
-            builder.setLen(len.asInstanceOf[Int])
-            Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
-          case None =>
-            withInfo(expr, expr.str)
-            None
-        }
-      case _ =>
-        withInfo(expr, "Substring pos and len must be literals")
-        None
+  override def getUnsupportedReasons(): Seq[String] = Seq("Only supports `StringType` input")
+
+  override def getSupportLevel(expr: Substring): SupportLevel = {
+    expr.str.dataType match {
+      case _: StringType => Compatible()
+      case _ => Unsupported(Some(s"Substring does not support ${expr.str.dataType}"))
     }
   }
 }
