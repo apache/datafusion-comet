@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate._
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -43,7 +43,7 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types._
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -54,7 +54,7 @@ import com.google.protobuf.CodedOutputStream
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde._
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
@@ -141,7 +141,6 @@ private[comet] object PlanDataInjector {
  * Injector for Iceberg scan operators.
  */
 private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
-
   import java.nio.ByteBuffer
   import java.util.{LinkedHashMap, Map => JMap}
 
@@ -634,7 +633,6 @@ abstract class CometNativeExec extends CometExec {
     val plan = OperatorOuterClass.Operator.parseFrom(planBytes)
     var scanIndex = 0
     val indices = mutable.Set.empty[Int]
-
     def walk(op: OperatorOuterClass.Operator): Unit = {
       if (op.hasShuffleScan) {
         indices += scanIndex
@@ -645,7 +643,6 @@ abstract class CometNativeExec extends CometExec {
         op.getChildrenList.asScala.foreach(walk)
       }
     }
-
     walk(plan)
     indices.toSet
   }
@@ -667,22 +664,21 @@ abstract class CometNativeExec extends CometExec {
   private def findAllPlanData(
       plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
     plan match {
-      // Found an Iceberg scan with planning data
-      case iceberg: CometIcebergNativeScanExec if {
-            // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
-            // InSubqueryExec values are resolved before commonData is read. Without
-            // this, the parent CometNativeExec.executeQuery flow never invokes the
-            // scan's executeQuery, leaving DPP unresolved and forcing a sync-on-this
-            // await inside the serializedPartitionData lazy val initializer (a known
-            // deadlock surface).
-            iceberg.ensureSubqueriesResolved()
-            iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty
-          } =>
-        (
-          Map(iceberg.metadataLocation -> iceberg.commonData),
-          Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+      case iceberg: CometIcebergNativeScanExec =>
+        // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
+        // InSubqueryExec values are resolved before commonData is read. Without this,
+        // the parent CometNativeExec.executeQuery flow never invokes the scan's
+        // executeQuery, leaving DPP unresolved and forcing a sync-on-this await inside
+        // the serializedPartitionData lazy val initializer (a known deadlock surface).
+        iceberg.ensureSubqueriesResolved()
+        if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
+          (
+            Map(iceberg.metadataLocation -> iceberg.commonData),
+            Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+        } else {
+          (Map.empty, Map.empty)
+        }
 
-      // Found a NativeScan with planning data
       case nativeScan: CometNativeScanExec =>
         nativeScan.ensureSubqueriesResolved()
         (

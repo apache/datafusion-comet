@@ -79,9 +79,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
       case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
         logDebug("Converting AQE DPP for CometNativeScanExec")
         convertNativeScanDPP(nativeScan, plan)
-      case ibgScan: CometIcebergNativeScanExec if ibgScan.runtimeFilters.exists(hasCometSAB) =>
+      case icebergScan: CometIcebergNativeScanExec
+          if icebergScan.runtimeFilters.exists(hasCometSAB) =>
         logDebug("Converting AQE DPP for CometIcebergNativeScanExec")
-        convertIcebergScanDPP(ibgScan, plan)
+        convertIcebergScanDPP(icebergScan, plan)
       case p: SparkPlan
           if !p.isInstanceOf[CometNativeScanExec]
             && !p.isInstanceOf[CometIcebergNativeScanExec]
@@ -92,15 +93,15 @@ case object CometPlanAdaptiveDynamicPruningFilters
   }
 
   private def convertIcebergScanDPP(
-      ibgScan: CometIcebergNativeScanExec,
+      icebergScan: CometIcebergNativeScanExec,
       stagePlan: SparkPlan): CometIcebergNativeScanExec = {
-    val newFilters = ibgScan.runtimeFilters.map(f => convertFilter(f, stagePlan))
-    if (newFilters == ibgScan.runtimeFilters) return ibgScan
+    val newFilters = icebergScan.runtimeFilters.map(f => convertFilter(f, stagePlan))
+    if (newFilters == icebergScan.runtimeFilters) return icebergScan
     // Top-level runtimeFilters is the single source of truth.
     // CometIcebergNativeScanExec.serializedPartitionData rebuilds originalPlan from the top-level
     // field at serialization time, so we don't need to sync originalPlan.runtimeFilters here.
-    val newScan = ibgScan.copy(runtimeFilters = newFilters)
-    ibgScan.logicalLink.foreach(newScan.setLogicalLink)
+    val newScan = icebergScan.copy(runtimeFilters = newFilters)
+    icebergScan.logicalLink.foreach(newScan.setLogicalLink)
     newScan
   }
 
@@ -204,7 +205,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * (correct results, scans all partitions).
    *
    * 3. No reusable broadcast + onlyInBroadcast=false: Aggregate SubqueryExec on the build side
-   * (DPP via separate execution, matching Spark's PlanAdaptiveDynamicPruningFilters lines 68-79).
+   * (DPP via separate execution, matching Spark's PlanAdaptiveDynamicPruningFilters case 3).
    */
   private def convertSAB(
       inSub: InSubqueryExec,
@@ -240,10 +241,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
     val canReuse = conf.exchangeReuseEnabled && matchingJoin.isDefined
 
     if (canReuse) {
-      // Case 1: broadcast reuse. Matches Spark's PlanAdaptiveDynamicPruningFilters
-      // lines 44-64: construct a NEW exchange wrapping the build subtree, then wrap
-      // in a new ASPE. AQE's stageCache ensures the broadcast runs once via
-      // ReusedExchangeExec (same canonical form as the join's exchange).
+      // Case 1: broadcast reuse. Mirrors Spark's PlanAdaptiveDynamicPruningFilters case 1:
+      // construct a fresh exchange wrapping the build subtree, then wrap in a new ASPE.
+      // AQE's stageCache ensures the broadcast runs once via ReusedExchangeExec (same
+      // canonical form as the join's exchange).
       val (broadcastChild, isComet) = matchingJoin.get
       val buildSidePlan = adaptivePlan.executedPlan
       logDebug(
@@ -252,7 +253,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
           s"${broadcastChild.getClass.getSimpleName}")
 
       // Construct the exchange from buildSidePlan (not from the existing exchange),
-      // matching Spark's PlanAdaptiveDynamicPruningFilters lines 44-48. The existing
+      // mirroring Spark's PlanAdaptiveDynamicPruningFilters case 1. The existing
       // exchange may belong to a different plan context (e.g., the main query) with
       // different attribute IDs than the current SAB's build side (e.g., a scalar
       // subquery). Using the existing exchange's output/mode would cause schema
@@ -299,7 +300,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // Case 3: no reusable broadcast, but the optimizer says DPP is worthwhile
       // even without broadcast reuse. Create an aggregate SubqueryExec on the build
       // side to get distinct partition key values for pruning.
-      // Matches Spark's PlanAdaptiveDynamicPruningFilters lines 68-79.
+      // Matches Spark's PlanAdaptiveDynamicPruningFilters case 3.
       val aliases =
         sab.indices.map(idx => Alias(sab.buildKeys(idx), sab.buildKeys(idx).toString)())
       val aggregate = Aggregate(aliases, aliases, sab.buildPlan)

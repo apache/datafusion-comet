@@ -29,7 +29,6 @@ import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryExec}
@@ -2544,7 +2543,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.runtime_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.runtime_cat.type" -> "hadoop",
         "spark.sql.catalog.runtime_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
@@ -2634,7 +2633,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.runtime_cat.type" -> "hadoop",
         "spark.sql.catalog.runtime_cat.warehouse" -> warehouseDir.getAbsolutePath,
         // Prevent fact table from being broadcast (force dimension to be broadcast)
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
@@ -2702,23 +2701,7 @@ class CometIcebergNativeSuite
         if (isSpark35Plus) {
           val subqueries = collectIcebergDPPSubqueries(cometPlan)
           assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
-          subqueries.foreach { sub =>
-            assert(
-              sub.isInstanceOf[CometSubqueryBroadcastExec],
-              s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
-            val csb = sub.asInstanceOf[CometSubqueryBroadcastExec]
-            assert(
-              csb.child.isInstanceOf[AdaptiveSparkPlanExec],
-              "Expected AdaptiveSparkPlanExec child but got " +
-                s"${csb.child.getClass.getSimpleName}")
-            val aspe = csb.child.asInstanceOf[AdaptiveSparkPlanExec]
-            val hasReuse = collect(aspe) { case r: ReusedExchangeExec => r }.nonEmpty ||
-              collect(aspe) { case b: BroadcastQueryStageExec => b }.nonEmpty
-            assert(
-              hasReuse,
-              "DPP subquery's ASPE should contain ReusedExchangeExec or " +
-                s"BroadcastQueryStageExec for broadcast reuse:\n${cometPlan.treeString}")
-          }
+          assertCsbBroadcastReuse(subqueries, cometPlan)
         }
 
         spark.sql("DROP TABLE runtime_cat.db.fact_table")
@@ -2987,11 +2970,27 @@ class CometIcebergNativeSuite
       }
   }
 
-  /** Extracts the broadcast-side child from a CometBroadcastHashJoinExec. */
-  private def broadcastChild(join: CometBroadcastHashJoinExec): SparkPlan = {
-    join.buildSide match {
-      case BuildLeft => join.left
-      case BuildRight => join.right
+  /**
+   * Asserts each subquery is a CometSubqueryBroadcastExec whose ASPE child contains a
+   * ReusedExchangeExec or BroadcastQueryStageExec, proving AQE stageCache wired the DPP subquery
+   * to the join's broadcast (no double-execution of the build side).
+   */
+  private def assertCsbBroadcastReuse(subqueries: Seq[SparkPlan], cometPlan: SparkPlan): Unit = {
+    subqueries.foreach { sub =>
+      assert(
+        sub.isInstanceOf[CometSubqueryBroadcastExec],
+        s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
+      val csb = sub.asInstanceOf[CometSubqueryBroadcastExec]
+      assert(
+        csb.child.isInstanceOf[AdaptiveSparkPlanExec],
+        s"Expected AdaptiveSparkPlanExec child but got ${csb.child.getClass.getSimpleName}")
+      val aspe = csb.child.asInstanceOf[AdaptiveSparkPlanExec]
+      val hasReuse = collect(aspe) { case r: ReusedExchangeExec => r }.nonEmpty ||
+        collect(aspe) { case b: BroadcastQueryStageExec => b }.nonEmpty
+      assert(
+        hasReuse,
+        "DPP subquery's ASPE should contain ReusedExchangeExec or " +
+          s"BroadcastQueryStageExec for broadcast reuse:\n${cometPlan.treeString}")
     }
   }
 
@@ -3003,7 +3002,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -3049,21 +3048,7 @@ class CometIcebergNativeSuite
           // ReusedExchangeExec). Reference equality (eq) on the join's BQS does not
           // hold because convertSAB wraps a fresh exchange in a new ASPE; the actual
           // reuse manifests as ReusedExchangeExec inside the ASPE's final plan.
-          subqueries.foreach {
-            case csb: CometSubqueryBroadcastExec =>
-              assert(
-                csb.child.isInstanceOf[AdaptiveSparkPlanExec],
-                "Expected AdaptiveSparkPlanExec child but got " +
-                  s"${csb.child.getClass.getSimpleName}")
-              val aspe = csb.child.asInstanceOf[AdaptiveSparkPlanExec]
-              val hasReuse = collect(aspe) { case r: ReusedExchangeExec => r }.nonEmpty ||
-                collect(aspe) { case b: BroadcastQueryStageExec => b }.nonEmpty
-              assert(
-                hasReuse,
-                "DPP subquery's ASPE should contain ReusedExchangeExec or " +
-                  s"BroadcastQueryStageExec for broadcast reuse:\n${cometPlan.treeString}")
-            case _ =>
-          }
+          assertCsbBroadcastReuse(subqueries, cometPlan)
 
           // Verify correct results and partition pruning
           val icebergScans = collectIcebergNativeScans(cometPlan)
@@ -3086,7 +3071,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -3140,21 +3125,7 @@ class CometIcebergNativeSuite
           // Both should reuse the dim broadcast. Each subquery child is an ASPE that
           // contains a BroadcastQueryStageExec (or ReusedExchangeExec) - AQE stageCache
           // dedupes via canonical form rather than Java reference identity.
-          subqueries.foreach {
-            case csb: CometSubqueryBroadcastExec =>
-              assert(
-                csb.child.isInstanceOf[AdaptiveSparkPlanExec],
-                "Expected AdaptiveSparkPlanExec child but got " +
-                  s"${csb.child.getClass.getSimpleName}")
-              val aspe = csb.child.asInstanceOf[AdaptiveSparkPlanExec]
-              val hasReuse = collect(aspe) { case r: ReusedExchangeExec => r }.nonEmpty ||
-                collect(aspe) { case b: BroadcastQueryStageExec => b }.nonEmpty
-              assert(
-                hasReuse,
-                "DPP subquery's ASPE should contain ReusedExchangeExec or " +
-                  s"BroadcastQueryStageExec:\n${cometPlan.treeString}")
-            case _ =>
-          }
+          assertCsbBroadcastReuse(subqueries, cometPlan)
         }
 
         spark.sql("DROP TABLE aqe_cat.db.multi_dpp_reuse")
@@ -3171,7 +3142,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -3235,19 +3206,7 @@ class CometIcebergNativeSuite
           }
 
           val subqueryCsbs = subqueries.collect { case csb: CometSubqueryBroadcastExec => csb }
-          subqueryCsbs.foreach { csb =>
-            assert(
-              csb.child.isInstanceOf[AdaptiveSparkPlanExec],
-              "Expected AdaptiveSparkPlanExec child but got " +
-                s"${csb.child.getClass.getSimpleName}")
-            val aspe = csb.child.asInstanceOf[AdaptiveSparkPlanExec]
-            val hasReuse = collect(aspe) { case r: ReusedExchangeExec => r }.nonEmpty ||
-              collect(aspe) { case b: BroadcastQueryStageExec => b }.nonEmpty
-            assert(
-              hasReuse,
-              "DPP subquery's ASPE should contain ReusedExchangeExec or " +
-                s"BroadcastQueryStageExec:\n${cometPlan.treeString}")
-          }
+          assertCsbBroadcastReuse(subqueryCsbs, cometPlan)
 
           // buildKeys disambiguation: the two DPP subqueries should not share canonical
           // form (different join keys -> different broadcasts). Compare canonicalized
@@ -3281,7 +3240,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -3330,7 +3289,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -3391,7 +3350,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
         // Disable broadcast to force sort-merge join, no broadcast join for DPP to reuse
-        "spark.sql.autoBroadcastJoinThreshold" -> "-1",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -3455,7 +3414,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
@@ -3536,7 +3495,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
@@ -3625,7 +3584,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         // exchangeReuseEnabled=false drops case 1; onlyInBroadcast=false (the default
         // when stats favor running anyway) makes the rule pick case 3, not case 2.
@@ -3692,7 +3651,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -3758,7 +3717,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "10MB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
@@ -3825,7 +3784,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "-1",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
@@ -3896,7 +3855,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "-1",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
         CometConf.COMET_ENABLED.key -> "true",
@@ -3975,7 +3934,7 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.aqe_cat.type" -> "hadoop",
         "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1KB",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",

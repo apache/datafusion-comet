@@ -985,24 +985,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
           perPartitionBuilders += partitionBuilder.build()
         }
-      case other =>
-        // Spark's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) - a
-        // ParallelCollectionRDD, not DataSourceRDD - when DPP filtering removes all input
-        // partitions (BatchScanExec.scala:154-156). That's the only non-DataSourceRDD shape
-        // its inputRDD produces, so any ParallelCollectionRDD here means "DPP pruned
-        // everything"; emit no per-partition data and let native execution return empty.
+      case other if other.getClass.getName == "org.apache.spark.rdd.ParallelCollectionRDD" =>
+        // Spark's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) when
+        // DPP filtering removes all input partitions. That ParallelCollectionRDD is the only
+        // non-DataSourceRDD shape its inputRDD produces, so reaching this branch means "DPP
+        // pruned everything"; emit no per-partition data and let native execution return empty.
         // Re-querying scan.toBatch.planInputPartitions() to verify is unreliable because
         // Iceberg's Scan state after filter() doesn't always reflect post-DPP partitions on
-        // a re-call (V2 scan state is one-shot for the materialized inputRDD).
-        if (other.getClass.getName == "org.apache.spark.rdd.ParallelCollectionRDD") {
-          logDebug(
-            "BatchScanExec.inputRDD is ParallelCollectionRDD (DPP pruned all partitions); " +
-              "skipping per-partition serialization")
-        } else {
-          throw new IllegalStateException(
-            "Expected DataSourceRDD or ParallelCollectionRDD from BatchScanExec, " +
-              s"got ${other.getClass.getName}")
-        }
+        // a re-call (V2 scan state is one-shot for the materialized inputRDD). Matched by class
+        // name because ParallelCollectionRDD is private[spark].
+        logDebug(
+          "BatchScanExec.inputRDD is ParallelCollectionRDD (DPP pruned all partitions); " +
+            "skipping per-partition serialization")
+      case other =>
+        throw new IllegalStateException(
+          "Expected DataSourceRDD or ParallelCollectionRDD from BatchScanExec, " +
+            s"got ${other.getClass.getName}")
     }
 
     // Log deduplication summary

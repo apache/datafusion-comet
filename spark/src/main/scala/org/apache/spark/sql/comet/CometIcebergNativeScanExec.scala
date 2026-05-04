@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, Literal, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
@@ -266,7 +266,7 @@ case class CometIcebergNativeScanExec(
       nativeOp,
       output.map(QueryPlan.normalizeExpressions(_, output)),
       QueryPlan.normalizePredicates(
-        runtimeFilters.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral)),
+        CometScanUtils.filterUnusedDynamicPruningExpressions(runtimeFilters),
         output),
       null, // Don't need originalPlan for canonicalization
       SerializedPlan(None),
