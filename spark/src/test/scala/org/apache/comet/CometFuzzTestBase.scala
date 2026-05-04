@@ -117,6 +117,7 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
           withSQLConf(
             CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> nativeC2R,
             CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "false",
+            CometConf.COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED.key -> "false",
             CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
             testFun
           }

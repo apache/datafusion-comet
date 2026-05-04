@@ -162,6 +162,15 @@ case class CometScanRule(session: SparkSession)
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           return withInfo(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
+        if (COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED.get() &&
+          (CometScanRule.containsTimestampNTZ(scanExec.requiredSchema) ||
+            CometScanRule.containsTimestampNTZ(r.partitionSchema))) {
+          return withInfo(
+            scanExec,
+            "Parquet scan falls back to Spark when the schema contains TimestampNTZ to " +
+              "avoid the INT96 read correctness issue (issue #3720). Set " +
+              s"${COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED.key}=false to disable.")
+        }
         val hadoopConf = r.sparkSession.sessionState.newHadoopConfWithOptions(r.options)
 
         // TODO is this restriction valid for all native scan types?
@@ -743,6 +752,17 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
 }
 
 object CometScanRule extends Logging {
+
+  def containsTimestampNTZ(schema: StructType): Boolean = {
+    def check(dt: DataType): Boolean = dt match {
+      case _: TimestampNTZType => true
+      case s: StructType => s.fields.exists(f => check(f.dataType))
+      case a: ArrayType => check(a.elementType)
+      case m: MapType => check(m.keyType) || check(m.valueType)
+      case _ => false
+    }
+    schema.fields.exists(f => check(f.dataType))
+  }
 
   /**
    * Tag set on a scan (`FileSourceScanExec` or `BatchScanExec`) that should be left as a plain

@@ -174,6 +174,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.timestampNTZ.fallback.enabled")
+      .category(CATEGORY_PARQUET)
+      .doc("When enabled, Comet falls back to Spark for any Parquet scan whose required or " +
+        "partition schema contains TimestampNTZ. This guards against the INT96-as-TimestampNTZ " +
+        "correctness issue tracked in https://github.com/apache/datafusion-comet/issues/3720, " +
+        "where Comet's native scan silently reinterprets UTC-adjusted INT96 timestamps as " +
+        "wall-clock TimestampNTZ values. Disable this only if you know your Parquet files do " +
+        "not store timestamps as INT96.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
       .category(CATEGORY_PARQUET)

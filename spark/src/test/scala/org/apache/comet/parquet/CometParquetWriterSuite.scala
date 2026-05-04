@@ -49,6 +49,7 @@ class CometParquetWriterSuite extends CometTestBase {
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
           CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+          CometConf.COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED.key -> "false",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
           writeWithCometNativeWriteExec(inputPath, outputPath)
@@ -71,6 +72,7 @@ class CometParquetWriterSuite extends CometTestBase {
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
           CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+          CometConf.COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED.key -> "false",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
           withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
@@ -108,6 +110,7 @@ class CometParquetWriterSuite extends CometTestBase {
             SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
             CometConf.getOperatorAllowIncompatConfigKey(
               classOf[DataWritingCommandExec]) -> "true",
+            CometConf.COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED.key -> "false",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
             writeWithCometNativeWriteExec(inputPath, outputPath, Some(10))
@@ -474,6 +477,8 @@ class CometParquetWriterSuite extends CometTestBase {
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",
         // Disable unsigned small int safety check for ShortType columns
         CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "false",
+        // generated schema may include TimestampNTZ; bypass the #3720 fallback
+        CometConf.COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED.key -> "false",
         // use a different timezone to make sure that timezone handling works with nested types
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax") {
 
@@ -538,7 +543,9 @@ class CometParquetWriterSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       // Override CI setting to use a scan impl that supports complex types
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto") {
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",
+      // verify Comet read even when the schema contains TimestampNTZ
+      CometConf.COMET_PARQUET_TIMESTAMP_NTZ_FALLBACK_ENABLED.key -> "false") {
       val df = spark.read.parquet(path)
       val plan = df.queryExecution.executedPlan
       assert(
