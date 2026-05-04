@@ -105,7 +105,7 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
 ```shell
-export COMET_JAR=spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
+export COMET_JAR=spark/target/comet-spark-spark4.0_2.13-$COMET_VERSION.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
@@ -161,7 +161,7 @@ explicitly contain Comet otherwise Spark may use a different class-loader for th
 components which will then fail at runtime. For example:
 
 ```
---driver-class-path spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
+--driver-class-path spark/target/comet-spark-spark4.0_2.13-$COMET_VERSION.jar
 ```
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>

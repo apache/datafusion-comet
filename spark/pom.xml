@@ -223,9 +223,6 @@ under the License.
 
     <profile>
       <id>spark-3.5</id>
-      <activation>
-        <activeByDefault>true</activeByDefault>
-      </activation>
       <dependencies>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
@@ -251,6 +248,9 @@ under the License.
 
     <profile>
       <id>spark-4.0</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
       <dependencies>
         <dependency>
           <groupId>org.apache.iceberg</groupId>

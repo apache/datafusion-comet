@@ -69,12 +69,12 @@ Unlike to native Comet reader the Datafusion reader fully supports nested types 
 To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed
 
 Example:
-Build a Comet for `spark-3.5` provide a JDK path in `JAVA_HOME`
+Build a Comet for `spark-4.0` provide a JDK path in `JAVA_HOME`
 Provide the JRE linker path in `RUSTFLAGS`, the path can vary depending on the system. Typically JRE linker is a part of installed JDK
 
 ```shell
-export JAVA_HOME="/opt/homebrew/opt/openjdk@11"
-make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
+export JAVA_HOME="/opt/homebrew/opt/openjdk@17"
+make release PROFILES="-Pspark-4.0" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 Start Comet with experimental reader and HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
@@ -149,7 +149,7 @@ docker compose -f kube/local/hdfs-docker-compose.yml up
 - Build a project with HDFS support
 
 ```shell
-JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server"
+JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.0" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 - Run local test
