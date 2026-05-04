@@ -75,6 +75,11 @@ case class CometScanRule(session: SparkSession)
 
   private def _apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf)) return plan
+    assert(
+      !CometConf.COMET_USE_PLANNER.get(conf),
+      s"CometScanRule ran while ${CometConf.COMET_USE_PLANNER.key}=true. CometPlanner should " +
+        "be the sole rule on this path. Either COMET_USE_PLANNER was flipped after session " +
+        "creation or the legacy rule was registered by mistake.")
 
     def isSupportedScanNode(plan: SparkPlan): Boolean = plan match {
       case _: FileSourceScanExec => true

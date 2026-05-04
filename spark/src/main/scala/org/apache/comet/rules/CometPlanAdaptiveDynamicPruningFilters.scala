@@ -46,8 +46,9 @@ import org.apache.comet.shims.{ShimPrepareExecutedPlan, ShimSubqueryBroadcast}
  * CometSubqueryBroadcastExec for broadcast reuse.
  *
  * Also handles the dual-filter problem: CometNativeScanExec.partitionFilters and
- * CometScanExec.partitionFilters are separate InSubqueryExec instances. Both must be converted
- * because CometScanExec.dynamicallySelectedPartitions evaluates its own partitionFilters.
+ * originalPlan.partitionFilters are separate InSubqueryExec instances. Both must be converted
+ * because originalPlan.inputRDD (used for FilePartition computation) evaluates its own
+ * partitionFilters during FileScanRDD construction.
  *
  * @see
  *   PlanAdaptiveDynamicPruningFilters (Spark's equivalent for BroadcastHashJoinExec)
@@ -66,18 +67,27 @@ case object CometPlanAdaptiveDynamicPruningFilters
       return plan
     }
 
+    var hits = 0
+
     // TODO(#3510): CometNativeScanExec needs special handling because its makeCopy
-    // loses @transient scan and expression transformations. Once makeCopy is fixed
-    // (or CometScanExec wrapping is removed), replace both cases with a single
-    // plan.transformAllExpressions call matching Spark's PlanAdaptiveDynamicPruningFilters.
-    plan.transformUp {
+    // loses expression transformations on originalPlan. Once makeCopy is fixed,
+    // replace both cases with a single plan.transformAllExpressions call matching
+    // Spark's PlanAdaptiveDynamicPruningFilters.
+    val out = plan.transformUp {
       case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
-        logDebug("Converting AQE DPP for CometNativeScanExec")
+        logDebug(s"CometPlanAdaptiveDPP: MATCH CometNativeScanExec id=${nativeScan.id}")
+        hits += 1
         convertNativeScanDPP(nativeScan, plan)
       case p: SparkPlan if !p.isInstanceOf[CometNativeScanExec] && hasWrappedSAB(p) =>
-        logDebug(s"Converting AQE DPP for non-Comet node: ${p.nodeName}")
+        logDebug(
+          s"CometPlanAdaptiveDPP: MATCH non-Comet node ${p.getClass.getSimpleName} id=${p.id}")
+        hits += 1
         convertNonCometNodeDPP(p, plan)
     }
+    if (hits > 0) {
+      logDebug(s"CometPlanAdaptiveDPP: applied to plan#${plan.id} hits=$hits")
+    }
+    out
   }
 
   private def convertNativeScanDPP(
@@ -88,16 +98,18 @@ case object CometPlanAdaptiveDynamicPruningFilters
     if (newOuterFilters == nativeScan.partitionFilters) return nativeScan
 
     // Dual-filter invariant: CometNativeScanExec.partitionFilters and
-    // CometScanExec.partitionFilters are separate InSubqueryExec instances for the
-    // same DPP filters. Both must be converted because
-    // CometScanExec.dynamicallySelectedPartitions evaluates its own filters.
+    // originalPlan.partitionFilters are separate InSubqueryExec instances for the same DPP
+    // filters. Both must be converted because originalPlan.inputRDD (called from
+    // serializedPartitionData) evaluates its own partitionFilters during FileScanRDD
+    // construction.
     assert(
-      nativeScan.scan != null,
-      "CometNativeScanExec with DPP filters must have a non-null CometScanExec")
-    val newInnerFilters = nativeScan.scan.partitionFilters.map(f => convertFilter(f, stagePlan))
-    val newInnerScan = nativeScan.scan.copy(partitionFilters = newInnerFilters)
+      nativeScan.originalPlan != null,
+      "CometNativeScanExec with DPP filters must have a non-null originalPlan")
+    val newInnerFilters =
+      nativeScan.originalPlan.partitionFilters.map(f => convertFilter(f, stagePlan))
+    val newOriginal = nativeScan.originalPlan.copy(partitionFilters = newInnerFilters)
 
-    nativeScan.copy(partitionFilters = newOuterFilters, scan = newInnerScan)
+    nativeScan.copy(partitionFilters = newOuterFilters, originalPlan = newOriginal)
   }
 
   private def convertFilter(filter: Expression, stagePlan: SparkPlan): Expression = {
@@ -113,8 +125,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
   /**
    * Extracts SAB data from an InSubqueryExec's plan. Handles both:
    *   - CometSubqueryAdaptiveBroadcastExec (outer partitionFilters, wrapped by CometExecRule)
-   *   - SubqueryAdaptiveBroadcastExec (inner CometScanExec.partitionFilters, never wrapped
-   *     because CometScanExec is @transient and not part of the plan expression tree)
+   *   - SubqueryAdaptiveBroadcastExec (inner originalPlan.partitionFilters, never wrapped because
+   *     originalPlan is @transient and not part of the plan expression tree)
    *
    * Either form may itself be wrapped in a `ReusedSubqueryExec` when Spark's
    * `ReuseAdaptiveSubquery` (which runs before our rule) dedupes identical DPP subqueries, e.g.
@@ -423,9 +435,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
   /**
    * Checks if an expression contains an SAB variant (wrapped or unwrapped). The outer
    * CometNativeScanExec.partitionFilters has CometSubqueryAdaptiveBroadcastExec (wrapped by
-   * CometExecRule). The inner CometScanExec.partitionFilters may have the original
-   * SubqueryAdaptiveBroadcastExec (unwrapped, because CometScanExec is
-   * @transient).
+   * CometExecRule). The inner originalPlan.partitionFilters may have the original
+   * SubqueryAdaptiveBroadcastExec (unwrapped, because originalPlan is @transient).
    */
   private def hasCometSAB(e: Expression): Boolean =
     e.exists {

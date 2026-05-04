@@ -51,6 +51,7 @@ import com.google.common.base.Objects
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isCometShuffleManagerEnabled, withInfos}
+import org.apache.comet.planner.tags.CometTags
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.{CometTypeShim, ShimCometShuffleExchangeExec}
@@ -582,7 +583,8 @@ object CometShuffleExchangeExec
     }
   }
 
-  private def isCometPlan(op: SparkPlan): Boolean = op.isInstanceOf[CometPlan]
+  private def isCometPlan(op: SparkPlan): Boolean =
+    op.isInstanceOf[CometPlan] || op.getTagValue(CometTags.NATIVE_OP).isDefined
 
   /**
    * Returns true if a given spark plan is Comet shuffle operator.

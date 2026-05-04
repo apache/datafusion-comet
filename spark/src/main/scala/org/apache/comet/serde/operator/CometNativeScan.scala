@@ -23,11 +23,12 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Expression, IsNotNull, IsNull, Literal, PlanExpression}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -42,7 +43,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 /**
  * Validation and serde logic for `native_datafusion` scans.
  */
-object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
+object CometNativeScan extends CometOperatorSerde[FileSourceScanExec] with Logging {
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -95,16 +96,38 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       case _ => false
     }
 
+  /**
+   * Data filters pushed down to the native reader. Excludes DPP (subquery-bearing) filters, which
+   * are resolved at execution time via CometNativeScanExec.serializedPartitionData, and null
+   * checks on array columns (Arrow semantics differ from Spark for nested null checks).
+   *
+   * Extracted from the previous CometScanExec.supportedDataFilters so this serde can operate
+   * directly on FileSourceScanExec.
+   */
+  private def supportedDataFilters(scan: FileSourceScanExec): Seq[Expression] =
+    scan.dataFilters
+      .filterNot(isDynamicPruningFilter)
+      .filterNot(isNullCheckOnArrayColumn)
+
+  private def isDynamicPruningFilter(e: Expression): Boolean =
+    e.exists(_.isInstanceOf[PlanExpression[_]])
+
+  private def isNullCheckOnArrayColumn(expr: Expression): Boolean = expr match {
+    case IsNotNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case IsNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case _ => false
+  }
+
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
-  override def getSupportLevel(operator: CometScanExec): SupportLevel = {
-    // all checks happen in CometScanRule before ScanExec is converted to CometScanExec, so
-    // we always report compatible here because this serde object is for the converted CometScanExec
+  override def getSupportLevel(operator: FileSourceScanExec): SupportLevel = {
+    // all checks happen in CometScanRule / CometPlanner before the scan reaches this serde, so
+    // we always report compatible here because this serde is only invoked for validated scans.
     Compatible()
   }
 
   override def convert(
-      scan: CometScanExec,
+      scan: FileSourceScanExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
@@ -127,7 +150,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(scan.conf)) {
 
         val dataFilters = new ListBuffer[Expr]()
-        for (filter <- scan.supportedDataFilters) {
+        for (filter <- supportedDataFilters(scan)) {
           exprToProto(filter, scan.output) match {
             case Some(proto) => dataFilters += proto
             case _ =>
@@ -218,7 +241,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
   }
 
-  override def createExec(nativeOp: Operator, op: CometScanExec): CometNativeExec = {
-    CometNativeScanExec(nativeOp, op.wrapped, op.session, op)
+  override def createExec(nativeOp: Operator, op: FileSourceScanExec): CometNativeExec = {
+    CometNativeScanExec(nativeOp, op, op.session)
   }
 }

@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
+import org.apache.comet.planner.CometPlanner
 import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
@@ -93,21 +94,33 @@ class CometSparkSessionExtensions
     // Registered before CometScanRule/CometExecRule so tags are in place when conversion runs.
     // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
     injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
-    extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
-    extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    if (CometConf.COMET_USE_PLANNER.get()) {
+      extensions.injectQueryStagePrepRule { session => CometPlanner(session) }
+    } else {
+      extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
+      extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
-    override def preColumnarTransitions: Rule[SparkPlan] = CometScanRule(session)
+    override def preColumnarTransitions: Rule[SparkPlan] =
+      if (CometConf.COMET_USE_PLANNER.get()) CometPlanner(session)
+      else CometScanRule(session)
   }
 
   case class CometExecColumnar(session: SparkSession) extends ColumnarRule {
-    override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
+    override def preColumnarTransitions: Rule[SparkPlan] =
+      if (CometConf.COMET_USE_PLANNER.get()) NoopRule else CometExecRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] =
       EliminateRedundantTransitions(session)
+  }
+
+  /** Identity rule used when CometPlanner already ran via CometScanColumnar. */
+  private object NoopRule extends Rule[SparkPlan] {
+    override def apply(plan: SparkPlan): SparkPlan = plan
   }
 }
 
