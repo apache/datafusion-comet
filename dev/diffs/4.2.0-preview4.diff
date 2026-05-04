@@ -39,14 +39,14 @@ index 6df8bc85b51..dabb75e2b75 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index 1e7774b3ae6..b18f4a83d31 100644
+index 1e7774b3ae6..6d36b281332 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
      <kryo.version>4.0.3</kryo.version>
      <ivy.version>2.5.3</ivy.version>
      <oro.version>2.0.8</oro.version>
-+    <spark.version.short>4.1</spark.version.short>
++    <spark.version.short>4.2</spark.version.short>
 +    <comet.version>0.16.0-SNAPSHOT</comet.version>
      <!--
      If you change codahale.metrics.version, you also need to change
