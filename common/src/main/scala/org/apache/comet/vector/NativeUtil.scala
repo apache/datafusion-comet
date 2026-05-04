@@ -112,7 +112,7 @@ class NativeUtil {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       batch: ColumnarBatch): Int = {
-    val numRows = mutable.ArrayBuffer.empty[Int]
+    val numRows = mutable.ArrayBuffer.empty[(Int, Int, String)]
 
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
@@ -122,7 +122,7 @@ class NativeUtil {
           val valueVector = valuesVector.getValueVector
 
           // Use the selection vector's logical row count
-          numRows += selectionVector.numValues()
+          numRows += ((selectionVector.numValues(), index, selectionVector.getClass.getSimpleName))
 
           val provider = if (valueVector.getField.getDictionary != null) {
             valuesVector.getDictionaryProvider
@@ -143,7 +143,7 @@ class NativeUtil {
         case a: CometVector =>
           val valueVector = a.getValueVector
 
-          numRows += valueVector.getValueCount
+          numRows += ((valueVector.getValueCount, index, a.getClass.getSimpleName))
 
           val provider = if (valueVector.getField.getDictionary != null) {
             a.getDictionaryProvider
@@ -168,9 +168,13 @@ class NativeUtil {
       }
     }
 
-    if (numRows.distinct.length > 1) {
+    val distinctRowCounts = numRows.map(_._1).distinct
+    if (distinctRowCounts.length > 1) {
+      val details = numRows
+        .map { case (rows, idx, className) => s"col[$idx]=$rows ($className)" }
+        .mkString(", ")
       throw new SparkException(
-        s"Number of rows in each column should be the same, but got [${numRows.distinct}]")
+        s"Number of rows in each column should be the same, but got [$details]")
     }
 
     // `ColumnarBatch.numRows` might return a different number than the actual number of rows in
@@ -179,7 +183,7 @@ class NativeUtil {
     // logical number of rows which is less than actual number of rows due to row deletion.
     // Similarly, CometSelectionVector represents a different number of logical rows than the
     // underlying vector.
-    numRows.headOption.getOrElse(batch.numRows())
+    numRows.headOption.map(_._1).getOrElse(batch.numRows())
   }
 
   /**
