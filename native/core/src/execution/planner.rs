@@ -39,8 +39,7 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
-use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
-use datafusion::physical_plan::InputOrderMode;
+use datafusion::physical_plan::windows::WindowAggExec;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
@@ -1859,27 +1858,20 @@ impl PhysicalPlanner {
 
                 let window_expr = window_expr?;
 
-                // Mirror DataFusion's own planner logic: use the streaming
-                // BoundedWindowAggExec when every window expression can run
-                // with bounded memory, otherwise fall back to the non-streaming
-                // WindowAggExec. Functions like PERCENT_RANK/CUME_DIST/NTILE
-                // report !uses_bounded_memory() and would otherwise fail at
-                // runtime with "Can not execute ... in a streaming fashion".
-                let window_agg: Arc<dyn ExecutionPlan> =
-                    if window_expr.iter().all(|e| e.uses_bounded_memory()) {
-                        Arc::new(BoundedWindowAggExec::try_new(
-                            window_expr,
-                            Arc::clone(&child.native_plan),
-                            InputOrderMode::Sorted,
-                            !partition_exprs.is_empty(),
-                        )?)
-                    } else {
-                        Arc::new(WindowAggExec::try_new(
-                            window_expr,
-                            Arc::clone(&child.native_plan),
-                            !partition_exprs.is_empty(),
-                        )?)
-                    };
+                // Always use the non-streaming `WindowAggExec`. `BoundedWindowAggExec`
+                // (DataFusion's streaming variant) invokes `retract_batch` on the UDAF
+                // for sliding frames like `ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING`,
+                // and Comet's Spark-compatible aggregates (`SumDecimal`, `SumInteger`,
+                // `AvgDecimal`, `Avg`) don't implement retract — they'd fail at runtime
+                // with "Aggregate can not be used as a sliding accumulator". It also
+                // sidesteps the "Can not execute X in a streaming fashion" error for
+                // PERCENT_RANK / CUME_DIST / NTILE which report !uses_bounded_memory().
+                // This matches Spark's non-streaming `WindowExec` semantics as well.
+                let window_agg: Arc<dyn ExecutionPlan> = Arc::new(WindowAggExec::try_new(
+                    window_expr,
+                    Arc::clone(&child.native_plan),
+                    !partition_exprs.is_empty(),
+                )?);
 
                 // DataFusion's window functions don't always return the same Arrow
                 // type that Spark expects (e.g. `row_number` returns UInt64 while
@@ -2460,6 +2452,7 @@ impl PhysicalPlanner {
         partition_by: &[Arc<dyn PhysicalExpr>],
         sort_exprs: &[PhysicalSortExpr],
     ) -> Result<Arc<dyn WindowExpr>, ExecutionError> {
+        let window_func: WindowFunctionDefinition;
         let window_func_name: String;
         let window_args: Vec<Arc<dyn PhysicalExpr>>;
         if let Some(func) = &spark_expr.built_in_window_function {
@@ -2471,6 +2464,13 @@ impl PhysicalPlanner {
                         .iter()
                         .map(|expr| self.create_expr(expr, Arc::clone(&input_schema)))
                         .collect::<Result<Vec<_>, ExecutionError>>()?;
+                    window_func = self.find_df_window_function(&window_func_name).ok_or_else(
+                        || {
+                            GeneralError(format!(
+                                "{window_func_name} not supported for window function"
+                            ))
+                        },
+                    )?;
                 }
                 other => {
                     return Err(GeneralError(format!(
@@ -2479,23 +2479,31 @@ impl PhysicalPlanner {
                 }
             };
         } else if let Some(agg_func) = &spark_expr.agg_func {
-            let result = self.process_agg_func(agg_func, Arc::clone(&input_schema))?;
-            window_func_name = result.0;
-            window_args = result.1;
+            // Is the frame ever-expanding (start = UnboundedPreceding)? When it is,
+            // DataFusion uses `PlainAggregateWindowExpr` which does not call
+            // `retract_batch`, so we can safely use Comet's Spark-compatible
+            // UDAFs (SumDecimal/SumInteger/AvgDecimal/Avg). Otherwise it uses
+            // `SlidingAggregateWindowExpr` which requires retract — Comet's UDAFs
+            // don't implement it, so the caller must fall back to DataFusion's
+            // built-ins (which do).
+            let is_ever_expanding = spark_expr
+                .spec
+                .as_ref()
+                .and_then(|s| s.frame_specification.as_ref())
+                .and_then(|f| f.lower_bound.as_ref())
+                .and_then(|lb| lb.lower_frame_bound_struct.as_ref())
+                .map(|inner| matches!(inner, LowerFrameBoundStruct::UnboundedPreceding(_)))
+                .unwrap_or(true);
+            let (func, args) =
+                self.process_agg_func(agg_func, Arc::clone(&input_schema), is_ever_expanding)?;
+            window_func_name = func.name().to_string();
+            window_args = args;
+            window_func = func;
         } else {
             return Err(GeneralError(
                 "Both func and agg_func are not set".to_string(),
             ));
         }
-
-        let window_func = match self.find_df_window_function(&window_func_name) {
-            Some(f) => f,
-            _ => {
-                return Err(GeneralError(format!(
-                    "{window_func_name} not supported for window function"
-                )))
-            }
-        };
 
         let spark_window_frame = match spark_expr
             .spec
@@ -2639,7 +2647,23 @@ impl PhysicalPlanner {
         &self,
         agg_func: &AggExpr,
         schema: SchemaRef,
-    ) -> Result<(String, Vec<Arc<dyn PhysicalExpr>>), ExecutionError> {
+        is_ever_expanding: bool,
+    ) -> Result<(WindowFunctionDefinition, Vec<Arc<dyn PhysicalExpr>>), ExecutionError> {
+        // Wrap a freshly-constructed AggregateUDF impl as a WindowFunctionDefinition.
+        fn udaf<U: datafusion::logical_expr::AggregateUDFImpl + 'static>(
+            udaf: U,
+        ) -> WindowFunctionDefinition {
+            WindowFunctionDefinition::AggregateUDF(Arc::new(AggregateUDF::new_from_impl(udaf)))
+        }
+
+        // Resolve a window-capable function by name via the session registry, returning
+        // a clean "X not supported for window function" error if missing.
+        let by_name = |name: &str| -> Result<WindowFunctionDefinition, ExecutionError> {
+            self.find_df_window_function(name).ok_or_else(|| {
+                GeneralError(format!("{name} not supported for window function"))
+            })
+        };
+
         match &agg_func.expr_struct {
             Some(AggExprStruct::Count(expr)) => {
                 let children = expr
@@ -2647,55 +2671,98 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|child| self.create_expr(child, Arc::clone(&schema)))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(("count".to_string(), children))
+                Ok((by_name("count")?, children))
             }
             Some(AggExprStruct::Min(expr)) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok(("min".to_string(), vec![child]))
+                Ok((by_name("min")?, vec![child]))
             }
             Some(AggExprStruct::Max(expr)) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok(("max".to_string(), vec![child]))
+                Ok((by_name("max")?, vec![child]))
             }
             Some(AggExprStruct::Sum(expr)) => {
+                // For ever-expanding frames, use Comet's Spark-compatible Sum UDAFs
+                // (SumDecimal / SumInteger) which enforce Spark overflow semantics.
+                // For sliding frames, those UDAFs can't be used (no retract_batch),
+                // so delegate to DataFusion's built-in `sum`, which supports retract
+                // but doesn't enforce Spark's decimal precision overflow-to-NULL.
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let arrow_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let datatype = child.data_type(&schema)?;
-
-                let child = if datatype != arrow_type {
-                    Arc::new(CastExpr::new(child, arrow_type.clone(), None))
-                } else {
-                    child
-                };
-                Ok(("sum".to_string(), vec![child]))
+                match arrow_type {
+                    DataType::Decimal128(_, _) if is_ever_expanding => {
+                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                        let func = SumDecimal::try_new(
+                            arrow_type,
+                            eval_mode,
+                            agg_func.expr_id,
+                            Arc::clone(&self.query_context_registry),
+                        )?;
+                        Ok((udaf(func), vec![child]))
+                    }
+                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64
+                        if is_ever_expanding =>
+                    {
+                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                        let func = SumInteger::try_new(arrow_type, eval_mode)?;
+                        Ok((udaf(func), vec![child]))
+                    }
+                    _ => {
+                        let actual = child.data_type(&schema)?;
+                        let child: Arc<dyn PhysicalExpr> = if actual != arrow_type {
+                            Arc::new(CastExpr::new(child, arrow_type, None))
+                        } else {
+                            child
+                        };
+                        Ok((by_name("sum")?, vec![child]))
+                    }
+                }
             }
             Some(AggExprStruct::Avg(expr)) => {
-                // Mirrors the non-window Avg path: for non-decimal inputs cast to
-                // Float64 (Spark's Avg returns Double for numeric types). For decimal,
-                // pass the child through — DataFusion's `avg` UDAF accepts Decimal128.
-                // Note: Comet's `AvgDecimal` (with Spark-specific precision rules) isn't
-                // registered as a named UDAF, so decimal avg in windows uses
-                // DataFusion's default precision/scale handling.
+                // Same rule as Sum: Comet's Avg/AvgDecimal for ever-expanding frames,
+                // DataFusion's `avg` for sliding (retract-capable).
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let child: Arc<dyn PhysicalExpr> = match datatype {
-                    DataType::Decimal128(_, _) => child,
-                    _ => Arc::new(CastExpr::new(child, DataType::Float64, None)),
-                };
-                Ok(("avg".to_string(), vec![child]))
+                let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
+                match datatype {
+                    DataType::Decimal128(_, _) if is_ever_expanding => {
+                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                        let func = AvgDecimal::new(
+                            datatype,
+                            input_datatype,
+                            eval_mode,
+                            agg_func.expr_id,
+                            Arc::clone(&self.query_context_registry),
+                        );
+                        Ok((udaf(func), vec![child]))
+                    }
+                    _ if is_ever_expanding => {
+                        let child: Arc<dyn PhysicalExpr> =
+                            Arc::new(CastExpr::new(child, DataType::Float64, None));
+                        let func = Avg::new("avg", DataType::Float64);
+                        Ok((udaf(func), vec![child]))
+                    }
+                    _ => {
+                        // Sliding frame — DataFusion's built-in `avg` handles retract.
+                        // Cast non-decimal input to Float64 to match Spark's Avg result type.
+                        let child: Arc<dyn PhysicalExpr> = match datatype {
+                            DataType::Decimal128(_, _) => child,
+                            _ => Arc::new(CastExpr::new(child, DataType::Float64, None)),
+                        };
+                        Ok((by_name("avg")?, vec![child]))
+                    }
+                }
             }
             Some(AggExprStruct::First(expr)) => {
-                // Spark's FIRST_VALUE → DataFusion's `first_value` UDAF. The UDAF handles
-                // ignore-nulls via the WindowExpr-level `ignore_nulls` flag, which the
-                // Scala side derives from First.ignoreNulls.
+                // Spark's FIRST_VALUE → DataFusion's `first_value` UDAF. The UDAF honors
+                // ignore-nulls via the WindowExpr-level `ignore_nulls` flag.
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok(("first_value".to_string(), vec![child]))
+                Ok((by_name("first_value")?, vec![child]))
             }
             Some(AggExprStruct::Last(expr)) => {
-                // Spark's LAST_VALUE → DataFusion's `last_value` UDAF. ignore-nulls is
-                // threaded through WindowExpr.ignore_nulls the same way as First.
+                // Spark's LAST_VALUE → DataFusion's `last_value` UDAF.
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok(("last_value".to_string(), vec![child]))
+                Ok((by_name("last_value")?, vec![child]))
             }
             other => Err(GeneralError(format!(
                 "{other:?} not supported for window function"
