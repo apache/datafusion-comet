@@ -24,7 +24,7 @@ between them. This document is likely biased because the Comet community maintai
 
 We recommend trying out both Comet and Gluten to see which is the best fit for your needs.
 
-This document is based on Comet 0.9.0 and Gluten 1.4.0.
+This document is based on Comet 0.15.0 and Gluten 1.6.0.
 
 ## Architecture
 
@@ -58,18 +58,64 @@ code, then we suggest benchmarking with both solutions and choosing the fastest 
 
 ![github-stars-datafusion-velox.png](/_static/images/github-stars-datafusion-velox.png)
 
+## Spark Version Support
+
+Both projects target a similar set of Spark releases.
+
+Comet supports Spark 3.4, 3.5, and 4.0 in production builds, with experimental builds also published for
+Spark 4.1 and the Spark 4.2 preview. See the [Spark version compatibility guide] for the exact patch versions and
+JDK/Scala combinations.
+
+[Spark version compatibility guide]: /user-guide/latest/compatibility/spark-versions.md
+
+Gluten supports Spark 3.3, 3.4, 3.5, 4.0, and 4.1.
+
+## ANSI Mode
+
+Spark 4.0 enables ANSI SQL semantics by default, which changes how arithmetic overflow, invalid casts, division by
+zero, and similar error conditions are handled. This is one area where the two projects currently differ.
+
+Comet implements ANSI semantics for the expressions it supports natively, including arithmetic overflow checks,
+ANSI cast behavior, and `try_*` variants. Queries running with `spark.sql.ansi.enabled=true` continue to be accelerated.
+See the [Comet Compatibility Guide] for details on which expressions have full ANSI coverage.
+
+The Gluten Velox backend documents that ANSI mode is not supported and that any query executed with ANSI enabled
+will fall back to vanilla Spark. See the [Gluten Velox limitations] page for the current status.
+
+[Gluten Velox limitations]: https://apache.github.io/gluten/velox-backend-limitations.html
+
+For users adopting Spark 4.0 without disabling ANSI mode, this difference can have a significant impact on the
+fraction of a workload that runs natively.
+
+## Table Format Support
+
+Both projects can accelerate queries against Apache Iceberg tables, but they take different approaches and Gluten
+covers a broader set of table formats overall.
+
+Comet provides a native Iceberg scan built on iceberg-rust. It has been tested with Iceberg 1.5 through 1.10 and
+supports Iceberg spec v1 and v2, schema evolution, time travel and branch reads, positional and equality deletes
+on merge-on-read tables, REST catalogs, and S3-compatible object storage. Iceberg writes still go through Spark.
+Comet does not currently provide native integrations for Delta Lake, Hudi, or Paimon. See the
+[Comet Iceberg guide] for the full list of supported features and known limitations.
+
+[Comet Iceberg guide]: /user-guide/latest/iceberg.md
+
+Gluten ships dedicated modules for Iceberg, Delta Lake (2.0 through 4.0), Hudi, and Paimon. Users who need native
+acceleration for Delta, Hudi, or Paimon will find broader coverage in Gluten today.
+
 ## Compatibility
 
 Comet relies on the full Spark SQL test suite (consisting of more than 24,000 tests) as well its own unit and
 integration tests to ensure compatibility with Spark. Features that are known to have compatibility differences with
 Spark are disabled by default, but users can opt in. See the [Comet Compatibility Guide] for more information.
 
-[Comet Compatibility Guide]: /user-guide/latest/compatibility/index.md
+[Comet Compatibility Guide]: https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html
 
 Gluten also aims to provide compatibility with Spark, and includes a subset of the Spark SQL tests in its own test
-suite. See the [Gluten Compatibility Guide] for more information.
+suite. See the Gluten [Velox backend limitations] page for known gaps, including notes on case sensitivity, regular
+expression dialect (RE2 vs `java.util.regex`), NaN handling, and timestamp encodings.
 
-[Gluten Compatibility Guide]: https://apache.github.io/incubator-gluten-site/archives/v1.3.0/velox-backend/limitations/
+[Velox backend limitations]: https://apache.github.io/gluten/velox-backend-limitations.html
 
 ## Performance
 
@@ -95,5 +141,7 @@ management capabilities vs the complexities around installing C++ dependencies.
 
 ## Summary
 
-Comet and Gluten are both good solutions for accelerating Spark jobs. We recommend trying both to see which is the
-best fit for your needs.
+Comet and Gluten are both good solutions for accelerating Spark jobs. Comet currently has an edge for users on
+Spark 4.0 with ANSI mode enabled, and for users who want a fully native Iceberg scan path. Gluten currently leads
+on TPC-H performance and offers broader native integration with Delta Lake, Hudi, and Paimon, plus a second backend
+in ClickHouse. We recommend trying both to see which is the best fit for your needs.
