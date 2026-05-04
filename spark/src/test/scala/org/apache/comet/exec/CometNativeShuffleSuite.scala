@@ -30,7 +30,7 @@ import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, count, sum}
 
 import org.apache.comet.CometConf
 
@@ -61,24 +61,18 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: different data type") {
-    // https://github.com/apache/datafusion-comet/issues/1538
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-    Seq(true, false).foreach { execEnabled =>
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-          var allTypes: Seq[Int] = (1 to 20)
-          allTypes.map(i => s"_$i").foreach { c =>
-            withSQLConf(
-              CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,
-              "parquet.enable.dictionary" -> dictionaryEnabled.toString) {
-              readParquetFile(path.toString) { df =>
-                val shuffled = df
-                  .select($"_1")
-                  .repartition(10, col(c))
-                checkShuffleAnswer(shuffled, 1, checkNativeOperators = execEnabled)
-              }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        var allTypes: Seq[Int] = (1 to 20)
+        allTypes.map(i => s"_$i").foreach { c =>
+          withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
+            readParquetFile(path.toString) { df =>
+              val shuffled = df
+                .select($"_1")
+                .repartition(10, col(c))
+              checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
             }
           }
         }
@@ -287,6 +281,53 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  private val floatingPointRangePartitionData: Seq[(Double, Int)] = (0 until 100).map { i =>
+    val doubleValue = i % 4 match {
+      case 0 => Double.NaN
+      case 1 => -0.0d
+      case 2 => 0.0d
+      case _ => i.toDouble
+    }
+    (doubleValue, i)
+  }
+
+  test("range partitioning on floating-point falls back when strictFloatingPoint=true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      // Bypass the CometSortOrder-level Incompatible check so that only
+      // supportedRangePartitioningDataType is exercised as the guard.
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true") {
+      withParquetTable(floatingPointRangePartitionData, "tbl") {
+        Seq(("FLOAT", "FloatType"), ("DOUBLE", "DoubleType")).foreach {
+          case (sqlType, sparkType) =>
+            val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
+              .repartitionByRange(4, $"c")
+
+            checkSparkAnswerAndFallbackReason(
+              df,
+              s"Range partitioning on $sparkType is not 100% compatible with Spark")
+        }
+      }
+    }
+  }
+
+  test(
+    "range partitioning on floating-point uses native shuffle when strictFloatingPoint=false") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false") {
+      withParquetTable(floatingPointRangePartitionData, "tbl") {
+        Seq("FLOAT", "DOUBLE").foreach { sqlType =>
+          val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
+            .repartitionByRange(4, $"c")
+
+          checkShuffleAnswer(df, 1)
+        }
+      }
+    }
+  }
+
   // Asserts ordering properties of partitions in a Dataset that has been RangePartitioned
   private def checkRangePartitionedDataset(df_range_partitioned: Dataset[Row]): Unit = {
     val partition_bounds = df_range_partitioned.rdd
@@ -434,6 +475,74 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         // Just collect and verify - simpler test
         val result = shuffled.collect()
         assert(result.length == 50, s"Expected 50 rows after filter, got ${result.length}")
+      }
+    }
+  }
+
+  test("shuffle direct read produces same results as FFI path") {
+    Seq(true, false).foreach { directRead =>
+      withSQLConf(CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) {
+        val df = spark
+          .range(1000)
+          .selectExpr("id", "id % 10 as key", "cast(id as string) as value")
+          .repartition(4, col("key"))
+          .groupBy("key")
+          .agg(sum("id").as("total"), count("value").as("cnt"))
+          .orderBy("key")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("shuffle direct read with multiple shuffles in plan") {
+    Seq(true, false).foreach { directRead =>
+      withSQLConf(CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) {
+        // Join two shuffled datasets to produce a plan with multiple shuffle reads
+        val left = spark
+          .range(100)
+          .selectExpr("id as l_id", "id % 10 as key")
+          .repartition(4, col("key"))
+        val right = spark
+          .range(100)
+          .selectExpr("id as r_id", "id % 10 as key")
+          .repartition(4, col("key"))
+        val df = left
+          .join(right, "key")
+          .groupBy("key")
+          .agg(count("l_id").as("cnt"))
+          .orderBy("key")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/3846
+  test("repartition count") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(1000)
+          .selectExpr("id", "concat('name_', id) as name")
+          .repartition(100)
+          .write
+          .parquet(dir.toString)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
+        val testDF = spark.read.parquet(dir.toString).repartition(10)
+        // Verify CometShuffleExchangeExec is in the plan
+        assert(
+          find(testDF.queryExecution.executedPlan) {
+            case _: CometShuffleExchangeExec => true
+            case _ => false
+          }.isDefined,
+          "Expected CometShuffleExchangeExec in the plan")
+        // Actual validation, no crash
+        val count = testDF.count()
+        assert(count == 1000)
+        // Ensure test df evaluated by Comet
+        checkSparkAnswerAndOperator(testDF)
       }
     }
   }

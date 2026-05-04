@@ -19,11 +19,12 @@ use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion::common::Result as DataFusionResult;
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
+use datafusion_comet_common::SparkError;
 use datafusion_comet_spark_expr::{Cast, SparkCastOptions};
 use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
@@ -66,20 +67,18 @@ fn remap_physical_schema_names(
     logical_schema: &SchemaRef,
     physical_schema: &SchemaRef,
 ) -> SchemaRef {
-    let logical_names: HashMap<String, &str> = logical_schema
-        .fields()
-        .iter()
-        .map(|f| (f.name().to_lowercase(), f.name().as_str()))
-        .collect();
-
     let remapped_fields: Vec<_> = physical_schema
         .fields()
         .iter()
         .map(|field| {
-            if let Some(logical_name) = logical_names.get(&field.name().to_lowercase()) {
-                if *logical_name != field.name() {
+            if let Some(logical_field) = logical_schema
+                .fields()
+                .iter()
+                .find(|lf| lf.name().eq_ignore_ascii_case(field.name()))
+            {
+                if logical_field.name() != field.name() {
                     Arc::new(Field::new(
-                        *logical_name,
+                        logical_field.name(),
                         field.data_type().clone(),
                         field.is_nullable(),
                     ))
@@ -95,12 +94,29 @@ fn remap_physical_schema_names(
     Arc::new(Schema::new(remapped_fields))
 }
 
+/// Check if a specific column name has duplicate matches in the physical schema
+/// (case-insensitive). Returns the error info if so.
+fn check_column_duplicate(col_name: &str, physical_schema: &SchemaRef) -> Option<(String, String)> {
+    let matches: Vec<&str> = physical_schema
+        .fields()
+        .iter()
+        .filter(|pf| pf.name().eq_ignore_ascii_case(col_name))
+        .map(|pf| pf.name().as_str())
+        .collect();
+    if matches.len() > 1 {
+        // Include brackets to match the format expected by ShimSparkErrorConverter
+        Some((col_name.to_string(), format!("[{}]", matches.join(", "))))
+    } else {
+        None
+    }
+}
+
 impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
     fn create(
         &self,
         logical_file_schema: SchemaRef,
         physical_file_schema: SchemaRef,
-    ) -> Arc<dyn PhysicalExprAdapter> {
+    ) -> DataFusionResult<Arc<dyn PhysicalExprAdapter>> {
         // When case-insensitive, remap physical schema field names to match logical
         // field names. The DefaultPhysicalExprAdapter uses exact name matching, so
         // without this remapping, columns like "a" won't match logical "A" and will
@@ -111,7 +127,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         // to the original physical names. This is necessary because downstream code
         // (reassign_expr_columns) looks up columns by name in the actual stream
         // schema, which uses the original physical file column names.
-        let (adapted_physical_schema, logical_to_physical_names) =
+        let (adapted_physical_schema, logical_to_physical_names, original_physical_schema) =
             if !self.parquet_options.case_sensitive {
                 let logical_to_physical: HashMap<String, String> = logical_file_schema
                     .fields()
@@ -121,7 +137,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                             .fields()
                             .iter()
                             .find(|pf| {
-                                pf.name().to_lowercase() == logical_field.name().to_lowercase()
+                                pf.name().eq_ignore_ascii_case(logical_field.name())
                                     && pf.name() != logical_field.name()
                             })
                             .map(|pf| (logical_field.name().clone(), pf.name().clone()))
@@ -136,25 +152,28 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                     } else {
                         Some(logical_to_physical)
                     },
+                    // Keep original physical schema for per-column duplicate detection
+                    Some(Arc::clone(&physical_file_schema)),
                 )
             } else {
-                (Arc::clone(&physical_file_schema), None)
+                (Arc::clone(&physical_file_schema), None, None)
             };
 
         let default_factory = DefaultPhysicalExprAdapterFactory;
         let default_adapter = default_factory.create(
             Arc::clone(&logical_file_schema),
             Arc::clone(&adapted_physical_schema),
-        );
+        )?;
 
-        Arc::new(SparkPhysicalExprAdapter {
+        Ok(Arc::new(SparkPhysicalExprAdapter {
             logical_file_schema,
             physical_file_schema: adapted_physical_schema,
             parquet_options: self.parquet_options.clone(),
             default_values: self.default_values.clone(),
             default_adapter,
             logical_to_physical_names,
-        })
+            original_physical_schema,
+        }))
     }
 }
 
@@ -183,10 +202,38 @@ struct SparkPhysicalExprAdapter {
     /// physical names so that downstream reassign_expr_columns can find
     /// columns in the actual stream schema.
     logical_to_physical_names: Option<HashMap<String, String>>,
+    /// The original (un-remapped) physical schema, kept for per-column duplicate
+    /// detection in case-insensitive mode. Only set when `!case_sensitive`.
+    original_physical_schema: Option<SchemaRef>,
 }
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        // In case-insensitive mode, check if any Column in this expression references
+        // a field with multiple case-insensitive matches in the physical schema.
+        // Only the columns actually referenced trigger the error (not the whole schema).
+        if let Some(orig_physical) = &self.original_physical_schema {
+            // Walk the expression tree to find Column references
+            let mut duplicate_err: Option<DataFusionError> = None;
+            let _ = Arc::<dyn PhysicalExpr>::clone(&expr).transform(|e| {
+                if let Some(col) = e.as_any().downcast_ref::<Column>() {
+                    if let Some((req, matched)) = check_column_duplicate(col.name(), orig_physical)
+                    {
+                        duplicate_err = Some(DataFusionError::External(Box::new(
+                            SparkError::DuplicateFieldCaseInsensitive {
+                                required_field_name: req,
+                                matched_fields: matched,
+                            },
+                        )));
+                    }
+                }
+                Ok(Transformed::no(e))
+            });
+            if let Some(err) = duplicate_err {
+                return Err(err);
+            }
+        }
+
         // First let the default adapter handle column remapping, missing columns,
         // and simple scalar type casts. Then replace DataFusion's CastColumnExpr
         // with Spark-compatible equivalents.
@@ -249,12 +296,26 @@ impl SparkPhysicalExprAdapter {
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         expr.transform(|e| {
             if let Some(column) = e.as_any().downcast_ref::<Column>() {
-                let col_idx = column.index();
                 let col_name = column.name();
 
-                let logical_field = self.logical_file_schema.fields().get(col_idx);
-                // Look up physical field by name instead of index for correctness
-                // when logical and physical schemas have different column orderings
+                // Resolve fields by name because this is the fallback path
+                // that runs on the original expression when the default
+                // adapter fails. The original expression was built against
+                // the required (pruned) schema, so column indices refer to
+                // that schema — not the logical or physical file schemas.
+                // DataFusion's DefaultPhysicalExprAdapter::resolve_physical_column
+                // also resolves by name for the same reason.
+                let logical_field = if self.parquet_options.case_sensitive {
+                    self.logical_file_schema
+                        .fields()
+                        .iter()
+                        .find(|f| f.name() == col_name)
+                } else {
+                    self.logical_file_schema
+                        .fields()
+                        .iter()
+                        .find(|f| f.name().eq_ignore_ascii_case(col_name))
+                };
                 let physical_field = if self.parquet_options.case_sensitive {
                     self.physical_file_schema
                         .fields()
@@ -264,15 +325,34 @@ impl SparkPhysicalExprAdapter {
                     self.physical_file_schema
                         .fields()
                         .iter()
-                        .find(|f| f.name().to_lowercase() == col_name.to_lowercase())
+                        .find(|f| f.name().eq_ignore_ascii_case(col_name))
                 };
 
-                if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
+                // Remap the column index to the physical file schema so
+                // downstream evaluation reads the correct column from the
+                // parquet batch.
+                let physical_index = if self.parquet_options.case_sensitive {
+                    self.physical_file_schema.index_of(col_name).ok()
+                } else {
+                    self.physical_file_schema
+                        .fields()
+                        .iter()
+                        .position(|f| f.name().eq_ignore_ascii_case(col_name))
+                };
+
+                if let (Some(logical_field), Some(physical_field), Some(phys_idx)) =
+                    (logical_field, physical_field, physical_index)
                 {
+                    let remapped: Arc<dyn PhysicalExpr> = if column.index() != phys_idx {
+                        Arc::new(Column::new(col_name, phys_idx))
+                    } else {
+                        Arc::clone(&e)
+                    };
+
                     if logical_field.data_type() != physical_field.data_type() {
                         let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(
                             CometCastColumnExpr::new(
-                                Arc::clone(&e),
+                                remapped,
                                 Arc::clone(physical_field),
                                 Arc::clone(logical_field),
                                 None,
@@ -280,6 +360,8 @@ impl SparkPhysicalExprAdapter {
                             .with_parquet_options(self.parquet_options.clone()),
                         );
                         return Ok(Transformed::yes(cast_expr));
+                    } else if column.index() != phys_idx {
+                        return Ok(Transformed::yes(remapped));
                     }
                 }
             }
@@ -303,6 +385,78 @@ impl SparkPhysicalExprAdapter {
             let physical_type = cast.input_field().data_type();
             let target_type = cast.target_field().data_type();
 
+            // Reject reading a string/binary Parquet column as anything other
+            // than string, binary, or a binary-encoded decimal. This mirrors
+            // Spark's TypeUtil.checkParquetType for the BINARY case (lines
+            // 208-221): a BINARY (or UTF8-annotated BINARY) physical column is
+            // only readable as StringType, BinaryType, or a binary-encoded
+            // decimal; every other target type (numeric, boolean, date,
+            // timestamp, ...) raises SchemaColumnConvertNotSupportedException.
+            //
+            // Without this guard, Spark's Cast below (in is_adapting_schema
+            // mode) falls through to DataFusion's cast, which silently parses
+            // the bytes (returning nulls for non-numeric strings, parsing
+            // date/timestamp/boolean strings, or in some paths reinterpreting
+            // raw bytes). See issue #4088.
+            if matches!(
+                physical_type,
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+            ) && !matches!(
+                target_type,
+                DataType::Utf8
+                    | DataType::LargeUtf8
+                    | DataType::Binary
+                    | DataType::LargeBinary
+                    | DataType::Decimal128(_, _)
+                    | DataType::Decimal256(_, _)
+            ) {
+                return Err(DataFusionError::External(Box::new(
+                    SparkError::ParquetSchemaConvert {
+                        file_path: String::new(),
+                        column: cast.input_field().name().to_string(),
+                        physical_type: physical_type.to_string(),
+                        spark_type: target_type.to_string(),
+                    },
+                )));
+            }
+
+            // Decimal-to-decimal scale-narrowing check.
+            // Reject reads where the read schema has a smaller scale than the
+            // file's, because Spark's Cast below would silently truncate
+            // fractional digits, producing wrong values. This matches the
+            // unconditionally-lossy case in issue #4089 (e.g. Decimal(10,2) read
+            // as Decimal(5,0)).
+            //
+            // Other decimal mismatches are intentionally NOT rejected here,
+            // even though Spark's vectorized reader would reject them via
+            // `ParquetVectorUpdaterFactory#isDecimalTypeMatched` (which requires
+            // exact precision and scale):
+            //
+            // - Precision-only changes with the same scale (e.g. Decimal(5,2)
+            //   read as Decimal(3,2)): Spark 4.0's parquet-mr fallback path
+            //   (PARQUET_VECTORIZED_READER_ENABLED=false) and the vectorized
+            //   type-widening path produce null on per-value overflow, which
+            //   DataFusion's cast already does in the adapting-schema path.
+            //
+            // - Scale widening (e.g. Decimal(10,2) read as Decimal(10,4)): the
+            //   cast is lossless (no truncation, no overflow), so allowing it
+            //   here is strictly more permissive than Spark's vectorized reader
+            //   without risking wrong values.
+            if let (DataType::Decimal128(_src_p, src_s), DataType::Decimal128(_dst_p, dst_s)) =
+                (physical_type, target_type)
+            {
+                if dst_s < src_s {
+                    return Err(DataFusionError::External(Box::new(
+                        SparkError::ParquetSchemaConvert {
+                            file_path: String::new(),
+                            column: cast.input_field().name().to_string(),
+                            physical_type: physical_type.to_string(),
+                            spark_type: target_type.to_string(),
+                        },
+                    )));
+                }
+            }
+
             // For complex nested types (Struct, List, Map), Timestamp timezone
             // mismatches, and Timestamp→Int64 (nanosAsLong), use CometCastColumnExpr
             // with spark_parquet_convert which handles field-name-based selection,
@@ -320,6 +474,29 @@ impl SparkPhysicalExprAdapter {
             // TIMESTAMP(NANOS) to LongType. Spark's Cast would divide by MICROS_PER_SECOND
             // (assuming microseconds), but the values are nanoseconds. Arrow cast correctly
             // reinterprets the raw i64 value without conversion.
+            // Reject scalar/complex mismatches at planning time. Spark's
+            // vectorized reader rejects e.g. reading a TIMESTAMP column as
+            // ARRAY<TIMESTAMP> with SchemaColumnConvertNotSupportedException
+            // (see SPARK-45604). Without this guard the runtime cast would
+            // raise a less-specific Arrow CastError. Same-complex-type pairs
+            // and timestamp→timestamp / timestamp→int64 are handled below.
+            let is_complex = |t: &DataType| {
+                matches!(
+                    t,
+                    DataType::Struct(_) | DataType::List(_) | DataType::Map(_, _)
+                )
+            };
+            if is_complex(physical_type) != is_complex(target_type) {
+                return Err(DataFusionError::External(Box::new(
+                    SparkError::ParquetSchemaConvert {
+                        file_path: String::new(),
+                        column: cast.input_field().name().to_string(),
+                        physical_type: physical_type.to_string(),
+                        spark_type: target_type.to_string(),
+                    },
+                )));
+            }
+
             if matches!(
                 (physical_type, target_type),
                 (DataType::Struct(_), DataType::Struct(_))
@@ -349,7 +526,13 @@ impl SparkPhysicalExprAdapter {
             cast_options.allow_cast_unsigned_ints = self.parquet_options.allow_cast_unsigned_ints;
             cast_options.is_adapting_schema = true;
 
-            let spark_cast = Arc::new(Cast::new(child, target_type.clone(), cast_options));
+            let spark_cast = Arc::new(Cast::new(
+                child,
+                target_type.clone(),
+                cast_options,
+                None,
+                None,
+            ));
 
             return Ok(Transformed::yes(spark_cast as Arc<dyn PhysicalExpr>));
         }
@@ -524,9 +707,66 @@ mod test {
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
+        let mut stream = parquet_exec.execute(0, Arc::new(TaskContext::default()))?;
+        stream.next().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn parquet_duplicate_fields_case_insensitive() {
+        // Parquet file has columns "A", "B", "b" - reading "b" in case-insensitive mode
+        // should fail with duplicate field error matching Spark's _LEGACY_ERROR_TEMP_2093
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("A", DataType::Int32, false),
+            Field::new("B", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]));
+
+        let col_a = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
+        let col_b1 = Arc::new(Int32Array::from(vec![4, 5, 6])) as Arc<dyn arrow::array::Array>;
+        let col_b2 = Arc::new(Int32Array::from(vec![7, 8, 9])) as Arc<dyn arrow::array::Array>;
+        let batch =
+            RecordBatch::try_new(Arc::clone(&file_schema), vec![col_a, col_b1, col_b2]).unwrap();
+
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        // Read with case-insensitive mode, requesting column "b" which matches both "B" and "b"
+        let required_schema = Arc::new(Schema::new(vec![Field::new("b", DataType::Int32, false)]));
+
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_parquet_options.case_sensitive = false;
+
+        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
+        );
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let parquet_source = ParquetSource::new(required_schema);
+        let files = FileGroup::new(vec![
+            PartitionedFile::from_path(filename.to_string()).unwrap()
+        ]);
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, Arc::new(parquet_source))
+                .with_file_groups(vec![files])
+                .with_expr_adapter(Some(expr_adapter_factory))
+                .build();
+
+        let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
         let mut stream = parquet_exec
             .execute(0, Arc::new(TaskContext::default()))
             .unwrap();
-        stream.next().await.unwrap()
+        let result = stream.next().await.unwrap();
+
+        // Should fail with duplicate field error
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Found duplicate field"),
+            "Expected duplicate field error, got: {err_msg}"
+        );
     }
 }

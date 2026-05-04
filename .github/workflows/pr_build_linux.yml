@@ -30,24 +30,33 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
   pull_request:
     paths-ignore:
       - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
 
 env:
   RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
 
 jobs:
 
@@ -65,15 +74,120 @@ jobs:
           rustup component add rustfmt
           cd native && cargo fmt --all -- --check
 
+  lint-java:
+    needs: lint
+    name: Lint Java (${{ matrix.profile.name }})
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+      env:
+        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+    strategy:
+      matrix:
+        profile:
+          - name: "Spark 3.4, JDK 11, Scala 2.12"
+            java_version: "11"
+            maven_opts: "-Pspark-3.4 -Pscala-2.12"
+          - name: "Spark 3.5, JDK 17, Scala 2.12"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+          - name: "Spark 4.0, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.0"
+          - name: "Spark 4.0, JDK 21"
+            java_version: "21"
+            maven_opts: "-Pspark-4.0"
+          # Spark 4.1 and 4.2 are intentionally absent: the lint job invokes -Psemanticdb,
+          # but semanticdb-scalac for those Scala patch versions (2.13.17 / 2.13.18) is not
+          # yet published, so we cannot currently run scalafix against the spark-4.1 or
+          # spark-4.2 profiles.
+      fail-fast: false
+    steps:
+      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ matrix.profile.java_version }}
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Run scalafix check
+        run: |
+          ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install prettier
+        run: |
+          npm install -g prettier
+
+      - name: Run prettier
+        run: |
+          npx prettier "**/*.md" --write
+
+      - name: Mark workspace as safe for git
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check for any local git changes (such as generated docs)
+        run: |
+          ./dev/ci/check-working-tree-clean.sh
+
+  # Compile-only verification for Spark 4.1. Tests are intentionally skipped: the spark-4.1
+  # profile is currently a build target only, and several runtime/test failures are tracked
+  # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet
+  # published and the lint job activates -Psemanticdb.
+  build-spark-4-1:
+    needs: lint
+    name: Build Spark 4.1, JDK 17
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-spark-4.1-build
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Compile (skip tests)
+        run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
+
   # Build native library once and share with all test jobs
   build-native:
     needs: lint
     name: Build Native Library
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=8,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=8,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     steps:
-      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
+      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
       - uses: actions/checkout@v6
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
@@ -99,7 +213,7 @@ jobs:
           # (no LTO, parallel codegen)
           cargo build --profile ci
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Upload native library
         uses: actions/upload-artifact@v7
@@ -122,11 +236,11 @@ jobs:
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     steps:
-      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
+      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
 
       - uses: actions/checkout@v6
 
@@ -173,29 +287,29 @@ jobs:
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
             scan_impl: "auto"
 
-          - name: "Spark 3.5.5, JDK 17, Scala 2.13"
+          - name: "Spark 3.5, JDK 17, Scala 2.13"
             java_version: "17"
-            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.5 -Pscala-2.13"
-            scan_impl: "auto"
-
-          - name: "Spark 3.5.6, JDK 17, Scala 2.13"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.6 -Pscala-2.13"
-            scan_impl: "auto"
-
-          - name: "Spark 3.5, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.12"
-            scan_impl: "native_datafusion"
-
-          - name: "Spark 3.5, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+            maven_opts: "-Pspark-3.5 -Pscala-2.13"
             scan_impl: "native_iceberg_compat"
 
           - name: "Spark 4.0, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.0"
+            scan_impl: "auto"
+
+          - name: "Spark 4.0, JDK 21"
+            java_version: "21"
+            maven_opts: "-Pspark-4.0"
+            scan_impl: "auto"
+
+          - name: "Spark 4.1, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.1"
+            scan_impl: "auto"
+
+          - name: "Spark 4.2, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.2"
             scan_impl: "auto"
         suite:
           - name: "fuzz"
@@ -228,6 +342,7 @@ jobs:
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.iceberg.IcebergReflectionSuite
           - name: "csv"
             value: |
               org.apache.comet.csv.CometCsvNativeReadSuite
@@ -253,6 +368,8 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
+              org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
+              org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.comet.objectstore.NativeConfigSuite
           - name: "expressions"
             value: |
@@ -263,28 +380,32 @@ jobs:
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometCastSuite
+              org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.CometJsonExpressionSuite
+              org.apache.comet.CometDateTimeUtilsSuite
+              org.apache.comet.SparkErrorConverterSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
+              org.apache.spark.sql.CometCollationSuite
       fail-fast: false
     name: ${{ matrix.profile.name }}/${{ matrix.profile.scan_impl }} [${{ matrix.suite.name }}]
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
       env:
-        JAVA_TOOL_OPTIONS: ${{ matrix.profile.java_version == '17' && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
 
     steps:
-      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
+      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
@@ -314,7 +435,7 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          artifact_name: ${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+          artifact_name: ${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ matrix.profile.scan_impl }}
           suites: ${{ matrix.suite.name == 'sql' && matrix.profile.name == 'Spark 3.4, JDK 11, Scala 2.12' && '' || matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
           scan_impl: ${{ matrix.profile.scan_impl }}
@@ -325,11 +446,11 @@ jobs:
   verify-benchmark-results-tpch:
     needs: build-native
     name: Verify TPC-H Results
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     steps:
-      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
+      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
 
       - uses: actions/checkout@v6
 
@@ -379,7 +500,7 @@ jobs:
   verify-benchmark-results-tpcds:
     needs: build-native
     name: Verify TPC-DS Results (${{ matrix.join }})
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     strategy:
@@ -387,7 +508,7 @@ jobs:
         join: [sort_merge, broadcast, hash]
       fail-fast: false
     steps:
-      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
+      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
 
       - uses: actions/checkout@v6
 

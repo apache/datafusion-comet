@@ -45,7 +45,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometRuntimeException, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
@@ -77,7 +77,13 @@ case class CometBroadcastExchangeExec(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "collectTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to collect"),
     "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
-    "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
+    "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"),
+    "numCoalescedBatches" -> SQLMetrics.createMetric(
+      sparkContext,
+      "number of coalesced batches for broadcast"),
+    "numCoalescedRows" -> SQLMetrics.createMetric(
+      sparkContext,
+      "number of coalesced rows for broadcast"))
 
   override def doCanonicalize(): SparkPlan = {
     CometBroadcastExchangeExec(null, null, mode, child.canonicalized)
@@ -132,14 +138,16 @@ case class CometBroadcastExchangeExec(
           case ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _)
               if plan.isInstanceOf[CometPlan] =>
             CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _) =>
-            throw new CometRuntimeException(
-              "Child of CometBroadcastExchangeExec should be CometExec, " +
-                s"but got: ${s.plan.getClass}")
           case _ =>
-            throw new CometRuntimeException(
-              "Child of CometBroadcastExchangeExec should be CometExec, " +
-                s"but got: ${child.getClass}")
+            // Non-Comet child (e.g., RowToColumnar -> LocalTableScan). Happens when
+            // AQE re-optimizes inside an ASPE and replaces the original Comet scan
+            // with a Spark-native node (e.g., empty broadcast triggers LocalTableScan).
+            logWarning(
+              "CometBroadcastExchangeExec child is not CometPlan: " +
+                s"${child.getClass.getSimpleName}. " +
+                "Wrapping in CometSparkToColumnarExec for Arrow serialization.")
+            val cometChild = CometSparkToColumnarExec(ColumnarToRowExec(child))
+            CometExec.getByteArrayRdd(cometChild).collect()
         }
 
         val numRows = countsAndBytes.map(_._1).sum
@@ -155,7 +163,14 @@ case class CometBroadcastExchangeExec(
         val beforeBuild = System.nanoTime()
         longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
 
-        val batches = input.toArray
+        // Coalesce the many small per-shuffle-block buffers into a single buffer.
+        // Without this, each consumer task deserializes one Arrow IPC stream per
+        // shuffle block (one per writer task per partition), which is very expensive
+        // when there are hundreds of writer tasks and partitions. See the scaladoc
+        // on coalesceBroadcastBatches for details.
+        val (batches, coalescedBatches, coalescedRows) = Utils.coalesceBroadcastBatches(input)
+        longMetric("numCoalescedBatches") += coalescedBatches
+        longMetric("numCoalescedRows") += coalescedRows
 
         val dataSize = batches.map(_.size).sum
 
@@ -265,13 +280,6 @@ case class CometBroadcastExchangeExec(
 }
 
 object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
-
-  /**
-   * Exchange data is FFI safe because there is no use of mutable buffers involved.
-   *
-   * Source of broadcast exchange batches is ArrowStreamReader.
-   */
-  override def isFfiSafe: Boolean = true
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED)

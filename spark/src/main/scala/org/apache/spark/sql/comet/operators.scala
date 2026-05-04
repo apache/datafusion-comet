@@ -25,11 +25,12 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -55,7 +56,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, with
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
 /**
@@ -553,9 +554,13 @@ abstract class CometNativeExec extends CometExec {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
+        // Detect ShuffleScan indices for direct read in CometExecRDD
+        val shuffleScanIndices = findShuffleScanIndices(serializedPlanCopy)
+
         // Unified RDD creation - CometExecRDD handles all cases
         val subqueries = collectSubqueries(this)
-        CometExecRDD(
+        val hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec])
+        new CometExecRDD(
           sparkContext,
           inputs.toSeq,
           commonByKey,
@@ -566,7 +571,21 @@ abstract class CometNativeExec extends CometExec {
           nativeMetrics,
           subqueries,
           broadcastedHadoopConfForEncryption,
-          encryptedFilePaths)
+          encryptedFilePaths,
+          shuffleScanIndices) {
+          override def compute(
+              split: Partition,
+              context: TaskContext): Iterator[ColumnarBatch] = {
+            val res = super.compute(split, context)
+
+            // Report scan input metrics only when the native plan contains a scan.
+            if (hasScanInput) {
+              Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+            }
+
+            res
+          }
+        }
     }
   }
 
@@ -604,6 +623,28 @@ abstract class CometNativeExec extends CometExec {
       case _ =>
       // no op
     }
+  }
+
+  /**
+   * Walk the serialized protobuf plan depth-first to find which input indices correspond to
+   * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
+   */
+  private def findShuffleScanIndices(planBytes: Array[Byte]): Set[Int] = {
+    val plan = OperatorOuterClass.Operator.parseFrom(planBytes)
+    var scanIndex = 0
+    val indices = mutable.Set.empty[Int]
+    def walk(op: OperatorOuterClass.Operator): Unit = {
+      if (op.hasShuffleScan) {
+        indices += scanIndex
+        scanIndex += 1
+      } else if (op.hasScan) {
+        scanIndex += 1
+      } else {
+        op.getChildrenList.asScala.foreach(walk)
+      }
+    }
+    walk(plan)
+    indices.toSet
   }
 
   /**
@@ -1336,18 +1377,20 @@ trait CometBaseAggregate {
       return None
     }
 
-    // Aggregate expressions with filter are not supported yet.
-    if (aggregateExpressions.exists(_.filter.isDefined)) {
-      withInfo(aggregate, "Aggregate expression with filter is not supported")
-      return None
-    }
-
     if (groupingExpressions.exists(expr =>
         expr.dataType match {
           case _: MapType => true
           case _ => false
         })) {
       withInfo(aggregate, "Grouping on map types is not supported")
+      return None
+    }
+
+    if (groupingExpressions.exists(expr => isStringCollationType(expr.dataType))) {
+      // Collation-aware grouping requires collation-aware hashing/equality; Comet only
+      // compares raw bytes, which would put rows that compare equal under the collation
+      // into different groups.
+      withInfo(aggregate, "Grouping on non-default collated strings is not supported")
       return None
     }
 
@@ -1545,13 +1588,50 @@ object CometObjectHashAggregateExec
     CometHashAggregateExec(
       nativeOp,
       op,
-      op.output,
+      adjustOutputForNativeState(op),
       op.groupingExpressions,
       op.aggregateExpressions,
       op.resultExpressions,
       op.child.output,
       op.child,
       SerializedPlan(None))
+  }
+
+  /**
+   * For Partial mode aggregates containing TypedImperativeAggregate functions (like CollectSet),
+   * the Spark-side output declares buffer columns as BinaryType (since Spark serializes state to
+   * binary). However, the native Comet aggregate produces the actual state type (e.g.,
+   * ArrayType(elementType) for CollectSet). This method corrects the output schema to match the
+   * native state types so the shuffle exchange schema is consistent with the actual data.
+   *
+   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
+   * case branch here mapping it to the native state type.
+   */
+  private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
+    // CometBaseAggregate.doConvert guarantees all expressions share the same mode.
+    val modes = op.aggregateExpressions.map(_.mode).distinct
+    if (modes != Seq(Partial)) {
+      return op.output
+    }
+
+    val numGrouping = op.groupingExpressions.length
+    val output = op.output.toArray
+
+    var bufferIdx = numGrouping
+    for (aggExpr <- op.aggregateExpressions) {
+      val aggFunc = aggExpr.aggregateFunction
+      val bufferAttrs = aggFunc.aggBufferAttributes
+      aggFunc match {
+        case cs: CollectSet =>
+          val elementType = cs.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _ =>
+      }
+      bufferIdx += bufferAttrs.length
+    }
+
+    output.toSeq
   }
 }
 
@@ -1630,9 +1710,28 @@ trait CometHashJoin {
       return None
     }
 
-    if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
-      // https://github.com/apache/datafusion-comet/issues/457
-      withInfo(join, "BuildRight with LeftAnti is not supported")
+    // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
+    val isNullAwareAntiJoin = join match {
+      case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
+      case _ => false
+    }
+
+    val joinKeys = join.leftKeys ++ join.rightKeys
+    if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
+      withInfo(join, "unsupported non-default collated string join keys")
+      return None
+    }
+
+    // Spark's BroadcastHashJoinExec.scala enforces these invariants for null-aware anti-join
+    // at construction. Verify them defensively so that, if Spark ever loosens them, we fall
+    // back to Spark with a clear message instead of failing in DataFusion.
+    if (isNullAwareAntiJoin &&
+      (join.leftKeys.length != 1 || join.rightKeys.length != 1 ||
+        join.joinType != LeftAnti || join.buildSide != BuildRight ||
+        join.condition.isDefined)) {
+      withInfo(
+        join,
+        "null-aware anti-join requires single-column LeftAnti BuildRight with no condition")
       return None
     }
 
@@ -1674,10 +1773,11 @@ trait CometHashJoin {
         .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
         .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
         else OperatorOuterClass.BuildSide.BuildRight)
+        .setNullAwareAntiJoin(isNullAwareAntiJoin)
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
+      val allExprs: Seq[Expression] = joinKeys
       withInfo(join, allExprs: _*)
       None
     }
@@ -1998,8 +2098,14 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       }
     }
 
+    val joinKeys = join.leftKeys ++ join.rightKeys
+    if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
+      withInfo(join, "unsupported non-default collated string join keys")
+      return None
+    }
+
     // Checks if the join keys are supported by DataFusion SortMergeJoin.
-    val errorMsgs = join.leftKeys.flatMap { key =>
+    val errorMsgs = joinKeys.flatMap { key =>
       if (!supportedSortMergeJoinEqualType(key.dataType)) {
         Some(s"Unsupported join key type ${key.dataType} on key: ${key.sql}")
       } else {
@@ -2008,7 +2114,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     }
 
     if (errorMsgs.nonEmpty) {
-      withInfo(join, errorMsgs.flatten.mkString("\n"))
+      withInfo(join, errorMsgs.mkString("\n"))
       return None
     }
 
@@ -2031,7 +2137,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       condition.map(joinBuilder.setCondition)
       Some(builder.setSortMergeJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
+      val allExprs: Seq[Expression] = joinKeys
       withInfo(join, allExprs: _*)
       None
     }
@@ -2056,6 +2162,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
    * Returns true if given datatype is supported as a key in DataFusion sort merge join.
    */
   private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
+    case st: StringType if isStringCollationType(st) => false
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true

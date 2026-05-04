@@ -53,6 +53,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
+import org.apache.comet.shims.ShimSubqueryBroadcast
 
 object CometExecRule {
 
@@ -88,27 +89,103 @@ object CometExecRule {
 
   val allExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = nativeExecs ++ sinks
 
+  /**
+   * Tag set on a `ShuffleExchangeExec` that should be left as a plain Spark shuffle rather than
+   * wrapped in `CometShuffleExchangeExec`. See `tagRedundantColumnarShuffle`.
+   */
+  val SKIP_COMET_SHUFFLE_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
+    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometShuffle")
+
+  /**
+   * Tag set on a `BroadcastExchangeExec` that should be left as a plain Spark broadcast rather
+   * than converted to `CometBroadcastExchangeExec`. Written by [[CometSpark34AqeDppFallbackRule]]
+   * on Spark < 3.5. See that rule's class docstring for the rationale.
+   */
+  val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
+    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
 }
 
 /**
  * Spark physical optimizer rule for replacing Spark operators with Comet operators.
  */
-case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
+case class CometExecRule(session: SparkSession)
+    extends Rule[SparkPlan]
+    with ShimSubqueryBroadcast {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
+  /**
+   * Revert any `CometShuffleExchangeExec` with `CometColumnarShuffle` whose parent and child are
+   * both non-Comet `HashAggregateExec` / `ObjectHashAggregateExec` operators back to the original
+   * Spark `ShuffleExchangeExec`. This is the partial-final-aggregate pattern where Comet couldn't
+   * convert either aggregate; keeping a columnar shuffle between them only adds
+   * row->arrow->shuffle->arrow->row conversion overhead with no Comet consumer on either side.
+   * See https://github.com/apache/datafusion-comet/issues/4004.
+   *
+   * The match is intentionally narrow (both sides must be row-based aggregates that remained JVM
+   * after the main transform pass). Running the revert post-transform means we only fire when the
+   * main conversion already decided to keep both aggregates JVM - we never create the dangerous
+   * mixed mode where a Comet partial feeds a JVM final (see issue #1389).
+   *
+   * Correctness depends on running as part of `preColumnarTransitions`: if the revert ran after
+   * Spark inserted `ColumnarToRowExec` between the aggregate and the columnar shuffle, the
+   * pattern would no longer match (the shuffle would be separated from the aggregate by the
+   * transition) and the unnecessary conversion could not be eliminated.
+   *
+   * The reverted shuffle is tagged with `SKIP_COMET_SHUFFLE_TAG` so both the AQE
+   * `QueryStagePrepRule` pass and the `ColumnarRule` `preColumnarTransitions` pass leave it alone
+   * on re-entry - AQE in particular re-runs the rule on each stage in isolation, where the outer
+   * aggregate context is no longer visible and the shuffle would otherwise be re-wrapped as a
+   * Comet columnar shuffle.
+   */
+  private def revertRedundantColumnarShuffle(plan: SparkPlan): SparkPlan = {
+    def isAggregate(p: SparkPlan): Boolean =
+      p.isInstanceOf[HashAggregateExec] || p.isInstanceOf[ObjectHashAggregateExec]
+
+    def isRedundantShuffle(child: SparkPlan): Boolean = child match {
+      case s: CometShuffleExchangeExec =>
+        s.shuffleType == CometColumnarShuffle && isAggregate(s.child)
+      case _ => false
+    }
+
+    plan.transform {
+      case op if isAggregate(op) && op.children.exists(isRedundantShuffle) =>
+        val newChildren = op.children.map {
+          case s: CometShuffleExchangeExec
+              if s.shuffleType == CometColumnarShuffle && isAggregate(s.child) =>
+            val reverted =
+              s.originalPlan.withNewChildren(Seq(s.child)).asInstanceOf[ShuffleExchangeExec]
+            reverted.setTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG, ())
+            logInfo(
+              "Reverting Comet columnar shuffle to Spark shuffle between " +
+                s"${op.getClass.getSimpleName} and ${s.child.getClass.getSimpleName} " +
+                "(no Comet operator on either side to consume columnar output)")
+            reverted
+          case other => other
+        }
+        op.withNewChildren(newChildren)
+    }
+  }
+
+  private def shouldSkipCometShuffle(s: ShuffleExchangeExec): Boolean =
+    s.getTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG).isDefined
+
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
-      case s: ShuffleExchangeExec if CometShuffleExchangeExec.nativeShuffleSupported(s) =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-        CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-
-      case s: ShuffleExchangeExec if CometShuffleExchangeExec.columnarShuffleSupported(s) =>
-        // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-        // (if configured)
-        CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+      case s: ShuffleExchangeExec if shouldSkipCometShuffle(s) =>
+        s
+      case s: ShuffleExchangeExec =>
+        CometShuffleExchangeExec.shuffleSupported(s) match {
+          case Some(CometNativeShuffle) =>
+            // Switch to use Decimal128 regardless of precision, since Arrow native execution
+            // doesn't support Decimal32 and Decimal64 yet.
+            conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+            CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+          case Some(CometColumnarShuffle) =>
+            CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+          case None =>
+            s
+        }
     }
   }
 
@@ -185,7 +262,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         convertToComet(scan, CometNativeScan).getOrElse(scan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
-      // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
+      // Only handle scans with native metadata; other scans fall through to isCometScan
       // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
@@ -227,6 +304,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // broadcast exchange is forced to be enabled by Comet config.
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
+          // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep the build-side
+          // broadcast Spark-native so Spark's PlanAdaptiveDynamicPruningFilters can match it.
+          case b: BroadcastExchangeExec
+              if b.getTagValue(CometExecRule.SKIP_COMET_BROADCAST_TAG).isDefined =>
+            b
           case b: BroadcastExchangeExec if b.children.forall(_.isInstanceOf[CometNativeExec]) =>
             convertToComet(b, CometBroadcastExchangeExec).getOrElse(b)
           case other => other
@@ -256,6 +338,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // the query plan won't be re-optimized/planned in non-AQE mode.
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
         convertToComet(s, CometExchangeSink).getOrElse(s)
+
+      case s: ShuffleExchangeExec if shouldSkipCometShuffle(s) =>
+        s
 
       case s: ShuffleExchangeExec =>
         convertToComet(s, CometShuffleExchangeExec).getOrElse(s)
@@ -298,7 +383,89 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     plan.transformUp { case op =>
-      convertNode(op)
+      val converted = convertNode(op)
+      // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
+      // when the broadcast child has a Comet plan underneath. This enables exchange reuse
+      // between the DPP subquery and the join's CometBroadcastExchangeExec because both
+      // will have the same CometBroadcastExchangeExec type and canonical form.
+      convertSubqueryBroadcasts(converted)
+    }
+  }
+
+  /**
+   * Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in a node's expressions
+   * (non-AQE DPP), and wrap SubqueryAdaptiveBroadcastExec in CometSubqueryAdaptiveBroadcastExec
+   * (AQE DPP) to protect it from Spark's PlanAdaptiveDynamicPruningFilters.
+   *
+   * Non-AQE DPP: When CometExecRule converts BroadcastExchangeExec to CometBroadcastExchangeExec
+   * on the join side, the DPP subquery still references the original BroadcastExchangeExec.
+   * ReuseExchangeAndSubquery (which runs after Comet rules) can't match them because they have
+   * different types. By replacing SubqueryBroadcastExec with CometSubqueryBroadcastExec (which
+   * wraps a CometBroadcastExchangeExec), both sides have the same exchange type and reuse works.
+   *
+   * AQE DPP: Spark's PlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule) pattern-matches
+   * on SubqueryAdaptiveBroadcastExec. When it can't find BroadcastHashJoinExec (Comet replaced
+   * it), it replaces DPP with Literal.TrueLiteral. We wrap SABs in
+   * CometSubqueryAdaptiveBroadcastExec to prevent this. CometPlanAdaptiveDynamicPruningFilters (a
+   * later queryStageOptimizerRule) unwraps and converts them with access to the materialized
+   * BroadcastQueryStageExec.
+   */
+  private def convertSubqueryBroadcasts(plan: SparkPlan): SparkPlan = {
+    plan.transformExpressionsUp { case inSub: InSubqueryExec =>
+      inSub.plan match {
+        case sub: SubqueryBroadcastExec =>
+          sub.child match {
+            case b: BroadcastExchangeExec =>
+              // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
+              // a Comet plan. Strip the row transition to get the columnar Comet plan.
+              val cometChild = b.child match {
+                case c2r: CometNativeColumnarToRowExec => c2r.child
+                case other => other
+              }
+              if (cometChild.isInstanceOf[CometNativeExec]) {
+                logInfo(
+                  "Converting SubqueryBroadcastExec to " +
+                    "CometSubqueryBroadcastExec for DPP exchange reuse")
+                val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
+                val cometSub = CometSubqueryBroadcastExec(
+                  sub.name,
+                  getSubqueryBroadcastExecIndices(sub),
+                  sub.buildKeys,
+                  cometBroadcast)
+                inSub.withNewPlan(cometSub)
+              } else {
+                inSub
+              }
+            case _ => inSub
+          }
+        case sab: SubqueryAdaptiveBroadcastExec if isSpark35Plus =>
+          // Wrap SABs to prevent Spark's PlanAdaptiveDynamicPruningFilters from
+          // converting them to Literal.TrueLiteral. Spark's rule pattern-matches for
+          // BroadcastHashJoinExec, which Comet replaced with CometBroadcastHashJoinExec.
+          // Without wrapping, DPP is disabled for both Comet native scans and non-Comet
+          // scans (e.g., V2 BatchScan). CometPlanAdaptiveDynamicPruningFilters
+          // (queryStageOptimizerRule, 3.5+) unwraps and converts them later.
+          //
+          // On Spark 3.4, injectQueryStageOptimizerRule is unavailable. The isSpark35Plus
+          // guard leaves SABs unwrapped; CometSpark34AqeDppFallbackRule then tags the
+          // matching BHJ's build broadcast so Spark's rule can match it natively.
+          assert(
+            sab.buildKeys.nonEmpty,
+            s"SubqueryAdaptiveBroadcastExec '${sab.name}' has empty buildKeys")
+          logInfo(
+            s"Wrapping SubqueryAdaptiveBroadcastExec '${sab.name}' in " +
+              "CometSubqueryAdaptiveBroadcastExec to preserve AQE DPP")
+          val indices = getSubqueryBroadcastIndices(sab)
+          val wrapped = CometSubqueryAdaptiveBroadcastExec(
+            sab.name,
+            indices,
+            sab.onlyInBroadcast,
+            sab.buildPlan,
+            sab.buildKeys,
+            sab.child)
+          inSub.withNewPlan(wrapped)
+        case _ => inSub
+      }
     }
   }
 
@@ -406,6 +573,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       newPlan = newPlan.transform {
         case CometSinkPlaceHolder(_, _, s) => s
         case CometScanWrapper(_, s) => s
+      }
+
+      // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when both its parent and child
+      // are non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main
+      // transform pass. See https://github.com/apache/datafusion-comet/issues/4004.
+      if (CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.get()) {
+        newPlan = revertRedundantColumnarShuffle(newPlan)
       }
 
       // Set up logical links

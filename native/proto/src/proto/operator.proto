@@ -52,6 +52,7 @@ message Operator {
     ParquetWriter parquet_writer = 113;
     Explode explode = 114;
     CsvScan csv_scan = 115;
+    ShuffleScan shuffle_scan = 116;
   }
 }
 
@@ -83,6 +84,12 @@ message Scan {
   string source = 2;
   // Whether native code can assume ownership of batches that it receives
   bool arrow_ffi_safe = 3;
+}
+
+message ShuffleScan {
+  repeated spark.spark_expression.DataType fields = 1;
+  // Informational label for debug output (e.g., "CometShuffleExchangeExec [id=5]")
+  string source = 2;
 }
 
 // Common data shared by all partitions in split mode (sent once at planning)
@@ -334,6 +341,9 @@ message HashJoin {
   JoinType join_type = 3;
   optional spark.spark_expression.Expr condition = 4;
   BuildSide build_side = 5;
+  // True for BroadcastHashJoinExec null-aware anti-joins (NOT IN subquery semantics).
+  // When true, any null in the build side suppresses all left rows.
+  bool null_aware_anti_join = 6;
 }
 
 message SortMergeJoin {
@@ -362,6 +372,7 @@ message WindowExpr {
   spark.spark_expression.Expr built_in_window_function = 1;
   spark.spark_expression.AggExpr agg_func = 2;
   WindowSpecDefinition spec = 3;
+  bool ignore_nulls = 4;
 }
 
 enum WindowFrameType {

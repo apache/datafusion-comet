@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 -- migrated from CometExpressionSuite "test concat function - arrays"
 -- https://github.com/apache/datafusion-comet/issues/2647
 
