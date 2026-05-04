@@ -142,6 +142,7 @@ jobs:
           - {spark-short: '4.0', spark-full: '4.0.2', java: 17, scan-impl: 'auto'}
           - {spark-short: '4.0', spark-full: '4.0.2', java: 21, scan-impl: 'auto'}
           - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
+          - {spark-short: '4.2', spark-full: '4.2.0-preview4', java: 17, scan-impl: 'auto'}
       fail-fast: false
     name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
     # Hive tests stay on the standard GitHub-hosted runner: HiveSparkSubmitSuite
