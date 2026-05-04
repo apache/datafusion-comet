@@ -64,7 +64,7 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
     val timeZone = exprToProtoInternal(Literal(expr.timeZoneId.orNull), inputs, binding)
 
     expr.format match {
-      case Literal(fmt, _) if fmt.toString != TimestampFormatter.defaultPattern =>
+      case Literal(fmt, _) if fmt != null && fmt.toString != TimestampFormatter.defaultPattern =>
         withInfo(expr, "Datetime pattern format is unsupported")
         None
       case _ if secExpr.isDefined && formatExpr.isDefined =>

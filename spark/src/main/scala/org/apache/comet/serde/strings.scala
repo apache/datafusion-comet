@@ -42,26 +42,12 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val children = expr.children
-
-    children(1) match {
-      case Literal(count, _) if isNegativeNumber(count) =>
-        withInfo(expr, "Negative repeat count is not supported")
-        return None
-      case _ =>
-    }
-
     val leftCast = Cast(children(0), StringType)
     val rightCast = Cast(children(1), LongType)
     val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
     val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
     val optExpr = scalarFunctionExprToProto("repeat", leftExpr, rightExpr)
     optExprWithInfo(optExpr, expr, leftCast, rightCast)
-  }
-
-  private def isNegativeNumber(value: Any): Boolean = value match {
-    case i: Int => i < 0
-    case l: Long => l < 0
-    case _ => false
   }
 }
 
