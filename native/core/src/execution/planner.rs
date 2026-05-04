@@ -39,7 +39,7 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
-use datafusion::physical_plan::windows::BoundedWindowAggExec;
+use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
@@ -1781,16 +1781,83 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let window_agg = Arc::new(BoundedWindowAggExec::try_new(
-                    window_expr?,
-                    Arc::clone(&child.native_plan),
-                    InputOrderMode::Sorted,
-                    !partition_exprs.is_empty(),
-                )?);
+                let window_expr = window_expr?;
+
+                // Mirror DataFusion's own planner logic: use the streaming
+                // BoundedWindowAggExec when every window expression can run
+                // with bounded memory, otherwise fall back to the non-streaming
+                // WindowAggExec. Functions like PERCENT_RANK/CUME_DIST/NTILE
+                // report !uses_bounded_memory() and would otherwise fail at
+                // runtime with "Can not execute ... in a streaming fashion".
+                let window_agg: Arc<dyn ExecutionPlan> =
+                    if window_expr.iter().all(|e| e.uses_bounded_memory()) {
+                        Arc::new(BoundedWindowAggExec::try_new(
+                            window_expr,
+                            Arc::clone(&child.native_plan),
+                            InputOrderMode::Sorted,
+                            !partition_exprs.is_empty(),
+                        )?)
+                    } else {
+                        Arc::new(WindowAggExec::try_new(
+                            window_expr,
+                            Arc::clone(&child.native_plan),
+                            !partition_exprs.is_empty(),
+                        )?)
+                    };
+
+                // DataFusion's window functions don't always return the same Arrow
+                // type that Spark expects (e.g. `row_number` returns UInt64 while
+                // Spark expects Int32). If any window expression carries a
+                // `result_type` that differs from the actual output type, wrap the
+                // aggregate in a projection that casts the mismatched columns.
+                let final_plan: Arc<dyn ExecutionPlan> = {
+                    let agg_schema = window_agg.schema();
+                    let input_field_count = input_schema.fields().len();
+                    let needs_cast = wnd.window_expr.iter().enumerate().any(|(i, w)| {
+                        w.result_type
+                            .as_ref()
+                            .map(|t| {
+                                let expected = to_arrow_datatype(t);
+                                let actual = agg_schema.field(input_field_count + i).data_type();
+                                &expected != actual
+                            })
+                            .unwrap_or(false)
+                    });
+
+                    if needs_cast {
+                        let mut proj_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> =
+                            Vec::with_capacity(agg_schema.fields().len());
+                        for (idx, field) in agg_schema.fields().iter().enumerate() {
+                            let col: Arc<dyn PhysicalExpr> =
+                                Arc::new(Column::new(field.name(), idx));
+                            let expr: Arc<dyn PhysicalExpr> = if idx >= input_field_count {
+                                let w = &wnd.window_expr[idx - input_field_count];
+                                match &w.result_type {
+                                    Some(t) => {
+                                        let expected = to_arrow_datatype(t);
+                                        if &expected != field.data_type() {
+                                            Arc::new(CastExpr::new(col, expected, None))
+                                        } else {
+                                            col
+                                        }
+                                    }
+                                    None => col,
+                                }
+                            } else {
+                                col
+                            };
+                            proj_exprs.push((expr, field.name().to_string()));
+                        }
+                        Arc::new(ProjectionExec::try_new(proj_exprs, window_agg)?)
+                    } else {
+                        window_agg
+                    }
+                };
+
                 Ok((
                     scans,
                     shuffle_scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])),
                 ))
             }
             OpStruct::ShuffleScan(scan) => {
@@ -2391,7 +2458,11 @@ impl PhysicalPlanner {
                             Some(offset_value as u64),
                         )),
                         WindowFrameUnits::Range => {
-                            WindowFrameBound::Preceding(ScalarValue::Int64(Some(offset_value)))
+                            let scalar = match offset.range_offset.as_ref() {
+                                Some(lit) => numeric_literal_to_scalar(lit)?,
+                                None => ScalarValue::Int64(Some(offset_value)),
+                            };
+                            WindowFrameBound::Preceding(scalar)
                         }
                         WindowFrameUnits::Groups => {
                             return Err(GeneralError(
@@ -2437,7 +2508,11 @@ impl PhysicalPlanner {
                         WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64)))
                     }
                     WindowFrameUnits::Range => {
-                        WindowFrameBound::Following(ScalarValue::Int64(Some(offset.offset)))
+                        let scalar = match offset.range_offset.as_ref() {
+                            Some(lit) => numeric_literal_to_scalar(lit)?,
+                            None => ScalarValue::Int64(Some(offset.offset)),
+                        };
+                        WindowFrameBound::Following(scalar)
                     }
                     WindowFrameUnits::Groups => {
                         return Err(GeneralError(
@@ -2825,6 +2900,62 @@ fn expr_to_columns(
     right_field_indices.sort();
 
     Ok((left_field_indices, right_field_indices))
+}
+
+/// Convert a Spark numeric Literal proto into a `ScalarValue` whose data type
+/// matches the literal's declared type. Used for RANGE window frame offsets,
+/// where the offset's type must match the ORDER BY column's type. Only numeric
+/// types are supported; the Scala side rejects non-numeric RANGE offsets before
+/// reaching here.
+fn numeric_literal_to_scalar(
+    lit: &spark_expression::Literal,
+) -> Result<ScalarValue, ExecutionError> {
+    let data_type = to_arrow_datatype(lit.datatype.as_ref().ok_or_else(|| {
+        GeneralError("RANGE frame offset literal is missing datatype".to_string())
+    })?);
+
+    if lit.is_null {
+        return Err(GeneralError(
+            "RANGE frame offset must not be null".to_string(),
+        ));
+    }
+
+    let value = lit
+        .value
+        .as_ref()
+        .ok_or_else(|| GeneralError("RANGE frame offset literal has no value".to_string()))?;
+
+    let scalar = match value {
+        Value::ByteVal(v) => ScalarValue::Int8(Some(*v as i8)),
+        Value::ShortVal(v) => ScalarValue::Int16(Some(*v as i16)),
+        Value::IntVal(v) => ScalarValue::Int32(Some(*v)),
+        Value::LongVal(v) => ScalarValue::Int64(Some(*v)),
+        Value::FloatVal(v) => ScalarValue::Float32(Some(*v)),
+        Value::DoubleVal(v) => ScalarValue::Float64(Some(*v)),
+        Value::DecimalVal(bytes) => {
+            let big_integer = BigInt::from_signed_bytes_be(bytes);
+            let integer = big_integer.to_i128().ok_or_else(|| {
+                GeneralError(format!(
+                    "Cannot parse {big_integer:?} as i128 for Decimal RANGE frame offset"
+                ))
+            })?;
+            match data_type {
+                DataType::Decimal128(p, s) => ScalarValue::Decimal128(Some(integer), p, s),
+                ref dt => {
+                    return Err(GeneralError(format!(
+                        "Decimal RANGE frame offset has non-Decimal128 datatype: {dt:?}"
+                    )))
+                }
+            }
+        }
+        other => {
+            return Err(GeneralError(format!(
+                "Unsupported value variant for RANGE frame offset: {other:?}"
+            )))
+        }
+    };
+
+    Ok(scalar)
 }
 
 /// A physical join filter rewritter which rewrites the column indices in the expression

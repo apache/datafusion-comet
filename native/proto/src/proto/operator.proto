@@ -22,6 +22,7 @@ syntax = "proto3";
 package spark.spark_operator;
 
 import "expr.proto";
+import "literal.proto";
 import "partitioning.proto";
 import "types.proto";
 
@@ -373,6 +374,10 @@ message WindowExpr {
   spark.spark_expression.AggExpr agg_func = 2;
   WindowSpecDefinition spec = 3;
   bool ignore_nulls = 4;
+  // Spark's expected result type. Used to cast the native window function output
+  // when DataFusion's return type differs (e.g. row_number returns UInt64 but
+  // Spark expects Int32).
+  spark.spark_expression.DataType result_type = 5;
 }
 
 enum WindowFrameType {
@@ -403,11 +408,19 @@ message UpperWindowFrameBound {
 }
 
 message Preceding {
+  // Used for ROWS frames. Integer row count.
   int64 offset = 1;
+  // Used for RANGE frames. Carries the typed offset value so the native
+  // side can build a ScalarValue whose type matches the ORDER BY column.
+  spark.spark_expression.Literal range_offset = 2;
 }
 
 message Following {
+  // Used for ROWS frames. Integer row count.
   int64 offset = 1;
+  // Used for RANGE frames. Carries the typed offset value so the native
+  // side can build a ScalarValue whose type matches the ORDER BY column.
+  spark.spark_expression.Literal range_offset = 2;
 }
 
 message UnboundedPreceding {}
