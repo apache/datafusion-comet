@@ -15,11 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod base64;
 mod contains;
 mod get_json_object;
 mod split;
 mod substring;
 
+pub use base64::spark_base64;
 pub use contains::SparkContains;
 pub use get_json_object::spark_get_json_object;
 pub use split::spark_split;

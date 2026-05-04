@@ -506,7 +506,10 @@
 ### string_funcs
 
 - [x] ascii
-- [ ] base64
+- [x] base64
+  - Spark 3.4.3 audited 2026-04-30 (always uses chunked `getMimeEncoder`, output differs from Comet for inputs longer than 57 bytes; requires `spark.comet.expr.allowIncompatible=true`)
+  - Spark 3.5.8 audited 2026-04-30 (chunked output is on by default via `spark.sql.chunkBase64String.enabled`; set the conf to `false` for full compatibility)
+  - Spark 4.0.1 audited 2026-04-30 (same chunking caveat as 3.5.8; default-collation result type is honored)
 - [x] bit_length
 - [x] btrim
 - [x] char
