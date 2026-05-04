@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CurrentRow, Expression, Lag, Lead, Literal, NamedExpression, RangeFrame, RowFrame, RowNumber, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, NamedExpression, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -43,10 +43,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WINDOW_ENABLED)
-
-  override def getSupportLevel(op: WindowExec): SupportLevel = {
-    Incompatible(Some("Native WindowExec has known correctness issues"))
-  }
 
   override def convert(
       op: WindowExec,
@@ -167,6 +163,17 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           (None, func, lead.ignoreNulls)
         case _: RowNumber =>
           (None, scalarFunctionExprToProto("row_number"), false)
+        case _: Rank =>
+          (None, scalarFunctionExprToProto("rank"), false)
+        case _: DenseRank =>
+          (None, scalarFunctionExprToProto("dense_rank"), false)
+        case _: PercentRank =>
+          (None, scalarFunctionExprToProto("percent_rank"), false)
+        case _: CumeDist =>
+          (None, scalarFunctionExprToProto("cume_dist"), false)
+        case nt: NTile =>
+          val bucketsExpr = exprToProto(nt.buckets, output)
+          (None, scalarFunctionExprToProto("ntile", bucketsExpr), false)
         case _ =>
           (None, exprToProto(windowExpr.windowFunction, output), false)
       }

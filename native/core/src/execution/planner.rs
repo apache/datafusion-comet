@@ -39,7 +39,7 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
-use datafusion::physical_plan::windows::BoundedWindowAggExec;
+use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
@@ -1772,12 +1772,29 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let window_agg = Arc::new(BoundedWindowAggExec::try_new(
-                    window_expr?,
-                    Arc::clone(&child.native_plan),
-                    InputOrderMode::Sorted,
-                    !partition_exprs.is_empty(),
-                )?);
+                let window_expr = window_expr?;
+
+                // Mirror DataFusion's own planner logic: use the streaming
+                // BoundedWindowAggExec when every window expression can run
+                // with bounded memory, otherwise fall back to the non-streaming
+                // WindowAggExec. Functions like PERCENT_RANK/CUME_DIST/NTILE
+                // report !uses_bounded_memory() and would otherwise fail at
+                // runtime with "Can not execute ... in a streaming fashion".
+                let window_agg: Arc<dyn ExecutionPlan> =
+                    if window_expr.iter().all(|e| e.uses_bounded_memory()) {
+                        Arc::new(BoundedWindowAggExec::try_new(
+                            window_expr,
+                            Arc::clone(&child.native_plan),
+                            InputOrderMode::Sorted,
+                            !partition_exprs.is_empty(),
+                        )?)
+                    } else {
+                        Arc::new(WindowAggExec::try_new(
+                            window_expr,
+                            Arc::clone(&child.native_plan),
+                            !partition_exprs.is_empty(),
+                        )?)
+                    };
 
                 // DataFusion's window functions don't always return the same Arrow
                 // type that Spark expects (e.g. `row_number` returns UInt64 while

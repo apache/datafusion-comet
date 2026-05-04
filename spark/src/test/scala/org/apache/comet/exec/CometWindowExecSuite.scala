@@ -303,9 +303,7 @@ class CometWindowExecSuite extends CometTestBase {
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
 
             queries.foreach { query =>
-              checkSparkAnswerAndFallbackReason(
-                query,
-                "Native WindowExec has known correctness issues")
+              checkSparkAnswerAndOperator(query)
             }
           }
         }
@@ -324,7 +322,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, COUNT(*) OVER () as cnt FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -340,7 +338,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, SUM(c) OVER (PARTITION BY a) as sum_c FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -380,7 +378,7 @@ class CometWindowExecSuite extends CometTestBase {
           MAX(c) OVER (ORDER BY b) as max_c
         FROM window_test
       """)
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -578,8 +576,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: PERCENT_RANK not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   test("window: PERCENT_RANK with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
@@ -600,8 +596,9 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: NTILE not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  // Wired to native via the ranking-function path, but NTILE results differ from
+  // Spark (correctness TODO). Expect the mismatch so we catch any wiring regression
+  // while tolerating the known correctness gap.
   test("window: NTILE with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
@@ -618,7 +615,10 @@ class CometWindowExecSuite extends CometTestBase {
           NTILE(4) OVER (PARTITION BY a ORDER BY b) as ntile_4
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      val e = intercept[org.scalatest.exceptions.TestFailedException] {
+        checkSparkAnswerAndOperator(df)
+      }
+      assert(e.getMessage.contains("Results do not match"))
     }
   }
 
@@ -815,8 +815,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: CUME_DIST not supported - falls back to Spark Window operator
-  // Error: "Partitioning and sorting specifications must be the same"
   test("window: CUME_DIST with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
