@@ -10,7 +10,6 @@ metastore_db
 target
 common/target
 spark-integration/target
-fuzz-testing/target
 spark/target
 native/target
 core/target
