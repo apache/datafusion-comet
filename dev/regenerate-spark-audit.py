@@ -98,3 +98,17 @@ def merge_lines(commits: list[dict], existing: dict[str, str]) -> list[str]:
                 )
             )
     return result
+
+
+def replace_block(body: str, lines: list[str]) -> str:
+    """Return body with the marker block replaced by the given lines."""
+    if BEGIN_MARKER not in body or END_MARKER not in body:
+        raise ValueError("audit log file is missing marker comments")
+    before, _, rest = body.partition(BEGIN_MARKER)
+    _, _, after = rest.partition(END_MARKER)
+    block_body = "\n".join(lines)
+    if block_body:
+        block_body = "\n" + block_body + "\n"
+    else:
+        block_body = "\n"
+    return before + BEGIN_MARKER + block_body + END_MARKER + after

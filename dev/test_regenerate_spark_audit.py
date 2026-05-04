@@ -142,5 +142,39 @@ class MergeTest(unittest.TestCase):
         self.assertIn("33333333", result[2])
 
 
+class WriteBlockTest(unittest.TestCase):
+    def test_replaces_block_only(self):
+        original = (
+            "preamble line\n"
+            "<!-- BEGIN AUDIT LIST -->\n"
+            "- `abcd1234` 2026-01-15 [needs-triage] OLD\n"
+            "<!-- END AUDIT LIST -->\n"
+            "trailer line\n"
+        )
+        new_lines = [
+            "- `abcd1234` 2026-01-15 [relevant] NEW. comet#9",
+            "- `def56789` 2026-01-16 [needs-triage] FRESH",
+        ]
+        result = rsa.replace_block(original, new_lines)
+        self.assertIn("preamble line", result)
+        self.assertIn("trailer line", result)
+        self.assertIn("[relevant] NEW. comet#9", result)
+        self.assertIn("[needs-triage] FRESH", result)
+        self.assertNotIn("OLD", result)
+        self.assertIn(rsa.BEGIN_MARKER, result)
+        self.assertIn(rsa.END_MARKER, result)
+
+    def test_empty_lines_yields_empty_block(self):
+        original = (
+            "<!-- BEGIN AUDIT LIST -->\n"
+            "- `abcd1234` 2026-01-15 [needs-triage] OLD\n"
+            "<!-- END AUDIT LIST -->\n"
+        )
+        result = rsa.replace_block(original, [])
+        self.assertNotIn("OLD", result)
+        self.assertIn(rsa.BEGIN_MARKER, result)
+        self.assertIn(rsa.END_MARKER, result)
+
+
 if __name__ == "__main__":
     unittest.main()
