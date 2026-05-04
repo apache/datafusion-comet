@@ -26,6 +26,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
@@ -705,6 +706,48 @@ class CometStringExpressionSuite extends CometTestBase {
       }
     }
     // scalastyle:on
+  }
+
+  test("levenshtein") {
+    val data =
+      Seq(("kitten", "sitting"), ("frog", "fog"), ("abc", "abc"), ("", "hello"), ("hello", ""))
+
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2) FROM tbl")
+    }
+  }
+
+  test("levenshtein with nulls") {
+    val table = "levenshtein_null_test"
+    withTable(table) {
+      sql(s"CREATE TABLE $table(s1 STRING, s2 STRING) USING parquet")
+      sql(
+        s"INSERT INTO $table VALUES " +
+          "('abc', 'adc'), (NULL, 'test'), ('hello', NULL), (NULL, NULL)")
+      checkSparkAnswerAndOperator(s"SELECT levenshtein(s1, s2) FROM $table")
+    }
+  }
+
+  test("levenshtein with unicode") {
+    val data = Seq(
+      ("\u4f60\u597d", "\u4f60\u574f"),
+      ("caf\u00e9", "cafe"),
+      ("\ud83d\ude00", "\ud83d\ude01"))
+
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2) FROM tbl")
+    }
+  }
+
+  test("levenshtein with threshold") {
+    assume(isSpark35Plus, "levenshtein with threshold requires Spark 3.5+")
+    val data = Seq(("kitten", "sitting"), ("frog", "fog"), ("abc", "abc"), ("hello", "world"))
+
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2, 0) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT levenshtein(_1, _2, 10) FROM tbl")
+    }
   }
 
 }
