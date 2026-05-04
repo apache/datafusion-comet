@@ -1,6 +1,6 @@
 ---
 name: bug-triage
-description: Triage open Comet issues marked `requires-triage` per the project bug triage guide. Applies the recommended priority and area labels (and `good first issue` where appropriate), removes `requires-triage`, and files a dated summary issue listing what was done. A human reviews the summary issue and closes it when satisfied.
+description: Triage open Comet issues marked `requires-triage` per the project bug triage guide. Applies the recommended priority and area labels, removes `requires-triage`, and files a dated summary issue listing what was done. A human reviews the summary issue and closes it when satisfied.
 ---
 
 Run a bug triage pass for the `apache/datafusion-comet` repository.
@@ -67,9 +67,7 @@ For each issue, review the title and body and determine:
    `area:expressions`, `area:ffi`, `area:ci`) plus the pre-existing area
    indicators (`native_datafusion`, `native_iceberg_compat`, `spark 4`,
    `spark sql tests`).
-3. **`good first issue`**: only if the fix is likely straightforward AND
-   well-scoped. When in doubt, leave it off.
-4. **Escalation note**: if the issue matches an escalation trigger from the
+3. **Escalation note**: if the issue matches an escalation trigger from the
    guide (e.g., a `priority:high` crash that may also produce wrong results),
    note it in the summary.
 
@@ -141,7 +139,6 @@ Body: a markdown report with these sections, in this order:
 
    - <issue title> ([#1234](https://github.com/apache/datafusion-comet/issues/1234))
      - Area labels: `area:expressions`, `area:scan`
-     - good first issue: no
      - Rationale: one sentence tying the call to the guide
    ```
 
