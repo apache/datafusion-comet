@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.planner
+package org.apache.comet.planner.phases
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.CometSparkToColumnarExec
@@ -26,6 +26,8 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 
 import org.apache.comet.CometConf
+import org.apache.comet.planner.PlanningContext
+import org.apache.comet.planner.gates.{S2CGate, V1ScanClassification, V1ScanGate, V2ScanClassification, V2ScanClassifier}
 import org.apache.comet.planner.tags.{CometTags, PlannerDecision}
 import org.apache.comet.planner.tags.PlannerDecision.{Convert, ConvertS2C, Fallback, Passthrough}
 

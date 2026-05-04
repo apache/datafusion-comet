@@ -30,6 +30,7 @@ import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
+import org.apache.comet.planner.phases.{NormalizePrePass, Phase1LikelyComet, Phase2Decision, Phase3Emit, SubqueryBroadcastRewrite}
 import org.apache.comet.planner.tags.CometTags
 import org.apache.comet.rules.RewriteJoin
 

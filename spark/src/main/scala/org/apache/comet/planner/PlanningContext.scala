@@ -27,6 +27,8 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.planner.phases.Phase1LikelyComet
+
 /**
  * State threaded through CometPlanner's three phases. Holds session-scoped data (configs, the
  * active SparkSession), a few plan-wide flags computed once at the top of `apply` so per-node

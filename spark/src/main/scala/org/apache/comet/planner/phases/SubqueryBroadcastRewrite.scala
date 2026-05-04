@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.planner
+package org.apache.comet.planner.phases
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometNativeColumnarToRowExec, CometNativeExec, CometSubqueryAdaptiveBroadcastExec, CometSubqueryBroadcastExec}

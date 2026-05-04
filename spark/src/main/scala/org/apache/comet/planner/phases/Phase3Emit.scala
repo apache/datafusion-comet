@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.planner
+package org.apache.comet.planner.phases
 
 import scala.jdk.CollectionConverters._
 
