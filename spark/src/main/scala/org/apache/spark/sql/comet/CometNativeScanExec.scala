@@ -79,34 +79,6 @@ case class CometNativeScanExec(
   override lazy val metadata: Map[String, String] =
     if (originalPlan != null) originalPlan.metadata else Map.empty
 
-  /**
-   * Prepare subquery plans before execution.
-   *
-   * DPP: partitionFilters may contain DynamicPruningExpression(InSubqueryExec(...)) from
-   * PlanDynamicPruningFilters.
-   *
-   * Scalar subquery pushdown (SPARK-43402, Spark 4.0+): dataFilters may contain ScalarSubquery.
-   *
-   * serializedPartitionData can be triggered outside the normal prepare() -> executeSubqueries()
-   * flow (e.g., from a BroadcastExchangeExec thread), so we prepare subquery plans here and
-   * resolve them explicitly in serializedPartitionData via updateResult().
-   */
-  override protected def doPrepare(): Unit = {
-    partitionFilters.foreach {
-      case DynamicPruningExpression(e: InSubqueryExec) =>
-        e.plan.prepare()
-      case _ =>
-    }
-    dataFilters.foreach { f =>
-      f.foreach {
-        case s: ExecScalarSubquery =>
-          s.plan.prepare()
-        case _ =>
-      }
-    }
-    super.doPrepare()
-  }
-
   override val nodeName: String =
     s"CometNativeScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
 
@@ -186,28 +158,16 @@ case class CometNativeScanExec(
    * partition's files (lazily, as tasks are scheduled).
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    // Ensure DPP subqueries are resolved before accessing file partitions.
-    // serializedPartitionData can be triggered from findAllPlanData (via commonData) on a
-    // different execution path than the standard prepare() -> executeSubqueries() flow
-    // (e.g., from a BroadcastExchangeExec thread). We must resolve DPP here explicitly.
-    partitionFilters.foreach {
-      case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
-        logDebug(s"Resolving DPP subquery: plan=${e.plan.getClass.getSimpleName}")
-        try {
-          e.updateResult()
-          logDebug("DPP subquery resolved successfully")
-        } catch {
-          case ex: Exception =>
-            logError(s"DPP subquery resolution failed: ${ex.getMessage}")
-            throw ex
-        }
-      case _ =>
-    }
-    // CometNativeScanExec.partitionFilters and CometScanExec.partitionFilters contain
-    // different InSubqueryExec instances. convertSubqueryBroadcasts replaced the former with
-    // CometSubqueryBroadcastExec, but the latter still has the original SubqueryBroadcastExec.
-    // Both need resolution because CometScanExec.dynamicallySelectedPartitions evaluates its
-    // own partitionFilters. updateResult() is a no-op if already resolved.
+    // Outer partitionFilters (wrapper) DPP is resolved by Spark's standard
+    // prepare → waitForSubqueries lifecycle, triggered explicitly via
+    // CometLeafExec.ensureSubqueriesResolved called from
+    // CometNativeExec.findAllPlanData before commonData is read.
+    //
+    // Inner scan.partitionFilters holds a SEPARATE InSubqueryExec instance that
+    // Spark's expressions walk does not see (scan is @transient and not a sibling
+    // expression). It still needs explicit resolution because
+    // CometScanExec.dynamicallySelectedPartitions evaluates its own partitionFilters.
+    // updateResult is a no-op if already resolved.
     if (scan != null) {
       scan.partitionFilters.foreach {
         case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>

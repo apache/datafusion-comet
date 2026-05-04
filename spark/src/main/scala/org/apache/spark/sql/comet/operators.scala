@@ -665,14 +665,23 @@ abstract class CometNativeExec extends CometExec {
       plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
     plan match {
       // Found an Iceberg scan with planning data
-      case iceberg: CometIcebergNativeScanExec
-          if iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty =>
+      case iceberg: CometIcebergNativeScanExec if {
+            // Trigger Spark's standard prepare → waitForSubqueries lifecycle so DPP
+            // InSubqueryExec values are resolved before commonData is read. Without
+            // this, the parent CometNativeExec.executeQuery flow never invokes the
+            // scan's executeQuery, leaving DPP unresolved and forcing a sync-on-this
+            // await inside the serializedPartitionData lazy val initializer (a known
+            // deadlock surface).
+            iceberg.ensureSubqueriesResolved()
+            iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty
+          } =>
         (
           Map(iceberg.metadataLocation -> iceberg.commonData),
           Map(iceberg.metadataLocation -> iceberg.perPartitionData))
 
       // Found a NativeScan with planning data
       case nativeScan: CometNativeScanExec =>
+        nativeScan.ensureSubqueriesResolved()
         (
           Map(nativeScan.sourceKey -> nativeScan.commonData),
           Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
@@ -767,7 +776,36 @@ abstract class CometNativeExec extends CometExec {
   }
 }
 
-abstract class CometLeafExec extends CometNativeExec with LeafExecNode
+abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
+
+  /**
+   * Public bridge to Spark's `prepare()` + `waitForSubqueries()` lifecycle. Comet's parent
+   * `CometNativeExec` reads scan data via `findAllPlanData → commonData` rather than invoking
+   * `executeColumnar` on its scan children, which means Spark's standard `executeQuery` chain
+   * never fires on the scan and DPP InSubqueryExec values are never resolved through
+   * `waitForSubqueries`. Calling this method before reading `commonData` restores the standard
+   * lifecycle: `prepare()` collects subqueries into `runningSubqueries` (via
+   * `prepareSubqueries`), then `waitForSubqueries()` resolves them via `updateResult()`. After
+   * this returns, any `e.values()` access on the scan's runtime/partition filter
+   * `InSubqueryExec`s returns the resolved values directly without further await.
+   */
+  def ensureSubqueriesResolved(): Unit = {
+    // scalastyle:off println
+    System.err.println(
+      s"[ensureSubqueriesResolved] enter ${this.getClass.getSimpleName}@" +
+        s"${System.identityHashCode(this)} thread=${Thread.currentThread().getName}")
+    val exprStr = expressions.mkString("; ")
+    System.err.println(s"[ensureSubqueriesResolved]   expressions=$exprStr")
+    // scalastyle:on println
+    prepare()
+    waitForSubqueries()
+    // scalastyle:off println
+    System.err.println(
+      s"[ensureSubqueriesResolved] exit ${this.getClass.getSimpleName}@" +
+        s"${System.identityHashCode(this)}")
+    // scalastyle:on println
+  }
+}
 
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode
 
