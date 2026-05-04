@@ -216,6 +216,36 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::SecFunc,
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::CscFunc,
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::CbrtFunc,
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::HypotFunc,
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::ShiftRightUnsignedFunc,
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::FactorialFunc,
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::PiFunc,
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::EulerNumberFunc,
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::ToDegreesFunc,
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            crate::math_funcs::math_expr::ToRadiansFunc,
+        )),
     ]
 }
 
