@@ -986,8 +986,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           perPartitionBuilders += partitionBuilder.build()
         }
       case other =>
-        // Spark's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) — a
-        // ParallelCollectionRDD, not DataSourceRDD — when DPP filtering removes all input
+        // Spark's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) - a
+        // ParallelCollectionRDD, not DataSourceRDD - when DPP filtering removes all input
         // partitions (BatchScanExec.scala:154-156). That's the only non-DataSourceRDD shape
         // its inputRDD produces, so any ParallelCollectionRDD here means "DPP pruned
         // everything"; emit no per-partition data and let native execution return empty.
@@ -1000,7 +1000,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               "skipping per-partition serialization")
         } else {
           throw new IllegalStateException(
-            s"Expected DataSourceRDD or ParallelCollectionRDD from BatchScanExec, " +
+            "Expected DataSourceRDD or ParallelCollectionRDD from BatchScanExec, " +
               s"got ${other.getClass.getName}")
         }
     }

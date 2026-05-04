@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, BindReferences, Dynamic
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometIcebergNativeScanExec, CometNativeScanExec, CometSubqueryAdaptiveBroadcastExec, CometSubqueryBroadcastExec}
+import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
@@ -71,39 +71,14 @@ case object CometPlanAdaptiveDynamicPruningFilters
       return plan
     }
 
-    // scalastyle:off println
-    val v1Scans = plan.collect { case s: CometNativeScanExec => s }
-    val ibgScans = plan.collect { case s: CometIcebergNativeScanExec => s }
-    System.err.println(
-      s"[CometPlanAdaptive.apply] invoked, plan root=${plan.nodeName}, " +
-        s"v1Scans=${v1Scans.size}, ibgScans=${ibgScans.size}")
-    v1Scans.foreach { s =>
-      val pfStr = s.partitionFilters.mkString(", ")
-      System.err.println(
-        s"[CometPlanAdaptive.apply]   v1 scan@${System.identityHashCode(s)} " +
-          s"partitionFilters=$pfStr hasCometSAB=${s.partitionFilters.exists(hasCometSAB)}")
-    }
-    // scalastyle:on println
-
     // TODO(#3510): CometNativeScanExec needs special handling because its makeCopy
     // loses @transient scan and expression transformations. Once makeCopy is fixed
     // (or CometScanExec wrapping is removed), replace both cases with a single
     // plan.transformAllExpressions call matching Spark's PlanAdaptiveDynamicPruningFilters.
     plan.transformUp {
       case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
-        // scalastyle:off println
-        System.err.println(
-          s"[CometPlanAdaptive] MATCH: V1 scan@${System.identityHashCode(nativeScan)}, " +
-            "converting")
-        // scalastyle:on println
         logDebug("Converting AQE DPP for CometNativeScanExec")
-        val converted = convertNativeScanDPP(nativeScan, plan)
-        // scalastyle:off println
-        System.err.println(
-          s"[CometPlanAdaptive] V1 converted scan@${System.identityHashCode(converted)} " +
-            s"new partitionFilters=${converted.partitionFilters.mkString(", ")}")
-        // scalastyle:on println
-        converted
+        convertNativeScanDPP(nativeScan, plan)
       case ibgScan: CometIcebergNativeScanExec if ibgScan.runtimeFilters.exists(hasCometSAB) =>
         logDebug("Converting AQE DPP for CometIcebergNativeScanExec")
         convertIcebergScanDPP(ibgScan, plan)
@@ -205,6 +180,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
         case _ => None
       }
     }
+
     inSub.plan match {
       // ReusedSubqueryExec extends BaseSubqueryExec, so unwrap it before dispatching
       // to `BaseSubqueryExec`. The order is load-bearing: if the general case runs
@@ -474,6 +450,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * CometNativeScanExec.partitionFilters has CometSubqueryAdaptiveBroadcastExec (wrapped by
    * CometExecRule). The inner CometScanExec.partitionFilters may have the original
    * SubqueryAdaptiveBroadcastExec (unwrapped, because CometScanExec is
+   *
    * @transient).
    */
   private def hasCometSAB(e: Expression): Boolean =

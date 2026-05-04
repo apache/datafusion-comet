@@ -49,7 +49,7 @@ import org.apache.comet.serde.operator.CometIcebergNativeScan
  * Supports Dynamic Partition Pruning (DPP) via top-level `runtimeFilters` (mirroring Spark's
  * `BatchScanExec.runtimeFilters`). Because the field is a constructor parameter, Spark's standard
  * `expressions` walk picks up the contained `DynamicPruningExpression(InSubqueryExec(...))`, and
- * the standard `prepare → prepareSubqueries → waitForSubqueries` lifecycle resolves it. The
+ * the standard `prepare -> prepareSubqueries -> waitForSubqueries` lifecycle resolves it. The
  * lifecycle is invoked via `CometLeafExec.ensureSubqueriesResolved`, called from
  * `CometNativeExec.findAllPlanData` before `commonData` is read.
  */
@@ -75,24 +75,31 @@ case class CometIcebergNativeScanExec(
    *
    * DPP InSubqueryExec values must already be resolved by the time this lazy val runs.
    * `CometNativeExec.findAllPlanData` calls `ensureSubqueriesResolved` (which invokes Spark's
-   * `prepare → waitForSubqueries`) before reading `commonData`. The `serializePartitions` call
-   * below reads `originalPlan.runtimeFilters` indirectly through `inputRDD → filteredPartitions`
+   * `prepare -> waitForSubqueries`) before reading `commonData`. The `serializePartitions` call
+   * below reads `originalPlan.runtimeFilters` indirectly through `inputRDD -> filteredPartitions`
    * and applies the resolved values to Iceberg's runtime filtering. `originalPlan.runtimeFilters`
    * shares the same `InSubqueryExec` instances as the top-level `runtimeFilters` field (enforced
    * by every construction site), so values resolved through `waitForSubqueries` are visible on
    * both sides.
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+    // Canonicalized instances set originalPlan = null and are not meant to be executed.
+    // If we ever reach this lazy val on a canonicalized form, fail loud rather than NPE
+    // deep inside originalPlan.inputRDD.
+    assert(
+      originalPlan != null,
+      "serializedPartitionData accessed on a canonicalized CometIcebergNativeScanExec; " +
+        "this lazy val should only execute on non-canonical instances")
     // Rebuild originalPlan with the current top-level runtimeFilters before serializing.
     // Spark's PlanAdaptiveDynamicPruningFilters and our transformExpressionsUp passes rewrite
     // the top-level `runtimeFilters` (visible via productIterator), but `originalPlan` is
     // @transient and not touched by transformAllExpressions. serializePartitions reads runtime
-    // filters via originalPlan.inputRDD → filteredPartitions, so an out-of-sync originalPlan
+    // filters via originalPlan.inputRDD -> filteredPartitions, so an out-of-sync originalPlan
     // would re-translate the original (unresolved) InSubqueryExec and throw "no subquery
     // result". This makes the top-level runtimeFilters the single source of truth at
     // serialization time.
     val effectiveOriginalPlan =
-      if (originalPlan != null && originalPlan.runtimeFilters != runtimeFilters) {
+      if (originalPlan.runtimeFilters != runtimeFilters) {
         originalPlan.copy(runtimeFilters = runtimeFilters)
       } else {
         originalPlan
@@ -104,6 +111,7 @@ case class CometIcebergNativeScanExec(
   }
 
   def commonData: Array[Byte] = serializedPartitionData._1
+
   def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 
   // numPartitions for execution - derived from actual DPP-filtered partitions
@@ -161,7 +169,7 @@ case class CometIcebergNativeScanExec(
     override def value: Long = {
       // Ensure DPP InSubqueryExec values are resolved before serializedPartitionData runs;
       // otherwise serializePartitions reads originalPlan.runtimeFilters with empty values
-      // and inputRDD → filteredPartitions skips DPP, caching an unfiltered result.
+      // and inputRDD -> filteredPartitions skips DPP, caching an unfiltered result.
       ensureSubqueriesResolved()
       val _ = serializedPartitionData
       originalPlan.metrics.get(metricName).map(_.value).getOrElse(0L)

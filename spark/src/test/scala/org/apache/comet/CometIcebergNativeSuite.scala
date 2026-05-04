@@ -30,7 +30,7 @@ import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometIcebergNativeScanExec, CometSubqueryAdaptiveBroadcastExec, CometSubqueryBroadcastExec}
+import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
@@ -3138,7 +3138,7 @@ class CometIcebergNativeSuite
           }
 
           // Both should reuse the dim broadcast. Each subquery child is an ASPE that
-          // contains a BroadcastQueryStageExec (or ReusedExchangeExec) — AQE stageCache
+          // contains a BroadcastQueryStageExec (or ReusedExchangeExec) - AQE stageCache
           // dedupes via canonical form rather than Java reference identity.
           subqueries.foreach {
             case csb: CometSubqueryBroadcastExec =>
@@ -3250,7 +3250,7 @@ class CometIcebergNativeSuite
           }
 
           // buildKeys disambiguation: the two DPP subqueries should not share canonical
-          // form (different join keys → different broadcasts). Compare canonicalized
+          // form (different join keys -> different broadcasts). Compare canonicalized
           // plans rather than Java reference identity.
           if (subqueryCsbs.size >= 2) {
             val distinctCanonical = subqueryCsbs.map(_.child.canonicalized).distinct
@@ -3443,7 +3443,7 @@ class CometIcebergNativeSuite
     }
     assert(
       remaining.isEmpty,
-      s"Expected no unconverted CometSubqueryAdaptiveBroadcastExec, " +
+      "Expected no unconverted CometSubqueryAdaptiveBroadcastExec, " +
         s"found ${remaining.size}:\n${plan.treeString}")
   }
 
@@ -3511,14 +3511,14 @@ class CometIcebergNativeSuite
           }
           assert(
             cometSubqueries.size == 1,
-            s"Expected exactly 1 CometSubqueryBroadcastExec (shared), got " +
+            "Expected exactly 1 CometSubqueryBroadcastExec (shared), got " +
               s"${cometSubqueries.size}:\n${cometPlan.treeString}")
           val reusedCsbs = collectWithSubqueries(cometPlan) {
             case r @ ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => r
           }
           assert(
             reusedCsbs.nonEmpty,
-            s"Expected at least one ReusedSubqueryExec(CometSubqueryBroadcastExec):" +
+            "Expected at least one ReusedSubqueryExec(CometSubqueryBroadcastExec):" +
               s"\n${cometPlan.treeString}")
         }
 
@@ -3571,8 +3571,8 @@ class CometIcebergNativeSuite
         // stats, which lets Spark's optimizer naturally pick BuildRight (dim broadcast)
         // in both contexts. Iceberg has no clean ANALYZE-equivalent (its stats come
         // from manifest summaries), and Spark's default size estimate for the small
-        // post-aggregate fact tempts AQE to broadcast fact in the scalar subquery —
-        // BuildLeft instead of BuildRight — which leaves no dim broadcast for the
+        // post-aggregate fact tempts AQE to broadcast fact in the scalar subquery -
+        // BuildLeft instead of BuildRight - which leaves no dim broadcast for the
         // SAB to match against, falling through to TrueLiteral. The hint forces the
         // same broadcast direction Spark picks naturally for V1, so the rule and
         // subqueryCache deduplication path under test actually fires.
@@ -3605,7 +3605,7 @@ class CometIcebergNativeSuite
 
           assert(
             countBroadcasts == 1,
-            s"Expected 1 CometSubqueryBroadcastExec (shared across plans), " +
+            "Expected 1 CometSubqueryBroadcastExec (shared across plans), " +
               s"got $countBroadcasts:\n${cometPlan.treeString}")
           assert(
             countReused == 1,
@@ -3676,7 +3676,7 @@ class CometIcebergNativeSuite
         }.sum
         assert(
           csbCount == 0,
-          s"Expected 0 CometSubqueryBroadcastExec when exchange reuse is off, " +
+          "Expected 0 CometSubqueryBroadcastExec when exchange reuse is off, " +
             s"got $csbCount:\n${cometPlan.treeString}")
 
         spark.sql("DROP TABLE aqe_cat.db.noreuse_fact")
@@ -3739,7 +3739,7 @@ class CometIcebergNativeSuite
           }
           assert(
             cometBroadcasts.size == 1,
-            s"Expected exactly 1 CometBroadcastExchangeExec across whole plan, " +
+            "Expected exactly 1 CometBroadcastExchangeExec across whole plan, " +
               s"got ${cometBroadcasts.size}:\n${cometPlan.treeString}")
         }
 
@@ -3807,15 +3807,15 @@ class CometIcebergNativeSuite
   // `Literal.TrueLiteral`. The invariant under test: the two scans of the same table
   // canonicalize identically AFTER DPP degradation, so the fact data is read exactly once.
   // This depends on CometIcebergNativeScanExec.doCanonicalize stripping
-  // DynamicPruningExpression(TrueLiteral) — analogous to FileSourceScanExec.doCanonicalize
+  // DynamicPruningExpression(TrueLiteral) - analogous to FileSourceScanExec.doCanonicalize
   // on V1.
   //
   // The "exactly once" property manifests differently across Spark versions:
   //   - 3.5+: EnsureRequirements inserts a hash shuffle for SMJ; AQE recognizes the matching
-  //     canonical form on the peer side and emits ReusedExchangeExec → 1 shuffle, 1 reuse.
+  //     canonical form on the peer side and emits ReusedExchangeExec -> 1 shuffle, 1 reuse.
   //     Same shape as V1's CometExecSuite version of this test.
   //   - 3.4: planner doesn't insert shuffles for this query shape (V2-specific outputPartitioning
-  //     interaction with EnsureRequirements). Result: 0 shuffles. Still "data read once" — just
+  //     interaction with EnsureRequirements). Result: 0 shuffles. Still "data read once" - just
   //     via a different mechanism.
   // Either shape satisfies the invariant; assertion accepts both.
   test("AQE DPP - unused DPP filter and exchange reuse (SPARK-32509)") {
@@ -3837,7 +3837,7 @@ class CometIcebergNativeSuite
             store_id INT, units_sold INT
           ) USING iceberg PARTITIONED BY (store_id)
         """)
-        // Match V1's withDppTables shape: 31 rows across many distinct store_ids → many file
+        // Match V1's withDppTables shape: 31 rows across many distinct store_ids -> many file
         // partitions on Iceberg's PARTITIONED BY (store_id). Multiple partitions ensure SMJ
         // sees enough work to need shuffles (Spark's planner can skip shuffles for trivially
         // small inputs). Only store_id=15 has units_sold=70, mirroring V1, so the self-join
@@ -3875,7 +3875,7 @@ class CometIcebergNativeSuite
         val noShuffles = shuffleExchanges.isEmpty && reusedExchanges.isEmpty
         assert(
           singleShuffleWithReuse || noShuffles,
-          s"Expected fact data read exactly once: either (1 shuffle + 1 ReusedExchange) " +
+          "Expected fact data read exactly once: either (1 shuffle + 1 ReusedExchange) " +
             s"or (0 shuffles), got (${shuffleExchanges.size} shuffles, " +
             s"${reusedExchanges.size} reused):\n${cometPlan.treeString}")
 

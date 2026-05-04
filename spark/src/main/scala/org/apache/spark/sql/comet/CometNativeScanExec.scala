@@ -29,8 +29,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
-import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery}
+import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery, _}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
@@ -159,7 +158,7 @@ case class CometNativeScanExec(
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
     // Outer partitionFilters (wrapper) DPP is resolved by Spark's standard
-    // prepare → waitForSubqueries lifecycle, triggered explicitly via
+    // prepare -> waitForSubqueries lifecycle, triggered explicitly via
     // CometLeafExec.ensureSubqueriesResolved called from
     // CometNativeExec.findAllPlanData before commonData is read.
     //
@@ -232,6 +231,7 @@ case class CometNativeScanExec(
   }
 
   def commonData: Array[Byte] = serializedPartitionData._1
+
   def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
