@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst._
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
+import org.apache.spark.sql.comet.shims.{ShimFileSourceScanExec, ShimStreamSourceAwareSparkPlan}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery}
 import org.apache.spark.sql.execution.datasources._
@@ -154,7 +154,7 @@ case class CometNativeScanExec(
       // This mirrors Spark's own FileSourceScanExec, which uses UnknownPartitioning(0)
       // for non-bucketed scans. We do slightly better by reporting a pre-DPP partition
       // count as a cardinality hint.
-      UnknownPartitioning(originalPlan.selectedPartitions.size)
+      UnknownPartitioning(ShimFileSourceScanExec.selectedPartitionCount(originalPlan))
     } else {
       // DPP is resolvable (non-AQE DPP, or AQE DPP already converted). perPartitionData
       // triggers serializedPartitionData which explicitly resolves DPP via updateResult().

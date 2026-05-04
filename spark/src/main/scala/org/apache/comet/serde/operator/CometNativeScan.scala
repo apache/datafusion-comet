@@ -26,6 +26,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Expression, IsNotNull, IsNull, Literal, PlanExpression}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec}
+import org.apache.spark.sql.comet.shims.ShimFileSourceScanExec
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.ArrayType
@@ -181,10 +182,7 @@ object CometNativeScan extends CometOperatorSerde[FileSourceScanExec] with Loggi
       // Extract object store options from first file (S3 configs apply to all files in scan).
       // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
       // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
-      val firstFileUri = scan.selectedPartitions
-        .flatMap(_.files.headOption)
-        .headOption
-        .map(_.getPath.toUri)
+      val firstFileUri = ShimFileSourceScanExec.firstSelectedFileUri(scan)
 
       val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
       val requiredSchema = schema2Proto(scan.requiredSchema.fields)
