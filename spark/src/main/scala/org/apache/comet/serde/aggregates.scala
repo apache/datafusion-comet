@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withInfo}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
@@ -660,6 +660,13 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
       builder.setNumItems(numItemsExpr.get)
       builder.setNumBits(numBitsExpr.get)
       builder.setDatatype(dataType.get)
+      // SPARK-XXXXX (Spark 4.1) introduced a V2 BloomFilter binary format with
+      // different bit-scattering. Spark 4.1's `BloomFilter.create` (used by
+      // `BloomFilterAggregate`) defaults to V2; older Spark always wrote V1. Match
+      // the Spark version so `bloom_filter_agg` outputs are byte-equivalent.
+      builder.setVersion(
+        if (isSpark41Plus) ExprOuterClass.BloomFilterVersion.BLOOM_FILTER_VERSION_V2
+        else ExprOuterClass.BloomFilterVersion.BLOOM_FILTER_VERSION_V1)
 
       Some(
         ExprOuterClass.AggExpr

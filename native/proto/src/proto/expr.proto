@@ -248,6 +248,17 @@ message BloomFilterAgg {
   Expr numItems = 2;
   Expr numBits = 3;
   DataType datatype = 4;
+  // Output serialization version. Spark 4.0 and earlier always wrote V1; Spark
+  // 4.1+ defaults to V2 (different bit-scattering algorithm and a `seed` field
+  // in the binary format). The JVM serde sets this to the matching version so
+  // Comet's aggregate output is byte-equivalent with Spark's.
+  BloomFilterVersion version = 5;
+}
+
+enum BloomFilterVersion {
+  BLOOM_FILTER_VERSION_UNSPECIFIED = 0;
+  BLOOM_FILTER_VERSION_V1 = 1;
+  BLOOM_FILTER_VERSION_V2 = 2;
 }
 
 message CollectSet {
