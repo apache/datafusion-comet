@@ -24,7 +24,8 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
-import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.TaskContext
+import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
@@ -176,7 +177,9 @@ case class CometNativeWriteExec(
           committer.setupTask(taskContext)
 
           // Get the work directory for temp files
-          val workPath = committer.newTaskTempFile(taskContext, None, "")
+          // Spark 4.1 made the (taskContext, dir, ext: String) overload throw by default;
+          // the FileNameSpec overload is the supported one and exists in 3.4+.
+          val workPath = committer.newTaskTempFile(taskContext, None, FileNameSpec("", ""))
           val workDir = new Path(workPath).getParent.toString
 
           (Some(workDir), Some((committer, taskContext)), null)
@@ -197,6 +200,9 @@ case class CometNativeWriteExec(
       }
 
       val nativeMetrics = CometMetricNode.fromCometPlan(this)
+      // Register before CometExecIterator so completion listeners run after iterator close
+      // (Spark runs task completion callbacks in reverse registration order).
+      Option(TaskContext.get()).foreach(nativeMetrics.reportNativeWriteOutputMetrics)
 
       val size = modifiedNativeOp.getSerializedSize
       val planBytes = new Array[Byte](size)

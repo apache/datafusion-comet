@@ -155,14 +155,45 @@ case class CometScanExec(
 
   /**
    * Returns the data filters that are supported for this scan implementation. For
-   * native_datafusion scans, this excludes dynamic pruning filters (subqueries)
+   * native_datafusion scans, this excludes dynamic pruning filters (subqueries) and null checks
+   * on array columns (see [[isNullCheckOnArrayColumn]]).
    */
   lazy val supportedDataFilters: Seq[Expression] = {
     if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
-      dataFilters.filterNot(isDynamicPruningFilter)
+      dataFilters
+        .filterNot(isDynamicPruningFilter)
+        .filterNot(isNullCheckOnArrayColumn)
     } else {
       dataFilters
     }
+  }
+
+  /**
+   * Returns true for IsNotNull/IsNull predicates on ArrayType columns.
+   *
+   * These must be excluded from native scan data filters because:
+   *
+   *   1. Parquet does not support predicate pushdown on repeated columns. The Parquet library's
+   *      SchemaCompatibilityValidator rejects filter predicates on repeated fields entirely
+   *      (SPARK-39393, PARQUET-34). Spark's own ParquetFilters excludes REPEATED columns from
+   *      pushdown for the same reason.
+   *
+   * 2. When Comet attaches these filters via ParquetSource.with_predicate(), DataFusion's list
+   * predicate pushdown (PR #19545) considers IsNotNull on List columns a supported predicate and
+   * pushes it into the Parquet reader as a RowFilter. This triggers an arrow-rs bug where
+   * ListArrayReader crashes on bare repeated primitives ("item_reader def levels are None").
+   *
+   * 3. Even without the arrow-rs bug, the filter is redundant: a bare repeated field is never
+   * null (an empty repeated field means zero elements, not null), and DataFusion's optimizer
+   * would eliminate the filter if it went through the normal planning path.
+   *
+   * Filtering these out is safe -- the predicate is still evaluated after reading, so correctness
+   * is preserved.
+   */
+  private def isNullCheckOnArrayColumn(expr: Expression): Boolean = expr match {
+    case IsNotNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case IsNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case _ => false
   }
 
   @transient
