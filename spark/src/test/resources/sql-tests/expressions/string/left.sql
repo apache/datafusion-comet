@@ -21,7 +21,7 @@ CREATE TABLE test_str_left(s string, n int) USING parquet
 statement
 INSERT INTO test_str_left VALUES ('hello', 3), ('hello', 0), ('hello', -1), ('hello', 10), ('', 3), (NULL, 3), ('hello', NULL)
 
-query expect_fallback(Substring pos and len must be literals)
+query
 SELECT left(s, n) FROM test_str_left
 
 -- column + literal
@@ -40,7 +40,7 @@ query
 SELECT left(s, 10) FROM test_str_left
 
 -- literal + column
-query expect_fallback(Substring pos and len must be literals)
+query
 SELECT left('hello', n) FROM test_str_left
 
 -- literal + literal
