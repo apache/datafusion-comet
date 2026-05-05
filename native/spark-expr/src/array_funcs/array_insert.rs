@@ -105,7 +105,7 @@ impl PhysicalExpr for ArrayInsert {
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
-        self.src_array_expr.nullable(input_schema)
+        Ok(self.src_array_expr.nullable(input_schema)? || self.pos_expr.nullable(input_schema)?)
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {

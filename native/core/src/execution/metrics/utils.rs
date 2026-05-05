@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::errors::CometError;
 use crate::execution::spark_plan::SparkPlan;
-use crate::{errors::CometError, jvm_bridge::jni_call};
 use datafusion::physical_plan::metrics::MetricValue;
 use datafusion_comet_proto::spark_metric::NativeMetricNode;
-use jni::{objects::JObject, JNIEnv};
+use jni::{objects::JObject, Env};
 use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// update the metrics of all the children nodes. The metrics are pulled from the
 /// native execution plan and pushed to the Java side through JNI.
 pub(crate) fn update_comet_metric(
-    env: &mut JNIEnv,
+    env: &mut Env,
     metric_node: &JObject,
     spark_plan: &Arc<SparkPlan>,
 ) -> Result<(), CometError> {

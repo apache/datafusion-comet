@@ -17,12 +17,14 @@ docs/source/_static/images/comet-dataflow.excalidraw
 docs/source/contributor-guide/benchmark-results/**/*.json
 docs/logos/*.png
 docs/logos/*.svg
+docs/source/contributor-guide/*.svg
 rust-toolchain
 spark/src/test/resources/tpcds-extended/q*.sql
 spark/src/test/resources/tpcds-query-results/*.out
 spark/src/test/resources/tpcds-micro-benchmarks/*.sql
 spark/src/test/resources/tpcds-plan-stability/approved-plans*/**/explain.txt
 spark/src/test/resources/tpcds-plan-stability/approved-plans*/**/simplified.txt
+spark/src/test/resources/tpcds-plan-stability/approved-plans*/**/extended.txt
 spark/src/test/resources/tpch-query-results/*.out
 spark/src/test/resources/tpch-extended/q*.sql
 spark/src/test/resources/test-data/*.csv

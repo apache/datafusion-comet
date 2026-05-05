@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_size(arr array<int>, m map<string, int>) USING parquet
 
@@ -27,5 +25,5 @@ query spark_answer_only
 SELECT size(arr), size(m) FROM test_size
 
 -- literal arguments
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT size(array(1, 2, 3)), size(array()), size(cast(NULL as array<int>))

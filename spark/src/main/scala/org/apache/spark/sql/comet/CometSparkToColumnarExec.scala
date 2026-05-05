@@ -97,7 +97,12 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     val numOutputBatches = longMetric("numOutputBatches")
     val conversionTime = longMetric("conversionTime")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    val timeZoneId = conf.sessionLocalTimeZone
+    // Use UTC for Arrow schema timezone to match the native side, which always
+    // deserializes Timestamp as Timestamp(Microsecond, Some("UTC")). Spark's internal
+    // timestamp representation is always UTC microseconds, so the timezone here is
+    // purely schema metadata. Using session timezone would cause Arrow RowConverter
+    // schema mismatch errors in non-UTC sessions. See COMET-2720.
+    val timeZoneId = "UTC"
     val schema = child.schema
 
     if (child.supportsColumnar) {
@@ -139,6 +144,10 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 }
 
 object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSupport {
+
+  // uses CometArrowConverters, which re-uses arrays
+  override def isFfiSafe: Boolean = false
+
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,
       op: SparkPlan): CometNativeExec = {

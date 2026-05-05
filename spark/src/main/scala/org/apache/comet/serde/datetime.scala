@@ -21,11 +21,13 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, SecondsToTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
@@ -177,6 +179,23 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
 }
 
 object CometHour extends CometExpressionSerde[Hour] {
+
+  val incompatReason: String = "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+    " (https://github.com/apache/datafusion-comet/issues/3180)"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: Hour): SupportLevel = {
+    if (expr.child.dataType == TimestampNTZType) {
+      Incompatible(
+        Some(
+          "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+            " (https://github.com/apache/datafusion-comet/issues/3180)"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: Hour,
       inputs: Seq[Attribute],
@@ -203,6 +222,22 @@ object CometHour extends CometExpressionSerde[Hour] {
 }
 
 object CometMinute extends CometExpressionSerde[Minute] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+      " (https://github.com/apache/datafusion-comet/issues/3180)")
+
+  override def getSupportLevel(expr: Minute): SupportLevel = {
+    if (expr.child.dataType == TimestampNTZType) {
+      Incompatible(
+        Some(
+          "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+            " (https://github.com/apache/datafusion-comet/issues/3180)"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: Minute,
       inputs: Seq[Attribute],
@@ -229,6 +264,22 @@ object CometMinute extends CometExpressionSerde[Minute] {
 }
 
 object CometSecond extends CometExpressionSerde[Second] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+      " (https://github.com/apache/datafusion-comet/issues/3180)")
+
+  override def getSupportLevel(expr: Second): SupportLevel = {
+    if (expr.child.dataType == TimestampNTZType) {
+      Incompatible(
+        Some(
+          "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+            " (https://github.com/apache/datafusion-comet/issues/3180)"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: Second,
       inputs: Seq[Attribute],
@@ -256,12 +307,15 @@ object CometSecond extends CometExpressionSerde[Second] {
 
 object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only `TimestampType` and `DateType` inputs are supported." +
+      " `TimestampNTZType` is not supported because Comet incorrectly applies timezone" +
+      " conversion to TimestampNTZ values.")
+
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
-    // Note: TimestampNTZType is not supported because Comet incorrectly applies
-    // timezone conversion to TimestampNTZ values. TimestampNTZ stores local time
-    // without timezone, so no conversion should be applied.
     expr.children.head.dataType match {
       case TimestampType | DateType => true
+      case TimestampNTZType => true
       case _ => false
     }
   }
@@ -314,7 +368,18 @@ object CometNextDay extends CometScalarFunction[NextDay]("next_day")
 
 object CometMakeDate extends CometScalarFunction[MakeDate]("make_date")
 
+object CometSecondsToTimestamp
+    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
+  override def getSupportLevel(expr: SecondsToTimestamp): SupportLevel =
+    expr.child.dataType match {
+      case IntegerType | LongType | FloatType | DoubleType => Compatible()
+      case dt => Unsupported(Some(s"timestamp_seconds does not support input type $dt"))
+    }
+}
+
 object CometLastDay extends CometScalarFunction[LastDay]("last_day")
+
+object CometDateFromUnixDate extends CometScalarFunction[DateFromUnixDate]("date_from_unix_date")
 
 object CometDateDiff extends CometScalarFunction[DateDiff]("date_diff")
 
@@ -350,6 +415,12 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
   val supportedFormats: Seq[String] =
     Seq("year", "yyyy", "yy", "quarter", "mon", "month", "mm", "week")
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Non-literal format strings will throw an exception instead of returning NULL")
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only the following formats are supported: " + supportedFormats.mkString(", "))
+
   override def getSupportLevel(expr: TruncDate): SupportLevel = {
     expr.format match {
       case Literal(fmt: UTF8String, _) =>
@@ -383,6 +454,10 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
 
 object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Produces incorrect results when used with non-UTC timezones. Compatible when timezone is" +
+      " UTC. (https://github.com/apache/datafusion-comet/issues/2649)")
+
   val supportedFormats: Seq[String] =
     Seq(
       "year",
@@ -402,10 +477,19 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
       "microsecond")
 
   override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
+    val timezone = expr.timeZoneId.getOrElse("UTC")
+    val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
     expr.format match {
       case Literal(fmt: UTF8String, _) =>
         if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
-          Compatible()
+          if (isUtc) {
+            Compatible()
+          } else {
+            Incompatible(
+              Some(
+                s"Incorrect results in non-UTC timezone '$timezone'" +
+                  " (https://github.com/apache/datafusion-comet/issues/2649)"))
+          }
         } else {
           Unsupported(Some(s"Format $fmt is not supported"))
         }
@@ -487,6 +571,15 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
     // ISO formats
     "yyyy-MM-dd'T'HH:mm:ss" -> "%Y-%m-%dT%H:%M:%S")
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Non-UTC timezones may produce different results than Spark")
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only the following formats are supported:" +
+      supportedFormats.keys.toSeq.sorted
+        .map(k => s"`$k`")
+        .mkString("\n  - ", "\n  - ", ""))
+
   override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
     // Check timezone - only UTC is fully compatible
     val timezone = expr.timeZoneId.getOrElse("UTC")
@@ -539,5 +632,85 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
         withInfo(expr, expr.left, expr.right)
         None
     }
+  }
+}
+
+/**
+ * Converts a timestamp to the number of hours since Unix epoch (1970-01-01 00:00:00 UTC). This is
+ * a V2 partition transform expression.
+ *
+ * Both TimestampType and TimestampNTZType use direct division of the raw microsecond value
+ * without applying any session timezone offset.
+ */
+object CometHours extends CometExpressionSerde[Hours] {
+  override def convert(
+      expr: Hours,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val optExpr = expr.child.dataType match {
+      case TimestampType | TimestampNTZType =>
+        exprToProtoInternal(expr.child, inputs, binding).map { childExpr =>
+          val builder = ExprOuterClass.HoursTransform.newBuilder()
+          builder.setChild(childExpr)
+
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setHoursTransform(builder)
+            .build()
+        }
+      case other =>
+        withInfo(expr, s"Hours does not support input type: $other")
+        None
+    }
+    optExprWithInfo(optExpr, expr, expr.child)
+  }
+}
+
+/**
+ * Converts a timestamp or date to the number of days since Unix epoch (1970-01-01). This is a V2
+ * partition transform expression.
+ *
+ * For DateType: dates are internally stored as days since epoch, so this is a simple cast to
+ * integer (same as CometUnixDate).
+ *
+ * For TimestampType: uses a timezone-aware Cast(Timestamp to Date) followed by Cast(Date to Int).
+ * The first cast respects the session timezone to correctly determine the date boundary.
+ */
+object CometDays extends CometExpressionSerde[Days] {
+  override def convert(
+      expr: Days,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+
+    // Normalize input to DateType (Timestamp converts to Date first)
+    val dateExprOpt = expr.child.dataType match {
+      case DateType => childExpr
+      case TimestampType =>
+        val timezone = SQLConf.get.sessionLocalTimeZone
+        childExpr.flatMap { child =>
+          CometCast.castToProto(expr, Some(timezone), DateType, child, CometEvalMode.LEGACY)
+        }
+      case other =>
+        withInfo(expr, s"Days does not support input type: $other")
+        None
+    }
+
+    // Convert DateType to IntegerType (days since epoch)
+    val optExpr = dateExprOpt.map { dateExpr =>
+      Expr
+        .newBuilder()
+        .setCast(
+          ExprOuterClass.Cast
+            .newBuilder()
+            .setChild(dateExpr)
+            .setDatatype(serializeDataType(IntegerType).get)
+            .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+            .setAllowIncompat(false)
+            .build())
+        .build()
+    }
+
+    optExprWithInfo(optExpr, expr, expr.child)
   }
 }

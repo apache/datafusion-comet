@@ -29,9 +29,22 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        openjdk-8-jdk-headless \
        openjdk-17-jdk-headless \
-       python3 python3-pip procps \
+       python3 python3-pip procps wget \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Install async-profiler for profiling Java + native (Rust/C++) code.
+ARG ASYNC_PROFILER_VERSION=3.0
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then AP_ARCH="linux-x64"; \
+    elif [ "$ARCH" = "aarch64" ]; then AP_ARCH="linux-aarch64"; \
+    else echo "Unsupported architecture: $ARCH" && exit 1; fi && \
+    wget -q "https://github.com/async-profiler/async-profiler/releases/download/v${ASYNC_PROFILER_VERSION}/async-profiler-${ASYNC_PROFILER_VERSION}-${AP_ARCH}.tar.gz" \
+         -O /tmp/async-profiler.tar.gz && \
+    mkdir -p /opt/async-profiler && \
+    tar xzf /tmp/async-profiler.tar.gz -C /opt/async-profiler --strip-components=1 && \
+    rm /tmp/async-profiler.tar.gz
+ENV ASYNC_PROFILER_HOME=/opt/async-profiler
 
 # Default to Java 17 (override with JAVA_HOME at runtime for Gluten).
 # Detect architecture (amd64 or arm64) so the image works on both Linux and macOS.

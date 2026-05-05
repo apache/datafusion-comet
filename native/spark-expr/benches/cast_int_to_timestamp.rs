@@ -35,7 +35,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Int8 -> Timestamp
     let batch_i8 = create_int8_batch();
     let expr_i8 = Arc::new(Column::new("a", 0));
-    let cast_i8_to_ts = Cast::new(expr_i8, timestamp_type.clone(), spark_cast_options.clone());
+    let cast_i8_to_ts = Cast::new(
+        expr_i8,
+        timestamp_type.clone(),
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
     group.bench_function("cast_i8_to_timestamp", |b| {
         b.iter(|| cast_i8_to_ts.evaluate(&batch_i8).unwrap());
     });
@@ -43,7 +49,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Int16 -> Timestamp
     let batch_i16 = create_int16_batch();
     let expr_i16 = Arc::new(Column::new("a", 0));
-    let cast_i16_to_ts = Cast::new(expr_i16, timestamp_type.clone(), spark_cast_options.clone());
+    let cast_i16_to_ts = Cast::new(
+        expr_i16,
+        timestamp_type.clone(),
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
     group.bench_function("cast_i16_to_timestamp", |b| {
         b.iter(|| cast_i16_to_ts.evaluate(&batch_i16).unwrap());
     });
@@ -51,7 +63,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Int32 -> Timestamp
     let batch_i32 = create_int32_batch();
     let expr_i32 = Arc::new(Column::new("a", 0));
-    let cast_i32_to_ts = Cast::new(expr_i32, timestamp_type.clone(), spark_cast_options.clone());
+    let cast_i32_to_ts = Cast::new(
+        expr_i32,
+        timestamp_type.clone(),
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
     group.bench_function("cast_i32_to_timestamp", |b| {
         b.iter(|| cast_i32_to_ts.evaluate(&batch_i32).unwrap());
     });
@@ -59,7 +77,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Int64 -> Timestamp
     let batch_i64 = create_int64_batch();
     let expr_i64 = Arc::new(Column::new("a", 0));
-    let cast_i64_to_ts = Cast::new(expr_i64, timestamp_type.clone(), spark_cast_options.clone());
+    let cast_i64_to_ts = Cast::new(
+        expr_i64,
+        timestamp_type.clone(),
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
     group.bench_function("cast_i64_to_timestamp", |b| {
         b.iter(|| cast_i64_to_ts.evaluate(&batch_i64).unwrap());
     });

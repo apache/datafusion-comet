@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_array_max(arr array<int>) USING parquet
 
@@ -27,5 +25,5 @@ query spark_answer_only
 SELECT array_max(arr) FROM test_array_max
 
 -- literal arguments
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT array_max(array(1, 2, 3)), array_max(array()), array_max(cast(NULL as array<int>))

@@ -101,6 +101,74 @@ The runtime is created once per executor JVM in a `Lazy<Runtime>` static:
 | Storing `JNIEnv` in an operator           | **No** | `JNIEnv` is thread-specific              |
 | Capturing state at plan creation time     | Yes    | Runs on executor thread, store in struct |
 
+## Global singletons
+
+Comet code runs in both the driver and executor JVM processes, and different parts of the
+codebase run in each. Global singletons have **process lifetime** — they are created once and
+never dropped until the JVM exits. Since multiple Spark jobs, queries, and tasks share the same
+process, this makes it difficult to reason about what state a singleton holds and whether it is
+still valid.
+
+### How to recognize them
+
+**Rust:** `static` variables using `OnceLock`, `LazyLock`, `OnceCell`, `Lazy`, or `lazy_static!`:
+
+```rust
+static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, PerTaskMemoryPool>>> = Lazy::new(..);
+```
+
+**Java:** `static` fields, especially mutable collections:
+
+```java
+private static final HashMap<Long, HashMap<Long, ScalarSubquery>> subqueryMap = new HashMap<>();
+```
+
+**Scala:** `object` declarations (companion objects are JVM singletons) holding mutable state:
+
+```scala
+object MyCache {
+  private val cache = new ConcurrentHashMap[String, Value]()
+}
+```
+
+### Why they are dangerous
+
+- **Credential staleness.** A singleton caching an authenticated client will hold stale
+  credentials after token rotation, causing silent failures mid-job.
+- **Unbounded growth.** A cache keyed by file path or configuration grows with every query
+  but never shrinks. Over hours of process uptime this becomes a memory leak.
+- **Cross-job contamination.** Different Spark jobs on the same process may use different
+  configurations. A singleton initialized by the first job silently serves wrong state to
+  subsequent jobs.
+- **Testing difficulty.** Global state persists across test cases, making tests
+  order-dependent.
+
+### When a singleton is acceptable
+
+Some state genuinely has process lifetime:
+
+| Singleton                                     | Why it is safe                                      |
+| --------------------------------------------- | --------------------------------------------------- |
+| `TOKIO_RUNTIME`                               | One runtime per executor, no configuration variance |
+| `JAVA_VM` / `JVM_CLASSES`                     | One JVM per process, set once at JNI load           |
+| `OperatorRegistry` / `ExpressionRegistry`     | Immutable after initialization                      |
+| Compiled `Regex` patterns (`LazyLock<Regex>`) | Stateless and immutable                             |
+
+### When to avoid a singleton
+
+If any of these apply, do **not** use a global singleton:
+
+- The state depends on configuration that can vary between jobs or queries
+- The state holds credentials or authenticated connections that will not expire or invalidate appropriately
+- The state grows proportionally to the number of queries or files processed
+- The state needs cleanup or refresh during process lifetime
+
+Instead, scope state to the plan or task by adding the cache as a field in an existing session or context object.
+
+If a singleton is truly needed, add a comment explaining why `static` is the right lifetime,
+whether the cache is bounded, and how credential refresh is handled (if applicable).
+
 ## Development Setup
 
 1. Make sure `JAVA_HOME` is set and point to JDK using [support matrix](../user-guide/latest/installation.md)
@@ -213,14 +281,14 @@ size limit to 16 MB.
 First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
 After that you can open the project in CLion. The IDE should automatically detect the project structure and import as a Cargo project.
 
-### SQL file tests (recommended for expressions)
+### Comet SQL Tests (recommended for expressions)
 
-For testing expressions and operators, prefer using SQL file tests over writing Scala test
-code. SQL file tests are plain `.sql` files that are automatically discovered and executed --
+For testing expressions and operators, prefer using Comet SQL Tests over writing Comet Scala
+Tests. Comet SQL Tests are plain `.sql` files that are automatically discovered and executed:
 no Scala code to write, and no recompilation needed when tests change. This makes it easy to
 iterate quickly and to get good coverage of edge cases and argument combinations.
 
-See the [SQL File Tests](sql-file-tests) guide for the full documentation on how to write
+See the [Comet SQL Tests](sql-file-tests) guide for the full documentation on how to write
 and run these tests.
 
 ### Running Tests in IDEA
@@ -369,6 +437,47 @@ make test-rust
 # Or run only JVM tests (native must be built first)
 make test-jvm
 ```
+
+### 5. Register New Test Suites in CI
+
+Comet's CI does not automatically discover test suites. Instead, test suites are explicitly listed
+in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
+jobs. This reduces overall CI time.
+
+If you add a new Comet Scala Test suite, you must add it to the `suite` matrix in **both** workflow files:
+
+- `.github/workflows/pr_build_linux.yml`
+- `.github/workflows/pr_build_macos.yml`
+
+Each file contains a `suite` matrix with named groups such as `fuzz`, `shuffle`, `parquet`, `csv`,
+`exec`, `expressions`, and `sql`. Add your new suite's fully qualified class name to the
+appropriate group. For example, if you add a new expression test suite, add it to the
+`expressions` group:
+
+```yaml
+- name: "expressions"
+  value: |
+    org.apache.comet.CometExpressionSuite
+    # ... existing suites ...
+    org.apache.comet.YourNewExpressionSuite  # <-- add here
+```
+
+Choose the group that best matches the area your test covers:
+
+| Group         | Covers                                                     |
+| ------------- | ---------------------------------------------------------- |
+| `fuzz`        | Fuzz testing and data generation                           |
+| `shuffle`     | Shuffle operators and related exchange behavior            |
+| `parquet`     | Parquet read/write and native reader tests                 |
+| `csv`         | CSV native read tests                                      |
+| `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\* |
+| `expressions` | Expression evaluation, casts, and Comet SQL Tests          |
+| `sql`         | SQL-level behavior tests                                   |
+
+**Important:** The suite lists in both workflow files must stay in sync. A separate CI check
+(`.github/workflows/pr_missing_suites.yml`) runs `dev/ci/check-suites.py` on every pull request.
+It scans for all `*Suite.scala` files in the repository and verifies that each one appears in both
+workflow files. If any suite is missing, this check will fail and block the PR.
 
 ### Pre-PR Summary
 
