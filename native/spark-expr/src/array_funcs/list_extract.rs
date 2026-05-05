@@ -277,33 +277,38 @@ fn list_extract<O: OffsetSizeTrait>(
 
     let mut mutable = MutableArrayData::new(vec![&data, &default_data], true, index_array.len());
 
-    for (row, (offset_window, index)) in offsets.windows(2).zip(index_array.values()).enumerate() {
+    for (row, (offset_window, index)) in offsets.windows(2).zip(index_array.iter()).enumerate() {
         let start = offset_window[0].as_usize();
         let len = offset_window[1].as_usize() - start;
 
-        if let Some(i) = adjust_index(*index, len)? {
-            mutable.extend(0, start + i, start + i + 1);
-        } else if list_array.is_null(row) {
+        if list_array.is_null(row) {
             mutable.extend_nulls(1);
-        } else if fail_on_error {
-            // Throw appropriate error based on whether this is element_at (one_based=true)
-            // or GetArrayItem (one_based=false)
-            let error = if one_based {
-                // element_at function
-                SparkError::InvalidElementAtIndex {
-                    index_value: *index,
-                    array_size: len as i32,
-                }
+        } else if let Some(index) = index {
+            if let Some(i) = adjust_index(index, len)? {
+                mutable.extend(0, start + i, start + i + 1);
+            } else if fail_on_error {
+                // Throw appropriate error based on whether this is element_at (one_based=true)
+                // or GetArrayItem (one_based=false)
+                let error = if one_based {
+                    // element_at function
+                    SparkError::InvalidElementAtIndex {
+                        index_value: index,
+                        array_size: len as i32,
+                    }
+                } else {
+                    // GetArrayItem (arr[index])
+                    SparkError::InvalidArrayIndex {
+                        index_value: index,
+                        array_size: len as i32,
+                    }
+                };
+                return Err(error_wrapper(error));
             } else {
-                // GetArrayItem (arr[index])
-                SparkError::InvalidArrayIndex {
-                    index_value: *index,
-                    array_size: len as i32,
-                }
-            };
-            return Err(error_wrapper(error));
+                mutable.extend(1, 0, 1);
+            }
         } else {
-            mutable.extend(1, 0, 1);
+            // index is NULL → result is NULL
+            mutable.extend_nulls(1);
         }
     }
 
@@ -379,6 +384,42 @@ mod test {
         assert_eq!(
             &result.to_data(),
             &Int32Array::from(vec![Some(1), None, Some(0)]).to_data()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_null_index() -> Result<()> {
+        // GetArrayItem returns incorrect results with dynamic (column) index containing nulls
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(10), Some(20), Some(30)]),
+            Some(vec![Some(10), Some(20), Some(30)]),
+            Some(vec![Some(10), Some(20), Some(30)]),
+            Some(vec![Some(1)]),
+            None,
+            Some(vec![Some(10), Some(20)]),
+        ]);
+        let indices = Int32Array::from(vec![Some(0), Some(1), Some(2), Some(0), Some(0), None]);
+
+        let null_default = ScalarValue::Int32(None);
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+
+        let ColumnarValue::Array(result) = list_extract(
+            &list,
+            &indices,
+            &null_default,
+            false,
+            false,
+            |idx, len| zero_based_index(idx, len, &error_wrapper),
+            &error_wrapper,
+        )?
+        else {
+            unreachable!()
+        };
+
+        assert_eq!(
+            &result.to_data(),
+            &Int32Array::from(vec![Some(10), Some(20), Some(30), Some(1), None, None]).to_data()
         );
         Ok(())
     }

@@ -191,7 +191,7 @@ class CometNativeShuffleWriter[K, V](
       shuffleWriterBuilder.setCompressionLevel(
         CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
       shuffleWriterBuilder.setWriteBufferSize(
-        CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().max(Int.MaxValue).toInt)
+        CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
 
       outputPartitioning match {
         case p if isSinglePartitioning(p) =>
@@ -306,6 +306,8 @@ class CometNativeShuffleWriter[K, V](
           throw new UnsupportedOperationException(
             s"Partitioning $outputPartitioning is not supported.")
       }
+
+      shuffleWriterBuilder.setTracingEnabled(CometConf.COMET_TRACING_ENABLED.get())
 
       val shuffleWriterOpBuilder = OperatorOuterClass.Operator.newBuilder()
       shuffleWriterOpBuilder

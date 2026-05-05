@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.jdk.CollectionConverters._
@@ -101,7 +100,9 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           case 2 =>
             c.newInstance(conf, null).asInstanceOf[IndexShuffleBlockResolver]
           case 3 =>
-            c.newInstance(conf, null, Collections.emptyMap())
+            // Spark 4.1 changed the third parameter type from java.util.Map to
+            // java.util.concurrent.ConcurrentMap. ConcurrentHashMap satisfies both.
+            c.newInstance(conf, null, new ConcurrentHashMap[Int, OpenHashSet[Long]]())
               .asInstanceOf[IndexShuffleBlockResolver]
         }
       }

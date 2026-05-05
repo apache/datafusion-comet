@@ -164,7 +164,8 @@ impl AggregateUDFImpl for SumDecimal {
     }
 
     fn is_nullable(&self) -> bool {
-        // SumDecimal is always nullable because overflows can cause null values
+        // In Spark, Sum.nullable and Average.nullable both return true irrespective of ANSI mode.
+        // SumDecimal is always nullable because overflows can cause null values.
         true
     }
 }
@@ -213,7 +214,7 @@ impl SumDecimalAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error();
+                let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
             }
             self.sum = None;
@@ -310,57 +311,61 @@ impl Accumulator for SumDecimalAccumulator {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> DFResult<()> {
-        // For decimal sum, always expect 2 state arrays regardless of eval_mode
         assert_eq!(
             states.len(),
             2,
-            "Expect two elements in 'states' but found {}",
+            "expected (sum, is_empty), got {}",
             states.len()
         );
-        assert_eq!(states[0].len(), 1);
-        assert_eq!(states[1].len(), 1);
+        assert_eq!(states[0].len(), states[1].len());
 
-        let that_sum_array = states[0].as_primitive::<Decimal128Type>();
-        let that_sum = if that_sum_array.is_null(0) {
-            None
-        } else {
-            Some(that_sum_array.value(0))
-        };
+        let sum_array = states[0].as_primitive::<Decimal128Type>();
+        let is_empty_array = states[1].as_boolean();
 
-        let that_is_empty = states[1].as_boolean().value(0);
-        let that_overflowed = !that_is_empty && that_sum.is_none();
-        let this_overflowed = !self.is_empty && self.sum.is_none();
-
-        if that_overflowed || this_overflowed {
-            self.sum = None;
-            self.is_empty = false;
-            return Ok(());
-        }
-
-        if that_is_empty {
-            return Ok(());
-        }
-
-        if self.is_empty {
-            self.sum = that_sum;
-            self.is_empty = false;
-            return Ok(());
-        }
-
-        let left = self.sum.unwrap();
-        let right = that_sum.unwrap();
-        let (new_sum, is_overflow) = left.overflowing_add(right);
-
-        if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
-            if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error();
-                return Err(self.wrap_error_with_context(error));
+        // May be called with multiple state rows (e.g. under MergeAsPartial or
+        // non-grouped aggregates merging state from several partitions).
+        for i in 0..sum_array.len() {
+            let that_sum = if sum_array.is_null(i) {
+                None
             } else {
+                Some(sum_array.value(i))
+            };
+            let that_is_empty = is_empty_array.value(i);
+            let that_overflowed = !that_is_empty && that_sum.is_none();
+            let this_overflowed = !self.is_empty && self.sum.is_none();
+
+            // Overflow is sticky; ANSI error was raised upstream.
+            if that_overflowed || this_overflowed {
                 self.sum = None;
                 self.is_empty = false;
+                continue;
             }
-        } else {
-            self.sum = Some(new_sum);
+
+            if that_is_empty {
+                continue;
+            }
+
+            if self.is_empty {
+                self.sum = that_sum;
+                self.is_empty = false;
+                continue;
+            }
+
+            let left = self.sum.unwrap();
+            let right = that_sum.unwrap();
+            let (new_sum, is_overflow) = left.overflowing_add(right);
+
+            if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
+                if self.eval_mode == EvalMode::Ansi {
+                    let error = decimal_sum_overflow_error("sum");
+                    return Err(self.wrap_error_with_context(error));
+                } else {
+                    self.sum = None;
+                    self.is_empty = false;
+                }
+            } else {
+                self.sum = Some(new_sum);
+            }
         }
 
         Ok(())
@@ -425,7 +430,7 @@ impl SumDecimalGroupsAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error();
+                let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
             }
             self.sum[group_index] = None;
@@ -445,7 +450,6 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        assert!(opt_filter.is_none(), "opt_filter is not supported yet");
         assert_eq!(values.len(), 1);
         let values = values[0].as_primitive::<Decimal128Type>();
         let data = values.values();
@@ -453,12 +457,17 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         self.resize_helper(total_num_groups);
 
         let iter = group_indices.iter().zip(data.iter());
-        if values.null_count() == 0 {
+        if opt_filter.is_none() && values.null_count() == 0 {
             for (&group_index, &value) in iter {
                 self.update_single(group_index, value)?;
             }
         } else {
             for (idx, (&group_index, &value)) in iter.enumerate() {
+                if let Some(f) = opt_filter {
+                    if !f.is_valid(idx) || !f.value(idx) {
+                        continue;
+                    }
+                }
                 if values.is_null(idx) {
                     continue;
                 }
@@ -539,7 +548,10 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        assert!(opt_filter.is_none(), "opt_filter is not supported yet");
+        debug_assert!(
+            opt_filter.is_none(),
+            "opt_filter is not supported in merge_batch"
+        );
 
         self.resize_helper(total_num_groups);
 
@@ -587,7 +599,7 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
 
             if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
                 if self.eval_mode == EvalMode::Ansi {
-                    let error = decimal_sum_overflow_error();
+                    let error = decimal_sum_overflow_error("sum");
                     return Err(self.wrap_error_with_context(error));
                 } else {
                     self.sum[group_index] = None;
@@ -710,5 +722,85 @@ mod tests {
 
         let schema = Schema::new(fields);
         RecordBatch::try_new(Arc::new(schema), columns).unwrap()
+    }
+
+    #[test]
+    fn test_update_batch_with_filter() {
+        use arrow::array::Decimal128Array;
+        use datafusion::logical_expr::{EmitTo, GroupsAccumulator};
+
+        let data_type = DataType::Decimal128(10, 2);
+        let mut acc = SumDecimalGroupsAccumulator::new(
+            data_type.clone(),
+            10,
+            EvalMode::Legacy,
+            None,
+            crate::create_query_context_map(),
+        );
+
+        // values: [100, 200, 300, 400], filter: [T, F, T, F] => sum = 100+300 = 400
+        let values: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![100i128, 200, 300, 400]).with_data_type(data_type.clone()),
+        );
+        let filter = BooleanArray::from(vec![true, false, true, false]);
+        acc.update_batch(&[values], &[0, 0, 0, 0], Some(&filter), 1)
+            .unwrap();
+
+        let result = acc.evaluate(EmitTo::All).unwrap();
+        let result = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(result.value(0), 400);
+    }
+
+    #[test]
+    fn test_update_batch_filter_null_treated_as_exclude() {
+        use arrow::array::Decimal128Array;
+        use datafusion::logical_expr::{EmitTo, GroupsAccumulator};
+
+        let data_type = DataType::Decimal128(10, 2);
+        let mut acc = SumDecimalGroupsAccumulator::new(
+            data_type.clone(),
+            10,
+            EvalMode::Legacy,
+            None,
+            crate::create_query_context_map(),
+        );
+
+        let values: ArrayRef =
+            Arc::new(Decimal128Array::from(vec![10i128, 20, 30]).with_data_type(data_type.clone()));
+        let filter = BooleanArray::from(vec![Some(true), None, Some(true)]);
+        acc.update_batch(&[values], &[0, 0, 0], Some(&filter), 1)
+            .unwrap();
+
+        let result = acc.evaluate(EmitTo::All).unwrap();
+        let result = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(result.value(0), 40); // 10 + 30 = 40
+    }
+
+    /// `merge_batch` must consume every row — previously it asserted
+    /// `states[*].len() == 1` and silently dropped the rest.
+    #[test]
+    fn test_accumulator_merge_batch_multi_row() {
+        let data_type = DataType::Decimal128(10, 2);
+        let mut acc = SumDecimalAccumulator::new(
+            10,
+            2,
+            EvalMode::Legacy,
+            None,
+            crate::create_query_context_map(),
+        );
+
+        // sums [100, 200, null, 300], is_empty [false, false, true, false] -> 600
+        let sums: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![Some(100i128), Some(200), None, Some(300)])
+                .with_data_type(data_type.clone()),
+        );
+        let is_empty: ArrayRef = Arc::new(BooleanArray::from(vec![false, false, true, false]));
+        acc.merge_batch(&[sums, is_empty]).unwrap();
+
+        let evaluated = acc.evaluate().unwrap();
+        match evaluated {
+            ScalarValue::Decimal128(Some(v), _, _) => assert_eq!(v, 600),
+            other => panic!("unexpected result: {other:?}"),
+        }
     }
 }

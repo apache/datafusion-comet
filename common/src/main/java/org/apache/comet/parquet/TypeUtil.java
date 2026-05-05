@@ -57,9 +57,8 @@ public class TypeUtil {
     DataType type = field.dataType();
 
     Types.PrimitiveBuilder<PrimitiveType> builder = null;
-    // Only partition column can be `NullType`, which also uses `ConstantColumnReader`. Here we
-    // piggy-back onto Parquet boolean type for constant vector of null values, we don't really
-    // care what Parquet type it is.
+    // Only partition column can be `NullType`. Here we piggy-back onto Parquet boolean type
+    // for constant vector of null values, we don't really care what Parquet type it is.
     if (type == DataTypes.BooleanType || type == DataTypes.NullType) {
       builder = Types.primitive(PrimitiveType.PrimitiveTypeName.BOOLEAN, repetition);
     } else if (type == DataTypes.IntegerType || type instanceof YearMonthIntervalType) {

@@ -19,7 +19,6 @@
 -- Uses UTC timezone to ensure results match Spark
 -- Config: spark.comet.expression.FromUnixTime.allowIncompatible=true
 -- Config: spark.sql.session.timeZone=UTC
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_from_unix_time_enabled(t long) USING parquet

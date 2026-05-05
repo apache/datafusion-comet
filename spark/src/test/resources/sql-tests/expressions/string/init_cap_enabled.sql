@@ -17,7 +17,6 @@
 
 -- Test initcap() with allowIncompatible enabled (happy path)
 -- Config: spark.comet.expression.InitCap.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_initcap_enabled(s string) USING parquet

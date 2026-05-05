@@ -17,6 +17,7 @@
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::parquet_read_cached_factory::CachingParquetReaderFactory;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
@@ -70,12 +71,14 @@ pub(crate) fn init_datasource_exec(
     default_values: Option<HashMap<Column, ScalarValue>>,
     session_timezone: &str,
     case_sensitive: bool,
+    return_null_struct_if_all_fields_missing: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     let (table_parquet_options, spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
+        return_null_struct_if_all_fields_missing,
         &object_store_url,
         encryption_enabled,
     );
@@ -149,6 +152,11 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
+    // Use caching reader factory to avoid redundant footer reads across partitions
+    let store = session_ctx.runtime_env().object_store(&object_store_url)?;
+    parquet_source = parquet_source
+        .with_parquet_file_reader_factory(Arc::new(CachingParquetReaderFactory::new(store)));
+
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
         SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
     );
@@ -179,6 +187,7 @@ pub(crate) fn init_datasource_exec(
 fn get_options(
     session_timezone: &str,
     case_sensitive: bool,
+    return_null_struct_if_all_fields_missing: bool,
     object_store_url: &ObjectStoreUrl,
     encryption_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
@@ -190,6 +199,8 @@ fn get_options(
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;
+    spark_parquet_options.return_null_struct_if_all_fields_missing =
+        return_null_struct_if_all_fields_missing;
 
     if encryption_enabled {
         table_parquet_options.crypto.configure_factory(

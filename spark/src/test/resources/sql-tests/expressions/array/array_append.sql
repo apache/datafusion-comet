@@ -15,9 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- On Spark 4.0, array_append is a RuntimeReplaceable that rewrites to array_insert(-1),
+-- so we need to allow the incompatible array_insert to run natively there.
 -- Config: spark.comet.expression.ArrayInsert.allowIncompatible=true
--- Config: spark.comet.expression.ArrayAppend.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_array_append(arr array<int>, val int) USING parquet
