@@ -1993,7 +1993,7 @@ dependencies = [
  "object_store",
  "object_store_opendal",
  "once_cell",
- "opendal 0.55.0 (git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512)",
+ "opendal 0.56.0",
  "parking_lot",
  "parquet",
  "paste",
@@ -3627,7 +3627,7 @@ dependencies = [
  "cfg-if",
  "futures",
  "iceberg",
- "opendal 0.55.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opendal 0.55.0",
  "reqsign",
  "reqwest 0.12.28",
  "serde",
@@ -4556,8 +4556,9 @@ dependencies = [
 
 [[package]]
 name = "object_store_opendal"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512#6909efcdfd12b3b2ac3a76f654c35ee576811512"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08298874eee5935c95bcaa393148834f9c53d904461ca15584a041d8a1c907c2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4565,7 +4566,7 @@ dependencies = [
  "futures",
  "mea",
  "object_store",
- "opendal 0.55.0 (git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512)",
+ "opendal 0.56.0",
  "pin-project",
  "tokio",
 ]
@@ -4625,8 +4626,9 @@ dependencies = [
 
 [[package]]
 name = "opendal"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512#6909efcdfd12b3b2ac3a76f654c35ee576811512"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97b31d3d8e99a85d83b73ec26647f5607b80578ed9375810b6e44ffa3590a236"
 dependencies = [
  "ctor",
  "opendal-core",
@@ -4639,8 +4641,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-core"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512#6909efcdfd12b3b2ac3a76f654c35ee576811512"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1849dd2687e173e776d3af5fce1ba3ae47b9dd37a09d1c4deba850ef45fe00ca"
 dependencies = [
  "anyhow",
  "base64",
@@ -4666,8 +4669,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-layer-concurrent-limit"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512#6909efcdfd12b3b2ac3a76f654c35ee576811512"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "048b1b29c503263bdd80a9afe46a68cd02ea9bd361185b1feab4b151078998e9"
 dependencies = [
  "futures",
  "http 1.4.0",
@@ -4677,8 +4681,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-layer-logging"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512#6909efcdfd12b3b2ac3a76f654c35ee576811512"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2645adc988b12eda106e2679ae529facfbbaa868ceb706f6f8125c6af15c47b"
 dependencies = [
  "log",
  "opendal-core",
@@ -4686,8 +4691,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-layer-retry"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512#6909efcdfd12b3b2ac3a76f654c35ee576811512"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4eac134ffa4ddda6131a640a84a5315996424b9416c85052f8c64c1a33b70ad4"
 dependencies = [
  "backon",
  "log",
@@ -4696,8 +4702,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-layer-timeout"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512#6909efcdfd12b3b2ac3a76f654c35ee576811512"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "619586ab7480c2e3009f6d18eabab18957bc094778fd130bcc38924970a90f4c"
 dependencies = [
  "opendal-core",
  "tokio",
@@ -4705,8 +4712,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-service-hdfs"
-version = "0.55.0"
-source = "git+https://github.com/apache/opendal?rev=6909efcdfd12b3b2ac3a76f654c35ee576811512#6909efcdfd12b3b2ac3a76f654c35ee576811512"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10fa31a5abe347c61c63edfb08e5c25f488dc000b0289023190b13b0c4c89b49"
 dependencies = [
  "bytes",
  "futures",
