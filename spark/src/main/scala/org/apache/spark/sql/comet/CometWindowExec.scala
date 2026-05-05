@@ -21,15 +21,15 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{LongType, NumericType}
 import org.apache.spark.sql.types.Decimal
-import org.apache.spark.sql.types.NumericType
 
 import com.google.common.base.Objects
 
@@ -190,8 +190,31 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         case nt: NTile =>
           val bucketsExpr = exprToProto(nt.buckets, output)
           (None, scalarFunctionExprToProto("ntile", bucketsExpr), false)
-        case _ =>
-          (None, exprToProto(windowExpr.windowFunction, output), false)
+        case nv: NthValue =>
+          val inputExpr = exprToProto(nv.input, output)
+          // DataFusion's nth_value (aggregate UDF path, picked first by
+          // find_df_window_function) requires the position argument to be a
+          // ScalarValue::Int64 literal. Spark's NthValue.offset is IntegerType,
+          // which would serialize as Int32 and trigger
+          // "nth_value not supported for n: <expr>" at plan time. Fold the
+          // (foldable) offset to a Long literal so the native side sees Int64.
+          val offsetExpr = nv.offset.eval() match {
+            case n: Number =>
+              exprToProto(Literal(n.longValue(), LongType), output)
+            case _ =>
+              withInfo(
+                windowExpr,
+                s"Unsupported NTH_VALUE offset: ${nv.offset} (${nv.offset.dataType})")
+              None
+          }
+          val func = scalarFunctionExprToProto("nth_value", inputExpr, offsetExpr)
+          (None, func, nv.ignoreNulls)
+        case other =>
+          withInfo(
+            windowExpr,
+            s"window function ${other.getClass.getSimpleName} is not supported",
+            other)
+          (None, None, false)
       }
     }
 

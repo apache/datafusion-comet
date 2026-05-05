@@ -788,7 +788,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: NTH_VALUE returns incorrect results - produces 0 instead of null for first row,
   test("window: NTH_VALUE with position 2") {
     withTempDir { dir =>
       (0 until 30)
