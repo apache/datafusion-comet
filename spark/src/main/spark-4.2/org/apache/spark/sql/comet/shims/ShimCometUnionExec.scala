@@ -22,10 +22,11 @@ package org.apache.spark.sql.comet.shims
 import scala.reflect.ClassTag
 
 import org.apache.spark.SparkContext
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.{RDD, SQLPartitioningAwareUnionRDD}
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 
-object ShimCometUnionExec {
+object ShimCometUnionExec extends Logging {
 
   /**
    * Unions a sequence of RDDs while preserving the declared output partitioning. Spark 4.1
@@ -51,6 +52,11 @@ object ShimCometUnionExec {
         // is stale relative to the RDDs (e.g. children were coalesced by AQE but the reported
         // partitioning was not). Fall back to plain concat in that case.
         if (nonEmpty.isEmpty || nonEmpty.exists(_.partitions.length != numPartitions)) {
+          val childCounts = rdds.map(_.partitions.length).mkString(", ")
+          logWarning(
+            s"CometUnionExec: child partition counts ($childCounts) do not match " +
+              s"declared output partitioning numPartitions=$numPartitions; " +
+              "falling back to SparkContext.union concat.")
           sc.union(rdds)
         } else {
           new SQLPartitioningAwareUnionRDD(sc, nonEmpty, numPartitions)

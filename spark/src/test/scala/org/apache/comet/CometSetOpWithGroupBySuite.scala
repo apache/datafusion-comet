@@ -19,7 +19,9 @@
 
 package org.apache.comet
 
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.comet.CometUnionExec
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 /**
  * Regression test for issue #4122: on Spark 4.1 (SPARK-52921), EXCEPT ALL / INTERSECT ALL whose
@@ -28,7 +30,7 @@ import org.apache.spark.sql.{CometTestBase, Row}
  * If Comet's columnar Union concatenates partitions it breaks that partitioning invariant and the
  * resulting sums/counts collapse two sides into the wrong partitions.
  */
-class CometSetOpWithGroupBySuite extends CometTestBase {
+class CometSetOpWithGroupBySuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("issue #4122: EXCEPT ALL with GROUP BY under both sides") {
     withTempView("tab3", "tab4") {
@@ -40,7 +42,8 @@ class CometSetOpWithGroupBySuite extends CometTestBase {
       val df = sql("""SELECT v FROM tab3 GROUP BY v
                      |EXCEPT ALL
                      |SELECT k FROM tab4 GROUP BY k""".stripMargin)
-      checkAnswer(df, Seq(Row(3)))
+      checkSparkAnswer(df)
+      assertContainsCometUnion(df)
     }
   }
 
@@ -58,7 +61,14 @@ class CometSetOpWithGroupBySuite extends CometTestBase {
       val df = sql("""SELECT v FROM tab1 GROUP BY v
                      |INTERSECT ALL
                      |SELECT k FROM tab2 GROUP BY k""".stripMargin)
-      checkAnswer(df, Seq(Row(2), Row(3), Row(null)))
+      checkSparkAnswer(df)
+      assertContainsCometUnion(df)
     }
+  }
+
+  private def assertContainsCometUnion(df: DataFrame): Unit = {
+    val plan = df.queryExecution.executedPlan
+    val found = collectFirst(plan) { case u: CometUnionExec => u }
+    assert(found.isDefined, s"Expected CometUnionExec in plan but found none:\n$plan")
   }
 }
