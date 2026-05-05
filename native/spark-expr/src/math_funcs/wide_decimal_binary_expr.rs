@@ -187,9 +187,10 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
         // Track scalar-ness so we can return a Scalar when both inputs are scalars.
         // Without this, a (Scalar op Scalar) result would be returned as a length-1
         // Array, and downstream comparisons against full batches would incorrectly
-        // see two Array operands with mismatched lengths instead of (Array, Scalar).
-        // See https://github.com/apache/datafusion-comet/issues/1615 (the q23 BHJ
-        // join-filter scalar-subquery crash).
+        // see two Array operands with mismatched lengths instead of (Array, Scalar),
+        // crashing arrow-ord's compare_op with "Cannot compare arrays of different
+        // lengths". This pattern appears, for example, in TPC-DS q23's BHJ filter
+        // `0.95 * scalar_subquery > ssales`.
         let both_scalar = matches!(
             (&left_val, &right_val),
             (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_))
@@ -577,20 +578,22 @@ mod tests {
         assert_eq!(arr.value(0), 20000); // 2.0000
     }
 
-    /// Regression test for the TPC-DS q23 BroadcastHashJoin crash (issue #1615).
+    /// Regression test for the Scalar x Scalar wide-decimal evaluation path.
     ///
     /// When both inputs are `ColumnarValue::Scalar`, `evaluate` must return a
     /// `ColumnarValue::Scalar` -- not a length-1 `ColumnarValue::Array`. Otherwise
     /// downstream comparisons against full batches see two `Array` operands with
     /// mismatched lengths and arrow-ord's `compare_op` rejects them with
-    /// "Cannot compare arrays of different lengths, got N vs 1".
+    /// "Cannot compare arrays of different lengths, got N vs 1". This pattern
+    /// appears, for example, in TPC-DS q23's BHJ filter
+    /// `0.95 * scalar_subquery > ssales`.
     #[test]
     fn test_scalar_scalar_returns_scalar() {
         use datafusion::common::ScalarValue;
         use datafusion::physical_expr::expressions::Literal;
 
         // 0.95 * 100.00 -- the same Scalar x Scalar decimal multiply pattern that
-        // appears in the q23 filter `0.95 * scalar_subquery > ssales`.
+        // appears in TPC-DS q23's filter `0.95 * scalar_subquery > ssales`.
         let left: Arc<dyn PhysicalExpr> =
             Arc::new(Literal::new(ScalarValue::Decimal128(Some(95), 38, 2)));
         let right: Arc<dyn PhysicalExpr> =
@@ -617,7 +620,7 @@ mod tests {
             }
             ColumnarValue::Array(_) => {
                 panic!(
-                    "Scalar x Scalar must return ColumnarValue::Scalar, not Array.                      This is the q23 BHJ crash regression (issue #1615)."
+                    "Scalar x Scalar must return ColumnarValue::Scalar, not Array"
                 );
             }
         }
