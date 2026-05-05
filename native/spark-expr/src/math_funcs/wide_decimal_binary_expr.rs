@@ -619,9 +619,7 @@ mod tests {
                 panic!("expected Decimal128(Some(_), 38, 2), got {other:?}");
             }
             ColumnarValue::Array(_) => {
-                panic!(
-                    "Scalar x Scalar must return ColumnarValue::Scalar, not Array"
-                );
+                panic!("Scalar x Scalar must return ColumnarValue::Scalar, not Array");
             }
         }
     }
