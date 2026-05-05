@@ -281,6 +281,53 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  private val floatingPointRangePartitionData: Seq[(Double, Int)] = (0 until 100).map { i =>
+    val doubleValue = i % 4 match {
+      case 0 => Double.NaN
+      case 1 => -0.0d
+      case 2 => 0.0d
+      case _ => i.toDouble
+    }
+    (doubleValue, i)
+  }
+
+  test("range partitioning on floating-point falls back when strictFloatingPoint=true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      // Bypass the CometSortOrder-level Incompatible check so that only
+      // supportedRangePartitioningDataType is exercised as the guard.
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true") {
+      withParquetTable(floatingPointRangePartitionData, "tbl") {
+        Seq(("FLOAT", "FloatType"), ("DOUBLE", "DoubleType")).foreach {
+          case (sqlType, sparkType) =>
+            val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
+              .repartitionByRange(4, $"c")
+
+            checkSparkAnswerAndFallbackReason(
+              df,
+              s"Range partitioning on $sparkType is not 100% compatible with Spark")
+        }
+      }
+    }
+  }
+
+  test(
+    "range partitioning on floating-point uses native shuffle when strictFloatingPoint=false") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false") {
+      withParquetTable(floatingPointRangePartitionData, "tbl") {
+        Seq("FLOAT", "DOUBLE").foreach { sqlType =>
+          val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
+            .repartitionByRange(4, $"c")
+
+          checkShuffleAnswer(df, 1)
+        }
+      }
+    }
+  }
+
   // Asserts ordering properties of partitions in a Dataset that has been RangePartitioned
   private def checkRangePartitionedDataset(df_range_partitioned: Dataset[Row]): Unit = {
     val partition_bounds = df_range_partitioned.rdd

@@ -31,7 +31,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
-import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isSpark35Plus, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isSpark35Plus, isSpark41Plus, withInfo}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
@@ -188,6 +188,17 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
       commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+
+      // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+      // missing in the Parquet file, the new default preserves the parent struct's
+      // nullness from the file (so non-null parents materialize as a struct of all-null
+      // fields). Pre-4.1 Spark hardcodes the legacy behavior (whole struct null), which
+      // matches the Comet default we use as fallback.
+      val returnNullStructConfKey =
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing"
+      val returnNullStructDefault = if (isSpark41Plus) "false" else "true"
+      commonBuilder.setReturnNullStructIfAllFieldsMissing(
+        scan.conf.getConfString(returnNullStructConfKey, returnNullStructDefault).toBoolean)
 
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState

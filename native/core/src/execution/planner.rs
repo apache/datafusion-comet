@@ -69,7 +69,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    SumInteger, ToCsv,
+    SparkBloomFilterVersion, SumInteger, ToCsv,
 };
 use datafusion_spark::function::aggregate::collect::SparkCollectSet;
 use iceberg::expr::Bind;
@@ -116,8 +116,8 @@ use datafusion_comet_proto::{
     },
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide,
-        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        upper_window_frame_bound::UpperFrameBoundStruct, AggregateMode as ProtoAggregateMode,
+        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -985,11 +985,25 @@ impl PhysicalPlanner {
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
                 let schema = child.schema();
 
-                let mode = if agg.mode == 0 {
-                    DFAggregateMode::Partial
-                } else {
-                    DFAggregateMode::Final
+                let proto_mode = ProtoAggregateMode::try_from(agg.mode).map_err(|_| {
+                    ExecutionError::GeneralError(format!(
+                        "Unsupported aggregate mode: {}",
+                        agg.mode
+                    ))
+                })?;
+                let mode = match proto_mode {
+                    ProtoAggregateMode::Partial => DFAggregateMode::Partial,
+                    ProtoAggregateMode::Final => DFAggregateMode::Final,
+                    // PartialMerge: Partial + MergeAsPartial
+                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Partial,
                 };
+
+                // Check if any expression uses PartialMerge mode. When present,
+                // those expressions are wrapped with MergeAsPartial to get merge
+                // semantics inside a Partial-mode AggregateExec.
+                let partial_merge_value = ProtoAggregateMode::PartialMerge as i32;
+                let has_partial_merge = proto_mode == ProtoAggregateMode::PartialMerge
+                    || agg.expr_modes.contains(&partial_merge_value);
 
                 let agg_exprs: PhyAggResult = agg
                     .agg_exprs
@@ -997,7 +1011,68 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_agg_expr(expr, Arc::clone(&schema)))
                     .collect();
 
-                let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
+                let aggr_expr: Vec<Arc<AggregateFunctionExpr>> = if has_partial_merge {
+                    // Wrap PartialMerge expressions with MergeAsPartial.
+                    // State fields in the child's output start at initial_input_buffer_offset.
+                    let mut state_offset = agg.initial_input_buffer_offset as usize;
+                    let per_expr_modes: Vec<i32> = if !agg.expr_modes.is_empty() {
+                        agg.expr_modes.clone()
+                    } else {
+                        vec![agg.mode; agg.agg_exprs.len()]
+                    };
+
+                    agg_exprs?
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, expr)| {
+                            if per_expr_modes[idx] == partial_merge_value {
+                                // PartialMerge: wrap with MergeAsPartial
+                                let state_fields = expr
+                                    .state_fields()
+                                    .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+                                let num_state_fields = state_fields.len();
+
+                                let state_cols: Vec<Arc<dyn PhysicalExpr>> = (0..num_state_fields)
+                                    .map(|i| {
+                                        let col_idx = state_offset + i;
+                                        let field = schema.field(col_idx);
+                                        Arc::new(Column::new(field.name(), col_idx))
+                                            as Arc<dyn PhysicalExpr>
+                                    })
+                                    .collect();
+                                state_offset += num_state_fields;
+
+                                let merge_udf =
+                                    crate::execution::merge_as_partial::MergeAsPartialUDF::new(
+                                        &expr,
+                                    )
+                                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?;
+                                let merge_udf_arc = Arc::new(
+                                    datafusion::logical_expr::AggregateUDF::new_from_impl(
+                                        merge_udf,
+                                    ),
+                                );
+
+                                let merge_expr =
+                                    AggregateExprBuilder::new(merge_udf_arc, state_cols)
+                                        .schema(Arc::clone(&schema))
+                                        .alias(format!("col_{idx}"))
+                                        .with_ignore_nulls(expr.ignore_nulls())
+                                        .with_distinct(expr.is_distinct())
+                                        .build()
+                                        .map_err(|e| {
+                                            ExecutionError::DataFusionError(e.to_string())
+                                        })?;
+
+                                Ok(Arc::new(merge_expr))
+                            } else {
+                                Ok(Arc::new(expr))
+                            }
+                        })
+                        .collect::<Result<Vec<_>, ExecutionError>>()?
+                } else {
+                    agg_exprs?.into_iter().map(Arc::new).collect()
+                };
 
                 // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
                 // Filters are only present in Partial mode; Final/PartialMerge always get None.
@@ -1248,6 +1323,7 @@ impl PhysicalPlanner {
                     default_values,
                     common.session_timezone.as_str(),
                     common.case_sensitive,
+                    common.return_null_struct_if_all_fields_missing,
                     self.session_ctx(),
                     common.encryption_enabled,
                 )?;
@@ -1688,6 +1764,17 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                // Null-aware anti-join must run in CollectLeft mode. In Partitioned mode
+                // each partition only sees per-partition null/emptiness state, which can
+                // produce wrong NOT IN results across partitions. DataFusion's JoinSelection
+                // rewrites null-aware joins to CollectLeft for this reason, but Comet
+                // executes the physical plan directly so we must pick the mode here.
+                let partition_mode = if join.null_aware_anti_join {
+                    PartitionMode::CollectLeft
+                } else {
+                    PartitionMode::Partitioned
+                };
+
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
                     right,
@@ -1695,20 +1782,18 @@ impl PhysicalPlanner {
                     join_params.join_filter,
                     &join_params.join_type,
                     None,
-                    PartitionMode::Partitioned,
+                    partition_mode,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
-                    // null_aware is for null-aware anti joins (NOT IN subqueries).
-                    // NullEquality controls whether NULL = NULL in join keys generally,
-                    // while null_aware changes anti-join semantics so any NULL changes
-                    // the entire result. Spark doesn't use this path (it rewrites
-                    // EqualNullSafe at plan time), so false is correct.
-                    false,
+                    join.null_aware_anti_join,
                 )?);
 
-                // If the hash join is build right, we need to swap the left and right
-                if join.build_side == BuildSide::BuildLeft as i32 {
+                // If the hash join is build right, we need to swap the left and right.
+                // Exception: null-aware anti-join requires LeftAnti + build-right semantics
+                // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
+                // into RightAnti, which DataFusion rejects with null_aware=true.
+                if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
                     Ok((
                         scans,
                         shuffle_scans,
@@ -2278,10 +2363,17 @@ impl PhysicalPlanner {
                 let num_bits =
                     self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let version = match expr.version() {
+                    spark_expression::BloomFilterVersion::V2 => SparkBloomFilterVersion::V2,
+                    // Default (Unspecified or V1) preserves the pre-Spark-4.1 format that
+                    // Comet has always emitted, keeping older Spark versions byte-equivalent.
+                    _ => SparkBloomFilterVersion::V1,
+                };
                 let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
                     Arc::clone(&num_items),
                     Arc::clone(&num_bits),
                     datatype,
+                    version,
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
             }
@@ -4038,6 +4130,7 @@ mod tests {
                 join_type: 0,
                 condition: None,
                 build_side: 0,
+                null_aware_anti_join: false,
             })),
         };
 
