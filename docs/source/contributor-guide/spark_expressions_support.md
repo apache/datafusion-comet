@@ -587,9 +587,9 @@
 
 - [ ] parse_url
 - [ ] try_parse_url
-- [ ] try_url_decode
-- [ ] url_decode
-- [ ] url_encode
+- [x] try_url_decode
+- [x] url_decode
+- [x] url_encode
 
 ### window_funcs
 
