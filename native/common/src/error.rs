@@ -72,8 +72,8 @@ pub enum SparkError {
     #[error("[ARITHMETIC_OVERFLOW] Overflow in integral divide. Use `try_divide` to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     IntegralDivideOverflow,
 
-    #[error("[ARITHMETIC_OVERFLOW] Overflow in sum of decimals. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    DecimalSumOverflow,
+    #[error("[ARITHMETIC_OVERFLOW] Overflow in sum of decimals. Use `try_{function_name}` to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    DecimalSumOverflow { function_name: String },
 
     #[error("[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     DivideByZero,
@@ -187,6 +187,19 @@ pub enum SparkError {
         matched_fields: String,
     },
 
+    /// Schema mismatch when reading a Parquet column under a requested schema
+    /// that's incompatible with the physical column type. Translated by the JVM
+    /// shim into Spark's `SchemaColumnConvertNotSupportedException`. The
+    /// `file_path` may be empty when the rejection happens at planning time
+    /// (the schema adapter doesn't carry the file path).
+    #[error("Parquet column cannot be converted in file {file_path}. Column: [{column}], Expected: {spark_type}, Found: {physical_type}")]
+    ParquetSchemaConvert {
+        file_path: String,
+        column: String,
+        physical_type: String,
+        spark_type: String,
+    },
+
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
 
@@ -227,7 +240,7 @@ impl SparkError {
             SparkError::CannotParseDecimal => "CannotParseDecimal",
             SparkError::ArithmeticOverflow { .. } => "ArithmeticOverflow",
             SparkError::IntegralDivideOverflow => "IntegralDivideOverflow",
-            SparkError::DecimalSumOverflow => "DecimalSumOverflow",
+            SparkError::DecimalSumOverflow { .. } => "DecimalSumOverflow",
             SparkError::DivideByZero => "DivideByZero",
             SparkError::RemainderByZero => "RemainderByZero",
             SparkError::IntervalDividedByZero => "IntervalDividedByZero",
@@ -260,6 +273,7 @@ impl SparkError {
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
             SparkError::FileNotFound { .. } => "FileNotFound",
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
+            SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -320,6 +334,11 @@ impl SparkError {
             SparkError::ArithmeticOverflow { from_type } => {
                 serde_json::json!({
                     "fromType": from_type,
+                })
+            }
+            SparkError::DecimalSumOverflow { function_name } => {
+                serde_json::json!({
+                    "functionName": function_name,
                 })
             }
             SparkError::BinaryArithmeticOverflow {
@@ -470,6 +489,19 @@ impl SparkError {
                     "matchedOrcFields": matched_fields,
                 })
             }
+            SparkError::ParquetSchemaConvert {
+                file_path,
+                column,
+                physical_type,
+                spark_type,
+            } => {
+                serde_json::json!({
+                    "filePath": file_path,
+                    "column": column,
+                    "physicalType": physical_type,
+                    "sparkType": spark_type,
+                })
+            }
             SparkError::Arrow(e) => {
                 serde_json::json!({
                     "message": e.to_string(),
@@ -496,7 +528,7 @@ impl SparkError {
             | SparkError::NumericOutOfRange { .. } // Comet-specific extension
             | SparkError::ArithmeticOverflow { .. }
             | SparkError::IntegralDivideOverflow
-            | SparkError::DecimalSumOverflow
+            | SparkError::DecimalSumOverflow { .. }
             | SparkError::BinaryArithmeticOverflow { .. }
             | SparkError::IntervalArithmeticOverflowWithSuggestion { .. }
             | SparkError::IntervalArithmeticOverflowWithoutSuggestion
@@ -545,6 +577,11 @@ impl SparkError {
                 "org/apache/spark/SparkRuntimeException"
             }
 
+            // ParquetSchemaConvert - converted to SchemaColumnConvertNotSupportedException by the shim
+            SparkError::ParquetSchemaConvert { .. } => {
+                "org/apache/spark/sql/execution/datasources/SchemaColumnConvertNotSupportedException"
+            }
+
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
         }
@@ -569,7 +606,7 @@ impl SparkError {
             SparkError::IntervalDividedByZero => Some("INTERVAL_DIVIDED_BY_ZERO"),
             SparkError::ArithmeticOverflow { .. } => Some("ARITHMETIC_OVERFLOW"),
             SparkError::IntegralDivideOverflow => Some("ARITHMETIC_OVERFLOW"),
-            SparkError::DecimalSumOverflow => Some("ARITHMETIC_OVERFLOW"),
+            SparkError::DecimalSumOverflow { .. } => Some("ARITHMETIC_OVERFLOW"),
             SparkError::BinaryArithmeticOverflow { .. } => Some("BINARY_ARITHMETIC_OVERFLOW"),
             SparkError::IntervalArithmeticOverflowWithSuggestion { .. } => {
                 Some("INTERVAL_ARITHMETIC_OVERFLOW")
@@ -623,6 +660,11 @@ impl SparkError {
 
             // Duplicate field in case-insensitive mode
             SparkError::DuplicateFieldCaseInsensitive { .. } => Some("_LEGACY_ERROR_TEMP_2093"),
+
+            // Parquet schema mismatch — translated to SchemaColumnConvertNotSupportedException
+            // by the JVM shim. The shim wraps it in the version-appropriate
+            // SparkException error class, so no error class is exposed here.
+            SparkError::ParquetSchemaConvert { .. } => None,
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,

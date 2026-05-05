@@ -53,15 +53,17 @@ class CometDateTimeUtilsSuite extends CometTestBase {
   }
 
   /**
-   * Same as checkCastToTimestamp but casts the result to STRING before collecting. Use for
-   * extreme-year values (e.g. year 294247 or -290308) where collect() overflows in
-   * toJavaTimestamp due to Gregorian/Julian calendar rebasing in the test harness.
+   * Same as checkCastToTimestamp but casts the result to BIGINT (seconds since epoch) before
+   * collecting. Use for extreme-year values (e.g. year 294247 or -290308) where both
+   * toJavaTimestamp and timestamp-to-string fail in the test harness due to calendar range
+   * limits. Casting to LongType is pure arithmetic on the i64 epoch value and has no range
+   * restriction.
    */
-  private def checkCastToTimestampAsString(values: Seq[String]): Unit = {
+  private def checkCastToTimestampAsLong(values: Seq[String]): Unit = {
     withTempPath { dir =>
       val df = roundtripParquet(values.toDF("a"), dir).coalesce(1)
       checkSparkAnswer(
-        df.withColumn("ts", col("a").cast(DataTypes.TimestampType).cast(DataTypes.StringType)))
+        df.withColumn("ts", col("a").cast(DataTypes.TimestampType).cast(DataTypes.LongType)))
     }
   }
 
@@ -224,6 +226,8 @@ class CometDateTimeUtilsSuite extends CometTestBase {
           // These look like time-only but with a leading sign — invalid
           "+12:12:12",
           "-12:12:12",
+          // Positive year-sign prefix IS accepted by Spark for timestamps (same value as without +)
+          "+2020-01-01T12:34:56",
           // Empty / whitespace
           "",
           "    ",
@@ -245,9 +249,10 @@ class CometDateTimeUtilsSuite extends CometTestBase {
           "2021-01-01T12:30:4294967297+4294967297:30"))
 
       // Extreme-year boundary cases: collecting a TimestampType value for year 294247 or -290308
-      // overflows in toJavaTimestamp due to Gregorian/Julian rebasing in the test harness.
-      // Cast to STRING first to avoid that while still verifying correct parsing.
-      checkCastToTimestampAsString(
+      // overflows in toJavaTimestamp, and casting to StringType fails in Comet (native engine also
+      // limits timestamp-to-string to ±262143 CE). Cast to LongType (seconds since epoch) instead —
+      // it is pure i64 arithmetic with no calendar range restriction.
+      checkCastToTimestampAsLong(
         Seq(
           // Long.MaxValue boundary — valid, equals Long.MaxValue microseconds
           "294247-01-10T04:00:54.775807Z",
@@ -269,8 +274,33 @@ class CometDateTimeUtilsSuite extends CometTestBase {
     checkCastToTimestamp(Seq("2019-10-31T10:59:23Z:::"))
   }
 
+  test("DST spring-forward gap and fall-back overlap") {
+    // America/New_York: spring-forward 2020-03-08 02:00 -> 03:00 (gap [02:00, 03:00)).
+    // Spark advances the non-existent time forward by the gap duration:
+    //   "2020-03-08 02:30:00" -> 03:30 EDT (UTC-4) = 2020-03-08T07:30:00Z.
+    //
+    // Fall-back 2020-11-01 02:00 EDT -> 01:00 EST (overlap [01:00, 02:00)).
+    // Spark picks the earlier (pre-transition) UTC instant:
+    //   "2020-11-01 01:30:00" (EDT, UTC-4) = 2020-11-01T05:30:00Z.
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/New_York") {
+      checkCastToTimestamp(
+        Seq(
+          // Spring-forward gap: 02:30 does not exist, Spark advances to 03:30 EDT
+          "2020-03-08 02:30:00",
+          // Boundary: just before the gap
+          "2020-03-08 01:59:59",
+          // Boundary: just after the gap (first valid post-transition time)
+          "2020-03-08 03:00:00",
+          // Fall-back overlap: 01:30 exists twice; Spark picks earlier UTC (EDT = UTC-4)
+          "2020-11-01 01:30:00",
+          // Boundary: just before fall-back
+          "2020-11-01 01:59:59",
+          // Just after fall-back (unambiguous EST)
+          "2020-11-01 02:00:00"))
+    }
+  }
+
   test("SPARK-37326: cast string to TIMESTAMP_NTZ rejects timezone offsets") {
-    // A value with a timezone offset should be null for TIMESTAMP_NTZ.
     checkCastToTimestampNTZ(
       Seq(
         // Has offset — null

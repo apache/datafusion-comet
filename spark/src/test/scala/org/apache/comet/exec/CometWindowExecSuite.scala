@@ -26,6 +26,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.CometWindowExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -605,87 +606,131 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: LAG produces incorrect results
-  ignore("window: LAG with default offset") {
-    withTempDir { dir =>
-      (0 until 30)
-        .map(i => (i % 3, i % 5, i))
-        .toDF("a", "b", "c")
-        .repartition(3)
-        .write
-        .mode("overwrite")
-        .parquet(dir.toString)
+  test("window: LAG with default offset") {
+    withSQLConf(CometConf.getOperatorAllowIncompatConfigKey(classOf[WindowExec]) -> "true") {
+      withTempDir { dir =>
+        (0 until 30)
+          .map(i => (i % 3, i % 5, i))
+          .toDF("a", "b", "c")
+          .repartition(3)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
 
-      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
-        SELECT a, b, c,
-          LAG(c) OVER (PARTITION BY a ORDER BY b) as lag_c
-        FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("""
+          SELECT a, b, c,
+            LAG(c) OVER (PARTITION BY a ORDER BY b, c) as lag_c
+          FROM window_test
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 
-  // TODO: LAG with offset 2 produces incorrect results
-  ignore("window: LAG with offset 2 and default value") {
-    withTempDir { dir =>
-      (0 until 30)
-        .map(i => (i % 3, i % 5, i))
-        .toDF("a", "b", "c")
-        .repartition(3)
-        .write
-        .mode("overwrite")
-        .parquet(dir.toString)
+  test("window: LAG with offset 2 and default value") {
+    withSQLConf(CometConf.getOperatorAllowIncompatConfigKey(classOf[WindowExec]) -> "true") {
+      withTempDir { dir =>
+        (0 until 30)
+          .map(i => (i % 3, i % 5, i))
+          .toDF("a", "b", "c")
+          .repartition(3)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
 
-      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
-        SELECT a, b, c,
-          LAG(c, 2, -1) OVER (PARTITION BY a ORDER BY b) as lag_c_2
-        FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("""
+          SELECT a, b, c,
+            LAG(c, 2, -1) OVER (PARTITION BY a ORDER BY b, c) as lag_c_2
+          FROM window_test
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 
-  // TODO: LEAD produces incorrect results
-  ignore("window: LEAD with default offset") {
-    withTempDir { dir =>
-      (0 until 30)
-        .map(i => (i % 3, i % 5, i))
-        .toDF("a", "b", "c")
-        .repartition(3)
-        .write
-        .mode("overwrite")
-        .parquet(dir.toString)
+  test("window: LAG with IGNORE NULLS") {
+    withSQLConf(CometConf.getOperatorAllowIncompatConfigKey(classOf[WindowExec]) -> "true") {
+      withTempDir { dir =>
+        Seq((1, 1, Some(10)), (1, 2, None), (1, 3, Some(30)), (2, 1, None), (2, 2, Some(20)))
+          .toDF("a", "b", "c")
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
 
-      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
-        SELECT a, b, c,
-          LEAD(c) OVER (PARTITION BY a ORDER BY b) as lead_c
-        FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("""
+          SELECT a, b, c,
+            LAG(c) IGNORE NULLS OVER (PARTITION BY a ORDER BY b) as lag_c
+          FROM window_test
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 
-  // TODO: LEAD with offset 2 produces incorrect results
-  ignore("window: LEAD with offset 2 and default value") {
-    withTempDir { dir =>
-      (0 until 30)
-        .map(i => (i % 3, i % 5, i))
-        .toDF("a", "b", "c")
-        .repartition(3)
-        .write
-        .mode("overwrite")
-        .parquet(dir.toString)
+  test("window: LEAD with default offset") {
+    withSQLConf(CometConf.getOperatorAllowIncompatConfigKey(classOf[WindowExec]) -> "true") {
+      withTempDir { dir =>
+        (0 until 30)
+          .map(i => (i % 3, i % 5, i))
+          .toDF("a", "b", "c")
+          .repartition(3)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
 
-      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
-        SELECT a, b, c,
-          LEAD(c, 2, -1) OVER (PARTITION BY a ORDER BY b) as lead_c_2
-        FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("""
+          SELECT a, b, c,
+            LEAD(c) OVER (PARTITION BY a ORDER BY b, c) as lead_c
+          FROM window_test
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("window: LEAD with offset 2 and default value") {
+    withSQLConf(CometConf.getOperatorAllowIncompatConfigKey(classOf[WindowExec]) -> "true") {
+      withTempDir { dir =>
+        (0 until 30)
+          .map(i => (i % 3, i % 5, i))
+          .toDF("a", "b", "c")
+          .repartition(3)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
+
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("""
+          SELECT a, b, c,
+            LEAD(c, 2, -1) OVER (PARTITION BY a ORDER BY b, c) as lead_c_2
+          FROM window_test
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("window: LEAD with IGNORE NULLS") {
+    withSQLConf(CometConf.getOperatorAllowIncompatConfigKey(classOf[WindowExec]) -> "true") {
+      withTempDir { dir =>
+        Seq((1, 1, Some(10)), (1, 2, None), (1, 3, Some(30)), (2, 1, None), (2, 2, Some(20)))
+          .toDF("a", "b", "c")
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
+
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("""
+          SELECT a, b, c,
+            LEAD(c) IGNORE NULLS OVER (PARTITION BY a ORDER BY b) as lead_c
+          FROM window_test
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 

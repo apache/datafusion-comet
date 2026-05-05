@@ -26,6 +26,7 @@ import scala.util.matching.Regex
 import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -292,6 +293,26 @@ trait ShimSparkErrorConverter {
             params("requiredFieldName").toString,
             params("matchedOrcFields").toString))
 
+      case "ParquetSchemaConvert" =>
+        // Mirror Spark's FileScanRDD: wrap the SchemaColumnConvertNotSupportedException
+        // in a SparkException whose message is "Parquet column cannot be converted in
+        // file <path>...". The native side may not have the file path; an empty path
+        // still produces a message that contains "Parquet column cannot be converted in
+        // file" (which is what Spark's own SQL tests assert).
+        val column = params("column").toString
+        val physicalType = params("physicalType").toString
+        val logicalType = params("sparkType").toString
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        val cause =
+          new SchemaColumnConvertNotSupportedException(column, physicalType, logicalType)
+        Some(
+          QueryExecutionErrors.unsupportedSchemaColumnConvertError(
+            filePath,
+            column,
+            logicalType,
+            physicalType,
+            cause))
+
       case "FileNotFound" =>
         val msg = params("message").toString
         // Extract file path from native error message and format like Hadoop's
@@ -327,7 +348,21 @@ trait ShimSparkErrorConverter {
         try {
           DataType.fromDDL(typeName)
         } catch {
-          case _: Exception => StringType
+          case _: Exception =>
+            // fromDDL rejects types that are syntactically invalid in SQL DDL, such as
+            // DECIMAL(p,s) with a negative scale (valid when allowNegativeScaleOfDecimal=true).
+            // Parse those manually rather than silently falling back to StringType.
+            if (typeName.toUpperCase.startsWith("DECIMAL(") && typeName.endsWith(")")) {
+              val inner = typeName.substring("DECIMAL(".length, typeName.length - 1)
+              val parts = inner.split(",")
+              if (parts.length == 2) {
+                try {
+                  DataTypes.createDecimalType(parts(0).trim.toInt, parts(1).trim.toInt)
+                } catch {
+                  case _: Exception => StringType
+                }
+              } else StringType
+            } else StringType
         }
     }
   }

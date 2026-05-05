@@ -17,7 +17,6 @@
 
 -- Test lower() with case conversion enabled (happy path)
 -- Config: spark.comet.caseConversion.enabled=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_lower_enabled(s string) USING parquet

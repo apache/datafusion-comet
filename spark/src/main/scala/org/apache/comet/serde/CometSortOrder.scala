@@ -20,7 +20,6 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
-import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -28,21 +27,14 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
+      " floating-point types is not 100% compatible with Spark")
+
   override def getSupportLevel(expr: SortOrder): SupportLevel = {
 
-    def containsFloatingPoint(dt: DataType): Boolean = {
-      dt match {
-        case DataTypes.FloatType | DataTypes.DoubleType => true
-        case ArrayType(elementType, _) => containsFloatingPoint(elementType)
-        case StructType(fields) => fields.exists(f => containsFloatingPoint(f.dataType))
-        case MapType(keyType, valueType, _) =>
-          containsFloatingPoint(keyType) || containsFloatingPoint(valueType)
-        case _ => false
-      }
-    }
-
     if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-      containsFloatingPoint(expr.child.dataType)) {
+      SupportLevel.containsFloatingPoint(expr.child.dataType)) {
       // https://github.com/apache/datafusion-comet/issues/2626
       Incompatible(
         Some(
