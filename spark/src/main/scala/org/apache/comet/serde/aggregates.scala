@@ -660,7 +660,7 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
       builder.setNumItems(numItemsExpr.get)
       builder.setNumBits(numBitsExpr.get)
       builder.setDatatype(dataType.get)
-      // SPARK-XXXXX (Spark 4.1) introduced a V2 BloomFilter binary format with
+      // SPARK-47547 (Spark 4.1) introduced a V2 BloomFilter binary format with
       // different bit-scattering. Spark 4.1's `BloomFilter.create` (used by
       // `BloomFilterAggregate`) defaults to V2; older Spark always wrote V1. Match
       // the Spark version so `bloom_filter_agg` outputs are byte-equivalent.
