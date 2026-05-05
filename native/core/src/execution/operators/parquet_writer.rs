@@ -34,7 +34,7 @@ use std::io::Cursor;
 use crate::execution::shuffle::CompressionCodec;
 use crate::parquet::parquet_support::{is_hdfs_scheme, is_s3_scheme};
 #[cfg(feature = "hdfs-opendal")]
-use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
+use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs, create_s3_operator};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
@@ -336,7 +336,42 @@ impl ParquetWriterExec {
                 ))
             }
         } else if is_s3_scheme(&url) {
+            let (_object_store_url, object_store_path) = prepare_object_store_with_configs(
+                _runtime_env,
+                output_file_path.to_string(),
+                object_store_options,
+            )
+                .map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Failed to prepare object store for '{}': {}",
+                        output_file_path, e
+                    ))
+                })?;
 
+            // For remote storage (HDFS, S3), write to an in-memory buffer
+            let buffer = Vec::new();
+            let cursor = Cursor::new(buffer);
+            let arrow_parquet_buffer_writer = ArrowWriter::try_new(cursor, schema, Some(props))
+                .map_err(|e| {
+                    DataFusionError::Execution(format!("Failed to create S3 writer: {}", e))
+                })?;
+
+            // Create S3 operator with configuration options using the helper function
+            let op = create_s3_operator(&url).map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "Failed to create S3 operator for '{}': {}",
+                    output_file_path, e
+                ))
+            })?;
+
+            // HDFS writer will be created lazily on first write
+            // Use the path from prepare_object_store_with_configs
+            Ok(ParquetWriter::Remote(
+                arrow_parquet_buffer_writer,
+                None,
+                op,
+                object_store_path.to_string(),
+            ))
         } else if output_file_path.starts_with("file://")
             || output_file_path.starts_with("file:")
             || !output_file_path.contains("://")

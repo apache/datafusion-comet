@@ -409,11 +409,11 @@ pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, objec
         .map(|op| op.finish())
 }
 
-pub(crate) fn create_s3_operator(url: &Url) -> Result<opendal::Operator, object_store::Error> {
+pub(crate) fn create_s3_operator(_url: &Url) -> Result<opendal::Operator, object_store::Error> {
     let builder = opendal::services::S3::default();
     opendal::Operator::new(builder)
         .map_err(|error| object_store::Error::Generic {
-            store: "hdfs-opendal",
+            store: "s3-opendal",
             source: error.into(),
         })
         .map(|op| op.finish())
