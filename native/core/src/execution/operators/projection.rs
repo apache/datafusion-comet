@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion_comet_proto::spark_operator::Operator;
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 
 use crate::{
     execution::{
@@ -38,7 +38,7 @@ impl OperatorBuilder for ProjectionBuilder {
     fn build(
         &self,
         spark_plan: &Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         partition_count: usize,
         planner: &PhysicalPlanner,
     ) -> PlanCreationResult {

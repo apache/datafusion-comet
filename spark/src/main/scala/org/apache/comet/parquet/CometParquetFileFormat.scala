@@ -43,6 +43,7 @@ import org.apache.spark.sql.types.{DateType, StructType, TimestampType}
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.MetricsSupport
 import org.apache.comet.shims.ShimSQLConf
 import org.apache.comet.vector.CometVector
@@ -96,6 +97,15 @@ class CometParquetFileFormat(session: SparkSession)
     val isCaseSensitive = sqlConf.caseSensitiveAnalysis
     val useFieldId = CometParquetUtils.readFieldId(sqlConf)
     val ignoreMissingIds = CometParquetUtils.ignoreMissingIds(sqlConf)
+    // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+    // missing in the Parquet file, the new default preserves the parent struct's
+    // nullness from the file. Pre-4.1 Spark hardcodes the legacy behavior, so we
+    // default to "true" there for backwards compatibility.
+    val returnNullStructIfAllFieldsMissing = sqlConf
+      .getConfString(
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing",
+        if (isSpark41Plus) "false" else "true")
+      .toBoolean
     val pushDownDate = sqlConf.parquetFilterPushDownDate
     val pushDownTimestamp = sqlConf.parquetFilterPushDownTimestamp
     val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
@@ -158,6 +168,7 @@ class CometParquetFileFormat(session: SparkSession)
         useFieldId,
         ignoreMissingIds,
         datetimeRebaseSpec.mode == CORRECTED,
+        returnNullStructIfAllFieldsMissing,
         partitionSchema,
         file.partitionValues,
         metrics.asJava,

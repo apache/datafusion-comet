@@ -42,7 +42,7 @@ pub struct ExpandExec {
     projections: Vec<Vec<Arc<dyn PhysicalExpr>>>,
     child: Arc<dyn ExecutionPlan>,
     schema: SchemaRef,
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
 }
 
 impl ExpandExec {
@@ -52,12 +52,12 @@ impl ExpandExec {
         child: Arc<dyn ExecutionPlan>,
         schema: SchemaRef,
     ) -> Self {
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Self {
             projections,
@@ -129,7 +129,7 @@ impl ExecutionPlan for ExpandExec {
         Ok(Box::pin(expand_stream))
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 

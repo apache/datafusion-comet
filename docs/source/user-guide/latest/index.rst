@@ -34,7 +34,8 @@ Comet $COMET_VERSION User Guide
    Supported Operators <operators>
    Supported Expressions <expressions>
    Configuration Settings <configs>
-   Compatibility Guide <compatibility>
+   Compatibility Guide <compatibility/index>
+   Understanding Comet Plans <understanding-comet-plans>
    Tuning Guide <tuning>
    Metrics Guide <metrics>
    Iceberg Guide <iceberg>

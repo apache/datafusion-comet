@@ -1,0 +1,34 @@
+<!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Map Expressions
+
+## MapSort (Spark 4.0+)
+
+Spark 4.0 inserts `MapSort` to normalize map values when they appear in shuffle hash partitioning
+keys, in `try_element_at`, and in other contexts where map ordering must be deterministic. Comet
+runs `MapSort` natively, so map shuffle and group-by-on-map stay on Comet under Spark 4.0.
+
+When `spark.comet.exec.strictFloatingPoint=true`, `MapSort` falls back to Spark for maps whose
+keys contain `Float` or `Double` (consistent with `SortOrder` and `SortArray`). Arrow's sort uses
+IEEE total ordering for floating-point, which differs from Spark's `Double.compare` semantics for
+`NaN` and `-0.0`.
+
+<!--BEGIN:EXPR_COMPAT[map]-->
+<!--END:EXPR_COMPAT-->

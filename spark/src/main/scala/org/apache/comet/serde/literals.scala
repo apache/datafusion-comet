@@ -37,6 +37,9 @@ import org.apache.comet.serde.Types.ListLiteral
 
 object CometLiteral extends CometExpressionSerde[Literal] with Logging {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Not all data types are supported for literal values")
+
   override def getSupportLevel(expr: Literal): SupportLevel = {
 
     if (supportedDataType(

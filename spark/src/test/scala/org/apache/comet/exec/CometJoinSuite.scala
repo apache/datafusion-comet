@@ -26,6 +26,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
+import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -190,8 +191,82 @@ class CometJoinSuite extends CometTestBase {
           val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
           checkSparkAnswerAndOperator(df8)
 
-          // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
-          // left.join(right, left("_2") === right("_1"), "leftanti")
+          val df9 = left.join(right, left("_2") === right("_1"), "leftanti")
+          checkSparkAnswerAndOperator(df9)
+        }
+      }
+    }
+  }
+
+  test("BroadcastHashJoin with LeftAnti and NOT IN subquery (null-aware)") {
+    withSQLConf(
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760") {
+      // Right side has no NULL: regular anti-semantics
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, i + 100)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Right side contains NULL: null-aware should suppress all left rows
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, 2), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Left side has NULL values: NOT IN filters them out (NULL vs anything is NULL)
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((2, 100), (4, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Empty subquery: NOT IN against an empty set returns all left rows, including NULL probe.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq.empty[(Integer, Int)], "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Both sides have NULL keys: probe-side NULL and build-side NULL on the same query.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
+  test("BroadcastHashJoin with LeftAnti (non-null-aware)") {
+    withSQLConf(
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, i + 100)), "tbl_b") {
+          // BROADCAST(tbl_b) forces tbl_b as build-right side
+          val df = sql(
+            "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b " +
+              "ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // With NULL values on both sides - non-null-aware semantics: NULL keys don't match anything
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql(
+            "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b " +
+              "ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
@@ -439,6 +514,52 @@ class CometJoinSuite extends CometTestBase {
             coalescedBatches >= numPartitions,
             s"Expected at least $numPartitions coalesced batches, got $coalescedBatches")
           assert(coalescedRows == 10000, s"Expected 10000 coalesced rows, got $coalescedRows")
+        }
+      }
+    }
+  }
+
+  test("Broadcast exchange respects AQE shuffle partition coalescing") {
+    // When a shuffle feeds into a broadcast exchange, AQE may coalesce the shuffle
+    // partitions. The broadcast collect should execute through the AQEShuffleReadExec
+    // to use coalesced partitions rather than bypassing it.
+    val numPartitions = 200
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> numPartitions.toString,
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "small_tbl") {
+        withParquetTable((0 until 10000).map(i => (i, i + 2)), "large_tbl") {
+          val query =
+            """SELECT /*+ BROADCAST(a) */ *
+              |FROM (SELECT /*+ REBALANCE(_1) */ * FROM small_tbl) a
+              |JOIN large_tbl b ON a._1 = b._1""".stripMargin
+
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql(query),
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+
+          // The shuffle partitions feeding the broadcast should be coalesced by
+          // AQE. AQEShuffleReadExec.executeColumnar() lazily builds its shuffleRDD
+          // and, as a side effect, sets the "numPartitions" driver metric to
+          // partitionSpecs.length. If the broadcast collect bypasses the wrapper
+          // (the bug this test guards against), executeColumnar is never called
+          // and the metric stays at its initial 0.
+          val readExecs = collect(cometPlan) { case r: AQEShuffleReadExec => r }
+          assert(readExecs.nonEmpty, "Expected AQEShuffleReadExec in plan")
+          readExecs.foreach { r =>
+            val coalesced = r.metrics("numPartitions").value
+            assert(
+              coalesced > 0,
+              "AQEShuffleReadExec.numPartitions metric was never updated; the " +
+                "broadcast collect likely bypassed AQEShuffleReadExec")
+            assert(
+              coalesced < numPartitions,
+              s"Expected AQE to coalesce shuffle partitions below $numPartitions, " +
+                s"got $coalesced")
+          }
         }
       }
     }
