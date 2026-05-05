@@ -187,6 +187,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 |--------|-------------|---------------|
 | `spark.comet.expression.Abs.enabled` | Enable Comet acceleration for `Abs` | true |
 | `spark.comet.expression.Acos.enabled` | Enable Comet acceleration for `Acos` | true |
+| `spark.comet.expression.Acosh.enabled` | Enable Comet acceleration for `Acosh` | true |
 | `spark.comet.expression.Add.enabled` | Enable Comet acceleration for `Add` | true |
 | `spark.comet.expression.Alias.enabled` | Enable Comet acceleration for `Alias` | true |
 | `spark.comet.expression.And.enabled` | Enable Comet acceleration for `And` | true |
@@ -209,8 +210,10 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ArraysZip.enabled` | Enable Comet acceleration for `ArraysZip` | true |
 | `spark.comet.expression.Ascii.enabled` | Enable Comet acceleration for `Ascii` | true |
 | `spark.comet.expression.Asin.enabled` | Enable Comet acceleration for `Asin` | true |
+| `spark.comet.expression.Asinh.enabled` | Enable Comet acceleration for `Asinh` | true |
 | `spark.comet.expression.Atan.enabled` | Enable Comet acceleration for `Atan` | true |
 | `spark.comet.expression.Atan2.enabled` | Enable Comet acceleration for `Atan2` | true |
+| `spark.comet.expression.Atanh.enabled` | Enable Comet acceleration for `Atanh` | true |
 | `spark.comet.expression.AttributeReference.enabled` | Enable Comet acceleration for `AttributeReference` | true |
 | `spark.comet.expression.Bin.enabled` | Enable Comet acceleration for `Bin` | true |
 | `spark.comet.expression.BitLength.enabled` | Enable Comet acceleration for `BitLength` | true |
@@ -351,6 +354,8 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Subtract.enabled` | Enable Comet acceleration for `Subtract` | true |
 | `spark.comet.expression.Tan.enabled` | Enable Comet acceleration for `Tan` | true |
 | `spark.comet.expression.Tanh.enabled` | Enable Comet acceleration for `Tanh` | true |
+| `spark.comet.expression.ToDegrees.enabled` | Enable Comet acceleration for `ToDegrees` | true |
+| `spark.comet.expression.ToRadians.enabled` | Enable Comet acceleration for `ToRadians` | true |
 | `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
