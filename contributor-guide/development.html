@@ -742,6 +742,69 @@ After that, you can open the project in IntelliJ IDEA. The IDE should automatica
 <a class="reference external" href="https://intellij-support.jetbrains.com/hc/en-us/articles/206544869-Configuring-JVM-options-and-platform-properties">IntelliJ’s Platform Properties</a>
 by going to <code class="docutils literal notranslate"><span class="pre">Help</span> <span class="pre">-&gt;</span> <span class="pre">Edit</span> <span class="pre">Custom</span> <span class="pre">Properties...</span></code>. For example, adding <code class="docutils literal notranslate"><span class="pre">idea.max.intellisense.filesize=16384</span></code> increases the file
 size limit to 16 MB.</p>
+<section id="working-with-spark-4-x-profiles-in-intellij-idea">
+<h4>Working with Spark 4.x profiles in IntelliJ IDEA<a class="headerlink" href="#working-with-spark-4-x-profiles-in-intellij-idea" title="Link to this heading">#</a></h4>
+<p>Spark 4.x requires JDK 17 and Scala 2.13. When switching an existing IntelliJ project from the
+default Spark 3.x setup to a Spark 4.x profile, it is usually best to re-import the Maven project
+from a clean IntelliJ configuration:</p>
+<ol class="arabic">
+<li><p>Close the IntelliJ project.</p></li>
+<li><p>Delete the <code class="docutils literal notranslate"><span class="pre">.idea</span></code> directory from the repository root.</p></li>
+<li><p>Make sure <code class="docutils literal notranslate"><span class="pre">protoc</span></code> is available. On macOS, install it with <code class="docutils literal notranslate"><span class="pre">brew</span> <span class="pre">install</span> <span class="pre">protobuf</span></code>; on Linux,
+install <code class="docutils literal notranslate"><span class="pre">protobuf-compiler</span></code> or the equivalent package for your distribution.</p></li>
+<li><p>Make sure <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code> points to JDK 17. On macOS, you can select it with:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="k">$(</span>/usr/libexec/java_home<span class="w"> </span>-v<span class="w"> </span><span class="m">17</span><span class="k">)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="s2">&quot;</span><span class="nv">$JAVA_HOME</span><span class="s2">/bin:</span><span class="nv">$PATH</span><span class="s2">&quot;</span>
+</pre></div>
+</div>
+<p>On Apple Silicon, the selected JDK architecture must match the native Rust target. Verify that
+<code class="docutils literal notranslate"><span class="pre">file</span> <span class="pre">&quot;$JAVA_HOME/lib/server/libjvm.dylib&quot;</span></code> reports <code class="docutils literal notranslate"><span class="pre">arm64</span></code>.</p>
+</li>
+<li><p>Build the profile once from the command line so generated sources and native artifacts are in
+place:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-4.0&quot;</span><span class="w"> </span>make<span class="w"> </span>release
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">spark-4.0</span></code> profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
+<code class="docutils literal notranslate"><span class="pre">PROFILES=&quot;-Pspark-4.0</span> <span class="pre">-Pscala-2.13</span> <span class="pre">-Pjdk17&quot;</span> <span class="pre">make</span> <span class="pre">release</span></code>.</p>
+<p>The Maven profile is named <code class="docutils literal notranslate"><span class="pre">jdk17</span></code> in this project.</p>
+<p>If the native build previously used a different JDK, clear Cargo’s cached JNI link path before
+rebuilding:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>native<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cargo<span class="w"> </span>clean
+</pre></div>
+</div>
+</li>
+<li><p>Open the repository root as a new project in IntelliJ IDEA.</p></li>
+<li><p>In the Maven tool window, enable the <code class="docutils literal notranslate"><span class="pre">spark-4.0</span></code> and <code class="docutils literal notranslate"><span class="pre">jdk17</span></code> profiles. Disable conflicting Spark
+version profiles such as <code class="docutils literal notranslate"><span class="pre">spark-3.4</span></code> or <code class="docutils literal notranslate"><span class="pre">spark-3.5</span></code> if IntelliJ selected them.</p></li>
+<li><p>Re-import or reload the Maven project.</p></li>
+<li><p>Build the project in IntelliJ.</p></li>
+</ol>
+<p>When running tests from IntelliJ on JDK 17, add the same VM options that Maven uses through the
+root <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code>’s <code class="docutils literal notranslate"><span class="pre">extraJavaTestArgs</span></code> property:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>-XX:+IgnoreUnrecognizedVMOptions
+--add-opens=java.base/java.lang=ALL-UNNAMED
+--add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+--add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+--add-opens=java.base/java.io=ALL-UNNAMED
+--add-opens=java.base/java.net=ALL-UNNAMED
+--add-opens=java.base/java.nio=ALL-UNNAMED
+--add-opens=java.base/java.util=ALL-UNNAMED
+--add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED
+--add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+--add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+--add-opens=java.base/sun.security.action=ALL-UNNAMED
+--add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+-Djdk.reflect.useDirectMethodHandle=false
+</pre></div>
+</div>
+<p>If IntelliJ still resolves Spark 3.x dependencies or reports shim source errors after switching
+profiles, repeat the clean import steps above. Maven profile state is cached in the IntelliJ
+project files, and stale profile selections are a common cause of mixed Spark 3.x and Spark 4.x
+source roots.</p>
+</section>
 </section>
 <section id="clion">
 <h3>CLion<a class="headerlink" href="#clion" title="Link to this heading">#</a></h3>
