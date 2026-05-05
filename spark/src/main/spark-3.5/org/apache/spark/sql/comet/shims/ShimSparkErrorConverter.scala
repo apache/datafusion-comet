@@ -162,8 +162,7 @@ trait ShimSparkErrorConverter {
       case "CollectionSizeLimitExceeded" =>
         Some(
           QueryExecutionErrors.createArrayWithElementsExceedLimitError(
-            "array",
-            params("numElements").toString.toLong))
+            ("array", params("numElements").toString.toLong)))
 
       case "NotNullAssertViolation" =>
         Some(

@@ -189,7 +189,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
               checkShuffleAnswer(df, complexKeyShuffles)
             }
 
-            withParquetTable((0 until 50).map(i => (Map(i -> (i, i.toString)), i + 1)), "tbl") {
+            withParquetTable((0 until 50).map(i => (Map(i -> ((i, i.toString))), i + 1)), "tbl") {
               val df = sql("SELECT * FROM tbl")
                 .filter($"_2" > 10)
                 .repartition(numPartitions, $"_1", $"_2")
