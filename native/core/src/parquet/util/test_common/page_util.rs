@@ -33,7 +33,6 @@ use parquet::{
 
 use super::random_numbers_range;
 use bytes::Bytes;
-use zstd::zstd_safe::WriteBuf;
 
 pub trait DataPageBuilder {
     fn add_rep_levels(&mut self, max_level: i16, rep_levels: &[i16]);
@@ -127,7 +126,7 @@ impl DataPageBuilder for DataPageBuilderImpl {
         let encoded_values = encoder
             .flush_buffer()
             .expect("consume_buffer() should be OK");
-        self.buffer.extend_from_slice(encoded_values.as_slice());
+        self.buffer.extend_from_slice(&encoded_values);
     }
 
     fn add_indices(&mut self, indices: Bytes) {

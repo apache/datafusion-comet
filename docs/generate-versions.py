@@ -52,6 +52,51 @@ def replace_in_files(root: str, filename_pattern: str, search: str, replace: str
             file.write_text(updated, encoding="utf-8")
             print(f"Replaced {search} with {replace} in {file}")
 
+
+def strip_conditional_blocks(root: str, mode: str):
+    if mode == "snapshot":
+        keep_marker = "<!-- IF_SNAPSHOT -->"
+        drop_marker = "<!-- IF_RELEASE -->"
+    elif mode == "release":
+        keep_marker = "<!-- IF_RELEASE -->"
+        drop_marker = "<!-- IF_SNAPSHOT -->"
+    else:
+        raise ValueError(f"mode must be 'snapshot' or 'release', got {mode!r}")
+    end_marker = "<!-- ENDIF -->"
+
+    root_path = Path(root)
+    for file_pattern in ("*.md", "*.rst"):
+        for file in root_path.rglob(file_pattern):
+            lines = file.read_text(encoding="utf-8").splitlines(keepends=True)
+            out = []
+            state = None  # None, "keep", or "drop"
+            changed = False
+            for lineno, line in enumerate(lines, start=1):
+                stripped = line.strip()
+                if stripped == keep_marker or stripped == drop_marker:
+                    if state is not None:
+                        raise ValueError(
+                            f"{file}:{lineno}: conditional block opened while already inside a block"
+                        )
+                    state = "keep" if stripped == keep_marker else "drop"
+                    changed = True
+                elif stripped == end_marker:
+                    if state is None:
+                        raise ValueError(
+                            f"{file}:{lineno}: ENDIF with no matching opener"
+                        )
+                    state = None
+                    changed = True
+                elif state == "drop":
+                    changed = True
+                else:
+                    out.append(line)
+            if state is not None:
+                raise ValueError(f"{file}: unclosed conditional block")
+            if changed:
+                file.write_text("".join(out), encoding="utf-8")
+                print(f"Processed conditional blocks ({mode}) in {file}")
+
 def insert_warning_after_asf_header(root: str, warning: str):
     root_path = Path(root)
     for file in root_path.rglob("*.md"):
@@ -78,11 +123,16 @@ def publish_released_version(version: str):
     os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{major_minor} comet-{major_minor}")
     os.system(f"mkdir temp/user-guide/{major_minor}")
     os.system(f"cp -rf comet-{major_minor}/{dir}/* temp/user-guide/{major_minor}")
+    # Strip snapshot-only content; keep release-only content
+    strip_conditional_blocks(f"temp/user-guide/{major_minor}", "release")
     # Replace $COMET_VERSION with actual version
     for file_pattern in ["*.md", "*.rst"]:
         replace_in_files(f"temp/user-guide/{major_minor}", file_pattern, "$COMET_VERSION", version)
 
 def generate_docs(snapshot_version: str, latest_released_version: str, previous_versions: list[str]):
+
+    # Strip release-only content; keep snapshot-only content for the latest (snapshot) docs
+    strip_conditional_blocks("temp/user-guide/latest", "snapshot")
 
     # Replace $COMET_VERSION with actual version for snapshot version
     for file_pattern in ["*.md", "*.rst"]:
@@ -104,6 +154,6 @@ This is **out-of-date** documentation. The latest Comet release is version {late
 if __name__ == "__main__":
     print("Generating versioned user guide docs...")
     snapshot_version = get_version_from_pom()
-    latest_released_version = "0.13.0"
-    previous_versions = ["0.10.1", "0.11.0", "0.12.0"]
+    latest_released_version = "0.15.0"
+    previous_versions = ["0.12.0", "0.13.0", "0.14.0"]
     generate_docs(snapshot_version, latest_released_version, previous_versions)

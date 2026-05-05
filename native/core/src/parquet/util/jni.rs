@@ -21,7 +21,7 @@ use jni::{
     errors::Result as JNIResult,
     objects::{JObjectArray, JString},
     sys::{jboolean, jint},
-    JNIEnv,
+    Env,
 };
 
 use arrow::error::ArrowError;
@@ -37,7 +37,7 @@ use url::{ParseError, Url};
 /// Convert primitives from Spark side into a `ColumnDescriptor`.
 #[allow(clippy::too_many_arguments)]
 pub fn convert_column_descriptor(
-    env: &mut JNIEnv,
+    env: &mut Env,
     physical_type_id: jint,
     logical_type_id: jint,
     max_dl: jint,
@@ -131,12 +131,13 @@ impl TypePromotionInfo {
     }
 }
 
-fn convert_column_path(env: &mut JNIEnv, path_array: JObjectArray) -> JNIResult<ColumnPath> {
-    let array_len = env.get_array_length(&path_array)?;
+fn convert_column_path(env: &mut Env, path_array: JObjectArray) -> JNIResult<ColumnPath> {
+    let array_len = path_array.len(env)?;
     let mut res: Vec<String> = Vec::new();
     for i in 0..array_len {
-        let p: JString = env.get_object_array_element(&path_array, i)?.into();
-        res.push(env.get_string(&p)?.into());
+        let p = path_array.get_element(env, i)?;
+        let p: JString = unsafe { JString::from_raw(env, p.into_raw()) };
+        res.push(p.try_to_string(env)?);
     }
     Ok(ColumnPath::new(res))
 }
@@ -167,13 +168,13 @@ fn convert_logical_type(
     match id {
         0 => LogicalType::Integer {
             bit_width: bit_width as i8,
-            is_signed: is_signed != 0,
+            is_signed,
         },
         1 => LogicalType::String,
         2 => LogicalType::Decimal { scale, precision },
         3 => LogicalType::Date,
         4 => LogicalType::Timestamp {
-            is_adjusted_to_u_t_c: is_adjusted_utc != 0,
+            is_adjusted_to_u_t_c: is_adjusted_utc,
             unit: convert_time_unit(time_unit),
         },
         5 => LogicalType::Enum,

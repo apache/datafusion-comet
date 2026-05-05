@@ -27,14 +27,62 @@ fn criterion_benchmark(c: &mut Criterion) {
     let expr = Arc::new(Column::new("a", 0));
     let boolean_batch = create_boolean_batch();
     let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
-    let cast_to_i8 = Cast::new(expr.clone(), DataType::Int8, spark_cast_options.clone());
-    let cast_to_i16 = Cast::new(expr.clone(), DataType::Int16, spark_cast_options.clone());
-    let cast_to_i32 = Cast::new(expr.clone(), DataType::Int32, spark_cast_options.clone());
-    let cast_to_i64 = Cast::new(expr.clone(), DataType::Int64, spark_cast_options.clone());
-    let cast_to_f32 = Cast::new(expr.clone(), DataType::Float32, spark_cast_options.clone());
-    let cast_to_f64 = Cast::new(expr.clone(), DataType::Float64, spark_cast_options.clone());
-    let cast_to_str = Cast::new(expr.clone(), DataType::Utf8, spark_cast_options.clone());
-    let cast_to_decimal = Cast::new(expr, DataType::Decimal128(10, 4), spark_cast_options);
+    let cast_to_i8 = Cast::new(
+        expr.clone(),
+        DataType::Int8,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_to_i16 = Cast::new(
+        expr.clone(),
+        DataType::Int16,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_to_i32 = Cast::new(
+        expr.clone(),
+        DataType::Int32,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_to_i64 = Cast::new(
+        expr.clone(),
+        DataType::Int64,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_to_f32 = Cast::new(
+        expr.clone(),
+        DataType::Float32,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_to_f64 = Cast::new(
+        expr.clone(),
+        DataType::Float64,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_to_str = Cast::new(
+        expr.clone(),
+        DataType::Utf8,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_to_decimal = Cast::new(
+        expr,
+        DataType::Decimal128(10, 4),
+        spark_cast_options,
+        None,
+        None,
+    );
 
     let mut group = c.benchmark_group("cast_bool".to_string());
     group.bench_function("i8", |b| {

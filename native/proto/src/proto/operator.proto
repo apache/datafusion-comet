@@ -52,6 +52,7 @@ message Operator {
     ParquetWriter parquet_writer = 113;
     Explode explode = 114;
     CsvScan csv_scan = 115;
+    ShuffleScan shuffle_scan = 116;
   }
 }
 
@@ -85,6 +86,12 @@ message Scan {
   bool arrow_ffi_safe = 3;
 }
 
+message ShuffleScan {
+  repeated spark.spark_expression.DataType fields = 1;
+  // Informational label for debug output (e.g., "CometShuffleExchangeExec [id=5]")
+  string source = 2;
+}
+
 // Common data shared by all partitions in split mode (sent once at planning)
 message NativeScanCommon {
   repeated SparkStructField required_schema = 1;
@@ -100,6 +107,11 @@ message NativeScanCommon {
   bool encryption_enabled = 11;
   string source = 12;
   repeated spark.spark_expression.DataType fields = 13;
+  // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+  // missing in the Parquet file, true returns the entire struct as null (legacy
+  // pre-4.1 behavior); false preserves the parent struct's nullness from the file
+  // so non-null parents return a struct of all-null fields.
+  bool return_null_struct_if_all_fields_missing = 14;
 }
 
 message NativeScan {
@@ -210,6 +222,9 @@ message IcebergFileScanTask {
   // Record count if reading entire file
   optional uint64 record_count = 4;
 
+  // Total file size from the manifest entry, used to skip stat/HEAD calls
+  uint64 file_size_in_bytes = 5;
+
   // Indices into IcebergScan deduplication pools
   uint32 schema_idx = 15;
   optional uint32 partition_type_idx = 16;
@@ -236,6 +251,9 @@ message IcebergDeleteFile {
 
   // Equality field IDs (empty for positional deletes)
   repeated int32 equality_ids = 4;
+
+  // // Total file size from the manifest entry, used to skip stat/HEAD calls
+  uint64 file_size_in_bytes = 5;
 }
 
 message Projection {
@@ -257,6 +275,13 @@ message HashAggregate {
   repeated spark.spark_expression.AggExpr agg_exprs = 2;
   repeated spark.spark_expression.Expr result_exprs = 3;
   AggregateMode mode = 5;
+  // Per-expression modes for mixed-mode aggregates (e.g., PartialMerge + Partial).
+  // When set, each entry corresponds to agg_exprs at the same index.
+  // When empty, all expressions use the `mode` field.
+  repeated AggregateMode expr_modes = 6;
+  // Offset in the child's output where aggregate buffer attributes start.
+  // Used by PartialMerge to locate state fields in the input.
+  int32 initial_input_buffer_offset = 7;
 }
 
 message Limit {
@@ -306,6 +331,7 @@ message ParquetWriter {
 enum AggregateMode {
   Partial = 0;
   Final = 1;
+  PartialMerge = 2;
 }
 
 message Expand {
@@ -328,6 +354,9 @@ message HashJoin {
   JoinType join_type = 3;
   optional spark.spark_expression.Expr condition = 4;
   BuildSide build_side = 5;
+  // True for BroadcastHashJoinExec null-aware anti-joins (NOT IN subquery semantics).
+  // When true, any null in the build side suppresses all left rows.
+  bool null_aware_anti_join = 6;
 }
 
 message SortMergeJoin {
@@ -356,6 +385,7 @@ message WindowExpr {
   spark.spark_expression.Expr built_in_window_function = 1;
   spark.spark_expression.AggExpr agg_func = 2;
   WindowSpecDefinition spec = 3;
+  bool ignore_nulls = 4;
 }
 
 enum WindowFrameType {

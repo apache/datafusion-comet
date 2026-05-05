@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" font-family="monospace, sans-serif" font-size="12">
+  <!-- Background -->
+  <rect width="900" height="520" fill="#1e1e2e"/>
+
+  <!-- Title -->
+  <text x="450" y="30" text-anchor="middle" fill="#cdd6f4" font-size="16" font-weight="bold">QueryContext Journey: From SQL Text to Error Pointer</text>
+
+  <!-- === PHASE 1: Spark side === -->
+  <rect x="20" y="48" width="260" height="200" rx="8" fill="#181825" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="150" y="68" text-anchor="middle" fill="#89b4fa" font-size="12" font-weight="bold">① Spark Parses SQL</text>
+
+  <text x="35" y="92" fill="#cdd6f4" font-size="11">SQL: SELECT a/b FROM t</text>
+  <text x="35" y="110" fill="#6c7086" font-size="11">Spark's parser attaches origin:</text>
+  <rect x="35" y="118" width="225" height="115" rx="4" fill="#11111b"/>
+  <text x="45" y="136" fill="#f9e2af" font-size="10">expr.origin:</text>
+  <text x="45" y="152" fill="#a6e3a1" font-size="10">  sqlText    = "SELECT a/b FROM t"</text>
+  <text x="45" y="168" fill="#a6e3a1" font-size="10">  startIndex = 7   (char 'a')</text>
+  <text x="45" y="184" fill="#a6e3a1" font-size="10">  stopIndex  = 9   (char 'b')</text>
+  <text x="45" y="200" fill="#a6e3a1" font-size="10">  line       = 1</text>
+  <text x="45" y="216" fill="#a6e3a1" font-size="10">  startPos   = 7   (column)</text>
+
+  <!-- Arrow: Phase 1 → Phase 2 -->
+  <line x1="282" y1="148" x2="318" y2="148" stroke="#6c7086" stroke-width="1.5" marker-end="url(#arr1)"/>
+  <text x="300" y="140" text-anchor="middle" fill="#6c7086" font-size="10">serialize</text>
+
+  <!-- === PHASE 2: Protobuf === -->
+  <rect x="320" y="48" width="240" height="200" rx="8" fill="#181825" stroke="#f38ba8" stroke-width="1.5"/>
+  <text x="440" y="68" text-anchor="middle" fill="#f38ba8" font-size="12" font-weight="bold">② Protobuf Wire Format</text>
+  <text x="335" y="90" fill="#6c7086" font-size="11">Expr message (expr.proto):</text>
+  <rect x="335" y="97" width="210" height="135" rx="4" fill="#11111b"/>
+  <text x="345" y="114" fill="#f9e2af" font-size="10">message Expr {</text>
+  <text x="355" y="130" fill="#cba6f7" font-size="10">  optional uint64 expr_id = 89;</text>
+  <text x="355" y="146" fill="#cba6f7" font-size="10">  optional QueryContext</text>
+  <text x="365" y="162" fill="#cba6f7" font-size="10">    query_context = 90;</text>
+  <text x="355" y="178" fill="#6c7086" font-size="10">  // ... actual expr type ...</text>
+  <text x="345" y="194" fill="#f9e2af" font-size="10">}</text>
+  <text x="345" y="218" fill="#a6e3a1" font-size="10">expr_id=42, sql="SELECT a/b.."</text>
+
+  <!-- Arrow: Phase 2 → Phase 3 -->
+  <line x1="562" y1="148" x2="598" y2="148" stroke="#6c7086" stroke-width="1.5" marker-end="url(#arr1)"/>
+  <text x="580" y="140" text-anchor="middle" fill="#6c7086" font-size="10">JNI</text>
+
+  <!-- === PHASE 3: Rust Registry === -->
+  <rect x="600" y="48" width="280" height="200" rx="8" fill="#181825" stroke="#fab387" stroke-width="1.5"/>
+  <text x="740" y="68" text-anchor="middle" fill="#fab387" font-size="12" font-weight="bold">③ Rust: QueryContextMap</text>
+  <text x="615" y="90" fill="#6c7086" font-size="11">planner.rs registers it:</text>
+  <rect x="615" y="97" width="250" height="135" rx="4" fill="#11111b"/>
+  <text x="625" y="114" fill="#f9e2af" font-size="10">registry.register(42, QueryContext {</text>
+  <text x="635" y="130" fill="#a6e3a1" font-size="10">  sql_text:      "SELECT a/b FROM t"</text>
+  <text x="635" y="146" fill="#a6e3a1" font-size="10">  start_index:   7</text>
+  <text x="635" y="162" fill="#a6e3a1" font-size="10">  stop_index:    9</text>
+  <text x="635" y="178" fill="#a6e3a1" font-size="10">  line:          1</text>
+  <text x="635" y="194" fill="#a6e3a1" font-size="10">  start_position:7</text>
+  <text x="625" y="210" fill="#f9e2af" font-size="10">});</text>
+
+  <!-- === PHASE 4: Error occurs === -->
+  <rect x="20" y="275" width="260" height="160" rx="8" fill="#181825" stroke="#f38ba8" stroke-width="1.5"/>
+  <text x="150" y="295" text-anchor="middle" fill="#f38ba8" font-size="12" font-weight="bold">④ Error During Execution</text>
+  <text x="35" y="315" fill="#6c7086" font-size="11">CheckedBinaryExpr evaluates:</text>
+  <rect x="35" y="322" width="230" height="98" rx="4" fill="#11111b"/>
+  <text x="45" y="340" fill="#f9e2af" font-size="10">self.child.evaluate(batch)?;</text>
+  <text x="45" y="356" fill="#6c7086" font-size="10">// ↑ returns Err(DivideByZero)</text>
+  <text x="45" y="372" fill="#f9e2af" font-size="10">SparkErrorWithContext::with_context(</text>
+  <text x="55" y="388" fill="#a6e3a1" font-size="10">  SparkError::DivideByZero,</text>
+  <text x="55" y="404" fill="#a6e3a1" font-size="10">  Arc::clone(&amp;self.query_context),</text>
+  <text x="45" y="420" fill="#f9e2af" font-size="10">);</text>
+
+  <!-- Arrow: Phase 3 → lookup context -->
+  <line x1="600" y1="200" x2="600" y2="350" stroke="#fab387" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <line x1="600" y1="350" x2="282" y2="350" stroke="#fab387" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrOrange)"/>
+  <text x="500" y="342" text-anchor="middle" fill="#fab387" font-size="10">lookup context for expr_id=42</text>
+
+  <!-- === PHASE 5: JSON === -->
+  <rect x="320" y="275" width="240" height="160" rx="8" fill="#181825" stroke="#a6e3a1" stroke-width="1.5"/>
+  <text x="440" y="295" text-anchor="middle" fill="#a6e3a1" font-size="12" font-weight="bold">⑤ Serialized to JSON</text>
+  <rect x="335" y="304" width="210" height="120" rx="4" fill="#11111b"/>
+  <text x="345" y="321" fill="#a6e3a1" font-size="10">{"errorType":"DivideByZero",</text>
+  <text x="345" y="337" fill="#a6e3a1" font-size="10"> "errorClass":"DIVIDE_BY_ZERO",</text>
+  <text x="345" y="353" fill="#a6e3a1" font-size="10"> "params":{},</text>
+  <text x="345" y="369" fill="#a6e3a1" font-size="10"> "context":{</text>
+  <text x="355" y="385" fill="#a6e3a1" font-size="10">   "sqlText":"SELECT a/b...",</text>
+  <text x="355" y="401" fill="#a6e3a1" font-size="10">   "startIndex":7,"line":1},</text>
+  <text x="345" y="417" fill="#a6e3a1" font-size="10"> "summary":"== SQL (line 1)..."}</text>
+
+  <!-- Arrow: Phase 4 → Phase 5 -->
+  <line x1="282" y1="355" x2="318" y2="355" stroke="#f38ba8" stroke-width="1.5" marker-end="url(#arr1)"/>
+  <text x="300" y="347" text-anchor="middle" fill="#f38ba8" font-size="10">.to_json()</text>
+
+  <!-- === PHASE 6: Result === -->
+  <rect x="600" y="275" width="280" height="160" rx="8" fill="#181825" stroke="#cba6f7" stroke-width="1.5"/>
+  <text x="740" y="295" text-anchor="middle" fill="#cba6f7" font-size="12" font-weight="bold">⑥ User Sees Proper Error</text>
+  <rect x="615" y="304" width="250" height="120" rx="4" fill="#11111b"/>
+  <text x="625" y="321" fill="#f38ba8" font-size="10">SparkArithmeticException:</text>
+  <text x="625" y="337" fill="#cdd6f4" font-size="10">[DIVIDE_BY_ZERO] Division by zero.</text>
+  <text x="625" y="353" fill="#cdd6f4" font-size="10">Use `try_divide` to tolerate...</text>
+  <text x="625" y="369" fill="#6c7086" font-size="10"></text>
+  <text x="625" y="385" fill="#f9e2af" font-size="10">== SQL (line 1, position 8) ==</text>
+  <text x="625" y="401" fill="#f9e2af" font-size="10">SELECT a/b FROM t</text>
+  <text x="625" y="417" fill="#f38ba8" font-size="10">       ^^^</text>
+
+  <!-- Arrow: Phase 5 → Phase 6 -->
+  <line x1="562" y1="355" x2="598" y2="355" stroke="#a6e3a1" stroke-width="1.5" marker-end="url(#arrGreen)"/>
+  <text x="580" y="347" text-anchor="middle" fill="#a6e3a1" font-size="10">convert</text>
+
+  <!-- JNI boundary line -->
+  <line x1="20" y1="262" x2="880" y2="262" stroke="#f38ba8" stroke-width="1" stroke-dasharray="8,4"/>
+  <text x="450" y="258" text-anchor="middle" fill="#f38ba8" font-size="10">── JNI boundary ──</text>
+
+  <!-- Step number labels below diagram -->
+  <text x="150" y="450" text-anchor="middle" fill="#89b4fa" font-size="11">① SQL → origin</text>
+  <text x="150" y="466" text-anchor="middle" fill="#89b4fa" font-size="11">(Spark)</text>
+
+  <text x="440" y="450" text-anchor="middle" fill="#f38ba8" font-size="11">②③ Proto + Registry</text>
+  <text x="440" y="466" text-anchor="middle" fill="#f38ba8" font-size="11">(Serialize → Deserialize)</text>
+
+  <text x="740" y="450" text-anchor="middle" fill="#fab387" font-size="11">④⑤⑥ Error → JSON → Exception</text>
+  <text x="740" y="466" text-anchor="middle" fill="#fab387" font-size="11">(Rust → JVM)</text>
+
+  <defs>
+    <marker id="arr1" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#6c7086"/>
+    </marker>
+    <marker id="arrOrange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#fab387"/>
+    </marker>
+    <marker id="arrGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#a6e3a1"/>
+    </marker>
+  </defs>
+</svg>

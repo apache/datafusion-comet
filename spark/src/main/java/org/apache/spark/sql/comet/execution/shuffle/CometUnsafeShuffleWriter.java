@@ -50,7 +50,6 @@ import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.network.shuffle.checksum.ShuffleChecksumHelper;
 import org.apache.spark.network.util.LimitedInputStream;
 import org.apache.spark.scheduler.MapStatus;
-import org.apache.spark.scheduler.MapStatus$;
 import org.apache.spark.serializer.SerializationStream;
 import org.apache.spark.serializer.SerializerInstance;
 import org.apache.spark.shuffle.BaseShuffleHandle;
@@ -212,9 +211,9 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     // generic throwables.
     boolean success = false;
     if (tracingEnabled) {
-      nativeLib.traceBegin("CometUnsafeShuffleWriter");
+      nativeLib.traceBegin("comet_unsafe_shuffle_writer");
     }
-    String offheapMemKey = "comet_shuffle_" + Thread.currentThread().getId();
+    String offheapMemKey = "thread_" + nativeLib.getRustThreadId() + "_comet_jvm_shuffle";
     try {
       while (records.hasNext()) {
         insertRecordIntoSorter(records.next());
@@ -226,7 +225,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       success = true;
     } finally {
       if (tracingEnabled) {
-        nativeLib.traceEnd("CometUnsafeShuffleWriter");
+        nativeLib.traceEnd("comet_unsafe_shuffle_writer");
       }
       if (sorter != null) {
         try {
@@ -288,7 +287,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         }
       }
     }
-    mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
+    mapStatus = MapStatusHelper.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
   }
 
   @VisibleForTesting

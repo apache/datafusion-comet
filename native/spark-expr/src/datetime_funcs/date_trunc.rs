@@ -16,7 +16,9 @@
 // under the License.
 
 use arrow::datatypes::DataType;
-use datafusion::common::{utils::take_function_args, DataFusionError, Result, ScalarValue::Utf8};
+use datafusion::common::{
+    utils::take_function_args, DataFusionError, Result, ScalarValue, ScalarValue::Utf8,
+};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -76,9 +78,14 @@ impl ScalarUDFImpl for SparkDateTrunc {
                 let result = date_trunc_array_fmt_dyn(&date, &formats)?;
                 Ok(ColumnarValue::Array(result))
             }
+            (ColumnarValue::Scalar(date_scalar), ColumnarValue::Scalar(Utf8(Some(format)))) => {
+                let date_arr = date_scalar.to_array()?;
+                let result = date_trunc_dyn(&date_arr, format)?;
+                let scalar = ScalarValue::try_from_array(&result, 0)?;
+                Ok(ColumnarValue::Scalar(scalar))
+            }
             _ => Err(DataFusionError::Execution(
-                "Invalid input to function DateTrunc. Expected (PrimitiveArray<Date32>, Scalar) or \
-                    (PrimitiveArray<Date32>, StringArray)".to_string(),
+                "Invalid input to function DateTrunc. Expected (Date32, Utf8)".to_string(),
             )),
         }
     }

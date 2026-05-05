@@ -34,10 +34,34 @@ fn criterion_benchmark(c: &mut Criterion) {
         (EvalMode::Try, "try"),
     ] {
         let spark_cast_options = SparkCastOptions::new(mode, "", false);
-        let cast_to_i8 = Cast::new(expr.clone(), DataType::Int8, spark_cast_options.clone());
-        let cast_to_i16 = Cast::new(expr.clone(), DataType::Int16, spark_cast_options.clone());
-        let cast_to_i32 = Cast::new(expr.clone(), DataType::Int32, spark_cast_options.clone());
-        let cast_to_i64 = Cast::new(expr.clone(), DataType::Int64, spark_cast_options);
+        let cast_to_i8 = Cast::new(
+            expr.clone(),
+            DataType::Int8,
+            spark_cast_options.clone(),
+            None,
+            None,
+        );
+        let cast_to_i16 = Cast::new(
+            expr.clone(),
+            DataType::Int16,
+            spark_cast_options.clone(),
+            None,
+            None,
+        );
+        let cast_to_i32 = Cast::new(
+            expr.clone(),
+            DataType::Int32,
+            spark_cast_options.clone(),
+            None,
+            None,
+        );
+        let cast_to_i64 = Cast::new(
+            expr.clone(),
+            DataType::Int64,
+            spark_cast_options,
+            None,
+            None,
+        );
 
         let mut group = c.benchmark_group(format!("cast_string_to_int/{}", mode_name));
         group.bench_function("i8", |b| {
@@ -57,8 +81,20 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // Benchmark decimal truncation (Legacy mode only)
     let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "", false);
-    let cast_to_i32 = Cast::new(expr.clone(), DataType::Int32, spark_cast_options.clone());
-    let cast_to_i64 = Cast::new(expr.clone(), DataType::Int64, spark_cast_options);
+    let cast_to_i32 = Cast::new(
+        expr.clone(),
+        DataType::Int32,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_to_i64 = Cast::new(
+        expr.clone(),
+        DataType::Int64,
+        spark_cast_options,
+        None,
+        None,
+    );
 
     let mut group = c.benchmark_group("cast_string_to_int/legacy_decimals");
     group.bench_function("i32", |b| {
@@ -81,6 +117,8 @@ fn criterion_benchmark(c: &mut Criterion) {
             expr.clone(),
             DataType::Decimal128(38, 10),
             spark_cast_options,
+            None,
+            None,
         );
 
         let mut group = c.benchmark_group(format!("cast_string_to_decimal/{}", mode_name));

@@ -34,7 +34,10 @@ impl MemoryPoolType {
     pub(crate) fn is_task_shared(&self) -> bool {
         matches!(
             self,
-            MemoryPoolType::GreedyTaskShared | MemoryPoolType::FairSpillTaskShared
+            MemoryPoolType::GreedyTaskShared
+                | MemoryPoolType::FairSpillTaskShared
+                | MemoryPoolType::FairUnified
+                | MemoryPoolType::GreedyUnified
         )
     }
 }

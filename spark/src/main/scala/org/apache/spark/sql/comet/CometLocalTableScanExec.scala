@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import scala.jdk.CollectionConverters._
-
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -34,9 +32,8 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.serializeDataType
+import org.apache.comet.serde.operator.CometSink
 
 case class CometLocalTableScanExec(
     originalPlan: LocalTableScanExec,
@@ -69,7 +66,8 @@ case class CometLocalTableScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numInputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    val timeZoneId = conf.sessionLocalTimeZone
+    // Use UTC to match native side expectations. See CometSparkToColumnarExec.
+    val timeZoneId = "UTC"
     rdd.mapPartitionsInternal { sparkBatches =>
       val context = TaskContext.get()
       val batches = CometArrowConverters.rowToArrowBatchIter(
@@ -106,23 +104,13 @@ case class CometLocalTableScanExec(
   override def hashCode(): Int = Objects.hashCode(originalPlan, originalPlan.schema, output)
 }
 
-object CometLocalTableScanExec extends CometOperatorSerde[LocalTableScanExec] {
+object CometLocalTableScanExec extends CometSink[LocalTableScanExec] {
+
+  // uses CometArrowConverters, which re-uses arrays
+  override def isFfiSafe: Boolean = false
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
-
-  override def convert(
-      op: LocalTableScanExec,
-      builder: Operator.Builder,
-      childOp: Operator*): Option[Operator] = {
-    val scanTypes = op.output.flatten(attr => serializeDataType(attr.dataType))
-    val scanBuilder = OperatorOuterClass.Scan
-      .newBuilder()
-      .setSource(op.getClass.getSimpleName)
-      .addAllFields(scanTypes.asJava)
-      .setArrowFfiSafe(false)
-    Some(builder.setScan(scanBuilder).build())
-  }
 
   override def createExec(nativeOp: Operator, op: LocalTableScanExec): CometNativeExec = {
     CometScanWrapper(nativeOp, CometLocalTableScanExec(op, op.rows, op.output))

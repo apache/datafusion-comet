@@ -23,16 +23,18 @@ use std::{
     fmt,
     fmt::{Debug, Formatter},
     fs::File,
-    io::Cursor,
     sync::Arc,
 };
 
+#[cfg(feature = "hdfs-opendal")]
 use opendal::Operator;
+#[cfg(feature = "hdfs-opendal")]
+use std::io::Cursor;
 
 use crate::execution::shuffle::CompressionCodec;
-use crate::parquet::parquet_support::{
-    create_hdfs_operator, is_hdfs_scheme, prepare_object_store_with_configs,
-};
+use crate::parquet::parquet_support::is_hdfs_scheme;
+#[cfg(feature = "hdfs-opendal")]
+use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
@@ -45,7 +47,7 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-        SendableRecordBatchStream, Statistics,
+        SendableRecordBatchStream,
     },
 };
 use futures::TryStreamExt;
@@ -64,6 +66,7 @@ enum ParquetWriter {
     /// Contains the arrow writer, HDFS operator, and destination path
     /// an Arrow writer writes to in-memory buffer the data converted to Parquet format
     /// The opendal::Writer is created lazily on first write
+    #[cfg(feature = "hdfs-opendal")]
     Remote(
         ArrowWriter<Cursor<Vec<u8>>>,
         Option<opendal::Writer>,
@@ -80,6 +83,7 @@ impl ParquetWriter {
     ) -> std::result::Result<(), parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => writer.write(batch),
+            #[cfg(feature = "hdfs-opendal")]
             ParquetWriter::Remote(
                 arrow_parquet_buffer_writer,
                 hdfs_writer_opt,
@@ -134,6 +138,7 @@ impl ParquetWriter {
                 writer.close()?;
                 Ok(())
             }
+            #[cfg(feature = "hdfs-opendal")]
             ParquetWriter::Remote(
                 arrow_parquet_buffer_writer,
                 mut hdfs_writer_opt,
@@ -208,7 +213,7 @@ pub struct ParquetWriterExec {
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for plan properties
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
 }
 
 impl ParquetWriterExec {
@@ -228,12 +233,12 @@ impl ParquetWriterExec {
         // Preserve the input's partitioning so each partition writes its own file
         let input_partitioning = input.output_partitioning().clone();
 
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
             input_partitioning,
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(ParquetWriterExec {
             input,
@@ -275,7 +280,7 @@ impl ParquetWriterExec {
         output_file_path: &str,
         schema: SchemaRef,
         props: WriterProperties,
-        runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
+        _runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
         object_store_options: &HashMap<String, String>,
     ) -> Result<ParquetWriter> {
         // Parse URL and match on storage scheme directly
@@ -284,11 +289,11 @@ impl ParquetWriterExec {
         })?;
 
         if is_hdfs_scheme(&url, object_store_options) {
-            // HDFS storage
+            #[cfg(feature = "hdfs-opendal")]
             {
                 // Use prepare_object_store_with_configs to create and register the object store
                 let (_object_store_url, object_store_path) = prepare_object_store_with_configs(
-                    runtime_env,
+                    _runtime_env,
                     output_file_path.to_string(),
                     object_store_options,
                 )
@@ -322,6 +327,12 @@ impl ParquetWriterExec {
                     None,
                     op,
                     object_store_path.to_string(),
+                ))
+            }
+            #[cfg(not(feature = "hdfs-opendal"))]
+            {
+                Err(DataFusionError::Execution(
+                    "HDFS support is not enabled. Rebuild with the 'hdfs-opendal' feature.".into(),
                 ))
             }
         } else if output_file_path.starts_with("file://")
@@ -405,11 +416,7 @@ impl ExecutionPlan for ParquetWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Result<Statistics> {
-        self.input.partition_statistics(None)
-    }
-
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
@@ -576,6 +583,7 @@ mod tests {
 
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
     /// Example batch_id 1 -> 0..1000, 2 -> 1001..2000
+    #[allow(dead_code)]
     fn create_test_record_batch(batch_id: i32) -> Result<RecordBatch> {
         assert!(batch_id > 0, "batch_id must be greater than 0");
         let num_rows = batch_id * 1000;

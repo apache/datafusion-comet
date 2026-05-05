@@ -63,6 +63,8 @@ trait CometBenchmarkBase
     sparkSession.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
+    // Benchmarks use invalid input values that should produce NULL, not exceptions
+    sparkSession.conf.set(SQLConf.ANSI_ENABLED.key, "false")
 
     sparkSession
   }

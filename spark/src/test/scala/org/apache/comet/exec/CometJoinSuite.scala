@@ -27,11 +27,11 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.Decimal
 
 import org.apache.comet.CometConf
 
 class CometJoinSuite extends CometTestBase {
+
   import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -190,70 +190,82 @@ class CometJoinSuite extends CometTestBase {
           val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
           checkSparkAnswerAndOperator(df8)
 
-          // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
-          // left.join(right, left("_2") === right("_1"), "leftanti")
+          val df9 = left.join(right, left("_2") === right("_1"), "leftanti")
+          checkSparkAnswerAndOperator(df9)
         }
       }
     }
   }
 
-  test("HashJoin struct key") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(usingLegacyNativeCometScan)
+  test("BroadcastHashJoin with LeftAnti and NOT IN subquery (null-aware)") {
     withSQLConf(
-      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
-      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760") {
+      // Right side has no NULL: regular anti-semantics
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, i + 100)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
 
-      def manyTypes(idx: Int, v: Int) =
-        (
-          idx,
-          v,
-          v.toLong,
-          v.toFloat,
-          v.toDouble,
-          v.toString,
-          v % 2 == 0,
-          v.toString.getBytes,
-          Decimal(v))
+      // Right side contains NULL: null-aware should suppress all left rows
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, 2), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
 
-      withParquetTable((0 until 10).map(i => manyTypes(i, i % 5)), "tbl_a") {
-        withParquetTable((0 until 10).map(i => manyTypes(i, i % 10)), "tbl_b") {
-          // Full join: struct key
-          val df1 =
-            sql(
-              "SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
-                "ON named_struct('1', tbl_a._2) = named_struct('1', tbl_b._1)")
-          checkSparkAnswerAndOperator(df1)
+      // Left side has NULL values: NOT IN filters them out (NULL vs anything is NULL)
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((2, 100), (4, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
 
-          // Full join: struct key with nulls
-          val df2 =
-            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
-              "ON IF(tbl_a._1 > 5, named_struct('2', tbl_a._2), NULL) = IF(tbl_b._2 > 5, named_struct('2', tbl_b._1), NULL)")
-          checkSparkAnswerAndOperator(df2)
+      // Empty subquery: NOT IN against an empty set returns all left rows, including NULL probe.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq.empty[(Integer, Int)], "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
 
-          // Full join: struct key with nulls in the struct
-          val df3 =
-            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
-              "ON named_struct('2', IF(tbl_a._1 > 5, tbl_a._2, NULL)) = named_struct('2', IF(tbl_b._2 > 5, tbl_b._1, NULL))")
-          checkSparkAnswerAndOperator(df3)
+      // Both sides have NULL keys: probe-side NULL and build-side NULL on the same query.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
 
-          // Full join: nested structs
-          val df4 =
-            sql("SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
-              "ON named_struct('1', named_struct('2', tbl_a._2)) = named_struct('1', named_struct('2',  tbl_b._1))")
-          checkSparkAnswerAndOperator(df4)
+  test("BroadcastHashJoin with LeftAnti (non-null-aware)") {
+    withSQLConf(
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, i + 100)), "tbl_b") {
+          // BROADCAST(tbl_b) forces tbl_b as build-right side
+          val df = sql(
+            "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b " +
+              "ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
 
-          val columnCount = manyTypes(0, 0).productArity
-          def key(tbl: String) =
-            (1 to columnCount).map(i => s"${tbl}._$i").mkString("struct(", ", ", ")")
-          // Using several different types in the struct key
-          val df5 =
-            sql(
-              "SELECT /*+ SHUFFLE_HASH(tbl_b) */ * FROM tbl_a FULL JOIN tbl_b " +
-                s"ON ${key("tbl_a")} = ${key("tbl_b")}")
-          checkSparkAnswerAndOperator(df5)
+      // With NULL values on both sides - non-null-aware semantics: NULL keys don't match anything
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql(
+            "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b " +
+              "ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
@@ -422,28 +434,87 @@ class CometJoinSuite extends CometTestBase {
       checkSparkAnswer(left.join(right, ($"left.N" === $"right.N") && ($"right.N" =!= 3), "full"))
 
       checkSparkAnswer(sql("""
-            |SELECT l.a, count(*)
-            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
-            |GROUP BY l.a
+          |SELECT l.a, count(*)
+          |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+          |GROUP BY l.a
         """.stripMargin))
 
       checkSparkAnswer(sql("""
-            |SELECT r.N, count(*)
-            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
-            |GROUP BY r.N
+          |SELECT r.N, count(*)
+          |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+          |GROUP BY r.N
           """.stripMargin))
 
       checkSparkAnswer(sql("""
-            |SELECT l.N, count(*)
-            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
-            |GROUP BY l.N
+          |SELECT l.N, count(*)
+          |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+          |GROUP BY l.N
           """.stripMargin))
 
       checkSparkAnswer(sql("""
-            |SELECT r.a, count(*)
-            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
-            |GROUP BY r.a
+          |SELECT r.a, count(*)
+          |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+          |GROUP BY r.a
         """.stripMargin))
+    }
+  }
+
+  test("Broadcast hash join build-side batch coalescing") {
+    // Use many shuffle partitions to produce many small broadcast batches,
+    // then verify that coalescing reduces the build-side batch count to 1 per task.
+    val numPartitions = 512
+    withSQLConf(
+      CometConf.COMET_BATCH_SIZE.key -> "100",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> numPartitions.toString) {
+      withParquetTable((0 until 10000).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10000).map(i => (i % 10, i + 2)), "tbl_b") {
+          // Force a shuffle on tbl_a before broadcast so the broadcast source has
+          // numPartitions partitions, not just the number of parquet files.
+          val query =
+            s"""SELECT /*+ BROADCAST(a) */ *
+               |FROM (SELECT /*+ REPARTITION($numPartitions) */ * FROM tbl_a) a
+               |JOIN tbl_b ON a._2 = tbl_b._1""".stripMargin
+
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql(query),
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+
+          val joins = collect(cometPlan) { case j: CometBroadcastHashJoinExec =>
+            j
+          }
+          assert(joins.nonEmpty, "Expected CometBroadcastHashJoinExec in plan")
+
+          val join = joins.head
+          val buildBatches = join.metrics("build_input_batches").value
+
+          // Without coalescing, build_input_batches would be ~numPartitions per task,
+          // totaling ~numPartitions * numPartitions across all tasks.
+          // With coalescing, each task gets 1 batch, so total ≈ numPartitions.
+          assert(
+            buildBatches <= numPartitions,
+            s"Expected at most $numPartitions build batches (1 per task), got $buildBatches. " +
+              "Broadcast batch coalescing may not be working.")
+
+          val broadcasts = collect(cometPlan) { case b: CometBroadcastExchangeExec =>
+            b
+          }
+          assert(broadcasts.nonEmpty, "Expected CometBroadcastExchangeExec in plan")
+
+          val broadcast = broadcasts.head
+          val coalescedBatches = broadcast.metrics("numCoalescedBatches").value
+          val coalescedRows = broadcast.metrics("numCoalescedRows").value
+
+          assert(
+            coalescedBatches >= numPartitions,
+            s"Expected at least $numPartitions coalesced batches, got $coalescedBatches")
+          assert(coalescedRows == 10000, s"Expected 10000 coalesced rows, got $coalescedRows")
+        }
+      }
     }
   }
 }
