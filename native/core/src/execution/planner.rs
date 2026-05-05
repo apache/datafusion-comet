@@ -2464,13 +2464,13 @@ impl PhysicalPlanner {
                         .iter()
                         .map(|expr| self.create_expr(expr, Arc::clone(&input_schema)))
                         .collect::<Result<Vec<_>, ExecutionError>>()?;
-                    window_func = self.find_df_window_function(&window_func_name).ok_or_else(
-                        || {
-                            GeneralError(format!(
-                                "{window_func_name} not supported for window function"
-                            ))
-                        },
-                    )?;
+                    window_func =
+                        self.find_df_window_function(&window_func_name)
+                            .ok_or_else(|| {
+                                GeneralError(format!(
+                                    "{window_func_name} not supported for window function"
+                                ))
+                            })?;
                 }
                 other => {
                     return Err(GeneralError(format!(
@@ -2659,9 +2659,8 @@ impl PhysicalPlanner {
         // Resolve a window-capable function by name via the session registry, returning
         // a clean "X not supported for window function" error if missing.
         let by_name = |name: &str| -> Result<WindowFunctionDefinition, ExecutionError> {
-            self.find_df_window_function(name).ok_or_else(|| {
-                GeneralError(format!("{name} not supported for window function"))
-            })
+            self.find_df_window_function(name)
+                .ok_or_else(|| GeneralError(format!("{name} not supported for window function")))
         };
 
         match &agg_func.expr_struct {
