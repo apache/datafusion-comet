@@ -19,90 +19,47 @@
 
 package org.apache.spark.sql.comet
 
-import scala.math.{max, min}
-
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types.DecimalType
 
 /**
- * This is mostly copied from the `decimalAndDecimal` method in Spark's [[DecimalPrecision]] which
- * existed before Spark 3.4.
+ * Wraps decimal binary arithmetic expressions in [[CheckOverflow]] so the native side has an
+ * explicit target type for the result.
  *
- * In Spark 3.4 and up, the method `decimalAndDecimal` is removed from Spark, and for binary
- * expressions with different decimal precisions from children, the difference is handled in the
- * expression evaluation instead (see SPARK-39316).
- *
- * However in Comet, we still have to rely on the type coercion to ensure the decimal precision is
- * the same for both children of a binary expression, since our arithmetic kernels do not yet
- * handle the case where precision is different. Therefore, this re-apply the logic in the
- * original rule, and rely on `Cast` and `CheckOverflow` for decimal binary operation.
- *
- * TODO: instead of relying on this rule, it's probably better to enhance arithmetic kernels to
- * handle different decimal precisions
+ * Spark itself stopped wrapping these in `CheckOverflow` in 3.4 (SPARK-39316), but Comet's native
+ * `CheckOverflow` only validates precision (it does not rescale), so the target type must equal
+ * the child's actual `dataType`. Always using `expr.dataType` is the safe choice: on Spark 3.4 -
+ * 4.0 it equals the value the rule would otherwise recompute from `SQLConf`, and on Spark 4.1+
+ * (SPARK-53968) it preserves the per-expression `allowDecimalPrecisionLoss` captured at view
+ * creation time. Recomputing from the live `SQLConf` would re-label a stored DEC(38, 17) result
+ * as DEC(38, 18) (or vice versa) and shift values by 10x (issue #4124).
  */
 object DecimalPrecision {
-  def promote(
-      allowPrecisionLoss: Boolean,
-      expr: Expression,
-      nullOnOverflow: Boolean): Expression = {
+  def promote(expr: Expression, nullOnOverflow: Boolean): Expression = {
     expr.transformUp {
       // This means the binary expression is already optimized with the rule in Spark. This can
       // happen if the Spark version is < 3.4
       case e: BinaryArithmetic if e.left.prettyName == "promote_precision" => e
 
-      case add @ Add(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _) =>
-        val resultScale = max(s1, s2)
-        val resultType = if (allowPrecisionLoss) {
-          DecimalType.adjustPrecisionScale(max(p1 - s1, p2 - s2) + resultScale + 1, resultScale)
-        } else {
-          DecimalType.bounded(max(p1 - s1, p2 - s2) + resultScale + 1, resultScale)
-        }
-        CheckOverflow(add, resultType, nullOnOverflow)
+      case add @ Add(DecimalExpression(_, _), DecimalExpression(_, _), _)
+          if add.dataType.isInstanceOf[DecimalType] =>
+        CheckOverflow(add, add.dataType.asInstanceOf[DecimalType], nullOnOverflow)
 
-      case sub @ Subtract(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _) =>
-        val resultScale = max(s1, s2)
-        val resultType = if (allowPrecisionLoss) {
-          DecimalType.adjustPrecisionScale(max(p1 - s1, p2 - s2) + resultScale + 1, resultScale)
-        } else {
-          DecimalType.bounded(max(p1 - s1, p2 - s2) + resultScale + 1, resultScale)
-        }
-        CheckOverflow(sub, resultType, nullOnOverflow)
+      case sub @ Subtract(DecimalExpression(_, _), DecimalExpression(_, _), _)
+          if sub.dataType.isInstanceOf[DecimalType] =>
+        CheckOverflow(sub, sub.dataType.asInstanceOf[DecimalType], nullOnOverflow)
 
-      case mul @ Multiply(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _) =>
-        val resultType = if (allowPrecisionLoss) {
-          DecimalType.adjustPrecisionScale(p1 + p2 + 1, s1 + s2)
-        } else {
-          DecimalType.bounded(p1 + p2 + 1, s1 + s2)
-        }
-        CheckOverflow(mul, resultType, nullOnOverflow)
+      case mul @ Multiply(DecimalExpression(_, _), DecimalExpression(_, _), _)
+          if mul.dataType.isInstanceOf[DecimalType] =>
+        CheckOverflow(mul, mul.dataType.asInstanceOf[DecimalType], nullOnOverflow)
 
-      case div @ Divide(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _) =>
-        val resultType = if (allowPrecisionLoss) {
-          // Precision: p1 - s1 + s2 + max(6, s1 + p2 + 1)
-          // Scale: max(6, s1 + p2 + 1)
-          val intDig = p1 - s1 + s2
-          val scale = max(DecimalType.MINIMUM_ADJUSTED_SCALE, s1 + p2 + 1)
-          val prec = intDig + scale
-          DecimalType.adjustPrecisionScale(prec, scale)
-        } else {
-          var intDig = min(DecimalType.MAX_SCALE, p1 - s1 + s2)
-          var decDig = min(DecimalType.MAX_SCALE, max(6, s1 + p2 + 1))
-          val diff = (intDig + decDig) - DecimalType.MAX_SCALE
-          if (diff > 0) {
-            decDig -= diff / 2 + 1
-            intDig = DecimalType.MAX_SCALE - decDig
-          }
-          DecimalType.bounded(intDig + decDig, decDig)
-        }
-        CheckOverflow(div, resultType, nullOnOverflow)
+      case div @ Divide(DecimalExpression(_, _), DecimalExpression(_, _), _)
+          if div.dataType.isInstanceOf[DecimalType] =>
+        CheckOverflow(div, div.dataType.asInstanceOf[DecimalType], nullOnOverflow)
 
-      case rem @ Remainder(DecimalExpression(p1, s1), DecimalExpression(p2, s2), _) =>
-        val resultType = if (allowPrecisionLoss) {
-          DecimalType.adjustPrecisionScale(min(p1 - s1, p2 - s2) + max(s1, s2), max(s1, s2))
-        } else {
-          DecimalType.bounded(min(p1 - s1, p2 - s2) + max(s1, s2), max(s1, s2))
-        }
-        CheckOverflow(rem, resultType, nullOnOverflow)
+      case rem @ Remainder(DecimalExpression(_, _), DecimalExpression(_, _), _)
+          if rem.dataType.isInstanceOf[DecimalType] =>
+        CheckOverflow(rem, rem.dataType.asInstanceOf[DecimalType], nullOnOverflow)
 
       case e => e
     }
