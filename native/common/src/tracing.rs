@@ -64,10 +64,9 @@ impl Recorder {
     }
 
     pub fn log_memory_usage(&self, name: &str, usage_bytes: u64) {
-        let usage_mb = (usage_bytes as f64 / 1024.0 / 1024.0) as usize;
         let json = format!(
-            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {usage_mb} }} }},\n",
-            Self::get_thread_id(),
+            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {usage_bytes} }} }},\n",
+            get_thread_id(),
             self.now.elapsed().as_micros()
         );
         let mut writer = self.writer.lock().unwrap();
@@ -80,7 +79,7 @@ impl Recorder {
         let json = format!(
             "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"{ph}\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},\n",
             name,
-            Self::get_thread_id(),
+            get_thread_id(),
             self.now.elapsed().as_micros()
         );
         let mut writer = self.writer.lock().unwrap();
@@ -88,15 +87,15 @@ impl Recorder {
             .write_all(json.as_bytes())
             .expect("Error writing tracing");
     }
+}
 
-    fn get_thread_id() -> u64 {
-        let thread_id = std::thread::current().id();
-        format!("{thread_id:?}")
-            .trim_start_matches("ThreadId(")
-            .trim_end_matches(")")
-            .parse()
-            .expect("Error parsing thread id")
-    }
+pub fn get_thread_id() -> u64 {
+    let thread_id = std::thread::current().id();
+    format!("{thread_id:?}")
+        .trim_start_matches("ThreadId(")
+        .trim_end_matches(")")
+        .parse()
+        .expect("Error parsing thread id")
 }
 
 pub fn trace_begin(name: &str) {

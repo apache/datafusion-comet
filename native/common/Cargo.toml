@@ -38,3 +38,7 @@ thiserror = { workspace = true }
 [lib]
 name = "datafusion_comet_common"
 path = "src/lib.rs"
+
+[[bin]]
+name = "analyze_trace"
+path = "src/bin/analyze_trace.rs"

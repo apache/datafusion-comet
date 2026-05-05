@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.Cast.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 -- Decimal arithmetic exercises CheckOverflow, MakeDecimal, UnscaledValue
 statement

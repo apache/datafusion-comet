@@ -19,7 +19,7 @@ use crate::execution::operators::ExecutionError;
 use crate::jvm_bridge::{check_exception, JVMClasses};
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
-use datafusion::common::extensions_options;
+use datafusion::common::{extensions_options, Result as DataFusionResult};
 use datafusion::config::EncryptionFactoryOptions;
 use datafusion::error::DataFusionError;
 use datafusion::execution::parquet_encryption::EncryptionFactory;
@@ -54,7 +54,7 @@ impl EncryptionFactory for CometEncryptionFactory {
         _options: &EncryptionFactoryOptions,
         _schema: &SchemaRef,
         _file_path: &Path,
-    ) -> Result<Option<Arc<FileEncryptionProperties>>, DataFusionError> {
+    ) -> DataFusionResult<Option<Arc<FileEncryptionProperties>>> {
         Err(DataFusionError::NotImplemented(
             "Comet does not support Parquet encryption yet."
                 .parse()
@@ -69,7 +69,7 @@ impl EncryptionFactory for CometEncryptionFactory {
         &self,
         options: &EncryptionFactoryOptions,
         file_path: &Path,
-    ) -> Result<Option<Arc<FileDecryptionProperties>>, DataFusionError> {
+    ) -> DataFusionResult<Option<Arc<FileDecryptionProperties>>> {
         let config: CometEncryptionConfig = options.to_extension_options()?;
 
         let full_path: String = config.uri_base + file_path.as_ref();

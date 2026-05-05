@@ -26,13 +26,24 @@ use jni::{
     errors::Error,
     objects::{JMethodID, JObject, JString, JThrowable, JValueOwned},
     signature::ReturnType,
-    Env, JavaVM,
+    Env, JavaVM, DEFAULT_LOCAL_FRAME_CAPACITY,
 };
 use once_cell::sync::OnceCell;
 
 use errors::{CometError, CometResult};
 
 pub mod errors;
+
+enum LocalFrameError<E> {
+    Closure(E),
+    Jni(jni::errors::Error),
+}
+
+impl<E> From<jni::errors::Error> for LocalFrameError<E> {
+    fn from(source: jni::errors::Error) -> Self {
+        Self::Jni(source)
+    }
+}
 
 /// Global reference to the Java VM, initialized during native library setup.
 pub static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
@@ -300,6 +311,13 @@ impl JVMClasses<'_> {
     }
 
     /// Runs a closure with an attached JNI environment for the current thread.
+    ///
+    /// The closure executes inside a JNI local frame. All JNI local references
+    /// created inside the closure are freed when the frame is popped on return.
+    /// Callers must return only Rust values (e.g. `Vec`, `ArrayRef`, scalars);
+    /// returning a raw JNI local reference will produce a dangling reference
+    /// after the frame is popped. Panic safety is guaranteed by
+    /// `jni::Env::with_local_frame`, which pops the frame even on unwinding.
     pub fn with_env<T, E, F>(f: F) -> Result<T, E>
     where
         F: FnOnce(&mut Env) -> Result<T, E>,
@@ -316,7 +334,15 @@ impl JVMClasses<'_> {
                 .attach_current_thread_guard(Default::default, &mut scope)
                 .map_err(CometError::from)
                 .map_err(E::from)?;
-            f(guard.borrow_env_mut())
+            guard
+                .borrow_env_mut()
+                .with_local_frame(DEFAULT_LOCAL_FRAME_CAPACITY, |env| {
+                    f(env).map_err(LocalFrameError::Closure)
+                })
+                .map_err(|err| match err {
+                    LocalFrameError::Closure(err) => err,
+                    LocalFrameError::Jni(err) => E::from(CometError::from(err)),
+                })
         }
     }
 }

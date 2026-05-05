@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.15.0-SNAPSHOT</version>
+  <version>0.16.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -668,13 +668,58 @@ under the License.
         <!-- Use Scala 2.13 by default -->
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.0.1</spark.version>
+        <spark.version>4.0.2</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.15.2</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.16</slf4j.version>
-        <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
-        <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
+        <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorVerSrc>spark-4.0</shims.minorVerSrc>
+        <!-- Use jdk17 by default -->
+        <java.version>17</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+      </properties>
+    </profile>
+
+    <profile>
+      <!-- WIP: Spark 4.1 support, with its own shim sources for 4.1-specific APIs -->
+      <id>spark-4.1</id>
+      <properties>
+        <!-- Spark 4.1.1 is compiled against Scala 2.13.17 and emits calls into stdlib methods
+             added in that release (e.g. MurmurHash3$.caseClassHash$default$2()). Comet must
+             match to avoid runtime NoSuchMethodError. Note: semanticdb-scalac_2.13.17 is not
+             yet published, so the -Psemanticdb / scalafix lint job is skipped for spark-4.1. -->
+        <scala.version>2.13.17</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <spark.version>4.1.1</spark.version>
+        <spark.version.short>4.1</spark.version.short>
+        <parquet.version>1.16.0</parquet.version>
+        <semanticdb.version>4.13.6</semanticdb.version>
+        <slf4j.version>2.0.17</slf4j.version>
+        <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorVerSrc>spark-4.1</shims.minorVerSrc>
+        <!-- Use jdk17 by default -->
+        <java.version>17</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+      </properties>
+    </profile>
+
+    <profile>
+      <!-- WIP: Spark 4.2 preview support. Targets the 4.2.0-preview4 release; tests are not
+           wired up yet, this profile only aims to compile main sources. -->
+      <id>spark-4.2</id>
+      <properties>
+        <scala.version>2.13.18</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <spark.version>4.2.0-preview4</spark.version>
+        <spark.version.short>4.2</spark.version.short>
+        <parquet.version>1.17.0</parquet.version>
+        <semanticdb.version>4.13.6</semanticdb.version>
+        <slf4j.version>2.0.17</slf4j.version>
+        <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorVerSrc>spark-4.2</shims.minorVerSrc>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>

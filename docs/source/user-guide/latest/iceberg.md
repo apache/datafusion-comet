@@ -17,20 +17,17 @@
   under the License.
 -->
 
-# Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)
-
-**Note: Iceberg integration is a work-in-progress.**
+# Accelerating Apache Iceberg Parquet Scans using Comet
 
 ## Native Reader
 
-Comet's fully-native Iceberg integration does not require modifying Iceberg source
-code. Instead, Comet relies on reflection to extract `FileScanTask`s from Iceberg, which are
+Comet's native Iceberg reader relies on reflection to extract `FileScanTask`s from Iceberg, which are
 then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
 The example below uses Spark's package downloader to retrieve Comet 0.14.0 and Iceberg
-1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The key configuration
-to enable fully-native Iceberg is `spark.comet.scan.icebergNative.enabled=true`.
+1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native Iceberg
+reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative.enabled=false`.
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
@@ -43,7 +40,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
-    --conf spark.comet.scan.icebergNative.enabled=true \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
@@ -120,7 +116,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
-    --conf spark.comet.scan.icebergNative.enabled=true \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
@@ -146,3 +141,9 @@ The following scenarios will fall back to Spark's native Iceberg reader:
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+
+### Task input metrics
+
+The native Iceberg reader populates Spark's task-level `inputMetrics.bytesRead` (visible in the Spark UI Stages tab) using the `bytes_read` counter from iceberg-rust's `ScanMetrics`. This counter includes bytes read from both data files and delete files.
+
+Iceberg Java does not explicitly report `bytesRead` to Spark's task input metrics. On the iceberg Java path, any `bytesRead` value comes from Hadoop's filesystem-level I/O counters, not from Iceberg itself. Because Comet's native reader and the Hadoop filesystem use different counting mechanisms, the exact byte counts will differ between the two paths.

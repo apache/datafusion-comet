@@ -68,8 +68,10 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SumInteger, ToCsv,
+    BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
+    SparkBloomFilterVersion, SumInteger, ToCsv,
 };
+use datafusion_spark::function::aggregate::collect::SparkCollectSet;
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -82,17 +84,17 @@ use datafusion::common::{
     JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
+    AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
-
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
@@ -102,7 +104,6 @@ use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::UnnestOptions;
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
@@ -115,8 +116,8 @@ use datafusion_comet_proto::{
     },
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide,
-        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        upper_window_frame_bound::UpperFrameBoundStruct, AggregateMode as ProtoAggregateMode,
+        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -406,7 +407,12 @@ impl PhysicalPlanner {
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
-                    SparkCastOptions::new(eval_mode, &expr.timezone, expr.allow_incompat),
+                    SparkCastOptions::new_with_version(
+                        eval_mode,
+                        &expr.timezone,
+                        expr.allow_incompat,
+                        expr.is_spark4_plus,
+                    ),
                     spark_expr.expr_id,
                     query_context,
                 )))
@@ -675,6 +681,24 @@ impl PhysicalPlanner {
                     csv_struct_expr,
                     &options.timezone,
                     csv_write_options,
+                )))
+            }
+            ExprStruct::ArraysZip(expr) => {
+                if expr.values.is_empty() {
+                    return Err(GeneralError(
+                        "arrays_zip requires at least one argument".to_string(),
+                    ));
+                }
+
+                let children = expr
+                    .values
+                    .iter()
+                    .map(|child| self.create_expr(child, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(Arc::new(SparkArraysZipFunc::new(
+                    children,
+                    expr.names.clone(),
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
@@ -961,11 +985,25 @@ impl PhysicalPlanner {
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
                 let schema = child.schema();
 
-                let mode = if agg.mode == 0 {
-                    DFAggregateMode::Partial
-                } else {
-                    DFAggregateMode::Final
+                let proto_mode = ProtoAggregateMode::try_from(agg.mode).map_err(|_| {
+                    ExecutionError::GeneralError(format!(
+                        "Unsupported aggregate mode: {}",
+                        agg.mode
+                    ))
+                })?;
+                let mode = match proto_mode {
+                    ProtoAggregateMode::Partial => DFAggregateMode::Partial,
+                    ProtoAggregateMode::Final => DFAggregateMode::Final,
+                    // PartialMerge: Partial + MergeAsPartial
+                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Partial,
                 };
+
+                // Check if any expression uses PartialMerge mode. When present,
+                // those expressions are wrapped with MergeAsPartial to get merge
+                // semantics inside a Partial-mode AggregateExec.
+                let partial_merge_value = ProtoAggregateMode::PartialMerge as i32;
+                let has_partial_merge = proto_mode == ProtoAggregateMode::PartialMerge
+                    || agg.expr_modes.contains(&partial_merge_value);
 
                 let agg_exprs: PhyAggResult = agg
                     .agg_exprs
@@ -973,7 +1011,68 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_agg_expr(expr, Arc::clone(&schema)))
                     .collect();
 
-                let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
+                let aggr_expr: Vec<Arc<AggregateFunctionExpr>> = if has_partial_merge {
+                    // Wrap PartialMerge expressions with MergeAsPartial.
+                    // State fields in the child's output start at initial_input_buffer_offset.
+                    let mut state_offset = agg.initial_input_buffer_offset as usize;
+                    let per_expr_modes: Vec<i32> = if !agg.expr_modes.is_empty() {
+                        agg.expr_modes.clone()
+                    } else {
+                        vec![agg.mode; agg.agg_exprs.len()]
+                    };
+
+                    agg_exprs?
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, expr)| {
+                            if per_expr_modes[idx] == partial_merge_value {
+                                // PartialMerge: wrap with MergeAsPartial
+                                let state_fields = expr
+                                    .state_fields()
+                                    .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+                                let num_state_fields = state_fields.len();
+
+                                let state_cols: Vec<Arc<dyn PhysicalExpr>> = (0..num_state_fields)
+                                    .map(|i| {
+                                        let col_idx = state_offset + i;
+                                        let field = schema.field(col_idx);
+                                        Arc::new(Column::new(field.name(), col_idx))
+                                            as Arc<dyn PhysicalExpr>
+                                    })
+                                    .collect();
+                                state_offset += num_state_fields;
+
+                                let merge_udf =
+                                    crate::execution::merge_as_partial::MergeAsPartialUDF::new(
+                                        &expr,
+                                    )
+                                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?;
+                                let merge_udf_arc = Arc::new(
+                                    datafusion::logical_expr::AggregateUDF::new_from_impl(
+                                        merge_udf,
+                                    ),
+                                );
+
+                                let merge_expr =
+                                    AggregateExprBuilder::new(merge_udf_arc, state_cols)
+                                        .schema(Arc::clone(&schema))
+                                        .alias(format!("col_{idx}"))
+                                        .with_ignore_nulls(expr.ignore_nulls())
+                                        .with_distinct(expr.is_distinct())
+                                        .build()
+                                        .map_err(|e| {
+                                            ExecutionError::DataFusionError(e.to_string())
+                                        })?;
+
+                                Ok(Arc::new(merge_expr))
+                            } else {
+                                Ok(Arc::new(expr))
+                            }
+                        })
+                        .collect::<Result<Vec<_>, ExecutionError>>()?
+                } else {
+                    agg_exprs?.into_iter().map(Arc::new).collect()
+                };
 
                 // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
                 // Filters are only present in Partial mode; Final/PartialMerge always get None.
@@ -1224,6 +1323,7 @@ impl PhysicalPlanner {
                     default_values,
                     common.session_timezone.as_str(),
                     common.case_sensitive,
+                    common.return_null_struct_if_all_fields_missing,
                     self.session_ctx(),
                     common.encryption_enabled,
                 )?;
@@ -1637,44 +1737,18 @@ impl PhysicalPlanner {
                     NullEquality::NullEqualsNothing,
                 )?);
 
-                if join.filter.is_some() {
-                    // SMJ with join filter produces lots of tiny batches
-                    let coalesce_batches: Arc<dyn ExecutionPlan> =
-                        Arc::new(CoalesceBatchesExec::new(
-                            Arc::<SortMergeJoinExec>::clone(&join),
-                            self.session_ctx
-                                .state()
-                                .config_options()
-                                .execution
-                                .batch_size,
-                        ));
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            coalesce_batches,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                            vec![join],
-                        )),
-                    ))
-                } else {
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new(
-                            spark_plan.plan_id,
-                            join,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                        )),
-                    ))
-                }
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        join,
+                        vec![
+                            Arc::clone(&join_params.left),
+                            Arc::clone(&join_params.right),
+                        ],
+                    )),
+                ))
             }
             OpStruct::HashJoin(join) => {
                 let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
@@ -1690,6 +1764,17 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                // Null-aware anti-join must run in CollectLeft mode. In Partitioned mode
+                // each partition only sees per-partition null/emptiness state, which can
+                // produce wrong NOT IN results across partitions. DataFusion's JoinSelection
+                // rewrites null-aware joins to CollectLeft for this reason, but Comet
+                // executes the physical plan directly so we must pick the mode here.
+                let partition_mode = if join.null_aware_anti_join {
+                    PartitionMode::CollectLeft
+                } else {
+                    PartitionMode::Partitioned
+                };
+
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
                     right,
@@ -1697,14 +1782,18 @@ impl PhysicalPlanner {
                     join_params.join_filter,
                     &join_params.join_type,
                     None,
-                    PartitionMode::Partitioned,
+                    partition_mode,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
+                    join.null_aware_anti_join,
                 )?);
 
-                // If the hash join is build right, we need to swap the left and right
-                if join.build_side == BuildSide::BuildLeft as i32 {
+                // If the hash join is build right, we need to swap the left and right.
+                // Exception: null-aware anti-join requires LeftAnti + build-right semantics
+                // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
+                // into RightAnti, which DataFusion rejects with null_aware=true.
+                if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
                     Ok((
                         scans,
                         shuffle_scans,
@@ -2274,12 +2363,24 @@ impl PhysicalPlanner {
                 let num_bits =
                     self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let version = match expr.version() {
+                    spark_expression::BloomFilterVersion::V2 => SparkBloomFilterVersion::V2,
+                    // Default (Unspecified or V1) preserves the pre-Spark-4.1 format that
+                    // Comet has always emitted, keeping older Spark versions byte-equivalent.
+                    _ => SparkBloomFilterVersion::V1,
+                };
                 let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
                     Arc::clone(&num_items),
                     Arc::clone(&num_bits),
                     datatype,
+                    version,
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
+            }
+            AggExprStruct::CollectSet(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
+                Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
             }
         }
     }
@@ -2452,7 +2553,7 @@ impl PhysicalPlanner {
             sort_phy_exprs,
             window_frame.into(),
             input_schema,
-            false, // TODO: Ignore nulls
+            spark_expr.ignore_nulls,
             false, // TODO: Spark does not support DISTINCT ... OVER
             None,
         )
@@ -2506,6 +2607,12 @@ impl PhysicalPlanner {
             .udaf(name)
             .map(WindowFunctionDefinition::AggregateUDF)
             .ok()
+            .or_else(|| {
+                registry
+                    .udwf(name)
+                    .map(WindowFunctionDefinition::WindowUDF)
+                    .ok()
+            })
     }
 
     /// Create a DataFusion physical partitioning from Spark physical partitioning
@@ -2630,15 +2737,44 @@ impl PhysicalPlanner {
                         other => other,
                     };
                     let func = self.session_ctx.udf(fun_name)?;
-                    let coerced_types = func
-                        .coerce_types(&input_expr_types)
-                        .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let arg_fields = coerced_types
+                    // Type coercion strategy:
+                    //
+                    // In DF52, Comet used coerce_types() which returns NotImplemented
+                    // for most UDFs, so input types were kept unchanged. In DF53,
+                    // fields_with_udf() runs full coercion which aggressively promotes
+                    // types (e.g. Utf8 to Utf8View via Variadic signatures, Int32 to Int64
+                    // via Exact signatures). This breaks Comet's native implementations.
+                    //
+                    // Strategy:
+                    // 1. Try coerce_types() — only UDFs that explicitly implement it
+                    //    will return Ok. Same as DF52 behavior.
+                    // 2. For "well-supported" signatures (Coercible, String, Numeric,
+                    //    Comparable), use fields_with_udf(). These preserve input types
+                    //    (e.g. Utf8 stays Utf8, not promoted to Utf8View).
+                    // 3. For all other signatures (Variadic, Exact, etc.), keep original
+                    //    types unchanged. Same as DF52 behavior.
+                    let coerced_types = match func.coerce_types(&input_expr_types) {
+                        Ok(types) => types,
+                        Err(_) if needs_fields_coercion(&func.signature().type_signature) => {
+                            let input_fields: Vec<_> = input_expr_types
+                                .iter()
+                                .enumerate()
+                                .map(|(i, dt)| {
+                                    Arc::new(Field::new(format!("arg{i}"), dt.clone(), true))
+                                })
+                                .collect();
+                            let arg_fields = fields_with_udf(&input_fields, func.as_ref())?;
+                            arg_fields.iter().map(|f| f.data_type().clone()).collect()
+                        }
+                        Err(_) => input_expr_types.clone(),
+                    };
+
+                    let arg_fields: Vec<_> = coerced_types
                         .iter()
                         .enumerate()
                         .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
-                        .collect::<Vec<_>>();
+                        .collect();
 
                     // TODO this should try and find scalar
                     let arguments = args
@@ -2694,9 +2830,32 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Arc::new(Field::new(fun_name, data_type, true)),
+            Arc::new(Field::new(fun_name, data_type.clone(), true)),
             Arc::new(ConfigOptions::default()),
         ));
+
+        // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
+        // time (apache/datafusion#20045). Comet does not yet support view types, so
+        // cast the result back to the non-view variant.
+        let scalar_expr = match data_type {
+            DataType::Utf8View => Arc::new(CastExpr::new(
+                scalar_expr,
+                DataType::Utf8,
+                Some(CastOptions {
+                    safe: false,
+                    ..Default::default()
+                }),
+            )) as Arc<dyn PhysicalExpr>,
+            DataType::BinaryView => Arc::new(CastExpr::new(
+                scalar_expr,
+                DataType::Binary,
+                Some(CastOptions {
+                    safe: false,
+                    ..Default::default()
+                }),
+            )) as Arc<dyn PhysicalExpr>,
+            _ => scalar_expr,
+        };
 
         Ok(scalar_expr)
     }
@@ -3658,6 +3817,24 @@ fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::sp
     }
 }
 
+/// Returns true for signature types that need fields_with_udf() for coercion.
+///
+/// "Well-supported" signatures (Coercible, String, Numeric, Comparable) preserve
+/// input types naturally (e.g. Utf8 stays Utf8) and need fields_with_udf() because
+/// they don't implement coerce_types(). Other signatures (Variadic, Exact, etc.)
+/// should keep original types to match DF52 behavior and avoid unwanted promotions
+/// like Utf8 to Utf8View or Int32 to Int64.
+fn needs_fields_coercion(sig: &TypeSignature) -> bool {
+    match sig {
+        TypeSignature::Coercible(_)
+        | TypeSignature::String(_)
+        | TypeSignature::Numeric(_)
+        | TypeSignature::Comparable(_) => true,
+        TypeSignature::OneOf(sigs) => sigs.iter().any(needs_fields_coercion),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::{poll, StreamExt};
@@ -3953,6 +4130,7 @@ mod tests {
                 join_type: 0,
                 condition: None,
                 build_side: 0,
+                null_aware_anti_join: false,
             })),
         };
 
@@ -4126,6 +4304,7 @@ mod tests {
 
     #[test]
     fn test_array_repeat() {
+        // Use built-in ArrayRepeat, not SparkArrayRepeat (see jni_api.rs comment)
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
@@ -4244,7 +4423,7 @@ mod tests {
                             "+--------------+",
                             "| [0]          |",
                             "| [3, 3, 3, 3] |",
-                            "| []           |",
+                            "|              |",
                             "+--------------+",
                         ];
                         assert_batches_eq!(expected, &[batch]);
