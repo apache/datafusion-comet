@@ -71,6 +71,7 @@ pub(crate) fn init_datasource_exec(
     default_values: Option<HashMap<Column, ScalarValue>>,
     session_timezone: &str,
     case_sensitive: bool,
+    return_null_struct_if_all_fields_missing: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
@@ -79,6 +80,7 @@ pub(crate) fn init_datasource_exec(
     let (table_parquet_options, mut spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
+        return_null_struct_if_all_fields_missing,
         &object_store_url,
         encryption_enabled,
     );
@@ -189,6 +191,7 @@ pub(crate) fn init_datasource_exec(
 fn get_options(
     session_timezone: &str,
     case_sensitive: bool,
+    return_null_struct_if_all_fields_missing: bool,
     object_store_url: &ObjectStoreUrl,
     encryption_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
@@ -200,6 +203,8 @@ fn get_options(
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;
+    spark_parquet_options.return_null_struct_if_all_fields_missing =
+        return_null_struct_if_all_fields_missing;
 
     if encryption_enabled {
         table_parquet_options.crypto.configure_factory(
