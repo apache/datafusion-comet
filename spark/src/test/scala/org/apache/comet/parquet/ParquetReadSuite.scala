@@ -1352,18 +1352,6 @@ abstract class ParquetReadSuite extends CometTestBase {
   private def withId(id: Int) =
     new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
 
-  // Spark 4.x wraps read errors in FAILED_READ_FILE.NO_HINT, so the underlying message
-  // is only reachable by walking the cause chain.
-  private def causeChainContains(t: Throwable, needle: String): Boolean = {
-    var cur: Throwable = t
-    while (cur != null) {
-      val msg = cur.getMessage
-      if (msg != null && msg.contains(needle)) return true
-      cur = cur.getCause
-    }
-    false
-  }
-
   // Based on Spark ParquetIOSuite.test("vectorized reader: array of nested struct")
   test("array of nested struct with and without field id") {
     val nestedSchema = StructType(
@@ -1525,74 +1513,79 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // Mirrors Spark ParquetFieldIdIOSuite.test("multiple id matches"). The native scan must
-  // reject reads where the file has more than one column matching a requested field id, the
-  // same way Spark's `matchIdField` raises foundDuplicateFieldInFieldIdLookupModeError.
-  test("native_datafusion: duplicate Parquet field ids raise a runtime error") {
-    val writeSchema = StructType(
-      Seq(
-        StructField("a", IntegerType, nullable = true, withId(1)),
-        StructField("rand1", StringType, nullable = true, withId(2)),
-        StructField("rand2", StringType, nullable = true, withId(1))))
-    val readSchema = StructType(Seq(StructField("a", IntegerType, nullable = true, withId(1))))
-    val writeData = Seq(Row(100, "text", "txt"), Row(200, "more", "mr"))
-
+  // Verbatim port of Spark `ParquetFieldIdIOSuite.test("multiple id matches")`, pinned to
+  // `SCAN_NATIVE_DATAFUSION` so the shim error path is exercised on both 3.x and 4.x.
+  // The stock suite is the CI signal but it requires the Spark test jars and
+  // `withAllParquetReaders`; keeping a copy here lets us iterate locally.
+  test("multiple id matches") {
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
+        val readSchema =
+          new StructType()
+            .add("a", IntegerType, true, withId(1))
+
+        val writeSchema =
+          new StructType()
+            .add("a", IntegerType, true, withId(1))
+            .add("rand1", StringType, true, withId(2))
+            .add("rand2", StringType, true, withId(1))
+
+        val writeData = Seq(Row(100, "text", "txt"), Row(200, "more", "mr"))
         spark
           .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
           .write
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
-        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
-        // Spark 3.x wraps the underlying error one level deep in SparkException; Spark 4.x
-        // wraps it in FAILED_READ_FILE.NO_HINT. Walk the cause chain to stay version-agnostic.
-        checkSparkAnswerMaybeThrows(df) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(causeChainContains(sparkExc, "Found duplicate field(s)"))
-            assert(causeChainContains(cometExc, "Found duplicate field(s)"))
-          case other => fail(s"Expected duplicate-field error from both sides, got $other")
-        }
+
+        val cause = intercept[SparkException] {
+          spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
+        }.getCause
+        assert(
+          cause.isInstanceOf[RuntimeException] &&
+            cause.getMessage.contains("Found duplicate field(s)"))
       }
     }
   }
 
-  // Mirrors Spark ParquetFieldIdIOSuite.test("read parquet file without ids"). The native
-  // scan must raise when the read schema requests ids but the file has none, and must NULL
-  // (not error) when `spark.sql.parquet.fieldId.read.ignoreMissing` is true.
-  test("native_datafusion: missing Parquet field ids respects ignoreMissing") {
-    val writeSchema = StructType(
-      Seq(
-        StructField("a", IntegerType, nullable = true),
-        StructField("rand1", StringType, nullable = true)))
-    val readSchema = StructType(Seq(StructField("a", IntegerType, nullable = true, withId(1))))
-    val writeData = Seq(Row(100, "text"), Row(200, "more"))
-
+  // Verbatim port of Spark `ParquetFieldIdIOSuite.test("read parquet file without ids")`,
+  // pinned to `SCAN_NATIVE_DATAFUSION` for the same reason as the duplicate-id test above.
+  test("read parquet file without ids") {
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
+        val readSchema =
+          new StructType()
+            .add("a", IntegerType, true, withId(1))
+
+        val writeSchema =
+          new StructType()
+            .add("a", IntegerType, true)
+            .add("rand1", StringType, true)
+            .add("rand2", StringType, true)
+
+        val writeData = Seq(Row(100, "text", "txt"), Row(200, "more", "mr"))
         spark
           .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
           .write
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
 
-        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
-        checkSparkAnswerMaybeThrows(df) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(
-              causeChainContains(sparkExc, "Parquet file schema doesn't contain any field Ids"))
-            assert(
-              causeChainContains(cometExc, "Parquet file schema doesn't contain any field Ids"))
-          case other => fail(s"Expected missing-field-ids error from both sides, got $other")
-        }
-
-        withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
-          val ignoredDf = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
-          checkSparkAnswerAndOperator(ignoredDf)
+        Seq(readSchema, readSchema.add("b", StringType, true)).foreach { schema =>
+          val cause = intercept[SparkException] {
+            spark.read.schema(schema).parquet(dir.getCanonicalPath).collect()
+          }.getCause
+          assert(
+            cause.isInstanceOf[RuntimeException] &&
+              cause.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
+          val expectedValues = (1 to schema.length).map(_ => null)
+          withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
+            checkAnswer(
+              spark.read.schema(schema).parquet(dir.getCanonicalPath),
+              Row(expectedValues: _*) :: Row(expectedValues: _*) :: Nil)
+          }
         }
       }
     }

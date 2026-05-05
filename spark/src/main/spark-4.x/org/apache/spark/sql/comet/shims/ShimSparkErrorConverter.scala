@@ -297,23 +297,28 @@ trait ShimSparkErrorConverter {
 
       case "DuplicateFieldByFieldId" =>
         // Mirror Spark's `ParquetReadSupport.matchIdField` which calls
-        // `foundDuplicateFieldInFieldIdLookupModeError` when more than one Parquet field
-        // shares an id requested by the read schema.
-        Some(
-          QueryExecutionErrors.foundDuplicateFieldInFieldIdLookupModeError(
-            params("requiredId").toString.toInt,
-            params("matchedFields").toString))
+        // `foundDuplicateFieldInFieldIdLookupModeError`. Wrap in FAILED_READ_FILE.NO_HINT
+        // so the outer exception is a SparkException (matches what Spark's `FileScanRDD`
+        // produces for stock parquet-mr at task boundary on 4.x); keeps the underlying
+        // SparkRuntimeException as `getCause` so tests that assert a RuntimeException
+        // with "Found duplicate field(s)" still pass.
+        val dupCause = QueryExecutionErrors.foundDuplicateFieldInFieldIdLookupModeError(
+          params("requiredId").toString.toInt,
+          params("matchedFields").toString)
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(QueryExecutionErrors.cannotReadFilesError(dupCause, filePath))
 
       case "ParquetMissingFieldIds" =>
-        // Mirror Spark's `ParquetReadSupport.inferSchema`, which throws a plain
-        // `RuntimeException` (not a SparkException) when the read schema requests field
-        // ids and the file carries none.
-        Some(
-          new RuntimeException(
-            "Spark read schema expects field Ids, but Parquet file schema doesn't " +
-              "contain any field Ids. Please remove the field ids from Spark schema or " +
-              "ignore missing ids by setting " +
-              "`spark.sql.parquet.fieldId.read.ignoreMissing = true`"))
+        // Mirror Spark's `ParquetReadSupport.inferSchema`. Same wrapping rationale as
+        // `DuplicateFieldByFieldId`: wrap the RuntimeException in FAILED_READ_FILE.NO_HINT
+        // so the outer is a SparkException.
+        val missingCause = new RuntimeException(
+          "Spark read schema expects field Ids, but Parquet file schema doesn't " +
+            "contain any field Ids. Please remove the field ids from Spark schema or " +
+            "ignore missing ids by setting " +
+            "`spark.sql.parquet.fieldId.read.ignoreMissing = true`")
+        val missingPath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(QueryExecutionErrors.cannotReadFilesError(missingCause, missingPath))
 
       case "ParquetSchemaConvert" =>
         // Mirror Spark 4.0's FileDataSourceV2: wrap the
