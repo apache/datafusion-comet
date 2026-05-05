@@ -3459,6 +3459,47 @@ index 38e5b15465b..ca3e8fef27a 100644
    import testImplicits._
  
    testWithColumnFamilies("RocksDBStateStore",
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala
+index e839ccd35ec..d182aa07b44 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala
+@@ -32,7 +32,8 @@ import org.apache.hadoop.conf.Configuration
+ import org.apache.hadoop.fs._
+ import org.json4s.DefaultFormats
+ import org.json4s.jackson.JsonMethods
+-import org.scalatest.{BeforeAndAfter, PrivateMethodTester}
++import org.scalactic.source.Position
++import org.scalatest.{BeforeAndAfter, PrivateMethodTester, Tag}
+ import org.scalatest.concurrent.Eventually._
+ import org.scalatest.time.SpanSugar._
+ 
+@@ -41,6 +42,7 @@ import org.apache.spark.LocalSparkContext._
+ import org.apache.spark.internal.Logging
+ import org.apache.spark.sql.SparkSession
+ import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection, UnsafeRow}
++import org.apache.spark.sql.classic.{SparkSession => ClassicSparkSession}
+ import org.apache.spark.sql.catalyst.util.quietly
+ import org.apache.spark.sql.execution.streaming._
+ import org.apache.spark.sql.execution.streaming.checkpointing.{CheckpointFileManager, ChecksumCheckpointFileManager, ChecksumFile}
+@@ -259,6 +261,18 @@ class StateStoreSuite extends StateStoreSuiteBase[HDFSBackedStateStoreProvider]
+   import StateStoreTestsHelper._
+   import StateStoreCoordinatorSuite._
+ 
++  // Comet: skip this suite under Comet. The tests target streaming state-store internals
++  // (StateStore.get/put/commit), not SQL execution paths, and the `maintenance` test is
++  // flaky in CI. See https://github.com/apache/datafusion-comet/issues/4221
++  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
++      (implicit pos: Position): Unit = {
++    if (ClassicSparkSession.isCometEnabled) {
++      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
++    } else {
++      super.test(testName, testTags: _*)(testFun)
++    }
++  }
++
+   before {
+     StateStore.stop()
+     require(!StateStore.isMaintenanceRunning)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index 83ebd24384c..32511091bb2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
