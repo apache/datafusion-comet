@@ -39,7 +39,8 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
-use datafusion::physical_plan::windows::WindowAggExec;
+use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
+use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
@@ -1856,22 +1857,41 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
+                // Route to `BoundedWindowAggExec` when every window expression can
+                // run with bounded memory. This uses DataFusion's
+                // `evaluate_stateful` / row-by-row `evaluate` path, which is the
+                // correct implementation for `LEAD` / `LAG` with `IGNORE NULLS`
+                // (`WindowAggExec` calls `evaluate_all`, whose
+                // `evaluate_all_with_ignore_null` has a sign-wrap bug for `LEAD`
+                // that produces all-NULL output).
+                //
+                // Fall back to `WindowAggExec` otherwise. That covers
+                // `PERCENT_RANK` / `CUME_DIST` / `NTILE`
+                // (`!uses_bounded_memory()` — "Can not execute X in a streaming
+                // fashion") and keeps the Spark-compatible Comet UDAFs
+                // (`SumDecimal` / `SumInteger` / `AvgDecimal` / `Avg`) on the
+                // non-streaming path since they don't implement `retract_batch`.
+                // Because `process_agg_func` already picks DataFusion's
+                // retract-capable built-ins for sliding aggregate frames,
+                // ever-expanding aggregate frames (all that route to
+                // `BoundedWindowAggExec` as `PlainAggregateWindowExpr`) never
+                // trigger a retract call.
                 let window_expr = window_expr?;
-
-                // Always use the non-streaming `WindowAggExec`. `BoundedWindowAggExec`
-                // (DataFusion's streaming variant) invokes `retract_batch` on the UDAF
-                // for sliding frames like `ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING`,
-                // and Comet's Spark-compatible aggregates (`SumDecimal`, `SumInteger`,
-                // `AvgDecimal`, `Avg`) don't implement retract — they'd fail at runtime
-                // with "Aggregate can not be used as a sliding accumulator". It also
-                // sidesteps the "Can not execute X in a streaming fashion" error for
-                // PERCENT_RANK / CUME_DIST / NTILE which report !uses_bounded_memory().
-                // This matches Spark's non-streaming `WindowExec` semantics as well.
-                let window_agg: Arc<dyn ExecutionPlan> = Arc::new(WindowAggExec::try_new(
-                    window_expr,
-                    Arc::clone(&child.native_plan),
-                    !partition_exprs.is_empty(),
-                )?);
+                let all_bounded = window_expr.iter().all(|e| e.uses_bounded_memory());
+                let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
+                    Arc::new(BoundedWindowAggExec::try_new(
+                        window_expr,
+                        Arc::clone(&child.native_plan),
+                        InputOrderMode::Sorted,
+                        !partition_exprs.is_empty(),
+                    )?)
+                } else {
+                    Arc::new(WindowAggExec::try_new(
+                        window_expr,
+                        Arc::clone(&child.native_plan),
+                        !partition_exprs.is_empty(),
+                    )?)
+                };
 
                 // DataFusion's window functions don't always return the same Arrow
                 // type that Spark expects (e.g. `row_number` returns UInt64 while
