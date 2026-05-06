@@ -33,6 +33,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.iceberg.RESTCatalogHelper
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
@@ -2471,6 +2472,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
   }
 
   test("REST catalog with native Iceberg scan") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withRESTCatalog { (restUri, _, warehouseDir) =>

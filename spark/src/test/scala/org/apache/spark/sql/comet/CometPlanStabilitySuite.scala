@@ -37,7 +37,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 
 /**
  * Similar to [[org.apache.spark.sql.PlanStabilitySuite]], checks that TPC-DS Comet plans don't
@@ -77,6 +77,16 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 
   def goldenFilePath: String
 
+  /**
+   * Ordered list of fallback golden file directories. When the primary [[goldenFilePath]] does
+   * not contain a directory for a given query, [[getDirForTest]] walks this list in order and
+   * returns the first directory that does. This lets each Spark-version-specific plan directory
+   * store only the queries whose plans actually changed against the previous version, falling
+   * through unchanged queries to the older version's goldens (and ultimately to the base
+   * `approved-plans-vX_Y` directory).
+   */
+  protected def fallbackGoldenFilePaths: Seq[String] = Nil
+
   private val approvedAnsiPlans: Seq[String] = Seq("q83", "q83.sf100")
 
   private def getDirForTest(name: String): File = {
@@ -87,12 +97,69 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     }
     val nativeImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
     goldenFileName = s"$goldenFileName.$nativeImpl"
-    new File(goldenFilePath, goldenFileName)
+    val primary = new File(goldenFilePath, goldenFileName)
+    if (regenerateGoldenFiles || primary.isDirectory) {
+      primary
+    } else {
+      fallbackGoldenFilePaths.iterator
+        .map(p => new File(p, goldenFileName))
+        .find(_.isDirectory)
+        .getOrElse(primary)
+    }
   }
 
   private def writeGoldenFile(dir: File, filename: String, plan: String): Unit = {
     FileUtils.writeStringToFile(new File(dir, s"$filename.txt"), plan, StandardCharsets.UTF_8)
     logDebug(s"APPROVED: $filename")
+  }
+
+  /**
+   * After regenerating goldens, drop any query directory under [[goldenFilePath]] whose contents
+   * match what [[fallbackGoldenFilePaths]] would resolve to. Mirrors the read-time fallback logic
+   * in [[getDirForTest]] so each version-specific directory only retains queries whose plans
+   * actually diverge from the previous tier.
+   */
+  private def pruneDuplicateQueryDirs(): Unit = {
+    if (fallbackGoldenFilePaths.isEmpty) return
+    val primary = new File(goldenFilePath)
+    if (!primary.isDirectory) return
+    var removed = 0
+    Option(primary.listFiles()).getOrElse(Array.empty).foreach { queryDir =>
+      if (queryDir.isDirectory) {
+        val effective = fallbackGoldenFilePaths.iterator
+          .map(p => new File(p, queryDir.getName))
+          .find(_.isDirectory)
+        effective.foreach { eff =>
+          if (directoriesContentEqual(queryDir, eff)) {
+            FileUtils.deleteDirectory(queryDir)
+            removed += 1
+          }
+        }
+      }
+    }
+    if (removed > 0) {
+      logInfo(s"Pruned $removed duplicate query director(ies) from ${primary.getName}")
+    }
+  }
+
+  private def directoriesContentEqual(a: File, b: File): Boolean = {
+    val aFiles = Option(a.listFiles()).getOrElse(Array.empty)
+    val bFiles = Option(b.listFiles()).getOrElse(Array.empty)
+    if (aFiles.length != bFiles.length) return false
+    aFiles.forall { fa =>
+      val fb = new File(b, fa.getName)
+      fa.isFile && fb.isFile && FileUtils.contentEquals(fa, fb)
+    }
+  }
+
+  override def afterAll(): Unit = {
+    try {
+      if (regenerateGoldenFiles) {
+        pruneDuplicateQueryDirs()
+      }
+    } finally {
+      super.afterAll()
+    }
   }
 
   private def checkWithApproved(dir: File, name: String, filename: String, plan: String): Unit = {
@@ -261,18 +328,30 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
   }
 }
 
-class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
-  private val planName = if (isSpark41Plus) {
-    "approved-plans-v1_4-spark4_1"
-  } else if (isSpark40Plus) {
-    "approved-plans-v1_4-spark4_0"
-  } else if (isSpark35Plus) {
-    "approved-plans-v1_4-spark3_5"
-  } else {
-    "approved-plans-v1_4"
+/**
+ * Returns the chain of plan-directory names for the active Spark version, ordered from
+ * most-specific to base. The first entry is the directory written to when goldens are
+ * regenerated; subsequent entries are searched in order for queries whose plans did not change
+ * against the previous version.
+ */
+private object CometPlanStabilitySuite {
+  def planNameChain(variant: String): Seq[String] = {
+    Seq(
+      isSpark42Plus -> s"approved-plans-${variant}-spark4_2",
+      isSpark41Plus -> s"approved-plans-${variant}-spark4_1",
+      isSpark40Plus -> s"approved-plans-${variant}-spark4_0",
+      isSpark35Plus -> s"approved-plans-${variant}-spark3_5")
+      .dropWhile(!_._1)
+      .map(_._2) :+ s"approved-plans-${variant}"
   }
+}
+
+class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
+  private val planNames: Seq[String] = CometPlanStabilitySuite.planNameChain("v1_4")
   override val goldenFilePath: String =
-    new File(baseResourcePath, planName).getAbsolutePath
+    new File(baseResourcePath, planNames.head).getAbsolutePath
+  override protected val fallbackGoldenFilePaths: Seq[String] =
+    planNames.tail.map(new File(baseResourcePath, _).getAbsolutePath)
 
   scanImpls.foreach { scan =>
     tpcdsQueries.foreach { q =>
@@ -286,17 +365,11 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
 }
 
 class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
-  private val planName = if (isSpark41Plus) {
-    "approved-plans-v2_7-spark4_1"
-  } else if (isSpark40Plus) {
-    "approved-plans-v2_7-spark4_0"
-  } else if (isSpark35Plus) {
-    "approved-plans-v2_7-spark3_5"
-  } else {
-    "approved-plans-v2_7"
-  }
+  private val planNames: Seq[String] = CometPlanStabilitySuite.planNameChain("v2_7")
   override val goldenFilePath: String =
-    new File(baseResourcePath, planName).getAbsolutePath
+    new File(baseResourcePath, planNames.head).getAbsolutePath
+  override protected val fallbackGoldenFilePaths: Seq[String] =
+    planNames.tail.map(new File(baseResourcePath, _).getAbsolutePath)
 
   scanImpls.foreach { scan =>
     tpcdsQueriesV2_7_0.foreach { q =>

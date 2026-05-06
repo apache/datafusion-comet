@@ -535,7 +535,7 @@ index 81713c777bc..b5f92ed9742 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index 2c24cc7d570..8c214e7d05c 100644
+index 2c24cc7d570..12d897866da 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -595,27 +595,7 @@ index 2c24cc7d570..8c214e7d05c 100644
  
        assert(countSubqueryBroadcasts == 1)
        assert(countReusedSubqueryBroadcasts == 1)
-@@ -1215,7 +1231,8 @@ abstract class DynamicPartitionPruningSuiteBase
-   }
- 
-   test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
--    "canonicalization and exchange reuse") {
-+    "canonicalization and exchange reuse",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/4045")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-       withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-         val df = sql(
-@@ -1424,7 +1441,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("SPARK-34637: DPP side broadcast query stage is created firstly") {
-+  test("SPARK-34637: DPP side broadcast query stage is created firstly",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/4045")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-       val df = sql(
-         """ WITH v as (
-@@ -1578,6 +1596,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1578,6 +1594,7 @@ abstract class DynamicPartitionPruningSuiteBase
  
          val subqueryBroadcastExecs = collectWithSubqueries(df.queryExecution.executedPlan) {
            case s: SubqueryBroadcastExec => s
@@ -623,7 +603,7 @@ index 2c24cc7d570..8c214e7d05c 100644
          }
          assert(subqueryBroadcastExecs.size === 1)
          subqueryBroadcastExecs.foreach { subqueryBroadcastExec =>
-@@ -1730,6 +1749,10 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1730,6 +1747,10 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
@@ -808,30 +788,6 @@ index 00000000000..5691536c114
 +    }
 +  }
 +}
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
-index 7d7185ae6c1..442a5bddeb8 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
-@@ -442,7 +442,8 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
-   }
- 
-   test("Runtime bloom filter join: do not add bloom filter if dpp filter exists " +
--    "on the same column") {
-+    "on the same column",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.RUNTIME_BLOOM_FILTER_APPLICATION_SIDE_SCAN_SIZE_THRESHOLD.key -> "3000",
-       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "2000") {
-       assertDidNotRewriteWithBloomFilter("select * from bf5part join bf2 on " +
-@@ -451,7 +452,8 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
-   }
- 
-   test("Runtime bloom filter join: add bloom filter if dpp filter exists on " +
--    "a different column") {
-+    "a different column",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.RUNTIME_BLOOM_FILTER_APPLICATION_SIDE_SCAN_SIZE_THRESHOLD.key -> "3000",
-       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "2000") {
-       assertRewroteWithBloomFilter("select * from bf5part join bf2 on " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
 index 53e47f428c3..a55d8f0c161 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
@@ -3191,6 +3147,47 @@ index 7838e62013d..8fa09652921 100644
  
    import testImplicits._
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala
+index 89f22186f7e..425233f00b2 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala
+@@ -32,7 +32,8 @@ import org.apache.hadoop.conf.Configuration
+ import org.apache.hadoop.fs._
+ import org.json4s.DefaultFormats
+ import org.json4s.jackson.JsonMethods
+-import org.scalatest.{BeforeAndAfter, PrivateMethodTester}
++import org.scalactic.source.Position
++import org.scalatest.{BeforeAndAfter, PrivateMethodTester, Tag}
+ import org.scalatest.concurrent.Eventually._
+ import org.scalatest.time.SpanSugar._
+ 
+@@ -40,6 +41,7 @@ import org.apache.spark._
+ import org.apache.spark.LocalSparkContext._
+ import org.apache.spark.sql.SparkSession
+ import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection, UnsafeRow}
++import org.apache.spark.sql.classic.{SparkSession => ClassicSparkSession}
+ import org.apache.spark.sql.catalyst.util.quietly
+ import org.apache.spark.sql.execution.streaming._
+ import org.apache.spark.sql.execution.streaming.state.StateStoreCoordinatorSuite.withCoordinatorRef
+@@ -128,6 +130,18 @@ class StateStoreSuite extends StateStoreSuiteBase[HDFSBackedStateStoreProvider]
+   import StateStoreTestsHelper._
+   import StateStoreCoordinatorSuite._
+ 
++  // Comet: skip this suite under Comet. The tests target streaming state-store internals
++  // (StateStore.get/put/commit), not SQL execution paths, and the `maintenance` test is
++  // flaky in CI. See https://github.com/apache/datafusion-comet/issues/4221
++  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
++      (implicit pos: Position): Unit = {
++    if (ClassicSparkSession.isCometEnabled) {
++      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
++    } else {
++      super.test(testName, testTags: _*)(testFun)
++    }
++  }
++
+   before {
+     StateStore.stop()
+     require(!StateStore.isMaintenanceRunning)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index c4b09c4b289..75c3437788e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala

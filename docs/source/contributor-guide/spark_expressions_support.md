@@ -19,12 +19,25 @@
 
 # Supported Spark Expressions
 
+## How to Read This Document
+
+- A function marked with `[x]` has a native implementation in Comet and does not fall back to Spark by default.
+- A function marked with `[ ]` has no native Comet implementation and falls back to Spark.
+
+> **Note:** Some functions listed as supported may still be incompatible with Spark in
+> certain cases (data types, modes, edge values) and fall back to Spark at runtime. Full
+> per-function details are documented in the
+> [Compatibility Guide](https://datafusion.apache.org/comet/user-guide/latest/compatibility/expressions/index.html).
+
 ### agg_funcs
 
 - [x] any
 - [x] any_value
 - [ ] approx_count_distinct
 - [ ] approx_percentile
+- [ ] approx_top_k
+- [ ] approx_top_k_accumulate
+- [ ] approx_top_k_combine
 - [ ] array_agg
 - [x] avg
 - [x] bit_and
@@ -46,9 +59,30 @@
 - [ ] grouping
 - [ ] grouping_id
 - [ ] histogram_numeric
+- [ ] hll_sketch_agg
+- [ ] hll_union_agg
+- [ ] kll_sketch_agg_bigint
+- [ ] kll_sketch_agg_double
+- [ ] kll_sketch_agg_float
+- [ ] kll_sketch_get_n_bigint
+- [ ] kll_sketch_get_n_double
+- [ ] kll_sketch_get_n_float
+- [ ] kll_sketch_get_quantile_bigint
+- [ ] kll_sketch_get_quantile_double
+- [ ] kll_sketch_get_quantile_float
+- [ ] kll_sketch_get_rank_bigint
+- [ ] kll_sketch_get_rank_double
+- [ ] kll_sketch_get_rank_float
+- [ ] kll_sketch_merge_bigint
+- [ ] kll_sketch_merge_double
+- [ ] kll_sketch_merge_float
+- [ ] kll_sketch_to_string_bigint
+- [ ] kll_sketch_to_string_double
+- [ ] kll_sketch_to_string_float
 - [ ] kurtosis
 - [x] last
 - [x] last_value
+- [ ] listagg
 - [x] max
 - [ ] max_by
 - [x] mean
@@ -58,6 +92,8 @@
 - [ ] mode
 - [ ] percentile
 - [ ] percentile_approx
+- [ ] percentile_cont
+- [ ] percentile_disc
 - [x] regr_avgx
 - [x] regr_avgy
 - [x] regr_count
@@ -73,7 +109,11 @@
 - [x] stddev
 - [x] stddev_pop
 - [x] stddev_samp
+- [ ] string_agg
 - [x] sum
+- [ ] theta_intersection_agg
+- [ ] theta_sketch_agg
+- [ ] theta_union_agg
 - [ ] try_avg
 - [ ] try_sum
 - [x] var_pop
@@ -98,15 +138,16 @@
   - Spark 4.0.1 audited 2026-04-24 (ordering incompatibility as above; collated strings now fall back to Spark)
 - [x] array_join
 - [x] array_max
-- [ ] array_min
+- [x] array_min
 - [x] array_position
+- [ ] array_prepend
 - [x] array_remove
 - [x] array_repeat
 - [x] array_union
 - [x] arrays_overlap
 - [x] arrays_zip
 - [x] element_at
-- [ ] flatten
+- [x] flatten
 - [x] get
 - [ ] sequence
 - [ ] shuffle
@@ -115,23 +156,26 @@
 
 ### bitwise_funcs
 
-- [x] &
-- [x] ^
-- [ ] bit_count
-- [ ] bit_get
+- [x] `&`
+- [ ] `<<`
+- [ ] `>>`
+- [ ] `>>>`
+- [x] `^`
+- [x] bit_count
+- [x] bit_get
 - [ ] getbit
 - [x] shiftright
 - [ ] shiftrightunsigned
-- [x] |
-- [x] ~
+- [x] `|`
+- [x] `~`
 
 ### collection_funcs
 
 - [ ] array_size
 - [ ] cardinality
-- [ ] concat
+- [x] concat
 - [x] reverse
-- [ ] size
+- [x] size
 
 ### conditional_funcs
 
@@ -140,16 +184,18 @@
 - [x] ifnull
 - [ ] nanvl
 - [x] nullif
+- [ ] nullifzero
 - [x] nvl
 - [x] nvl2
 - [ ] when
+- [ ] zeroifnull
 
 ### conversion_funcs
 
 - [ ] bigint
 - [ ] binary
 - [ ] boolean
-- [ ] cast
+- [x] cast
 - [ ] date
 - [ ] decimal
 - [ ] double
@@ -172,61 +218,75 @@
 - [ ] convert_timezone
 - [x] curdate
 - [x] current_date
+- [ ] current_time
 - [ ] current_timestamp
 - [x] current_timezone
-- [ ] date_add
-- [ ] date_diff
-- [ ] date_format
+- [x] date_add
+- [x] date_diff
+- [x] date_format
 - [x] date_from_unix_date
 - [x] date_part
-- [ ] date_sub
-- [ ] date_trunc
-- [ ] dateadd
-- [ ] datediff
+- [x] date_sub
+- [x] date_trunc
+- [x] dateadd
+- [x] datediff
 - [x] datepart
-- [ ] day
-- [ ] dayofmonth
-- [ ] dayofweek
-- [ ] dayofyear
+- [x] day
+- [ ] dayname
+- [x] dayofmonth
+- [x] dayofweek
+- [x] dayofyear
 - [x] extract
 - [x] from_unixtime
 - [ ] from_utc_timestamp
-- [ ] hour
-- [ ] last_day
+- [x] hour
+- [x] last_day
 - [ ] localtimestamp
-- [ ] make_date
+- [x] make_date
 - [ ] make_dt_interval
 - [ ] make_interval
+- [ ] make_time
 - [ ] make_timestamp
 - [ ] make_timestamp_ltz
 - [ ] make_timestamp_ntz
 - [ ] make_ym_interval
-- [ ] minute
-- [ ] month
+- [x] minute
+- [x] month
+- [ ] monthname
 - [ ] months_between
-- [ ] next_day
+- [x] next_day
 - [ ] now
-- [ ] quarter
-- [ ] second
+- [x] quarter
+- [x] second
+- [ ] session_window
+- [ ] time_diff
+- [ ] time_trunc
 - [ ] timestamp_micros
 - [ ] timestamp_millis
-- [ ] timestamp_seconds
+- [x] timestamp_seconds
 - [ ] to_date
+- [ ] to_time
 - [ ] to_timestamp
 - [ ] to_timestamp_ltz
 - [ ] to_timestamp_ntz
 - [ ] to_unix_timestamp
 - [ ] to_utc_timestamp
-- [ ] trunc
+- [x] trunc
+- [ ] try_make_interval
+- [ ] try_make_timestamp
+- [ ] try_to_date
+- [ ] try_to_time
 - [ ] try_to_timestamp
-- [ ] unix_date
+- [x] unix_date
 - [ ] unix_micros
 - [ ] unix_millis
 - [ ] unix_seconds
 - [x] unix_timestamp
-- [ ] weekday
-- [ ] weekofyear
-- [ ] year
+- [x] weekday
+- [x] weekofyear
+- [ ] window
+- [ ] window_time
+- [x] year
 
 ### generator_funcs
 
@@ -241,12 +301,12 @@
 ### hash_funcs
 
 - [x] crc32
-- [ ] hash
+- [x] hash
 - [x] md5
 - [ ] sha
-- [ ] sha1
-- [ ] sha2
-- [ ] xxhash64
+- [x] sha1
+- [x] sha2
+- [x] xxhash64
 
 ### json_funcs
 
@@ -284,16 +344,16 @@
 - [ ] map_from_entries
 - [x] map_keys
 - [ ] map_values
-- [ ] str_to_map
+- [x] str_to_map
 - [ ] try_element_at
 
 ### math_funcs
 
-- [x] %
-- [x] -
-- [x] -
-- [x] -
-- [x] /
+- [x] `%`
+- [ ] `*`
+- [ ] `+`
+- [x] `-`
+- [x] `/`
 - [x] abs
 - [x] acos
 - [ ] acosh
@@ -309,18 +369,18 @@
 - [x] ceiling
 - [ ] conv
 - [x] cos
-- [ ] cosh
-- [ ] cot
+- [x] cosh
+- [x] cot
 - [ ] csc
 - [ ] degrees
 - [ ] div
 - [ ] e
 - [x] exp
-- [ ] expm1
+- [x] expm1
 - [ ] factorial
 - [x] floor
 - [ ] greatest
-- [ ] hex
+- [x] hex
 - [ ] hypot
 - [ ] least
 - [x] ln
@@ -336,9 +396,10 @@
 - [x] pow
 - [x] power
 - [ ] radians
-- [ ] rand
-- [ ] randn
+- [x] rand
+- [x] randn
 - [ ] random
+- [ ] randstr
 - [ ] rint
 - [x] round
 - [ ] sec
@@ -346,54 +407,93 @@
 - [x] sign
 - [x] signum
 - [x] sin
-- [ ] sinh
+- [x] sinh
 - [x] sqrt
 - [x] tan
-- [ ] tanh
+- [x] tanh
 - [x] try_add
 - [x] try_divide
+- [ ] try_mod
 - [x] try_multiply
 - [x] try_subtract
 - [x] unhex
+- [ ] uniform
 - [x] width_bucket
 
 ### misc_funcs
 
 - [ ] aes_decrypt
 - [ ] aes_encrypt
+- [ ] approx_top_k_estimate
 - [ ] assert_true
+- [ ] bitmap_and_agg
+- [ ] bitmap_bit_position
+- [ ] bitmap_bucket_number
+- [ ] bitmap_construct_agg
+- [ ] bitmap_count
+- [ ] bitmap_or_agg
 - [x] current_catalog
 - [x] current_database
 - [x] current_schema
 - [x] current_user
 - [x] equal_null
+- [ ] from_avro
+- [ ] from_protobuf
+- [ ] hll_sketch_estimate
+- [ ] hll_union
 - [ ] input_file_block_length
 - [ ] input_file_block_start
 - [ ] input_file_name
+- [ ] is_variant_null
+- [ ] java_method
 - [x] monotonically_increasing_id
+- [ ] parse_json
 - [ ] raise_error
 - [x] rand
 - [x] randn
+- [ ] reflect
+- [ ] schema_of_avro
+- [ ] schema_of_variant
+- [ ] schema_of_variant_agg
+- [ ] session_user
 - [x] spark_partition_id
+- [ ] st_asbinary
+- [ ] st_geogfromwkb
+- [ ] st_geomfromwkb
+- [ ] st_setsrid
+- [ ] st_srid
+- [ ] theta_difference
+- [ ] theta_intersection
+- [ ] theta_sketch_estimate
+- [ ] theta_union
+- [ ] to_avro
+- [ ] to_protobuf
+- [ ] to_variant_object
+- [ ] try_aes_decrypt
+- [ ] try_parse_json
+- [ ] try_reflect
+- [ ] try_variant_get
 - [ ] typeof
 - [x] user
 - [ ] uuid
+- [ ] variant_get
 - [ ] version
 
 ### predicate_funcs
 
-- [x] !
-- [x] <
-- [x] <=
-- [x] <=>
-- [x] =
-- [x] ==
-- [x] >
-- [x] > =
+- [x] `!`
+- [x] `<`
+- [x] `<=`
+- [x] `<=>`
+- [x] `=`
+- [x] `==`
+- [x] `>`
+- [x] `>=`
 - [x] and
+- [ ] between
 - [x] ilike
 - [x] in
-- [ ] isnan
+- [x] isnan
 - [x] isnotnull
 - [x] isnull
 - [x] like
@@ -401,7 +501,7 @@
 - [x] or
 - [ ] regexp
 - [ ] regexp_like
-- [ ] rlike
+- [x] rlike
 
 ### string_funcs
 
@@ -413,6 +513,8 @@
 - [x] char_length
 - [x] character_length
 - [x] chr
+- [ ] collate
+- [ ] collation
 - [x] concat_ws
 - [x] contains
 - [ ] decode
@@ -424,8 +526,9 @@
 - [ ] format_string
 - [x] initcap
 - [x] instr
+- [ ] is_valid_utf8
 - [x] lcase
-- [ ] left
+- [x] left
 - [x] len
 - [x] length
 - [ ] levenshtein
@@ -433,50 +536,58 @@
 - [x] lower
 - [x] lpad
 - [x] ltrim
+- [ ] luhn_check
+- [ ] make_valid_utf8
 - [ ] mask
 - [x] octet_length
 - [ ] overlay
 - [ ] position
 - [ ] printf
+- [ ] quote
 - [ ] regexp_count
 - [ ] regexp_extract
 - [ ] regexp_extract_all
 - [ ] regexp_instr
-- [ ] regexp_replace
+- [x] regexp_replace
 - [ ] regexp_substr
 - [x] repeat
 - [x] replace
-- [ ] right
+- [x] right
 - [x] rpad
 - [x] rtrim
 - [ ] sentences
 - [ ] soundex
 - [x] space
-- [ ] split
+- [x] split
 - [ ] split_part
 - [x] startswith
-- [ ] substr
-- [ ] substring
+- [x] substr
+- [x] substring
 - [ ] substring_index
 - [ ] to_binary
 - [ ] to_char
 - [ ] to_number
+- [ ] to_varchar
 - [x] translate
 - [x] trim
 - [ ] try_to_binary
 - [ ] try_to_number
+- [ ] try_validate_utf8
 - [x] ucase
 - [ ] unbase64
 - [x] upper
+- [ ] validate_utf8
 
 ### struct_funcs
 
-- [ ] named_struct
+- [x] named_struct
 - [ ] struct
 
 ### url_funcs
 
 - [ ] parse_url
+- [ ] try_parse_url
+- [ ] try_url_decode
 - [ ] url_decode
 - [ ] url_encode
 
@@ -494,6 +605,9 @@
 
 ### xml_funcs
 
+- [ ] from_xml
+- [ ] schema_of_xml
+- [ ] to_xml
 - [ ] xpath
 - [ ] xpath_boolean
 - [ ] xpath_double

@@ -50,78 +50,86 @@ object GenerateDocs {
    * that category from the serde maps in `QueryPlanSerde`.
    */
   private def categoryPages: Map[String, (String, () => CategoryNotes)] = Map(
-    "array" -> ("compatibility/expressions/array.md",
-    () =>
-      QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
-      }),
-    "datetime" -> ("compatibility/expressions/datetime.md",
-    () =>
-      QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
-      }),
-    "math" -> ("compatibility/expressions/math.md",
-    () =>
-      QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
-      }),
-    "struct" -> ("compatibility/expressions/struct.md",
-    () =>
-      QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
-      }),
-    "aggregate" -> ("compatibility/expressions/aggregate.md",
-    () =>
-      QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
-      }),
-    "string" -> ("compatibility/expressions/string.md",
-    () =>
-      QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
-      }),
-    "map" -> ("compatibility/expressions/map.md",
-    () =>
-      QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
-      }),
-    "misc" -> ("compatibility/expressions/misc.md",
-    () =>
-      QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
-      }))
+    "array" -> ((
+      "compatibility/expressions/array.md",
+      () =>
+        QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
+          (
+            cls.getSimpleName,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons())
+        })),
+    "datetime" -> ((
+      "compatibility/expressions/datetime.md",
+      () =>
+        QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
+          (
+            cls.getSimpleName,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons())
+        })),
+    "math" -> ((
+      "compatibility/expressions/math.md",
+      () =>
+        QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
+          (
+            cls.getSimpleName,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons())
+        })),
+    "struct" -> ((
+      "compatibility/expressions/struct.md",
+      () =>
+        QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
+          (
+            cls.getSimpleName,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons())
+        })),
+    "aggregate" -> ((
+      "compatibility/expressions/aggregate.md",
+      () =>
+        QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
+          (
+            cls.getSimpleName,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons())
+        })),
+    "string" -> ((
+      "compatibility/expressions/string.md",
+      () =>
+        QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
+          (
+            cls.getSimpleName,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons())
+        })),
+    "map" -> ((
+      "compatibility/expressions/map.md",
+      () =>
+        QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
+          (
+            cls.getSimpleName,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons())
+        })),
+    "misc" -> ((
+      "compatibility/expressions/misc.md",
+      () =>
+        QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
+          (
+            cls.getSimpleName,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons())
+        })))
 
   def main(args: Array[String]): Unit = {
     val userGuideLocation = args(0)

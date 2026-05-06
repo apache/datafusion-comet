@@ -819,7 +819,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           inputPartitions.foreach { inputPartition =>
             val inputPartClass = inputPartition.getClass
 
-            try {
+            {
               val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
               taskGroupMethod.setAccessible(true)
               val taskGroup = taskGroupMethod.invoke(inputPartition)

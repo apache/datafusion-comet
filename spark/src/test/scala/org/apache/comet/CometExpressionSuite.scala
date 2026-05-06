@@ -38,7 +38,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -2123,6 +2123,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("unary negative integer overflow test") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
@@ -2717,6 +2718,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for add") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2737,6 +2739,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for subtract") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val data = Seq((Integer.MIN_VALUE, 1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2756,6 +2759,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for multiply") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val data = Seq((Integer.MAX_VALUE, 10))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2994,7 +2998,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
         SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
-        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString) {
+        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString,
+        // SPARK-53535 (Spark 4.1+) flipped the default to "false", which preserves the parent
+        // struct's nullness so non-null parents materialise as Row(Row(null, null)). This test
+        // asserts the legacy "all missing fields => null struct" answer, so pin the conf to
+        // "true" to keep the expectation valid on both 3.x/4.0 and 4.1+. The non-legacy
+        // behaviour is covered separately by `issue #4136` in CometNativeReaderSuite.
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> "true") {
         val data = Seq(Tuple1((1, "a")), Tuple1((2, null)), Tuple1(null))
 
         val readSchema = new StructType().add(
