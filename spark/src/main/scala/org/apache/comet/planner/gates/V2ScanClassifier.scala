@@ -23,7 +23,8 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression}
+import org.apache.spark.sql.catalyst.util.MetadataColumnHelper
 import org.apache.spark.sql.comet.CometBatchScanExec
 import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
@@ -68,6 +69,13 @@ object V2ScanClassification {
 object V2ScanClassifier extends Logging with ShimSubqueryBroadcast {
 
   def classify(scanExec: BatchScanExec, conf: SQLConf): V2ScanClassification = {
+    // Mirrors CometScanRule's pre-dispatch gate: any metadata column reference (e.g. Iceberg's
+    // `_file`, `_pos`, `_deleted`, `_spec_id`, `_partition`, `_change_type`) disqualifies the
+    // scan from native conversion because iceberg-rust / DataFusion's Parquet reader don't
+    // populate those columns.
+    if (hasMetadataCol(scanExec)) {
+      return V2ScanClassification.NotConvertible(Set("Metadata column is not supported"))
+    }
     val result = scanExec.scan match {
       case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get(conf) =>
         classifyCsv(scan, scanExec)
@@ -136,6 +144,16 @@ object V2ScanClassifier extends Logging with ShimSubqueryBroadcast {
 
   private def classifyIceberg(scanExec: BatchScanExec, conf: SQLConf): V2ScanClassification = {
     val fallbackReasons = new ListBuffer[String]()
+
+    // Iceberg metadata tables (e.g. `t.snapshots`, `t.history`, `t.manifests`) still produce a
+    // SparkBatchQueryScan via SparkTable.newScanBuilder, so without this early reject we would
+    // run through full metadata extraction and eventually fail inside
+    // validateIcebergFileScanTasks (metadata DataTasks don't implement ContentScanTask.file()).
+    // Mirrors CometScanRule.isIcebergMetadataTable.
+    if (isIcebergMetadataTable(scanExec)) {
+      fallbackReasons += "Iceberg Metadata tables are not supported"
+      return V2ScanClassification.NotConvertible(fallbackReasons.toSet)
+    }
 
     if (!COMET_ICEBERG_NATIVE_ENABLED.get(conf)) {
       fallbackReasons += "Native Iceberg scan disabled because " +
@@ -419,5 +437,41 @@ object V2ScanClassifier extends Logging with ShimSubqueryBroadcast {
     } else {
       V2ScanClassification.NotConvertible(fallbackReasons.toSet)
     }
+  }
+
+  /**
+   * Any expression on the scan that references an `Attribute` flagged as a metadata column
+   * (`isMetadataCol`). Mirrors `CometScanRule.hasMetadataCol`. Iceberg surfaces row-level columns
+   * `_file`, `_pos`, `_deleted`, `_spec_id`, `_partition`, `_change_type`, `_change_ordinal`,
+   * `_commit_snapshot_id` this way; the native iceberg scan does not populate them.
+   */
+  private def hasMetadataCol(scanExec: BatchScanExec): Boolean = {
+    scanExec.expressions.exists(_.exists {
+      case a: Attribute => a.isMetadataCol
+      case _ => false
+    })
+  }
+
+  /**
+   * Iceberg metadata table scans (e.g. `SELECT * FROM t.snapshots`) still present as
+   * `SparkBatchQueryScan` because `SparkTable.newScanBuilder` is shared between regular and
+   * metadata tables. Mirrors `CometScanRule.isIcebergMetadataTable`: suffix list copied from
+   * https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables.
+   */
+  private def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
+    val metadataTableSuffix = Set(
+      "history",
+      "metadata_log_entries",
+      "snapshots",
+      "entries",
+      "files",
+      "manifests",
+      "partitions",
+      "position_deletes",
+      "all_data_files",
+      "all_delete_files",
+      "all_entries",
+      "all_manifests")
+    metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
   }
 }
