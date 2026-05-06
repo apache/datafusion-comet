@@ -755,9 +755,8 @@ class CometStringExpressionSuite extends CometTestBase {
     val table = "levenshtein_col_threshold_test"
     withTable(table) {
       sql(s"CREATE TABLE $table(s1 STRING, s2 STRING, threshold INT) USING parquet")
-      sql(
-        s"INSERT INTO $table VALUES " +
-          "('kitten', 'sitting', 2), ('frog', 'fog', 5), ('abc', 'abc', 0), ('hello', 'world', 3)")
+      sql(s"INSERT INTO $table VALUES " +
+        "('kitten', 'sitting', 2), ('frog', 'fog', 5), ('abc', 'abc', 0), ('hello', 'world', 3)")
       // threshold as column reference
       checkSparkAnswerAndOperator(s"SELECT levenshtein(s1, s2, threshold) FROM $table")
     }
