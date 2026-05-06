@@ -733,6 +733,7 @@ class CometWindowExecSuite extends CometTestBase {
       withTempDir { dir =>
         Seq((1, 1, Some(10)), (1, 2, None), (1, 3, Some(30)), (2, 1, None), (2, 2, Some(20)))
           .toDF("a", "b", "c")
+          .repartition(3)
           .write
           .mode("overwrite")
           .parquet(dir.toString)
