@@ -74,19 +74,23 @@ class CometSetOpWithGroupBySuite extends CometTestBase with AdaptiveSparkPlanHel
   }
 
   test("UNION ALL with checkSparkAnswerAndOperator") {
-    withTempView("u1", "u2") {
-      sql("""CREATE TEMPORARY VIEW u1 AS SELECT * FROM VALUES
-            |  (1, 'a'), (2, 'b'), (3, 'c') AS u1(id, name)""".stripMargin)
-      sql("""CREATE TEMPORARY VIEW u2 AS SELECT * FROM VALUES
-            |  (4, 'd'), (5, 'e'), (6, 'f') AS u2(id, name)""".stripMargin)
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      withTempView("u1", "u2") {
+        sql("""CREATE TEMPORARY VIEW u1 AS SELECT * FROM VALUES
+              |  (1, 'a'), (2, 'b'), (3, 'c') AS u1(id, name)""".stripMargin)
+        sql("""CREATE TEMPORARY VIEW u2 AS SELECT * FROM VALUES
+              |  (4, 'd'), (5, 'e'), (6, 'f') AS u2(id, name)""".stripMargin)
 
-      val df = sql("SELECT id, name FROM u1 UNION ALL SELECT id, name FROM u2")
-      checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometUnionExec]))
+        val df = sql("SELECT id, name FROM u1 UNION ALL SELECT id, name FROM u2")
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometUnionExec]))
+      }
     }
   }
 
   test("UNION ALL with SinglePartition (coalesce(1) children)") {
-    withSQLConf(SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false") {
+    withSQLConf(
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
       withTempView("s1", "s2") {
         sql("""CREATE TEMPORARY VIEW s1 AS SELECT * FROM VALUES
               |  (10), (20), (30) AS s1(x)""".stripMargin)
