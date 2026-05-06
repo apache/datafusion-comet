@@ -53,7 +53,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.ShimSubqueryBroadcast
+import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
 
 object CometExecRule {
 
@@ -540,6 +540,10 @@ case class CometExecRule(session: SparkSession)
       s"CometExecRule ran while ${CometConf.COMET_USE_PLANNER.key}=true. CometPlanner should " +
         "be the sole rule on this path. Either COMET_USE_PLANNER was flipped after session " +
         "creation or the legacy rule was registered by mistake.")
+
+    // Comet does not support structured streaming. Fall back to Spark for any plan that
+    // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).
+    if (ShimCometStreaming.isStreamingPlan(plan)) return plan
 
     if (!CometConf.COMET_EXEC_ENABLED.get(conf)) {
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle

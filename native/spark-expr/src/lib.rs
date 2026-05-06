@@ -53,7 +53,7 @@ pub use agg_funcs::*;
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 
 mod bloom_filter;
-pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
+pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain, SparkBloomFilterVersion};
 
 mod conditional_funcs;
 mod conversion_funcs;
@@ -123,8 +123,10 @@ pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     }
 }
 
-pub(crate) fn decimal_sum_overflow_error() -> SparkError {
-    SparkError::DecimalSumOverflow
+pub(crate) fn decimal_sum_overflow_error(function_name: &str) -> SparkError {
+    SparkError::DecimalSumOverflow {
+        function_name: function_name.to_string(),
+    }
 }
 
 pub(crate) fn divide_by_zero_error() -> SparkError {

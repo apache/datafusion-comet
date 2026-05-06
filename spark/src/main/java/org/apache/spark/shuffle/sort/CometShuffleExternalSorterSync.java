@@ -22,6 +22,7 @@ package org.apache.spark.shuffle.sort;
 import java.io.File;
 import java.io.IOException;
 import java.util.LinkedList;
+import java.util.concurrent.atomic.AtomicLong;
 
 import scala.Tuple2;
 
@@ -83,6 +84,14 @@ public final class CometShuffleExternalSorterSync
 
   private final LinkedList<SpillInfo> spills = new LinkedList<>();
 
+  /** Shared accumulator for encode + compression time across all SpillSorter instances. */
+  private final AtomicLong encodeNanos = new AtomicLong(0);
+
+  @Override
+  public long getEncodeNanos() {
+    return encodeNanos.get();
+  }
+
   /** Peak memory used by this sorter so far, in bytes. */
   private long peakMemoryUsedBytes;
 
@@ -140,20 +149,23 @@ public final class CometShuffleExternalSorterSync
 
   /** Creates a new SpillSorter with all required dependencies. */
   private SpillSorter createSpillSorter() {
-    return new SpillSorter(
-        allocator,
-        initialSize,
-        schema,
-        uaoSize,
-        preferDictionaryRatio,
-        compressionCodec,
-        compressionLevel,
-        checksumAlgorithm,
-        partitionChecksums,
-        writeMetrics,
-        taskContext,
-        spills,
-        this::spill);
+    SpillSorter sorter =
+        new SpillSorter(
+            allocator,
+            initialSize,
+            schema,
+            uaoSize,
+            preferDictionaryRatio,
+            compressionCodec,
+            compressionLevel,
+            checksumAlgorithm,
+            partitionChecksums,
+            writeMetrics,
+            taskContext,
+            spills,
+            this::spill);
+    sorter.setEncodeNanosAccumulator(encodeNanos);
+    return sorter;
   }
 
   @Override

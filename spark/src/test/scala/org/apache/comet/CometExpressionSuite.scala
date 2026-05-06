@@ -1544,22 +1544,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("unhex") {
     val table = "unhex_table"
-    withTable(table) {
-      sql(s"create table $table(col string) using parquet")
+    Seq(false, true).foreach { dictionaryEnabled =>
+      withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
+        withTable(table) {
+          sql(s"create table $table(col string) using parquet")
 
-      sql(s"""INSERT INTO $table VALUES
-        |('537061726B2053514C'),
-        |('737472696E67'),
-        |('\\0'),
-        |(''),
-        |('###'),
-        |('G123'),
-        |('hello'),
-        |('A1B'),
-        |('0A1B')""".stripMargin)
+          sql(s"""INSERT INTO $table VALUES
+            |('537061726B2053514C'),
+            |('537061726B2053514C'),
+            |('737472696E67'),
+            |('737472696E67'),
+            |('\\0'),
+            |(''),
+            |('###'),
+            |('G123'),
+            |('hello'),
+            |('A1B'),
+            |('0A1B')""".stripMargin)
 
-      checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
+          checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
+        }
+      }
     }
+
+    Seq(false, true).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        withParquetTable(path.toString, table) {
+          checkSparkAnswerAndOperator(s"SELECT unhex(_8) FROM $table")
+        }
+      }
+    }
+
   }
 
   test("EqualNullSafe should preserve comet filter") {
@@ -2998,7 +3015,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
         SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
-        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString) {
+        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString,
+        // SPARK-53535 (Spark 4.1+) flipped the default to "false", which preserves the parent
+        // struct's nullness so non-null parents materialise as Row(Row(null, null)). This test
+        // asserts the legacy "all missing fields => null struct" answer, so pin the conf to
+        // "true" to keep the expectation valid on both 3.x/4.0 and 4.1+. The non-legacy
+        // behaviour is covered separately by `issue #4136` in CometNativeReaderSuite.
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> "true") {
         val data = Seq(Tuple1((1, "a")), Tuple1((2, null)), Tuple1(null))
 
         val readSchema = new StructType().add(

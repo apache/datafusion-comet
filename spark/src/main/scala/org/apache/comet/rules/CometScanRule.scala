@@ -50,7 +50,7 @@ import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.parquet.Native
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
-import org.apache.comet.shims.{CometTypeShim, ShimFileFormat, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
@@ -80,6 +80,11 @@ case class CometScanRule(session: SparkSession)
       s"CometScanRule ran while ${CometConf.COMET_USE_PLANNER.key}=true. CometPlanner should " +
         "be the sole rule on this path. Either COMET_USE_PLANNER was flipped after session " +
         "creation or the legacy rule was registered by mistake.")
+
+    // Comet does not support structured streaming. The parallel guard in
+    // CometExecRule only stops operator wrapping, so without this check we
+    // would still rewrite scans to CometScanExec in a streaming plan.
+    if (ShimCometStreaming.isStreamingPlan(plan)) return plan
 
     def isSupportedScanNode(plan: SparkPlan): Boolean = plan match {
       case _: FileSourceScanExec => true
