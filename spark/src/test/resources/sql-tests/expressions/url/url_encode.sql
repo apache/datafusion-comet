@@ -24,9 +24,13 @@ INSERT INTO test_encode VALUES
   ('https://spark.apache.org'),
   ('hello world'),
   ('a+b=c&d=e'),
+  ('café'),
   (''),
   (NULL),
-  ('foo bar/baz?x=1&y=2')
+  ('foo bar/baz?x=1&y=2'),
+  ('~*''()'),
+  ('a%20b'),
+  ('\t\n\r')
 
 query
 SELECT url_encode(s) FROM test_encode
@@ -51,3 +55,15 @@ SELECT url_encode('a b+c&d=e/f')
 -- multibyte UTF-8
 query
 SELECT url_encode('日本語テスト')
+
+-- boundary characters in the preserved set
+query
+SELECT url_encode('~*''()')
+
+-- already-encoded input (verify double-encoding of percent)
+query
+SELECT url_encode('a%20b')
+
+-- whitespace control characters
+query
+SELECT url_encode('\t\n\r')
