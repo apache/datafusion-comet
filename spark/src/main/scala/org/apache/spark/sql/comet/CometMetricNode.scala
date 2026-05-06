@@ -85,6 +85,26 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   }
 
   /**
+   * Reports native Parquet writer SQL metrics to Spark's task-level
+   * [[org.apache.spark.executor.OutputMetrics]] so the Spark UI Stages tab Output column shows
+   * bytes and records written.
+   *
+   * Must be registered on the task thread before [[org.apache.comet.CometExecIterator]] so
+   * Spark's completion listener stack invokes the iterator `close` (final SQL metric update)
+   * before this listener runs.
+   */
+  def reportNativeWriteOutputMetrics(ctx: TaskContext): Unit = {
+    ctx.addTaskCompletionListener[Unit] { _ =>
+      metrics.get("bytes_written").foreach { m =>
+        ctx.taskMetrics().outputMetrics.setBytesWritten(m.value)
+      }
+      metrics.get("rows_written").foreach { m =>
+        ctx.taskMetrics().outputMetrics.setRecordsWritten(m.value)
+      }
+    }
+  }
+
+  /**
    * Gets a child node. Called from native.
    */
   def getChildNode(i: Int): CometMetricNode = {

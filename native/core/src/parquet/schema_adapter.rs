@@ -385,6 +385,78 @@ impl SparkPhysicalExprAdapter {
             let physical_type = cast.input_field().data_type();
             let target_type = cast.target_field().data_type();
 
+            // Reject reading a string/binary Parquet column as anything other
+            // than string, binary, or a binary-encoded decimal. This mirrors
+            // Spark's TypeUtil.checkParquetType for the BINARY case (lines
+            // 208-221): a BINARY (or UTF8-annotated BINARY) physical column is
+            // only readable as StringType, BinaryType, or a binary-encoded
+            // decimal; every other target type (numeric, boolean, date,
+            // timestamp, ...) raises SchemaColumnConvertNotSupportedException.
+            //
+            // Without this guard, Spark's Cast below (in is_adapting_schema
+            // mode) falls through to DataFusion's cast, which silently parses
+            // the bytes (returning nulls for non-numeric strings, parsing
+            // date/timestamp/boolean strings, or in some paths reinterpreting
+            // raw bytes). See issue #4088.
+            if matches!(
+                physical_type,
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+            ) && !matches!(
+                target_type,
+                DataType::Utf8
+                    | DataType::LargeUtf8
+                    | DataType::Binary
+                    | DataType::LargeBinary
+                    | DataType::Decimal128(_, _)
+                    | DataType::Decimal256(_, _)
+            ) {
+                return Err(DataFusionError::External(Box::new(
+                    SparkError::ParquetSchemaConvert {
+                        file_path: String::new(),
+                        column: cast.input_field().name().to_string(),
+                        physical_type: physical_type.to_string(),
+                        spark_type: target_type.to_string(),
+                    },
+                )));
+            }
+
+            // Decimal-to-decimal scale-narrowing check.
+            // Reject reads where the read schema has a smaller scale than the
+            // file's, because Spark's Cast below would silently truncate
+            // fractional digits, producing wrong values. This matches the
+            // unconditionally-lossy case in issue #4089 (e.g. Decimal(10,2) read
+            // as Decimal(5,0)).
+            //
+            // Other decimal mismatches are intentionally NOT rejected here,
+            // even though Spark's vectorized reader would reject them via
+            // `ParquetVectorUpdaterFactory#isDecimalTypeMatched` (which requires
+            // exact precision and scale):
+            //
+            // - Precision-only changes with the same scale (e.g. Decimal(5,2)
+            //   read as Decimal(3,2)): Spark 4.0's parquet-mr fallback path
+            //   (PARQUET_VECTORIZED_READER_ENABLED=false) and the vectorized
+            //   type-widening path produce null on per-value overflow, which
+            //   DataFusion's cast already does in the adapting-schema path.
+            //
+            // - Scale widening (e.g. Decimal(10,2) read as Decimal(10,4)): the
+            //   cast is lossless (no truncation, no overflow), so allowing it
+            //   here is strictly more permissive than Spark's vectorized reader
+            //   without risking wrong values.
+            if let (DataType::Decimal128(_src_p, src_s), DataType::Decimal128(_dst_p, dst_s)) =
+                (physical_type, target_type)
+            {
+                if dst_s < src_s {
+                    return Err(DataFusionError::External(Box::new(
+                        SparkError::ParquetSchemaConvert {
+                            file_path: String::new(),
+                            column: cast.input_field().name().to_string(),
+                            physical_type: physical_type.to_string(),
+                            spark_type: target_type.to_string(),
+                        },
+                    )));
+                }
+            }
+
             // For complex nested types (Struct, List, Map), Timestamp timezone
             // mismatches, and Timestamp→Int64 (nanosAsLong), use CometCastColumnExpr
             // with spark_parquet_convert which handles field-name-based selection,
@@ -402,6 +474,29 @@ impl SparkPhysicalExprAdapter {
             // TIMESTAMP(NANOS) to LongType. Spark's Cast would divide by MICROS_PER_SECOND
             // (assuming microseconds), but the values are nanoseconds. Arrow cast correctly
             // reinterprets the raw i64 value without conversion.
+            // Reject scalar/complex mismatches at planning time. Spark's
+            // vectorized reader rejects e.g. reading a TIMESTAMP column as
+            // ARRAY<TIMESTAMP> with SchemaColumnConvertNotSupportedException
+            // (see SPARK-45604). Without this guard the runtime cast would
+            // raise a less-specific Arrow CastError. Same-complex-type pairs
+            // and timestamp→timestamp / timestamp→int64 are handled below.
+            let is_complex = |t: &DataType| {
+                matches!(
+                    t,
+                    DataType::Struct(_) | DataType::List(_) | DataType::Map(_, _)
+                )
+            };
+            if is_complex(physical_type) != is_complex(target_type) {
+                return Err(DataFusionError::External(Box::new(
+                    SparkError::ParquetSchemaConvert {
+                        file_path: String::new(),
+                        column: cast.input_field().name().to_string(),
+                        physical_type: physical_type.to_string(),
+                        spark_type: target_type.to_string(),
+                    },
+                )));
+            }
+
             if matches!(
                 (physical_type, target_type),
                 (DataType::Struct(_), DataType::Struct(_))

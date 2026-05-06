@@ -54,6 +54,7 @@ use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::map::map_from_entries::MapFromEntries;
+use datafusion_spark::function::map::str_to_map::SparkStrToMap;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::hex::SparkHex;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
@@ -564,6 +565,8 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStrToMap::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -986,7 +989,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     _ => CompressionCodec::Lz4Frame,
                 };
 
-                let (written_bytes, checksum) = process_sorted_row_partition(
+                let (written_bytes, checksum, encode_nanos) = process_sorted_row_partition(
                     row_num,
                     batch_size as usize,
                     row_addresses_ptr,
@@ -1008,8 +1011,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     i64::MIN
                 };
 
-                let long_array = env.new_long_array(2)?;
-                long_array.set_region(env, 0, &[written_bytes, checksum])?;
+                // results[0] = bytes written, results[1] = checksum, results[2] = encode nanos
+                let long_array = env.new_long_array(3)?;
+                long_array.set_region(env, 0, &[written_bytes, checksum, encode_nanos])?;
 
                 Ok(long_array.into_raw())
             },
@@ -1134,6 +1138,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
 
 use crate::execution::columnar_to_row::ColumnarToRowContext;
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
+use datafusion_spark::function::math::bin::SparkBin;
 
 /// Initialize a native columnar to row converter.
 ///

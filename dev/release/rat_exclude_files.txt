@@ -24,6 +24,7 @@ spark/src/test/resources/tpcds-query-results/*.out
 spark/src/test/resources/tpcds-micro-benchmarks/*.sql
 spark/src/test/resources/tpcds-plan-stability/approved-plans*/**/explain.txt
 spark/src/test/resources/tpcds-plan-stability/approved-plans*/**/simplified.txt
+spark/src/test/resources/tpcds-plan-stability/approved-plans*/**/extended.txt
 spark/src/test/resources/tpch-query-results/*.out
 spark/src/test/resources/tpch-extended/q*.sql
 spark/src/test/resources/test-data/*.csv

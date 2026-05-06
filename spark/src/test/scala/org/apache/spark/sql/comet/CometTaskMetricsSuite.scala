@@ -19,20 +19,26 @@
 
 package org.apache.spark.sql.comet
 
+import java.io.File
+
 import scala.collection.mutable
 
-import org.apache.spark.SparkConf
+import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.executor.ShuffleReadMetrics
 import org.apache.spark.executor.ShuffleWriteMetrics
 import org.apache.spark.scheduler.SparkListener
+import org.apache.spark.scheduler.SparkListenerJobStart
 import org.apache.spark.scheduler.SparkListenerTaskEnd
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -100,6 +106,91 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("native parquet write reports task-level output metrics") {
+    withParquetTable((0 until 5000).map(i => (i, (i + 1).toLong)), "tbl") {
+      withTempPath { dir =>
+        val outPath = new File(dir, "written").getAbsolutePath
+        val expectedRows = 5000L
+        val outputBytes = mutable.ArrayBuffer.empty[Long]
+        val outputRecords = mutable.ArrayBuffer.empty[Long]
+        val targetStageIds = mutable.HashSet.empty[Int]
+        val jobGroupId = s"native-write-metrics-${java.util.UUID.randomUUID().toString}"
+
+        val listener = new SparkListener {
+          override def onJobStart(jobStart: SparkListenerJobStart): Unit = {
+            val isTargetJob = Option(jobStart.properties)
+              .flatMap(props => Option(props.getProperty(SparkContext.SPARK_JOB_GROUP_ID)))
+              .contains(jobGroupId)
+            if (isTargetJob) {
+              targetStageIds.synchronized {
+                targetStageIds ++= jobStart.stageInfos.map(_.stageId)
+              }
+            }
+          }
+
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val isTargetStage = targetStageIds.synchronized {
+              targetStageIds.contains(taskEnd.stageId)
+            }
+            if (isTargetStage) {
+              val om = taskEnd.taskMetrics.outputMetrics
+              if (om.bytesWritten > 0) {
+                outputBytes.synchronized {
+                  outputBytes += om.bytesWritten
+                  outputRecords += om.recordsWritten
+                }
+              }
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        try {
+          spark.sparkContext.listenerBus.waitUntilEmpty()
+
+          withSQLConf(
+            CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.getOperatorAllowIncompatConfigKey(
+              classOf[DataWritingCommandExec]) -> "true",
+            SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax") {
+            spark.sparkContext.setJobGroup(jobGroupId, "native parquet write output metrics")
+            try {
+              sql("SELECT * FROM tbl").write.parquet(outPath)
+            } finally {
+              spark.sparkContext.clearJobGroup()
+            }
+          }
+
+          spark.sparkContext.listenerBus.waitUntilEmpty()
+
+          assert(outputBytes.nonEmpty, "No task reported outputMetrics.bytesWritten")
+          val totalOutputBytes = outputBytes.sum
+          val totalOutputRecords = outputRecords.sum
+
+          assert(
+            totalOutputRecords == expectedRows,
+            s"recordsWritten mismatch: metrics=$totalOutputRecords, expected=$expectedRows")
+
+          val outputDir = new File(outPath)
+          val fileBytes = Option(outputDir.listFiles())
+            .getOrElse(Array.empty)
+            .filter(f => f.isFile && f.getName.startsWith("part-"))
+            .map(_.length())
+            .sum
+
+          assert(fileBytes > 0L, s"Expected written parquet bytes should be > 0, got $fileBytes")
+          val ratio = totalOutputBytes.toDouble / fileBytes.toDouble
+          assert(
+            ratio >= 0.7 && ratio <= 1.3,
+            s"bytesWritten ratio out of range: metrics=$totalOutputBytes, files=$fileBytes, ratio=$ratio")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+        }
+      }
+    }
+  }
+
   test("native_datafusion scan reports task-level input metrics matching Spark") {
     val totalRows = 10000
     withTempPath { dir =>
@@ -138,10 +229,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // (e.g. footer reads, page headers, buffering granularity).
       assert(sparkBytes > 0, s"Spark bytesRead should be > 0, got $sparkBytes")
       assert(cometBytes > 0, s"Comet bytesRead should be > 0, got $cometBytes")
-      val ratio = cometBytes.toDouble / sparkBytes.toDouble
-      assert(
-        ratio >= 0.7 && ratio <= 1.3,
-        s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
+      assertCometBytesReadInRange(cometBytes, sparkBytes)
     }
   }
 
@@ -190,11 +278,30 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
 
         // Both sides should contribute to the total bytes
-        val ratio = cometBytes.toDouble / sparkBytes.toDouble
-        assert(
-          ratio >= 0.7 && ratio <= 1.3,
-          s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
+        assertCometBytesReadInRange(cometBytes, sparkBytes)
       }
+    }
+  }
+
+  /**
+   * Compare Comet's `bytesRead` against Spark's baseline. On Spark <= 4.0 the two readers report
+   * the same Hadoop-FS thread-local byte count, so we keep a tight 0.7-1.3 band. Spark 4.1
+   * pre-opens the parquet `SeekableInputStream` outside the FileScanRDD `compute()` thread, so
+   * its `getFSBytesReadOnThreadCallback` no longer captures most of the parquet IO and
+   * `inputMetrics.bytesRead` is now a small fraction of the actual file IO. Comet (via
+   * DataFusion's `bytes_scanned`) still reports actual bytes, so the only safe cross-version
+   * invariant on 4.1+ is that Comet >= Spark and both are positive.
+   */
+  private def assertCometBytesReadInRange(cometBytes: Long, sparkBytes: Long): Unit = {
+    if (isSpark41Plus) {
+      assert(
+        cometBytes >= sparkBytes,
+        s"Comet bytesRead should be >= Spark bytesRead on 4.1+: comet=$cometBytes, spark=$sparkBytes")
+    } else {
+      val ratio = cometBytes.toDouble / sparkBytes.toDouble
+      assert(
+        ratio >= 0.7 && ratio <= 1.3,
+        s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
     }
   }
 
@@ -241,10 +348,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(sparkRecords > 0, s"Spark recordsRead should be > 0, got $sparkRecords")
         assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
 
-        val ratio = cometBytes.toDouble / sparkBytes.toDouble
-        assert(
-          ratio >= 0.7 && ratio <= 1.3,
-          s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
+        assertCometBytesReadInRange(cometBytes, sparkBytes)
       }
     }
   }

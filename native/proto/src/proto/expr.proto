@@ -89,6 +89,7 @@ message Expr {
     FromJson from_json = 66;
     ToCsv to_csv = 67;
     HoursTransform hours_transform = 68;
+    ArraysZip arrays_zip = 69;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -140,6 +141,7 @@ message AggExpr {
     Stddev stddev = 14;
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
+    CollectSet collectSet = 17;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -246,6 +248,22 @@ message BloomFilterAgg {
   Expr numItems = 2;
   Expr numBits = 3;
   DataType datatype = 4;
+  // Output serialization version. Spark 4.0 and earlier always wrote V1; Spark
+  // 4.1+ defaults to V2 (different bit-scattering algorithm and a `seed` field
+  // in the binary format). The JVM serde sets this to the matching version so
+  // Comet's aggregate output is byte-equivalent with Spark's.
+  BloomFilterVersion version = 5;
+}
+
+enum BloomFilterVersion {
+  BLOOM_FILTER_VERSION_UNSPECIFIED = 0;
+  BLOOM_FILTER_VERSION_V1 = 1;
+  BLOOM_FILTER_VERSION_V2 = 2;
+}
+
+message CollectSet {
+  Expr child = 1;
+  DataType datatype = 2;
 }
 
 enum EvalMode {
@@ -488,4 +506,11 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+// Spark's ArraysZip takes children: Seq[Expression] and names: Seq[Expression]
+// https://github.com/apache/spark/blob/branch-4.1/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L296
+message ArraysZip {
+  repeated Expr values = 1;
+  repeated string names = 2;
 }

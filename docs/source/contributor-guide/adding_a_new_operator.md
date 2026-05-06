@@ -414,7 +414,7 @@ mod tests {
 
 ### Step 7: Update Documentation
 
-Add your operator to the supported operators list in `docs/source/user-guide/latest/compatibility.md` or similar documentation.
+Add your operator to the supported operators list in `docs/source/user-guide/latest/compatibility/operators.md` or similar documentation.
 
 ## Implementing a Sink Operator
 
@@ -553,8 +553,14 @@ For operators that run in the JVM:
 Example pattern from `CometExecRule.scala`:
 
 ```scala
-case s: ShuffleExchangeExec if nativeShuffleSupported(s) =>
-  CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+case s: ShuffleExchangeExec =>
+  CometShuffleExchangeExec.shuffleSupported(s) match {
+    case Some(CometNativeShuffle) =>
+      CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+    case Some(CometColumnarShuffle) =>
+      CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+    case None => s
+  }
 ```
 
 ## Common Patterns and Helpers

@@ -28,6 +28,7 @@ import org.json4s.jackson.JsonMethods._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
+import org.apache.spark.sql.comet.shims.ShimDataSourceRDDPartition
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.types._
 
@@ -812,14 +813,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         partitions.foreach { partition =>
           val partitionBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
-          val inputPartitions = partition
-            .asInstanceOf[DataSourceRDDPartition]
-            .inputPartitions
+          val inputPartitions = ShimDataSourceRDDPartition
+            .inputPartitions(partition.asInstanceOf[DataSourceRDDPartition])
 
           inputPartitions.foreach { inputPartition =>
             val inputPartClass = inputPartition.getClass
 
-            try {
+            {
               val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
               taskGroupMethod.setAccessible(true)
               val taskGroup = taskGroupMethod.invoke(inputPartition)

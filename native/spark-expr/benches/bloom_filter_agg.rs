@@ -30,7 +30,7 @@ use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_comet_spark_expr::BloomFilterAgg;
+use datafusion_comet_spark_expr::{BloomFilterAgg, SparkBloomFilterVersion};
 use futures::StreamExt;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -66,6 +66,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                     Arc::clone(&num_items),
                     Arc::clone(&num_bits),
                     DataType::Binary,
+                    SparkBloomFilterVersion::V1,
                 )));
             b.to_async(&rt).iter(|| {
                 black_box(agg_test(
