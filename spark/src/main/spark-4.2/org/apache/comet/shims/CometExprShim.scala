@@ -23,9 +23,10 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType, TimeType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -91,6 +92,16 @@ trait CometExprShim extends CommonStringExprs {
               BooleanType) =>
         val Seq(bin, charset, _, _) = s.arguments
         stringDecode(expr, charset, bin, inputs, binding)
+
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            s.functionName == "makeTime" &&
+            s.arguments.size == 3 &&
+            s.dataType.isInstanceOf[TimeType] =>
+        val childExprs = s.arguments.map(exprToProtoInternal(_, inputs, binding))
+        val optExpr =
+          scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
+        optExprWithInfo(optExpr, expr, s.arguments: _*)
 
       case expr @ ToPrettyString(child, timeZoneId) =>
         val castSupported = CometCast.isSupported(

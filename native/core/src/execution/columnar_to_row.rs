@@ -161,6 +161,7 @@ enum TypedArray<'a> {
     Float64(&'a Float64Array),
     Date32(&'a Date32Array),
     TimestampMicro(&'a TimestampMicrosecondArray),
+    Time64Nano(&'a Time64NanosecondArray),
     Decimal128(&'a Decimal128Array, u8), // array + precision
     String(&'a StringArray),
     LargeString(&'a LargeStringArray),
@@ -199,6 +200,9 @@ impl<'a> TypedArray<'a> {
             DataType::Date32 => Ok(TypedArray::Date32(downcast_array!(array, Date32Array)?)),
             DataType::Timestamp(TimeUnit::Microsecond, _) => Ok(TypedArray::TimestampMicro(
                 downcast_array!(array, TimestampMicrosecondArray)?,
+            )),
+            DataType::Time64(TimeUnit::Nanosecond) => Ok(TypedArray::Time64Nano(
+                downcast_array!(array, Time64NanosecondArray)?,
             )),
             DataType::Decimal128(p, _) => Ok(TypedArray::Decimal128(
                 downcast_array!(array, Decimal128Array)?,
@@ -267,6 +271,7 @@ impl<'a> TypedArray<'a> {
                 Float64,
                 Date32,
                 TimestampMicro,
+                Time64Nano,
                 Decimal128,
                 String,
                 LargeString,
@@ -295,6 +300,7 @@ impl<'a> TypedArray<'a> {
             TypedArray::Float64(arr) => arr.value(row_idx).to_bits() as i64,
             TypedArray::Date32(arr) => arr.value(row_idx) as i64,
             TypedArray::TimestampMicro(arr) => arr.value(row_idx),
+            TypedArray::Time64Nano(arr) => arr.value(row_idx),
             TypedArray::Decimal128(arr, precision) if *precision <= MAX_LONG_DIGITS => {
                 arr.value(row_idx) as i64
             }
@@ -317,7 +323,8 @@ impl<'a> TypedArray<'a> {
             | TypedArray::Float32(_)
             | TypedArray::Float64(_)
             | TypedArray::Date32(_)
-            | TypedArray::TimestampMicro(_) => false,
+            | TypedArray::TimestampMicro(_)
+            | TypedArray::Time64Nano(_) => false,
             TypedArray::Decimal128(_, precision) => *precision > MAX_LONG_DIGITS,
             _ => true,
         }
@@ -380,6 +387,7 @@ enum TypedElements<'a> {
     Float64(&'a Float64Array),
     Date32(&'a Date32Array),
     TimestampMicro(&'a TimestampMicrosecondArray),
+    Time64Nano(&'a Time64NanosecondArray),
     Decimal128(&'a Decimal128Array, u8),
     String(&'a StringArray),
     LargeString(&'a LargeStringArray),
@@ -418,6 +426,11 @@ impl<'a> TypedElements<'a> {
                     return TypedElements::TimestampMicro(arr);
                 }
             }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                if let Some(arr) = array.as_any().downcast_ref::<Time64NanosecondArray>() {
+                    return TypedElements::Time64Nano(arr);
+                }
+            }
             DataType::Decimal128(p, _) => {
                 if let Some(arr) = array.as_any().downcast_ref::<Decimal128Array>() {
                     return TypedElements::Decimal128(arr, *p);
@@ -442,6 +455,7 @@ impl<'a> TypedElements<'a> {
             TypedElements::Int32(_) | TypedElements::Date32(_) | TypedElements::Float32(_) => 4,
             TypedElements::Int64(_)
             | TypedElements::TimestampMicro(_)
+            | TypedElements::Time64Nano(_)
             | TypedElements::Float64(_) => 8,
             TypedElements::Decimal128(_, p) if *p <= MAX_LONG_DIGITS => 8,
             _ => 8, // Variable-length uses 8 bytes for offset+length
@@ -460,6 +474,7 @@ impl<'a> TypedElements<'a> {
                 | TypedElements::Float64(_)
                 | TypedElements::Date32(_)
                 | TypedElements::TimestampMicro(_)
+                | TypedElements::Time64Nano(_)
         )
     }
 
@@ -479,6 +494,7 @@ impl<'a> TypedElements<'a> {
                 Float64,
                 Date32,
                 TimestampMicro,
+                Time64Nano,
                 Decimal128,
                 String,
                 LargeString,
@@ -502,7 +518,8 @@ impl<'a> TypedElements<'a> {
             | TypedElements::Float32(_)
             | TypedElements::Float64(_)
             | TypedElements::Date32(_)
-            | TypedElements::TimestampMicro(_) => true,
+            | TypedElements::TimestampMicro(_)
+            | TypedElements::Time64Nano(_) => true,
             TypedElements::Decimal128(_, p) => *p <= MAX_LONG_DIGITS,
             _ => false,
         }
@@ -521,6 +538,7 @@ impl<'a> TypedElements<'a> {
             TypedElements::Float64(arr) => arr.value(idx).to_bits() as i64,
             TypedElements::Date32(arr) => arr.value(idx) as i64,
             TypedElements::TimestampMicro(arr) => arr.value(idx),
+            TypedElements::Time64Nano(arr) => arr.value(idx),
             TypedElements::Decimal128(arr, _) => arr.value(idx) as i64,
             _ => 0, // Should not be called for variable-length types
         }
