@@ -750,4 +750,30 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("levenshtein with threshold as column") {
+    assume(isSpark35Plus, "levenshtein with threshold requires Spark 3.5+")
+    val table = "levenshtein_col_threshold_test"
+    withTable(table) {
+      sql(s"CREATE TABLE $table(s1 STRING, s2 STRING, threshold INT) USING parquet")
+      sql(
+        s"INSERT INTO $table VALUES " +
+          "('kitten', 'sitting', 2), ('frog', 'fog', 5), ('abc', 'abc', 0), ('hello', 'world', 3)")
+      // threshold as column reference
+      checkSparkAnswerAndOperator(s"SELECT levenshtein(s1, s2, threshold) FROM $table")
+    }
+  }
+
+  test("levenshtein with threshold as column with nulls") {
+    assume(isSpark35Plus, "levenshtein with threshold requires Spark 3.5+")
+    val table = "levenshtein_col_threshold_null_test"
+    withTable(table) {
+      sql(s"CREATE TABLE $table(s1 STRING, s2 STRING, threshold INT) USING parquet")
+      sql(
+        s"INSERT INTO $table VALUES " +
+          "('abc', 'adc', 2), ('hello', 'world', NULL), (NULL, 'test', 3), ('frog', 'fog', -1)")
+      // NULL threshold and NULL strings should produce NULL; negative threshold returns -1
+      checkSparkAnswerAndOperator(s"SELECT levenshtein(s1, s2, threshold) FROM $table")
+    }
+  }
+
 }
