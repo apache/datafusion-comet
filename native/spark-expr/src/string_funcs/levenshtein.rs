@@ -114,9 +114,7 @@ pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
             .as_any()
             .downcast_ref::<Int32Array>()
             .ok_or_else(|| {
-                DataFusionError::Internal(
-                    "levenshtein threshold must be Int32".to_string(),
-                )
+                DataFusionError::Internal("levenshtein threshold must be Int32".to_string())
             })?;
 
         let result: Int32Array = left_arr
@@ -320,18 +318,11 @@ mod tests {
     #[test]
     fn test_spark_levenshtein_threshold_negative() {
         // Negative threshold means distance always exceeds threshold → return -1
-        let left = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("abc"),
-            Some("abc"),
-        ])));
-        let right = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("abc"),
-            Some("adc"),
-        ])));
-        let threshold = ColumnarValue::Array(Arc::new(Int32Array::from(vec![
-            Some(-1),
-            Some(-5),
-        ])));
+        let left =
+            ColumnarValue::Array(Arc::new(StringArray::from(vec![Some("abc"), Some("abc")])));
+        let right =
+            ColumnarValue::Array(Arc::new(StringArray::from(vec![Some("abc"), Some("adc")])));
+        let threshold = ColumnarValue::Array(Arc::new(Int32Array::from(vec![Some(-1), Some(-5)])));
 
         let result = spark_levenshtein(&[left, right, threshold]).unwrap();
         match result {
