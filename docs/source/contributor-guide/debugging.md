@@ -221,28 +221,129 @@ Example log output:
 
 When backtraces are enabled (see earlier section) then backtraces will be included for failed allocations.
 
-### Dumping native stream output with `DbgExec`
+### Dumping native stream output with a `DbgExec` wrapper
 
 When a native operator is suspected of producing wrong data (wrong values, wrong
 nullability, wrong row count) but the JVM-side observable output is just a DataFrame
 mismatch, it is useful to inspect the `RecordBatch`es that the operator actually
-emits. Comet ships two small helpers in `native/core/src/parquet/parquet_exec.rs`:
+emits. A small `ExecutionPlan` wrapper that prints every batch as it flows through
+makes this easy. Comet does not ship this wrapper in the source tree — paste it
+into a convenient module (for example `native/core/src/parquet/parquet_exec.rs`)
+for the duration of your debugging session and remove it before committing.
 
-- `dbg_batch_stream(stream)` — wraps an existing `SendableRecordBatchStream` so that
-  every batch, schema, and per-column null buffer is dumped to stderr as the stream
-  is polled.
-- `DbgExec::new(label, inner)` — an `ExecutionPlan` wrapper that applies
-  `dbg_batch_stream` to whatever its inner plan produces on `execute()`. Because it
-  is itself an `ExecutionPlan` it can be inserted anywhere in the physical plan
-  tree built by `PhysicalPlanner::create_plan` in `native/core/src/execution/planner.rs`.
+#### Reference implementation
+
+```rust
+use std::sync::Arc;
+
+use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+
+/// Wraps a `SendableRecordBatchStream` to print each batch as it flows through.
+/// Returns a new `SendableRecordBatchStream` that yields the same batches.
+pub fn dbg_batch_stream(stream: SendableRecordBatchStream) -> SendableRecordBatchStream {
+    use futures::StreamExt;
+    let schema = stream.schema();
+    let printing_stream = stream.map(|batch_result| {
+        match &batch_result {
+            Ok(batch) => {
+                dbg!(batch, batch.schema());
+                for (col_idx, column) in batch.columns().iter().enumerate() {
+                    dbg!(col_idx, column, column.nulls());
+                }
+            }
+            Err(e) => {
+                println!("batch error: {:?}", e);
+            }
+        }
+        batch_result
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, printing_stream))
+}
+
+/// Execution plan wrapper that prints each batch produced by `inner` at
+/// runtime. Wrap an operator (e.g. `WindowAggExec`) with this to see what
+/// its output stream actually contains during JVM test execution.
+#[derive(Debug)]
+pub struct DbgExec {
+    label: String,
+    inner: Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+}
+
+impl DbgExec {
+    pub fn new(
+        label: impl Into<String>,
+        inner: Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            inner,
+        }
+    }
+}
+
+impl datafusion::physical_plan::DisplayAs for DbgExec {
+    fn fmt_as(
+        &self,
+        _t: datafusion::physical_plan::DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        write!(f, "DbgExec[{}]", self.label)
+    }
+}
+
+impl datafusion::physical_plan::ExecutionPlan for DbgExec {
+    fn name(&self) -> &str {
+        "DbgExec"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn properties(&self) -> &Arc<datafusion::physical_plan::PlanProperties> {
+        self.inner.properties()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        vec![&self.inner]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn datafusion::physical_plan::ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        Ok(Arc::new(DbgExec::new(
+            self.label.clone(),
+            Arc::clone(&children[0]),
+        )))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        eprintln!(
+            "[comet-debug] DbgExec[{}] execute(partition={})",
+            self.label, partition
+        );
+        let stream = self.inner.execute(partition, context)?;
+        Ok(dbg_batch_stream(stream))
+    }
+}
+```
 
 `DbgExec` forwards `schema`, `properties`, `children`, and `with_new_children` to the
 inner plan, so slotting it in does not change operator semantics — it only adds
-printing.
+printing. Because it is itself an `ExecutionPlan` it can be inserted anywhere in
+the physical plan tree built by `PhysicalPlanner::create_plan` in
+`native/core/src/execution/planner.rs`.
 
 #### Using `DbgExec` to inspect an operator's output
 
-Import the wrapper in `planner.rs`:
+Import the wrapper in `planner.rs` (assuming you pasted it into
+`parquet_exec.rs`):
 
 ```rust
 use crate::parquet::parquet_exec::DbgExec;
@@ -304,5 +405,5 @@ Because `DbgExec` is a one-line wrap, it is fine to scatter several throughout t
 plan during a debugging session and remove them afterwards. The `label` is part of
 every line it emits, so multiple wrappers stay easy to tell apart.
 
-`DbgExec` is a debugging aid — remove the wrap (and, if you added one, the
-`use crate::parquet::parquet_exec::DbgExec;` import) before committing.
+`DbgExec` is a debugging aid — remove the wrapper definition, any wraps, and the
+`use crate::parquet::parquet_exec::DbgExec;` import before committing.

@@ -28,11 +28,9 @@ use datafusion::datasource::physical_plan::{
 };
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_expr::expressions::{BinaryExpr, Column};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
@@ -216,100 +214,4 @@ fn get_options(
     }
 
     (table_parquet_options, spark_parquet_options)
-}
-
-/// Wraps a `SendableRecordBatchStream` to print each batch as it flows through.
-/// Returns a new `SendableRecordBatchStream` that yields the same batches.
-pub fn dbg_batch_stream(stream: SendableRecordBatchStream) -> SendableRecordBatchStream {
-    use futures::StreamExt;
-    let schema = stream.schema();
-    let printing_stream = stream.map(|batch_result| {
-        match &batch_result {
-            Ok(batch) => {
-                dbg!(batch, batch.schema());
-                for (col_idx, column) in batch.columns().iter().enumerate() {
-                    dbg!(col_idx, column, column.nulls());
-                }
-            }
-            Err(e) => {
-                println!("batch error: {:?}", e);
-            }
-        }
-        batch_result
-    });
-    Box::pin(RecordBatchStreamAdapter::new(schema, printing_stream))
-}
-
-/// Execution plan wrapper that prints each batch produced by `inner` at
-/// runtime. Wrap an operator (e.g. `WindowAggExec`) with this to see what
-/// its output stream actually contains during JVM test execution.
-///
-/// See `docs/source/contributor-guide/debugging.md` for a walkthrough.
-#[derive(Debug)]
-pub struct DbgExec {
-    label: String,
-    inner: Arc<dyn datafusion::physical_plan::ExecutionPlan>,
-}
-
-impl DbgExec {
-    pub fn new(
-        label: impl Into<String>,
-        inner: Arc<dyn datafusion::physical_plan::ExecutionPlan>,
-    ) -> Self {
-        Self {
-            label: label.into(),
-            inner,
-        }
-    }
-}
-
-impl datafusion::physical_plan::DisplayAs for DbgExec {
-    fn fmt_as(
-        &self,
-        _t: datafusion::physical_plan::DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        write!(f, "DbgExec[{}]", self.label)
-    }
-}
-
-impl datafusion::physical_plan::ExecutionPlan for DbgExec {
-    fn name(&self) -> &str {
-        "DbgExec"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn properties(&self) -> &Arc<datafusion::physical_plan::PlanProperties> {
-        self.inner.properties()
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
-        vec![&self.inner]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn datafusion::physical_plan::ExecutionPlan>>,
-    ) -> datafusion::common::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
-        Ok(Arc::new(DbgExec::new(
-            self.label.clone(),
-            Arc::clone(&children[0]),
-        )))
-    }
-
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<datafusion::execution::TaskContext>,
-    ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        eprintln!(
-            "[comet-debug] DbgExec[{}] execute(partition={})",
-            self.label, partition
-        );
-        let stream = self.inner.execute(partition, context)?;
-        Ok(dbg_batch_stream(stream))
-    }
 }
