@@ -2583,9 +2583,9 @@ index 6080a5e8e4b..ea058d57b4b 100644
            // Note that, if record level filtering is enabled, it should be a single record.
            // If no filter is pushed down to Parquet, it should be the total length of data.
 -          assert(actual > 1 && actual < data.length)
-+          // Only enable Comet test iff it's scan only, since with native execution
++          // Skip when Comet is enabled since with native execution
 +          // `stripSparkFilter` can't remove the native filter
-+          if (!isCometEnabled || isCometScanOnly) {
++          if (!isCometEnabled) {
 +            assert(actual > 1 && actual < data.length)
 +          }
          }
@@ -2596,9 +2596,9 @@ index 6080a5e8e4b..ea058d57b4b 100644
          // Note that, if record level filtering is enabled, it should be a single record.
          // If no filter is pushed down to Parquet, it should be the total length of data.
 -        assert(actual > 1 && actual < data.length)
-+        // Only enable Comet test iff it's scan only, since with native execution
++        // Skip when Comet is enabled since with native execution
 +        // `stripSparkFilter` can't remove the native filter
-+        if (!isCometEnabled || isCometScanOnly) {
++        if (!isCometEnabled) {
 +          assert(actual > 1 && actual < data.length)
 +        }
        }
@@ -3605,15 +3605,6 @@ index f0f3f94b811..f77b54dcef9 100644
 +   */
 +  protected def isCometEnabled: Boolean = SparkSession.isCometEnabled
 +
-+  /**
-+   * Whether Spark should only apply Comet scan optimization. This is only effective when
-+   * [[isCometEnabled]] returns true.
-+   */
-+  protected def isCometScanOnly: Boolean = {
-+    val v = System.getenv("ENABLE_COMET_SCAN_ONLY")
-+    v != null && v.toBoolean
-+  }
-+
    protected override def withSQLConf[T](pairs: (String, String)*)(f: => T): T = {
      SparkSession.setActiveSession(spark)
 +
@@ -3645,18 +3636,12 @@ index 245219c1756..a611836f086 100644
 +        .set("spark.comet.enabled", "true")
 +        .set("spark.comet.parquet.respectFilterPushdown", "true")
 +
-+      if (!isCometScanOnly) {
-+        conf
-+          .set("spark.comet.exec.enabled", "true")
-+          .set("spark.shuffle.manager",
-+            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+          .set("spark.comet.exec.shuffle.enabled", "true")
-+          .set("spark.comet.memoryOverhead", "10g")
-+      } else {
-+        conf
-+          .set("spark.comet.exec.enabled", "false")
-+          .set("spark.comet.exec.shuffle.enabled", "false")
-+      }
++      conf
++        .set("spark.comet.exec.enabled", "true")
++        .set("spark.shuffle.manager",
++          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++        .set("spark.comet.exec.shuffle.enabled", "true")
++        .set("spark.comet.memoryOverhead", "10g")
 +
 +    }
      conf.set(
@@ -3823,18 +3808,11 @@ index a394d0b7393..a4bc3d3fd8e 100644
 +            .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +            .set("spark.comet.enabled", "true")
 +
-+          val v = System.getenv("ENABLE_COMET_SCAN_ONLY")
-+          if (v == null || !v.toBoolean) {
-+            conf
-+              .set("spark.comet.exec.enabled", "true")
-+              .set("spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+              .set("spark.comet.exec.shuffle.enabled", "true")
-+          } else {
-+            conf
-+              .set("spark.comet.exec.enabled", "false")
-+              .set("spark.comet.exec.shuffle.enabled", "false")
-+          }
++          conf
++            .set("spark.comet.exec.enabled", "true")
++            .set("spark.shuffle.manager",
++              "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .set("spark.comet.exec.shuffle.enabled", "true")
 +        }
 +
 +        conf
