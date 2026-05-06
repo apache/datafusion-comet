@@ -366,6 +366,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
         _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
       true
+    case dt if dt.getClass.getSimpleName.startsWith("TimeType") =>
+      true
     case s: StructType if allowComplex =>
       s.fields.nonEmpty && s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
@@ -400,6 +402,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: ArrayType => 14
       case _: MapType => 15
       case _: StructType => 16
+      case dt if dt.getClass.getSimpleName.startsWith("TimeType") => 17
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None
