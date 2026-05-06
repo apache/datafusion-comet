@@ -47,7 +47,7 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
           Unsupported(Some(s"Datetime pattern format: $formatStr is unsupported"))
         }
       case _ =>
-        Unsupported(Some("Datetime pattern format is unsupported"))
+        Unsupported(Some("Non-literal datetime pattern format is unsupported"))
     }
   }
 
