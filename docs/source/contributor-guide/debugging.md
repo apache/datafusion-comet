@@ -407,3 +407,184 @@ every line it emits, so multiple wrappers stay easy to tell apart.
 
 `DbgExec` is a debugging aid — remove the wrapper definition, any wraps, and the
 `use crate::parquet::parquet_exec::DbgExec;` import before committing.
+
+### Dumping expression inputs and outputs with a `DbgExpr` wrapper
+
+`DbgExec` works at the operator level. When the suspect is a single
+**expression** — a cast, a binary op, a `CASE WHEN` predicate, a UDF — an
+`ExecutionPlan` wrapper is too coarse. The equivalent trick at the
+`PhysicalExpr` level is a small wrapper that forwards `evaluate()` to an inner
+expression and prints both the input `RecordBatch` and the resulting
+`ColumnarValue`. Like `DbgExec`, this wrapper is not shipped in the source tree
+— paste it in for a debugging session and remove it before committing.
+
+#### Reference implementation
+
+```rust
+use std::any::Any;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+use arrow::array::RecordBatch;
+use arrow::datatypes::{DataType, Schema};
+use datafusion::common::Result;
+use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::PhysicalExpr;
+
+/// `PhysicalExpr` wrapper that prints every `evaluate()` call:
+/// - the input `RecordBatch` (rows / columns / schema),
+/// - the resulting `ColumnarValue` (array + null buffer, or scalar).
+///
+/// Wrap any `Arc<dyn PhysicalExpr>` produced by `PhysicalPlanner::create_expr`
+/// in `planner.rs` to see exactly what it receives and returns at runtime.
+#[derive(Debug)]
+pub struct DbgExpr {
+    label: String,
+    inner: Arc<dyn PhysicalExpr>,
+}
+
+impl DbgExpr {
+    pub fn new(label: impl Into<String>, inner: Arc<dyn PhysicalExpr>) -> Self {
+        Self {
+            label: label.into(),
+            inner,
+        }
+    }
+}
+
+impl fmt::Display for DbgExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DbgExpr[{}]({})", self.label, self.inner)
+    }
+}
+
+impl PartialEq for DbgExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.label == other.label && self.inner.eq(&other.inner)
+    }
+}
+impl Eq for DbgExpr {}
+impl Hash for DbgExpr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.inner.hash(state);
+    }
+}
+
+impl PhysicalExpr for DbgExpr {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
+        self.inner.data_type(input_schema)
+    }
+
+    fn nullable(&self, input_schema: &Schema) -> Result<bool> {
+        self.inner.nullable(input_schema)
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        eprintln!(
+            "[comet-debug] DbgExpr[{}].evaluate(rows={}, cols={})",
+            self.label,
+            batch.num_rows(),
+            batch.num_columns()
+        );
+        dbg!(batch, batch.schema());
+        let out = self.inner.evaluate(batch)?;
+        match &out {
+            ColumnarValue::Array(arr) => {
+                dbg!(arr.len(), arr.nulls(), arr);
+            }
+            ColumnarValue::Scalar(s) => {
+                dbg!(s);
+            }
+        }
+        Ok(out)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.inner]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        Ok(Arc::new(DbgExpr::new(
+            self.label.clone(),
+            Arc::clone(&children[0]),
+        )))
+    }
+
+    fn fmt_sql(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt_sql(f)
+    }
+}
+```
+
+`DbgExpr` forwards `data_type`, `nullable`, `children`, and `with_new_children`
+to the inner expression, so wrapping it does not change semantics — it only adds
+printing on every `evaluate()` call.
+
+#### Using `DbgExpr` in `planner.rs`
+
+`PhysicalPlanner::create_expr` returns `Arc<dyn PhysicalExpr>`, so any expression
+produced during plan building can be one-line-wrapped. For example, to dump what
+a `CASE WHEN` predicate sees and produces:
+
+```rust
+use crate::parquet::parquet_exec::DbgExpr; // or wherever you pasted it
+
+// Before:
+let predicate = self.create_expr(when_expr, Arc::clone(&input_schema))?;
+
+// After — TEMPORARY, remove before committing:
+let predicate: Arc<dyn PhysicalExpr> =
+    Arc::new(DbgExpr::new("case-when-predicate", predicate));
+```
+
+To trace every argument of a suspicious scalar function, wrap each child as it
+is built:
+
+```rust
+let args: Vec<Arc<dyn PhysicalExpr>> = expr
+    .children
+    .iter()
+    .enumerate()
+    .map(|(i, c)| {
+        let child = self.create_expr(c, Arc::clone(&input_schema))?;
+        Ok::<_, ExecutionError>(Arc::new(DbgExpr::new(
+            format!("arg{i}"),
+            child,
+        )) as Arc<dyn PhysicalExpr>)
+    })
+    .collect::<Result<_, _>>()?;
+```
+
+Rebuild with `make core` and run the JVM test. Sample output for a `BinaryExpr`
+computing `a + b` over a three-row batch:
+
+```text
+[comet-debug] DbgExpr[add].evaluate(rows=3, cols=2)
+[core/src/execution/planner.rs:…] batch = RecordBatch { columns: [Int32[1,2,3], Int32[10,20,30]], row_count: 3 }
+[core/src/execution/planner.rs:…] arr.len() = 3
+[core/src/execution/planner.rs:…] arr.nulls() = None
+[core/src/execution/planner.rs:…] arr = PrimitiveArray<Int32> [11, 22, 33]
+```
+
+#### When to reach for `DbgExpr` vs `DbgExec`
+
+- Use **`DbgExec`** when you suspect an *operator* (scan, window, sort, aggregate)
+  is emitting wrong batches — you want to see what crosses operator boundaries.
+- Use **`DbgExpr`** when the operator looks fine but a specific *expression*
+  inside a projection, filter, or window function is returning wrong values or
+  nullability — you want to see what one expression receives and computes.
+- They compose: wrap the suspect expression with `DbgExpr`, and wrap the
+  operator that evaluates it with `DbgExec`, to correlate per-expression
+  behavior with the batches the operator is producing overall.
+
+`DbgExpr` is a debugging aid — remove the wrapper definition, any wraps, and the
+`use crate::parquet::parquet_exec::DbgExpr;` import before committing.
