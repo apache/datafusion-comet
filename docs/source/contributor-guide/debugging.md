@@ -220,3 +220,89 @@ Example log output:
 ```
 
 When backtraces are enabled (see earlier section) then backtraces will be included for failed allocations.
+
+### Dumping native stream output with `DbgExec`
+
+When a native operator is suspected of producing wrong data (wrong values, wrong
+nullability, wrong row count) but the JVM-side observable output is just a DataFrame
+mismatch, it is useful to inspect the `RecordBatch`es that the operator actually
+emits. Comet ships two small helpers in `native/core/src/parquet/parquet_exec.rs`:
+
+- `dbg_batch_stream(stream)` — wraps an existing `SendableRecordBatchStream` so that
+  every batch, schema, and per-column null buffer is dumped to stderr as the stream
+  is polled.
+- `DbgExec::new(label, inner)` — an `ExecutionPlan` wrapper that applies
+  `dbg_batch_stream` to whatever its inner plan produces on `execute()`. Because it
+  is itself an `ExecutionPlan` it can be inserted anywhere in the physical plan
+  tree built by `PhysicalPlanner::create_plan` in `native/core/src/execution/planner.rs`.
+
+`DbgExec` forwards `schema`, `properties`, `children`, and `with_new_children` to the
+inner plan, so slotting it in does not change operator semantics — it only adds
+printing.
+
+#### Using `DbgExec` to inspect an operator's output
+
+Import the wrapper in `planner.rs`:
+
+```rust
+use crate::parquet::parquet_exec::DbgExec;
+```
+
+Then wrap whichever `Arc<dyn ExecutionPlan>` you want to see the batches of. For
+example, to dump the output of the window operator:
+
+```rust
+let window_agg: Arc<dyn ExecutionPlan> = Arc::new(WindowAggExec::try_new(
+    window_expr?,
+    Arc::clone(&child.native_plan),
+    !partition_exprs.is_empty(),
+)?);
+
+// TEMPORARY: print every batch emitted by the window operator.
+let window_agg: Arc<dyn ExecutionPlan> =
+    Arc::new(DbgExec::new("window", window_agg));
+```
+
+Rebuild with `make core` and run the JVM test that exercises the operator. Each
+emitted batch is printed to stderr with `dbg!`. The output looks like this for a
+`LEAD(c) IGNORE NULLS OVER (PARTITION BY a ORDER BY b)` query over five rows:
+
+```text
+[comet-debug] DbgExec[window] execute(partition=0)
+[core/src/parquet/parquet_exec.rs:225:17] batch = RecordBatch {
+    schema: Schema { fields: [ ... "col_0" Int32, "col_1" Int32, "col_2" Int32, "lead" Int32 ] },
+    columns: [
+        PrimitiveArray<Int32> [1, 1, 1, 2, 2],                // partition key a
+        PrimitiveArray<Int32> [1, 2, 3, 1, 2],                // order key  b
+        PrimitiveArray<Int32> [10, null, 30, null, 20],       // value      c
+        PrimitiveArray<Int32> [null, null, null, null, null], // lead(c)
+    ],
+    row_count: 5,
+}
+[core/src/parquet/parquet_exec.rs:227:21] col_idx = 3
+[core/src/parquet/parquet_exec.rs:227:21] column.nulls() = Some(
+    NullBuffer { ..., null_count: 5 },
+)
+```
+
+From the dump you can see immediately that the native `lead` column is all-null
+(`null_count: 5` out of 5 rows) while the inputs are correctly sorted — pinpointing
+the bug to the native operator rather than to the scan, the plan shape, or the
+JVM-side comparison.
+
+#### Where to place `DbgExec`
+
+Good insertion points when debugging:
+
+- **Right after the operator under test**, to see exactly what that operator emits.
+- **Right before the operator under test**, to confirm what its input looked like
+  (rules out upstream issues).
+- **Both**, with different labels (`DbgExec::new("window-in", ...)` /
+  `DbgExec::new("window-out", ...)`), to diff input vs output.
+
+Because `DbgExec` is a one-line wrap, it is fine to scatter several throughout the
+plan during a debugging session and remove them afterwards. The `label` is part of
+every line it emits, so multiple wrappers stay easy to tell apart.
+
+`DbgExec` is a debugging aid — remove the wrap (and, if you added one, the
+`use crate::parquet::parquet_exec::DbgExec;` import) before committing.
