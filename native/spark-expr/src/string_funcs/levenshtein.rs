@@ -21,7 +21,7 @@
 //! matching Apache Spark's `levenshtein(str1, str2)` semantics.
 
 use arrow::array::{as_string_array, Array, ArrayRef, Int32Array};
-use datafusion::common::{DataFusionError, Result, ScalarValue};
+use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
@@ -163,6 +163,7 @@ pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
 mod tests {
     use super::*;
     use arrow::array::StringArray;
+    use datafusion::common::ScalarValue;
 
     #[test]
     fn test_levenshtein_basic() {
