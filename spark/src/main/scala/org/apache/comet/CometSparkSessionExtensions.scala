@@ -33,7 +33,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.planner.CometPlanner
-import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometShuffleRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -96,6 +96,9 @@ class CometSparkSessionExtensions
     injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
     if (CometConf.COMET_USE_PLANNER.get()) {
       extensions.injectQueryStagePrepRule { session => CometPlanner(session) }
+      // Covers the legacy `exec=off + shuffle=on` mode that CometPlanner intentionally
+      // leaves untouched. See CometShuffleRule for the removal plan.
+      extensions.injectQueryStagePrepRule { session => CometShuffleRule(session) }
     } else {
       extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
       extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
@@ -112,15 +115,11 @@ class CometSparkSessionExtensions
 
   case class CometExecColumnar(session: SparkSession) extends ColumnarRule {
     override def preColumnarTransitions: Rule[SparkPlan] =
-      if (CometConf.COMET_USE_PLANNER.get()) NoopRule else CometExecRule(session)
+      if (CometConf.COMET_USE_PLANNER.get()) CometShuffleRule(session)
+      else CometExecRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] =
       EliminateRedundantTransitions(session)
-  }
-
-  /** Identity rule used when CometPlanner already ran via CometScanColumnar. */
-  private object NoopRule extends Rule[SparkPlan] {
-    override def apply(plan: SparkPlan): SparkPlan = plan
   }
 }
 
