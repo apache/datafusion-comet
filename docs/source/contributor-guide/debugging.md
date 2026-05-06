@@ -249,6 +249,187 @@ expression and prints both the input `RecordBatch` and the resulting
 
 #### Using `DbgExpr` in `planner.rs`
 
+Paste the wrappers below into a convenient module (for example
+`native/core/src/parquet/parquet_exec.rs`). The first block is `DbgExec` (wraps
+an `ExecutionPlan`); the second is `DbgExpr` (wraps a `PhysicalExpr`). You only
+need whichever one matches the granularity you want to trace — they are
+independent.
+
+```rust
+use std::sync::Arc;
+
+use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+
+/// Wraps a `SendableRecordBatchStream` to print each batch as it flows through.
+pub fn dbg_batch_stream(stream: SendableRecordBatchStream) -> SendableRecordBatchStream {
+    use futures::StreamExt;
+    let schema = stream.schema();
+    let printing_stream = stream.map(|batch_result| {
+        match &batch_result {
+            Ok(batch) => {
+                dbg!(batch, batch.schema());
+                for (col_idx, column) in batch.columns().iter().enumerate() {
+                    dbg!(col_idx, column, column.nulls());
+                }
+            }
+            Err(e) => {
+                println!("batch error: {:?}", e);
+            }
+        }
+        batch_result
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, printing_stream))
+}
+
+/// `ExecutionPlan` wrapper that prints every batch produced by `inner`.
+#[derive(Debug)]
+pub struct DbgExec {
+    label: String,
+    inner: Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+}
+
+impl DbgExec {
+    pub fn new(
+        label: impl Into<String>,
+        inner: Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            inner,
+        }
+    }
+}
+
+impl datafusion::physical_plan::DisplayAs for DbgExec {
+    fn fmt_as(
+        &self,
+        _t: datafusion::physical_plan::DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        write!(f, "DbgExec[{}]", self.label)
+    }
+}
+
+impl datafusion::physical_plan::ExecutionPlan for DbgExec {
+    fn name(&self) -> &str { "DbgExec" }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn properties(&self) -> &Arc<datafusion::physical_plan::PlanProperties> {
+        self.inner.properties()
+    }
+    fn children(&self) -> Vec<&Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        vec![&self.inner]
+    }
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn datafusion::physical_plan::ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        Ok(Arc::new(DbgExec::new(
+            self.label.clone(),
+            Arc::clone(&children[0]),
+        )))
+    }
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        eprintln!(
+            "[comet-debug] DbgExec[{}] execute(partition={})",
+            self.label, partition
+        );
+        let stream = self.inner.execute(partition, context)?;
+        Ok(dbg_batch_stream(stream))
+    }
+}
+```
+
+```rust
+use std::any::Any;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+use arrow::array::RecordBatch;
+use arrow::datatypes::{DataType, Schema};
+use datafusion::common::Result;
+use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::PhysicalExpr;
+
+/// `PhysicalExpr` wrapper that prints every `evaluate()` call: input
+/// `RecordBatch` and the resulting `ColumnarValue`.
+#[derive(Debug)]
+pub struct DbgExpr {
+    label: String,
+    inner: Arc<dyn PhysicalExpr>,
+}
+
+impl DbgExpr {
+    pub fn new(label: impl Into<String>, inner: Arc<dyn PhysicalExpr>) -> Self {
+        Self { label: label.into(), inner }
+    }
+}
+
+impl fmt::Display for DbgExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DbgExpr[{}]({})", self.label, self.inner)
+    }
+}
+
+impl PartialEq for DbgExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.label == other.label && self.inner.eq(&other.inner)
+    }
+}
+impl Eq for DbgExpr {}
+impl Hash for DbgExpr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.inner.hash(state);
+    }
+}
+
+impl PhysicalExpr for DbgExpr {
+    fn as_any(&self) -> &dyn Any { self }
+    fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
+        self.inner.data_type(input_schema)
+    }
+    fn nullable(&self, input_schema: &Schema) -> Result<bool> {
+        self.inner.nullable(input_schema)
+    }
+    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        eprintln!(
+            "[comet-debug] DbgExpr[{}].evaluate(rows={}, cols={})",
+            self.label,
+            batch.num_rows(),
+            batch.num_columns()
+        );
+        dbg!(batch, batch.schema());
+        let out = self.inner.evaluate(batch)?;
+        match &out {
+            ColumnarValue::Array(arr) => { dbg!(arr.len(), arr.nulls(), arr); }
+            ColumnarValue::Scalar(s)  => { dbg!(s); }
+        }
+        Ok(out)
+    }
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.inner]
+    }
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        Ok(Arc::new(DbgExpr::new(
+            self.label.clone(),
+            Arc::clone(&children[0]),
+        )))
+    }
+    fn fmt_sql(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt_sql(f)
+    }
+}
+```
+
 `PhysicalPlanner::create_expr` returns `Arc<dyn PhysicalExpr>`, so any expression
 produced during plan building can be one-line-wrapped. For example, to dump what
 a `CASE WHEN` predicate sees and produces:
