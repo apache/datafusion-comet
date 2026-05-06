@@ -63,18 +63,14 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
     val formatExpr = exprToProtoInternal(Literal("%Y-%m-%d %H:%M:%S"), inputs, binding)
     val timeZone = exprToProtoInternal(Literal(expr.timeZoneId.orNull), inputs, binding)
 
-    expr.format match {
-      case Literal(fmt, _) if fmt != null && fmt.toString != TimestampFormatter.defaultPattern =>
-        withInfo(expr, "Datetime pattern format is unsupported")
-        None
-      case _ if secExpr.isDefined && formatExpr.isDefined =>
-        val timestampExpr =
-          scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
-        val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
-        optExprWithInfo(optExpr, expr, expr.sec, expr.format)
-      case _ =>
-        withInfo(expr, expr.sec, expr.format)
-        None
+    if (secExpr.isDefined && formatExpr.isDefined) {
+      val timestampExpr =
+        scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
+      val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
+      optExprWithInfo(optExpr, expr, expr.sec, expr.format)
+    } else {
+      withInfo(expr, expr.sec, expr.format)
+      None
     }
   }
 }
