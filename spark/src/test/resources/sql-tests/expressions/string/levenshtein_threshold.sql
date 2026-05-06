@@ -38,3 +38,23 @@ SELECT levenshtein('abc', 'abc', 0), levenshtein('abc', 'adc', 0), levenshtein('
 -- threshold with NULL
 query
 SELECT levenshtein('abc', 'adc', NULL), levenshtein(NULL, 'test', 2)
+
+-- threshold as column
+statement
+CREATE TABLE test_levenshtein_col(s1 string, s2 string, threshold int) USING parquet
+
+statement
+INSERT INTO test_levenshtein_col VALUES ('kitten', 'sitting', 2), ('frog', 'fog', 5), ('abc', 'abc', 0), ('hello', 'world', 3)
+
+query
+SELECT levenshtein(s1, s2, threshold) FROM test_levenshtein_col
+
+-- threshold as column with NULLs
+statement
+CREATE TABLE test_levenshtein_col_nulls(s1 string, s2 string, threshold int) USING parquet
+
+statement
+INSERT INTO test_levenshtein_col_nulls VALUES ('abc', 'adc', 2), ('hello', 'world', NULL), (NULL, 'test', 3), ('frog', 'fog', -1)
+
+query
+SELECT levenshtein(s1, s2, threshold) FROM test_levenshtein_col_nulls
