@@ -226,6 +226,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.BloomFilterMightContain.enabled` | Enable Comet acceleration for `BloomFilterMightContain` | true |
 | `spark.comet.expression.CaseWhen.enabled` | Enable Comet acceleration for `CaseWhen` | true |
 | `spark.comet.expression.Cast.enabled` | Enable Comet acceleration for `Cast` | true |
+| `spark.comet.expression.Cbrt.enabled` | Enable Comet acceleration for `Cbrt` | true |
 | `spark.comet.expression.Ceil.enabled` | Enable Comet acceleration for `Ceil` | true |
 | `spark.comet.expression.CheckOverflow.enabled` | Enable Comet acceleration for `CheckOverflow` | true |
 | `spark.comet.expression.Chr.enabled` | Enable Comet acceleration for `Chr` | true |
@@ -308,6 +309,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Not.enabled` | Enable Comet acceleration for `Not` | true |
 | `spark.comet.expression.OctetLength.enabled` | Enable Comet acceleration for `OctetLength` | true |
 | `spark.comet.expression.Or.enabled` | Enable Comet acceleration for `Or` | true |
+| `spark.comet.expression.Pi.enabled` | Enable Comet acceleration for `Pi` | true |
 | `spark.comet.expression.Pow.enabled` | Enable Comet acceleration for `Pow` | true |
 | `spark.comet.expression.Quarter.enabled` | Enable Comet acceleration for `Quarter` | true |
 | `spark.comet.expression.RLike.enabled` | Enable Comet acceleration for `RLike` | true |
