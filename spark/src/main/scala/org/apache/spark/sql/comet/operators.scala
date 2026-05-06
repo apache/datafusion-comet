@@ -1325,8 +1325,16 @@ case class CometUnionExec(
   // from current children so SPARK-52921's union-output-partitioning inference is based on
   // the live plan. Safe on older Spark too: UnionExec.outputPartitioning returns
   // UnknownPartitioning when UNION_OUTPUT_PARTITIONING is off (the pre-4.1 default).
-  override def outputPartitioning: Partitioning = {
-    originalPlan.withNewChildren(children).outputPartitioning
+  //
+  // Only advertise SinglePartition or HashPartitioningLike — the same whitelist that Spark's
+  // UnionExec.comparePartitioning uses and that ShimCometUnionExec.unionRDDs honors via
+  // SQLPartitioningAwareUnionRDD. For anything else, report UnknownPartitioning so that the
+  // declared partitioning and the RDD layer always agree.
+  override lazy val outputPartitioning: Partitioning = {
+    originalPlan.withNewChildren(children).outputPartitioning match {
+      case p @ (SinglePartition | _: HashPartitioningLike) => p
+      case p => UnknownPartitioning(p.numPartitions)
+    }
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {

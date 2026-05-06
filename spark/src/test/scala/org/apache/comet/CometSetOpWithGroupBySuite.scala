@@ -22,6 +22,7 @@ package org.apache.comet
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.CometUnionExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 
 /**
  * Regression test for issue #4122: on Spark 4.1 (SPARK-52921), EXCEPT ALL / INTERSECT ALL whose
@@ -70,5 +71,34 @@ class CometSetOpWithGroupBySuite extends CometTestBase with AdaptiveSparkPlanHel
     val plan = df.queryExecution.executedPlan
     val found = collectFirst(plan) { case u: CometUnionExec => u }
     assert(found.isDefined, s"Expected CometUnionExec in plan but found none:\n$plan")
+  }
+
+  test("UNION ALL with checkSparkAnswerAndOperator") {
+    withTempView("u1", "u2") {
+      sql("""CREATE TEMPORARY VIEW u1 AS SELECT * FROM VALUES
+            |  (1, 'a'), (2, 'b'), (3, 'c') AS u1(id, name)""".stripMargin)
+      sql("""CREATE TEMPORARY VIEW u2 AS SELECT * FROM VALUES
+            |  (4, 'd'), (5, 'e'), (6, 'f') AS u2(id, name)""".stripMargin)
+
+      val df = sql("SELECT id, name FROM u1 UNION ALL SELECT id, name FROM u2")
+      checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometUnionExec]))
+    }
+  }
+
+  test("UNION ALL with SinglePartition (coalesce(1) children)") {
+    withSQLConf(SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false") {
+      withTempView("s1", "s2") {
+        sql("""CREATE TEMPORARY VIEW s1 AS SELECT * FROM VALUES
+              |  (10), (20), (30) AS s1(x)""".stripMargin)
+        sql("""CREATE TEMPORARY VIEW s2 AS SELECT * FROM VALUES
+              |  (40), (50) AS s2(x)""".stripMargin)
+
+        val df = sql("""SELECT * FROM (SELECT sum(x) as total FROM s1)
+            |UNION ALL
+            |SELECT * FROM (SELECT sum(x) as total FROM s2)""".stripMargin)
+        checkSparkAnswer(df)
+        assertContainsCometUnion(df)
+      }
+    }
   }
 }

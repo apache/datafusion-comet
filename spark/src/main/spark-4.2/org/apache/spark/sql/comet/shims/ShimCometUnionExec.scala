@@ -24,7 +24,7 @@ import scala.reflect.ClassTag
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.{RDD, SQLPartitioningAwareUnionRDD}
-import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioningLike, Partitioning, SinglePartition}
 
 object ShimCometUnionExec extends Logging {
 
@@ -42,8 +42,7 @@ object ShimCometUnionExec extends Logging {
       rdds: Seq[RDD[T]],
       outputPartitioning: Partitioning): RDD[T] = {
     outputPartitioning match {
-      case _: UnknownPartitioning => sc.union(rdds)
-      case _ =>
+      case SinglePartition | _: HashPartitioningLike =>
         val numPartitions = outputPartitioning.numPartitions
         val nonEmpty = rdds.filter(_.partitions.nonEmpty)
         // SQLPartitioningAwareUnionRDD indexes every child at every output partition, so any
@@ -61,6 +60,7 @@ object ShimCometUnionExec extends Logging {
         } else {
           new SQLPartitioningAwareUnionRDD(sc, nonEmpty, numPartitions)
         }
+      case _ => sc.union(rdds)
     }
   }
 }
