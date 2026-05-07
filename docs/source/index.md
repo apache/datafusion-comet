@@ -40,21 +40,14 @@ Comet also accelerates Apache Iceberg, when performing Parquet scans from Spark.
 
 Comet delivers a performance speedup for many queries, enabling faster data processing and shorter time-to-insights.
 
-The following chart shows the time it takes to run the 22 TPC-H queries against 100 GB of data in Parquet format
-using a single executor with 8 cores. See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html)
-for details of the environment used for these benchmarks.
+The following charts demonstrate Comet accelerating TPC-H @ 1 TB. See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html)
+for details.
 
-When using Comet, the overall run time is reduced from 687 seconds to 302 seconds, a 2.2x speedup.
-
-![](_static/images/benchmark-results/0.11.0/tpch_allqueries.png)
+![](_static/images/benchmark-results/0.15.0/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark and Comet for each TPC-H query.
 
-![](_static/images/benchmark-results/0.11.0/tpch_queries_compare.png)
-
-These benchmarks can be reproduced in any environment using the documentation in the
-[Comet Benchmarking Guide](/contributor-guide/benchmarking.md). We encourage
-you to run your own benchmarks.
+![](_static/images/benchmark-results/0.15.0/tpch_queries_compare.png)
 
 ## Use Commodity Hardware
 

@@ -40,7 +40,7 @@ Comet $COMET_VERSION supports the following versions of Apache Spark. Refer to t
 in the [Compatibility Guide] for more information, such as known limitations per Spark version.
 
 [Spark Version Compatibility]: compatibility/spark-versions.md
-[Compatibility Guide]: compatibility
+[Compatibility Guide]: compatibility/index.md
 
 We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
 Other versions may work well enough for development and evaluation purposes.

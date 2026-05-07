@@ -134,8 +134,8 @@ html_sidebars = {
     "**": ["docs-sidebar.html"],
 }
 
-# tell myst_parser to auto-generate anchor links for headers h1, h2, h3
-myst_heading_anchors = 3
+# tell myst_parser to auto-generate anchor links for headers h1, h2, h3, h4
+myst_heading_anchors = 4
 
 # enable nice rendering of checkboxes for the task lists
 myst_enable_extensions = ["colon_fence", "deflist", "tasklist"]
