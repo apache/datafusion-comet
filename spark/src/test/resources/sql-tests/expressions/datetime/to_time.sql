@@ -16,6 +16,7 @@
 -- under the License.
 
 -- MinSparkVersion: 4.1
+-- Config: spark.sql.timeType.enabled=true
 
 statement
 CREATE TABLE test_to_time(s STRING) USING parquet
@@ -46,8 +47,8 @@ INSERT INTO test_to_time VALUES
   ('1:00:00PM'),
   (NULL)
 
--- column argument: basic time formats
-query
+-- column argument: basic time formats (spark_answer_only: shuffle does not support TimeType yet)
+query spark_answer_only
 SELECT s, to_time(s) FROM test_to_time ORDER BY s
 
 -- literal HH:mm

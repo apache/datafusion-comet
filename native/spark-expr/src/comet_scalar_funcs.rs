@@ -26,8 +26,8 @@ use crate::{
     spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad,
     spark_to_time, spark_unhex, spark_unscaled_value, EvalMode, SparkArrayCompact,
     SparkArrayPositionFunc, SparkArraysOverlap, SparkContains, SparkDateDiff,
-    SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime,
-    SparkSecondsToTimestamp, SparkSizeFunc,
+    SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime, SparkSecondsToTimestamp,
+    SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};

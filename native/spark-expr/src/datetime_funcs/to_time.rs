@@ -45,9 +45,12 @@ pub fn spark_to_time(args: &[ColumnarValue], fail_on_error: bool) -> Result<Colu
         .unwrap_or(1);
 
     let str_arr = args[0].clone().into_array(num_rows)?;
-    let str_array = str_arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-        DataFusionError::Execution("to_time: expected String argument".to_string())
-    })?;
+    let str_array = str_arr
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| {
+            DataFusionError::Execution("to_time: expected String argument".to_string())
+        })?;
 
     let len = str_array.len();
     let mut builder = Time64NanosecondArray::builder(len);
@@ -120,13 +123,21 @@ fn string_to_time(s: &str) -> Option<i64> {
         }
         hour
     } else {
-        if hour < 1 || hour > 12 {
+        if !(1..=12).contains(&hour) {
             return None;
         }
         if is_am {
-            if hour == 12 { 0 } else { hour }
+            if hour == 12 {
+                0
+            } else {
+                hour
+            }
         } else if is_pm {
-            if hour == 12 { 12 } else { hour + 12 }
+            if hour == 12 {
+                12
+            } else {
+                hour + 12
+            }
         } else {
             return None;
         }
@@ -148,7 +159,7 @@ fn string_to_time(s: &str) -> Option<i64> {
 /// Parse time components from a string like "HH:mm:ss.ffffff" or "T HH:mm:ss".
 /// Returns (hour, minute, second, microseconds) or None if invalid.
 fn parse_time_components(s: &str) -> Option<(i32, i32, i32, i32)> {
-    let bytes = s.trim_start().as_bytes();
+    let bytes = s.as_bytes();
     if bytes.is_empty() {
         return None;
     }
@@ -223,7 +234,7 @@ fn parse_digits(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
 
     while pos < bytes.len() {
         let b = bytes[pos];
-        if b >= b'0' && b <= b'9' {
+        if b.is_ascii_digit() {
             value = value * 10 + (b - b'0') as i32;
             count += 1;
             pos += 1;
@@ -233,11 +244,7 @@ fn parse_digits(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
     }
 
     if count == 0 || count > 2 {
-        // Hour/minute/second: 1-2 digits
-        // Exception: we allow 1-2 digits for time components
-        if count == 0 {
-            return None;
-        }
+        return None;
     }
 
     Some((value, pos))
@@ -252,7 +259,7 @@ fn parse_fractional(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
 
     while pos < bytes.len() && count < 6 {
         let b = bytes[pos];
-        if b >= b'0' && b <= b'9' {
+        if b.is_ascii_digit() {
             value = value * 10 + (b - b'0') as i32;
             count += 1;
             pos += 1;
@@ -266,7 +273,7 @@ fn parse_fractional(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
     }
 
     // Skip any remaining digits beyond 6 (truncation)
-    while pos < bytes.len() && bytes[pos] >= b'0' && bytes[pos] <= b'9' {
+    while pos < bytes.len() && bytes[pos].is_ascii_digit() {
         pos += 1;
     }
 
@@ -292,8 +299,14 @@ mod tests {
     fn test_basic_time_parsing() {
         // HH:mm
         assert_eq!(string_to_time("00:00"), Some(0));
-        assert_eq!(string_to_time("12:30"), Some(12 * NANOS_PER_HOUR + 30 * NANOS_PER_MINUTE));
-        assert_eq!(string_to_time("23:59"), Some(23 * NANOS_PER_HOUR + 59 * NANOS_PER_MINUTE));
+        assert_eq!(
+            string_to_time("12:30"),
+            Some(12 * NANOS_PER_HOUR + 30 * NANOS_PER_MINUTE)
+        );
+        assert_eq!(
+            string_to_time("23:59"),
+            Some(23 * NANOS_PER_HOUR + 59 * NANOS_PER_MINUTE)
+        );
 
         // HH:mm:ss
         assert_eq!(
@@ -320,10 +333,7 @@ mod tests {
             Some(1_000 * NANOS_PER_MICRO)
         );
         // 6 digits
-        assert_eq!(
-            string_to_time("00:00:00.000001"),
-            Some(1 * NANOS_PER_MICRO)
-        );
+        assert_eq!(string_to_time("00:00:00.000001"), Some(1 * NANOS_PER_MICRO));
         // Full precision
         assert_eq!(
             string_to_time("23:59:59.999999"),
@@ -438,5 +448,19 @@ mod tests {
     fn test_trailing_whitespace() {
         assert_eq!(string_to_time("12:30:45  "), string_to_time("12:30:45"));
         assert_eq!(string_to_time("1:00:00 AM  "), string_to_time("1:00:00 AM"));
+    }
+
+    #[test]
+    fn test_three_digit_components() {
+        // 3-digit hour/minute/second must be rejected (Spark requires 1-2 digits)
+        assert_eq!(string_to_time("001:02:03"), None);
+        assert_eq!(string_to_time("12:001:03"), None);
+        assert_eq!(string_to_time("12:02:003"), None);
+    }
+
+    #[test]
+    fn test_leading_space_with_t_prefix() {
+        // Leading space before T should be rejected (Spark only right-trims)
+        assert_eq!(string_to_time(" T12:30"), None);
     }
 }
