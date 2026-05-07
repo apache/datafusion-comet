@@ -57,6 +57,15 @@ The following shared limitation may produce incorrect results without falling ba
   written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
   October 15, 1582.
 
+The following shared limitation raises an error at scan time rather than falling back to Spark:
+
+- Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
+  column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
+  Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains
+  non-UTF-8 bytes fails with `Parquet error: encountered non UTF-8 data`. Disable Comet for the
+  query, or cast the column to `BINARY` before persisting, if you need to preserve non-UTF-8 bytes.
+  See [#4121](https://github.com/apache/datafusion-comet/issues/4121).
+
 ## `native_datafusion` Limitations
 
 The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these

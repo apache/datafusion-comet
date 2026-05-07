@@ -49,7 +49,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.{CometConf, CometExecIterator, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
@@ -2092,9 +2092,11 @@ class CometExecSuite extends CometTestBase {
         case s: CometHashAggregateExec => s
       }.get
 
-      assert(agg.mode.isDefined && agg.mode.get.isInstanceOf[AggregateMode])
+      assert(agg.modes.nonEmpty && agg.modes.headOption.get.isInstanceOf[AggregateMode])
       val newAgg = agg.cleanBlock().asInstanceOf[CometHashAggregateExec]
-      assert(newAgg.mode.isDefined && newAgg.mode.get.isInstanceOf[AggregateMode])
+      assert(
+        newAgg.modes.nonEmpty &&
+          newAgg.modes.headOption.get.isInstanceOf[AggregateMode])
     }
   }
 
@@ -2827,7 +2829,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("bloom_filter_agg") {
-    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
     spark.sessionState.functionRegistry.registerFunction(
       funcId_bloom_filter_agg,

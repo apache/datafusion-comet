@@ -25,7 +25,8 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -54,21 +55,159 @@ class CometJoinSuite extends CometTestBase {
         .toSeq)
   }
 
-  test("SortMergeJoin with unsupported key type should fall back to Spark") {
+  test("SortMergeJoin with TimestampType key runs natively") {
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
       withTable("t1", "t2") {
         sql("CREATE TABLE t1(name STRING, time TIMESTAMP) USING PARQUET")
-        sql("INSERT OVERWRITE t1 VALUES('a', timestamp'2019-01-01 11:11:11')")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('b', timestamp'2020-05-05 05:05:05')")
 
         sql("CREATE TABLE t2(name STRING, time TIMESTAMP) USING PARQUET")
-        sql("INSERT OVERWRITE t2 VALUES('a', timestamp'2019-01-01 11:11:11')")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('c', timestamp'2021-07-07 07:07:07')")
 
-        val df = sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time")
-        val (sparkPlan, cometPlan) = checkSparkAnswer(df)
-        assert(sparkPlan.canonicalized === cometPlan.canonicalized)
+        checkSparkAnswerAndOperator(
+          sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
+          Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
+  test("SortMergeJoin with TimestampType key supports outer joins") {
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "(1, timestamp'2019-01-01 11:11:11'), " +
+            "(2, timestamp'2020-05-05 05:05:05'), " +
+            "(3, timestamp'2021-07-07 07:07:07')")
+
+        sql("CREATE TABLE t2(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "(10, timestamp'2019-01-01 11:11:11'), " +
+            "(20, timestamp'2022-02-02 02:02:02')")
+
+        for (joinType <- Seq("LEFT OUTER", "RIGHT OUTER", "FULL OUTER")) {
+          checkSparkAnswerAndOperator(
+            sql(s"SELECT * FROM t1 $joinType JOIN t2 ON t1.time = t2.time"),
+            Seq(classOf[CometSortMergeJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("SortMergeJoin with composite (string, timestamp) key runs natively") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(name STRING, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('b', timestamp'2019-01-01 11:11:11'), " +
+            "('a', timestamp'2020-05-05 05:05:05')")
+
+        sql("CREATE TABLE t2(name STRING, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('b', timestamp'2020-05-05 05:05:05'), " +
+            "('a', timestamp'2020-05-05 05:05:05')")
+
+        checkSparkAnswerAndOperator(
+          sql(
+            "SELECT * FROM t1 JOIN t2 " +
+              "ON t1.name = t2.name AND t1.time = t2.time"),
+          Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
+  test("SortMergeJoin with nullable TimestampType key runs natively") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "(1, timestamp'2019-01-01 11:11:11'), " +
+            "(2, CAST(NULL AS TIMESTAMP)), " +
+            "(3, timestamp'2020-05-05 05:05:05')")
+
+        sql("CREATE TABLE t2(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "(10, timestamp'2019-01-01 11:11:11'), " +
+            "(20, CAST(NULL AS TIMESTAMP)), " +
+            "(30, timestamp'2022-02-02 02:02:02')")
+
+        // Inner join: NULL = NULL must not match in Spark semantics.
+        checkSparkAnswerAndOperator(
+          sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
+          Seq(classOf[CometSortMergeJoinExec]))
+
+        // Full outer join: NULL-keyed rows from both sides surface as unmatched.
+        checkSparkAnswerAndOperator(
+          sql("SELECT * FROM t1 FULL OUTER JOIN t2 ON t1.time = t2.time"),
+          Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
+  test("SortMergeJoin with TimestampType key across mixed write-time session timezones") {
+    // TimestampType is an instant (UTC microseconds); only the parsing of literal
+    // strings depends on the session timezone. Writing each side under a different
+    // session zone with wall-clock literals that resolve to the same UTC instant
+    // must still produce a join match.
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTable("t1", "t2") {
+        // t1 written in America/Los_Angeles. 03:11:11 -0800 == 11:11:11 UTC.
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
+          sql("CREATE TABLE t1(name STRING, time TIMESTAMP) USING PARQUET")
+          sql(
+            "INSERT OVERWRITE t1 VALUES " +
+              "('a', timestamp'2019-01-01 03:11:11'), " +
+              "('b', timestamp'2020-05-04 22:05:05')")
+        }
+
+        // t2 written in Asia/Tokyo. 20:11:11 +0900 == 11:11:11 UTC, so the 'a' and
+        // 'a2' rows share a UTC instant with t1's 'a' row.
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Tokyo") {
+          sql("CREATE TABLE t2(name STRING, time TIMESTAMP) USING PARQUET")
+          sql(
+            "INSERT OVERWRITE t2 VALUES " +
+              "('a', timestamp'2019-01-01 20:11:11'), " +
+              "('c', timestamp'2021-07-07 16:07:07')")
+        }
+
+        // Read at a third session timezone to confirm the equality is on the
+        // stored UTC instant rather than the displayed wall-clock value.
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
+            Seq(classOf[CometSortMergeJoinExec]))
+        }
       }
     }
   }
@@ -190,8 +329,82 @@ class CometJoinSuite extends CometTestBase {
           val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
           checkSparkAnswerAndOperator(df8)
 
-          // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
-          // left.join(right, left("_2") === right("_1"), "leftanti")
+          val df9 = left.join(right, left("_2") === right("_1"), "leftanti")
+          checkSparkAnswerAndOperator(df9)
+        }
+      }
+    }
+  }
+
+  test("BroadcastHashJoin with LeftAnti and NOT IN subquery (null-aware)") {
+    withSQLConf(
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760") {
+      // Right side has no NULL: regular anti-semantics
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, i + 100)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Right side contains NULL: null-aware should suppress all left rows
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, 2), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Left side has NULL values: NOT IN filters them out (NULL vs anything is NULL)
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((2, 100), (4, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Empty subquery: NOT IN against an empty set returns all left rows, including NULL probe.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq.empty[(Integer, Int)], "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // Both sides have NULL keys: probe-side NULL and build-side NULL on the same query.
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a WHERE _2 NOT IN (SELECT _1 FROM tbl_b)")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
+  test("BroadcastHashJoin with LeftAnti (non-null-aware)") {
+    withSQLConf(
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, i + 100)), "tbl_b") {
+          // BROADCAST(tbl_b) forces tbl_b as build-right side
+          val df = sql(
+            "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b " +
+              "ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+
+      // With NULL values on both sides - non-null-aware semantics: NULL keys don't match anything
+      withParquetTable(Seq[(Int, Integer)]((1, 1), (2, null), (3, 3)), "tbl_a") {
+        withParquetTable(Seq[(Integer, Int)]((1, 100), (null, 200)), "tbl_b") {
+          val df = sql(
+            "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b " +
+              "ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
@@ -439,6 +652,52 @@ class CometJoinSuite extends CometTestBase {
             coalescedBatches >= numPartitions,
             s"Expected at least $numPartitions coalesced batches, got $coalescedBatches")
           assert(coalescedRows == 10000, s"Expected 10000 coalesced rows, got $coalescedRows")
+        }
+      }
+    }
+  }
+
+  test("Broadcast exchange respects AQE shuffle partition coalescing") {
+    // When a shuffle feeds into a broadcast exchange, AQE may coalesce the shuffle
+    // partitions. The broadcast collect should execute through the AQEShuffleReadExec
+    // to use coalesced partitions rather than bypassing it.
+    val numPartitions = 200
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> numPartitions.toString,
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "small_tbl") {
+        withParquetTable((0 until 10000).map(i => (i, i + 2)), "large_tbl") {
+          val query =
+            """SELECT /*+ BROADCAST(a) */ *
+              |FROM (SELECT /*+ REBALANCE(_1) */ * FROM small_tbl) a
+              |JOIN large_tbl b ON a._1 = b._1""".stripMargin
+
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql(query),
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+
+          // The shuffle partitions feeding the broadcast should be coalesced by
+          // AQE. AQEShuffleReadExec.executeColumnar() lazily builds its shuffleRDD
+          // and, as a side effect, sets the "numPartitions" driver metric to
+          // partitionSpecs.length. If the broadcast collect bypasses the wrapper
+          // (the bug this test guards against), executeColumnar is never called
+          // and the metric stays at its initial 0.
+          val readExecs = collect(cometPlan) { case r: AQEShuffleReadExec => r }
+          assert(readExecs.nonEmpty, "Expected AQEShuffleReadExec in plan")
+          readExecs.foreach { r =>
+            val coalesced = r.metrics("numPartitions").value
+            assert(
+              coalesced > 0,
+              "AQEShuffleReadExec.numPartitions metric was never updated; the " +
+                "broadcast collect likely bypassed AQEShuffleReadExec")
+            assert(
+              coalesced < numPartitions,
+              s"Expected AQE to coalesce shuffle partitions below $numPartitions, " +
+                s"got $coalesced")
+          }
         }
       }
     }
