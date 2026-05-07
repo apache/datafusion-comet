@@ -51,7 +51,7 @@ import org.apache.comet.parquet.CometParquetFileFormat
  *
  * This is a hybrid scan where the native plan will contain a `ScanExec` that reads batches of
  * data from the JVM via JNI. The ultimate source of data may be a JVM implementation such as
- * Spark readers, or could be the `native_comet` or `native_iceberg_compat` native scans.
+ * Spark readers, or could be the `native_iceberg_compat` native scan.
  *
  * Note that scanImpl can only be `native_datafusion` after CometScanRule runs and before
  * CometExecRule runs. It will never be set to `native_datafusion` at execution time
@@ -90,7 +90,7 @@ case class CometScanExec(
    * initialized. See SPARK-26327 for more details.
    */
   private def sendDriverMetrics(): Unit = {
-    driverMetrics.foreach(e => metrics(e._1).add(e._2))
+    driverMetrics.foreach(e => metrics(e._1).set(e._2))
     val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
     SQLMetrics.postDriverMetricUpdates(
       sparkContext,
@@ -155,14 +155,45 @@ case class CometScanExec(
 
   /**
    * Returns the data filters that are supported for this scan implementation. For
-   * native_datafusion scans, this excludes dynamic pruning filters (subqueries)
+   * native_datafusion scans, this excludes dynamic pruning filters (subqueries) and null checks
+   * on array columns (see [[isNullCheckOnArrayColumn]]).
    */
   lazy val supportedDataFilters: Seq[Expression] = {
     if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
-      dataFilters.filterNot(isDynamicPruningFilter)
+      dataFilters
+        .filterNot(isDynamicPruningFilter)
+        .filterNot(isNullCheckOnArrayColumn)
     } else {
       dataFilters
     }
+  }
+
+  /**
+   * Returns true for IsNotNull/IsNull predicates on ArrayType columns.
+   *
+   * These must be excluded from native scan data filters because:
+   *
+   *   1. Parquet does not support predicate pushdown on repeated columns. The Parquet library's
+   *      SchemaCompatibilityValidator rejects filter predicates on repeated fields entirely
+   *      (SPARK-39393, PARQUET-34). Spark's own ParquetFilters excludes REPEATED columns from
+   *      pushdown for the same reason.
+   *
+   * 2. When Comet attaches these filters via ParquetSource.with_predicate(), DataFusion's list
+   * predicate pushdown (PR #19545) considers IsNotNull on List columns a supported predicate and
+   * pushes it into the Parquet reader as a RowFilter. This triggers an arrow-rs bug where
+   * ListArrayReader crashes on bare repeated primitives ("item_reader def levels are None").
+   *
+   * 3. Even without the arrow-rs bug, the filter is redundant: a bare repeated field is never
+   * null (an empty repeated field means zero elements, not null), and DataFusion's optimizer
+   * would eliminate the filter if it went through the normal planning path.
+   *
+   * Filtering these out is safe -- the predicate is still evaluated after reading, so correctness
+   * is preserved.
+   */
+  private def isNullCheckOnArrayColumn(expr: Expression): Boolean = expr match {
+    case IsNotNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case IsNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case _ => false
   }
 
   @transient

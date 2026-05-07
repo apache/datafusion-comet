@@ -34,30 +34,6 @@ use datafusion_comet_proto::{
 use prost::Message;
 use std::{io::Cursor, sync::Arc};
 
-impl From<prost::DecodeError> for ExpressionError {
-    fn from(error: prost::DecodeError) -> ExpressionError {
-        ExpressionError::Deserialize(error.to_string())
-    }
-}
-
-impl From<prost::UnknownEnumValue> for ExpressionError {
-    fn from(error: prost::UnknownEnumValue) -> ExpressionError {
-        ExpressionError::Deserialize(error.to_string())
-    }
-}
-
-impl From<prost::DecodeError> for ExecutionError {
-    fn from(error: prost::DecodeError) -> ExecutionError {
-        ExecutionError::DeserializeError(error.to_string())
-    }
-}
-
-impl From<prost::UnknownEnumValue> for ExecutionError {
-    fn from(error: prost::UnknownEnumValue) -> ExecutionError {
-        ExecutionError::DeserializeError(error.to_string())
-    }
-}
-
 /// Deserialize bytes to protobuf type of expression
 pub fn deserialize_expr(buf: &[u8]) -> Result<spark_expression::Expr, ExpressionError> {
     match spark_expression::Expr::decode(&mut Cursor::new(buf)) {
@@ -181,11 +157,19 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
                     .iter()
                     .enumerate()
                     .map(|(idx, name)| {
-                        Field::new(
+                        let field = Field::new(
                             name,
                             to_arrow_datatype(&info.field_datatypes[idx]),
                             info.field_nullable[idx],
-                        )
+                        );
+                        // Attach Spark field metadata (currently parquet.field.id) when present.
+                        // field_metadata is parallel to field_names; either empty or full length.
+                        if let Some(meta) = info.field_metadata.get(idx) {
+                            if !meta.metadata.is_empty() {
+                                return field.with_metadata(meta.metadata.clone());
+                            }
+                        }
+                        field
                     })
                     .collect();
                 ArrowDataType::Struct(fields)

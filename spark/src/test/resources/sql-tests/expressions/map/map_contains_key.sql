@@ -15,7 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
+-- Config: spark.comet.expression.ArrayContains.allowIncompatible=true
 
 -- TODO: replace map_from_arrays with map whenever map is supported in Comet
 

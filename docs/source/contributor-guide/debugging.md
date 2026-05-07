@@ -33,8 +33,14 @@ _Caveat: The steps here have only been tested with JDK 11_ on Mac (M1)
 
 ## Debugging for Advanced Developers
 
-Add a `.lldbinit` to comet/core. This is not strictly necessary but will be useful if you want to
-use advanced `lldb` debugging.
+Add a `.lldbinit` to comet/native. This is not strictly necessary but will be useful if you want to
+use advanced `lldb` debugging. For example, we can ignore some exceptions and signals that are not relevant
+to our debugging and would otherwise cause the debugger to stop.
+
+```
+settings set platform.plugin.darwin.ignored-exceptions EXC_BAD_ACCESS|EXC_BAD_INSTRUCTION
+process handle -n true -p true -s false SIGBUS SIGSEGV SIGILL
+```
 
 ### In IntelliJ
 
@@ -130,7 +136,7 @@ make release COMET_FEATURES=backtrace
 Set `RUST_BACKTRACE=1` for the Spark worker/executor process, or for `spark-submit` if running in local mode.
 
 ```console
-RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
+RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark4.1_2.13-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
 ```
 
 Get the expanded exception details

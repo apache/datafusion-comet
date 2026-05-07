@@ -27,13 +27,13 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.CometMapFromEntries
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
 
   test("read map[int, int] from parquet") {
-    assume(!usingLegacyNativeCometScan(conf))
 
     withTempPath { dir =>
       // create input file with Comet disabled
@@ -65,7 +65,6 @@ class CometMapExpressionSuite extends CometTestBase {
 
   // repro for https://github.com/apache/datafusion-comet/issues/1754
   test("read map[struct, struct] from parquet") {
-    assume(!usingLegacyNativeCometScan(conf))
 
     withTempPath { dir =>
       // create input file with Comet disabled
@@ -223,15 +222,20 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("map_from_entries - fallback for binary type") {
-    def fallbackReason(reason: String) = {
-      if (CometConf.COMET_NATIVE_SCAN_IMPL.key == CometConf.SCAN_NATIVE_COMET || sys.env
-          .getOrElse("COMET_PARQUET_SCAN_IMPL", "") == CometConf.SCAN_NATIVE_COMET) {
-        "Unsupported schema"
-      } else {
-        reason
-      }
+  test("group by map column with string values") {
+    assume(isSpark40Plus, "Spark 4.0 inserts MapSort for group-by on map keys")
+    withTable("t_map_group") {
+      sql("""
+        |CREATE TABLE t_map_group USING parquet AS
+        |SELECT map(cast(id as string), cast(id + 100 as string)) as m
+        |FROM range(5)
+      """.stripMargin)
+      checkSparkAnswer(sql("SELECT m, count(*) FROM t_map_group GROUP BY m"))
     }
+  }
+
+  test("map_from_entries - fallback for binary type") {
+    def fallbackReason(reason: String) = reason
     val table = "t2"
     withTable(table) {
       sql(

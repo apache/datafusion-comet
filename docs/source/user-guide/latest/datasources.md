@@ -69,12 +69,12 @@ Unlike to native Comet reader the Datafusion reader fully supports nested types 
 To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed
 
 Example:
-Build a Comet for `spark-3.5` provide a JDK path in `JAVA_HOME`
+Build a Comet for `spark-4.1` provide a JDK path in `JAVA_HOME`
 Provide the JRE linker path in `RUSTFLAGS`, the path can vary depending on the system. Typically JRE linker is a part of installed JDK
 
 ```shell
-export JAVA_HOME="/opt/homebrew/opt/openjdk@11"
-make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
+export JAVA_HOME="/opt/homebrew/opt/openjdk@17"
+make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 Start Comet with experimental reader and HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
@@ -149,7 +149,7 @@ docker compose -f kube/local/hdfs-docker-compose.yml up
 - Build a project with HDFS support
 
 ```shell
-JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server"
+JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 - Run local test
@@ -174,6 +174,14 @@ Or use `spark-shell` with HDFS support as described [above](#using-experimental-
 
 ## S3
 
+The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading
+to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and
+support configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to
+the `object_store` crate's format.
+
+This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will
+continue to work as long as the configurations are supported and can be translated without loss of functionality.
+
 #### Root CA Certificates
 
 One major difference between Spark and Comet is the mechanism for discovering Root
@@ -197,5 +205,61 @@ AWS credential providers can be configured using the `fs.s3a.aws.credentials.pro
 | `com.amazonaws.auth.InstanceProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider`                                                     | Access S3 using EC2 instance metadata service (IMDS)                                                            | None                                                                                                                            |
 | `com.amazonaws.auth.ContainerCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider`<br/>`com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper` | Access S3 using ECS task credentials                                                                            | None                                                                                                                            |
 | `com.amazonaws.auth.WebIdentityTokenCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider`                                               | Authenticate using web identity token file                                                                      | None                                                                                                                            |
+| `com.amazonaws.auth.profile.ProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider`                                                             | Authenticate using a named profile from the local AWS credentials file                                          | None                                                                                                                            |
 
 Multiple credential providers can be specified in a comma-separated list using the `fs.s3a.aws.credentials.provider` configuration, just as Hadoop AWS supports. If `fs.s3a.aws.credentials.provider` is not configured, Hadoop S3A's default credential provider chain will be used. All configuration options also support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
+
+#### Additional S3 Configuration Options
+
+Beyond credential providers, the `native_datafusion` and `native_iceberg_compat` implementations support additional
+S3 configuration options:
+
+| Option                          | Description                                                                                        |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `fs.s3a.endpoint`               | The endpoint of the S3 service                                                                     |
+| `fs.s3a.endpoint.region`        | The AWS region for the S3 service. If not specified, the region will be auto-detected.             |
+| `fs.s3a.path.style.access`      | Whether to use path style access for the S3 service (true/false, defaults to virtual hosted style) |
+| `fs.s3a.requester.pays.enabled` | Whether to enable requester pays for S3 requests (true/false)                                      |
+
+All configuration options support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
+
+#### Examples
+
+The following examples demonstrate how to configure S3 access with the `native_datafusion` and `native_iceberg_compat`
+Parquet scan implementations using different authentication methods.
+
+**Example 1: Simple Credentials**
+
+This example shows how to access a private S3 bucket using an access key and secret key. The `fs.s3a.aws.credentials.provider` configuration can be omitted since `org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider` is included in Hadoop S3A's default credential provider chain.
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+...
+--conf spark.comet.scan.impl=native_datafusion \
+--conf spark.hadoop.fs.s3a.access.key=my-access-key \
+--conf spark.hadoop.fs.s3a.secret.key=my-secret-key
+...
+```
+
+**Example 2: Assume Role with Web Identity Token**
+
+This example demonstrates using an assumed role credential to access a private S3 bucket, where the base credential for assuming the role is provided by a web identity token credentials provider.
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+...
+--conf spark.comet.scan.impl=native_datafusion \
+--conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider \
+--conf spark.hadoop.fs.s3a.assumed.role.arn=arn:aws:iam::123456789012:role/my-role \
+--conf spark.hadoop.fs.s3a.assumed.role.session.name=my-session \
+--conf spark.hadoop.fs.s3a.assumed.role.credentials.provider=com.amazonaws.auth.WebIdentityTokenCredentialsProvider
+...
+```
+
+#### Limitations
+
+The S3 support of `native_datafusion` and `native_iceberg_compat` has the following limitations:
+
+1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
+
+2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.

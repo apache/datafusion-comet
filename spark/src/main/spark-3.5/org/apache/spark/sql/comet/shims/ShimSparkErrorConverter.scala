@@ -19,11 +19,20 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.{QueryContext, SparkException}
+import java.io.FileNotFoundException
+
+import scala.util.matching.Regex
+
+import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
+
+object ShimSparkErrorConverter {
+  val ObjectLocationPattern: Regex = "Object at location (.+?) not found".r
+}
 
 /**
  * Spark 3.5 implementation for converting error types to proper Spark exceptions.
@@ -35,6 +44,25 @@ trait ShimSparkErrorConverter {
 
   private def sqlCtx(context: Array[QueryContext]): SQLQueryContext =
     context.headOption.map(_.asInstanceOf[SQLQueryContext]).getOrElse(null)
+
+  private def parseFloatLiteral(value: String): Float = {
+    value.toLowerCase match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Float.PositiveInfinity
+      case "-inf" | "-infinity" => Float.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Float.NaN
+      case _ => value.toFloat
+    }
+  }
+
+  private def parseDoubleLiteral(value: String): Double = {
+    val normalized = value.toLowerCase.stripSuffix("d")
+    normalized match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Double.PositiveInfinity
+      case "-inf" | "-infinity" => Double.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Double.NaN
+      case _ => normalized.toDouble
+    }
+  }
 
   def convertErrorType(
       errorType: String,
@@ -50,11 +78,7 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.divideByZeroError(sqlCtx(context)))
 
       case "RemainderByZero" =>
-        Some(
-          new SparkException(
-            errorClass = "REMAINDER_BY_ZERO",
-            messageParameters = params.map { case (k, v) => (k, v.toString) },
-            cause = null))
+        Some(QueryExecutionErrors.divideByZeroError(sqlCtx(context)))
 
       case "IntervalDividedByZero" =>
         Some(QueryExecutionErrors.intervalDividedByZeroError(sqlCtx(context)))
@@ -134,8 +158,7 @@ trait ShimSparkErrorConverter {
       case "CollectionSizeLimitExceeded" =>
         Some(
           QueryExecutionErrors.createArrayWithElementsExceedLimitError(
-            "array",
-            params("numElements").toString.toLong))
+            ("array", params("numElements").toString.toLong)))
 
       case "NotNullAssertViolation" =>
         Some(
@@ -162,6 +185,22 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .invalidInputInCastToNumberError(targetType, str, sqlCtx(context)))
 
+      case "InvalidInputInCastToDatetime" =>
+        val expression =
+          s"'${params("value").toString.replace("\\", "\\\\").replace("'", "\\'")}'"
+        val sourceType = s""""${params("fromType").toString}""""
+        val targetType = s""""${params("toType").toString}""""
+        Some(
+          new SparkDateTimeException(
+            errorClass = "CAST_INVALID_INPUT",
+            messageParameters = Map(
+              "expression" -> expression,
+              "sourceType" -> sourceType,
+              "targetType" -> targetType,
+              "ansiConfig" -> "\"spark.sql.ansi.enabled\""),
+            context = context,
+            summary = summary))
+
       case "CastOverFlow" =>
         val fromType = getDataType(params("fromType").toString)
         val toType = getDataType(params("toType").toString)
@@ -181,8 +220,8 @@ trait ShimSparkErrorConverter {
           case LongType =>
             val cleanStr = if (valueStr.endsWith("L")) valueStr.dropRight(1) else valueStr
             cleanStr.toLong
-          case FloatType => valueStr.toFloat
-          case DoubleType => valueStr.toDouble
+          case FloatType => parseFloatLiteral(valueStr)
+          case DoubleType => parseDoubleLiteral(valueStr)
           case StringType => UTF8String.fromString(valueStr)
           case _ => valueStr
         }
@@ -239,6 +278,64 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .intervalArithmeticOverflowError("Interval arithmetic overflow", "", sqlCtx(context)))
 
+      case "DuplicateFieldCaseInsensitive" =>
+        Some(
+          QueryExecutionErrors.foundDuplicateFieldInCaseInsensitiveModeError(
+            params("requiredFieldName").toString,
+            params("matchedOrcFields").toString))
+
+      case "DuplicateFieldByFieldId" =>
+        // Mirror Spark's `ParquetReadSupport.matchIdField` which calls
+        // `foundDuplicateFieldInFieldIdLookupModeError` when more than one Parquet field
+        // shares an id requested by the read schema.
+        Some(
+          QueryExecutionErrors.foundDuplicateFieldInFieldIdLookupModeError(
+            params("requiredId").toString.toInt,
+            params("matchedFields").toString))
+
+      case "ParquetMissingFieldIds" =>
+        // Mirror Spark's `ParquetReadSupport.inferSchema`, which throws a plain
+        // `RuntimeException` (not a SparkException) when the read schema requests field
+        // ids and the file carries none.
+        Some(
+          new RuntimeException(
+            "Spark read schema expects field Ids, but Parquet file schema doesn't " +
+              "contain any field Ids. Please remove the field ids from Spark schema or " +
+              "ignore missing ids by setting " +
+              "`spark.sql.parquet.fieldId.read.ignoreMissing = true`"))
+
+      case "ParquetSchemaConvert" =>
+        // Mirror Spark's FileScanRDD: wrap the SchemaColumnConvertNotSupportedException
+        // in a SparkException whose message is "Parquet column cannot be converted in
+        // file <path>...". The native side may not have the file path; an empty path
+        // still produces a message that contains "Parquet column cannot be converted in
+        // file" (which is what Spark's own SQL tests assert).
+        val column = params("column").toString
+        val physicalType = params("physicalType").toString
+        val logicalType = params("sparkType").toString
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        val cause =
+          new SchemaColumnConvertNotSupportedException(column, physicalType, logicalType)
+        Some(
+          QueryExecutionErrors.unsupportedSchemaColumnConvertError(
+            filePath,
+            column,
+            logicalType,
+            physicalType,
+            cause))
+
+      case "FileNotFound" =>
+        val msg = params("message").toString
+        // Extract file path from native error message and format like Hadoop's
+        // FileNotFoundException: "File <path> does not exist"
+        val path = ShimSparkErrorConverter.ObjectLocationPattern
+          .findFirstMatchIn(msg)
+          .map(_.group(1))
+          .getOrElse(msg)
+        Some(
+          QueryExecutionErrors.readCurrentFileNotFoundError(
+            new FileNotFoundException(s"File $path does not exist")))
+
       case _ =>
         None
     }
@@ -262,7 +359,21 @@ trait ShimSparkErrorConverter {
         try {
           DataType.fromDDL(typeName)
         } catch {
-          case _: Exception => StringType
+          case _: Exception =>
+            // fromDDL rejects types that are syntactically invalid in SQL DDL, such as
+            // DECIMAL(p,s) with a negative scale (valid when allowNegativeScaleOfDecimal=true).
+            // Parse those manually rather than silently falling back to StringType.
+            if (typeName.toUpperCase.startsWith("DECIMAL(") && typeName.endsWith(")")) {
+              val inner = typeName.substring("DECIMAL(".length, typeName.length - 1)
+              val parts = inner.split(",")
+              if (parts.length == 2) {
+                try {
+                  DataTypes.createDecimalType(parts(0).trim.toInt, parts(1).trim.toInt)
+                } catch {
+                  case _: Exception => StringType
+                }
+              } else StringType
+            } else StringType
         }
     }
   }

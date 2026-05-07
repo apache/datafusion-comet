@@ -23,16 +23,16 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
-import org.apache.spark.sql.execution.FileSourceScanExec
-import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
-import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isSpark35Plus, isSpark41Plus, withInfo}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
@@ -57,9 +57,17 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       withInfo(scanExec, s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
     }
 
-    // Native DataFusion doesn't support subqueries/dynamic pruning
-    if (scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-      withInfo(scanExec, "Native DataFusion scan does not support subqueries/dynamic pruning")
+    // AQE DPP (SubqueryAdaptiveBroadcastExec) is converted to CometSubqueryBroadcastExec
+    // by CometPlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule, Spark 3.5+).
+    // Non-AQE DPP (SubqueryBroadcastExec/SubqueryExec) is converted by
+    // CometExecRule.convertSubqueryBroadcasts. Both are resolved through the lazy
+    // partition serialization path in CometNativeScanExec.
+    //
+    // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so the AQE DPP conversion
+    // rule can't run. CometScanRule.transformV1Scan rejects AQE DPP on 3.4, so this check
+    // is a safety net: if the scan somehow reached here with AQE DPP on 3.4, reject it.
+    if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
+      withInfo(scanExec, "Native DataFusion scan does not support AQE DPP on Spark 3.4")
     }
 
     if (SQLConf.get.ignoreCorruptFiles ||
@@ -81,8 +89,12 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
     !hasExplainInfo(scanExec)
   }
 
-  private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.exists(_.isInstanceOf[PlanExpression[_]])
+  /** Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP. */
+  private def isAqeDynamicPruningFilter(e: Expression): Boolean =
+    e.exists {
+      case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
+      case _ => false
+    }
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
@@ -144,10 +156,13 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         commonBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
       }
 
-      // Extract object store options from first file (S3 configs apply to all files in scan)
-      var firstPartition: Option[PartitionedFile] = None
-      val filePartitions = scan.getFilePartitions()
-      firstPartition = filePartitions.flatMap(_.files.headOption).headOption
+      // Extract object store options from first file (S3 configs apply to all files in scan).
+      // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
+      // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
+      val firstFileUri = scan.selectedPartitions
+        .flatMap(_.files.headOption)
+        .headOption
+        .map(_.getPath.toUri)
 
       val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
       val requiredSchema = schema2Proto(scan.requiredSchema.fields)
@@ -175,15 +190,36 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
+      // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+      // missing in the Parquet file, the new default preserves the parent struct's
+      // nullness from the file (so non-null parents materialize as a struct of all-null
+      // fields). Pre-4.1 Spark hardcodes the legacy behavior (whole struct null), which
+      // matches the Comet default we use as fallback.
+      val returnNullStructConfKey =
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing"
+      val returnNullStructDefault = if (isSpark41Plus) "false" else "true"
+      commonBuilder.setReturnNullStructIfAllFieldsMissing(
+        scan.conf.getConfString(returnNullStructConfKey, returnNullStructDefault).toBoolean)
+
+      // Field-ID matching: only ask the native side to do extra work when the conf is on AND
+      // the requested schema actually carries IDs. Spark's ParquetReadSupport applies the same
+      // gate before invoking matchIdField.
+      val useFieldId =
+        scan.conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
+          ParquetUtils.hasFieldIds(scan.requiredSchema)
+      commonBuilder.setUseFieldId(useFieldId)
+      commonBuilder.setIgnoreMissingFieldId(
+        scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
+
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState
         .newHadoopConfWithOptions(scan.relation.options)
 
       commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
-      firstPartition.foreach { partitionFile =>
+      firstFileUri.foreach { uri =>
         val objectStoreOptions =
-          NativeConfig.extractObjectStoreOptions(hadoopConf, partitionFile.pathUri)
+          NativeConfig.extractObjectStoreOptions(hadoopConf, uri)
         objectStoreOptions.foreach { case (key, value) =>
           commonBuilder.putObjectStoreOptions(key, value)
         }
