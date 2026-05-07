@@ -132,3 +132,7 @@ pub(crate) fn decimal_sum_overflow_error(function_name: &str) -> SparkError {
 pub(crate) fn divide_by_zero_error() -> SparkError {
     SparkError::DivideByZero
 }
+
+pub(crate) fn remainder_by_zero_error() -> SparkError {
+    SparkError::RemainderByZero
+}
