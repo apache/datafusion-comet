@@ -33,6 +33,7 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -405,6 +406,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
       }
+    }
+  }
+
+  test("grouping on struct containing map should fallback to Spark") {
+    assume(isSpark41Plus, "Spark 4.1+ supports grouping on map-containing types")
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      val query =
+        """SELECT col1.data['key']
+          |FROM VALUES
+          |  (NAMED_STRUCT('data', MAP('key', 'value', 'num', '42'))),
+          |  (NAMED_STRUCT('data', MAP('key', 'other', 'num', '7')))
+          |t (col1)
+          |GROUP BY col1
+          |HAVING col1.data['num'] IS NOT NULL
+          |ORDER BY col1.data['key']
+          |""".stripMargin
+
+      val (_, cometPlan) =
+        checkSparkAnswerAndFallbackReason(
+          query,
+          "Grouping on map-containing types is not supported")
+
+      assert(
+        stripAQEPlan(cometPlan).collect { case s: CometHashAggregateExec => s }.isEmpty,
+        "Expected aggregate to fall back to Spark for grouping on Struct(Map(...))")
     }
   }
 
@@ -2057,6 +2085,22 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   def getNumCometHashAggregate(df: DataFrame): Int = {
     val sparkPlan = stripAQEPlan(df.queryExecution.executedPlan)
     sparkPlan.collect { case s: CometHashAggregateExec => s }.size
+  }
+
+  test("group by array of map falls back to Spark (issue #4123)") {
+    assume(isSpark41Plus, "Spark 4.1+ supports grouping on map-containing types")
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      checkSparkAnswerAndFallbackReason(
+        """SELECT a, COUNT(*)
+          |FROM VALUES
+          |  (ARRAY(MAP('x', 10))),
+          |  (ARRAY(MAP('y', 20))),
+          |  (ARRAY(MAP('x', 10)))
+          |t (a)
+          |GROUP BY a
+          |""".stripMargin,
+        "Grouping on map-containing types is not supported")
+    }
   }
 
 }
