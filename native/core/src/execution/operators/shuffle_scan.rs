@@ -333,9 +333,7 @@ impl Stream for ShuffleScanStream {
                 Poll::Ready(Some(maybe_batch))
             }
             InputBatch::Complete(_) => {
-                // Complete batches are produced only by ScanExec for the
-                // batch-stash path. ShuffleScanExec never sources batches
-                // from the stash, so this variant is unreachable here.
+                // Complete is only emitted by the batch-stash path in ScanExec.
                 unreachable!("ShuffleScanExec does not produce Complete batches")
             }
         };

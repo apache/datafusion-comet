@@ -88,7 +88,7 @@ class CometExecIterator(
   // scan indices, CometBatchIterator for regular scan indices.
   private val inputIterators: Array[Object] = if (handleInputs.nonEmpty) {
     assert(inputs.isEmpty, "handleInputs and inputs are mutually exclusive")
-    handleInputs.map(_.asInstanceOf[Object])
+    handleInputs.asInstanceOf[Array[Object]]
   } else {
     inputs.zipWithIndex.map {
       case (_, idx) if shuffleBlockIterators.contains(idx) =>
