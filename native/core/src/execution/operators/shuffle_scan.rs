@@ -332,9 +332,11 @@ impl Stream for ShuffleScanStream {
                 .map_err(|e| arrow_datafusion_err!(e));
                 Poll::Ready(Some(maybe_batch))
             }
-            InputBatch::Complete(batch) => {
-                self.baseline_metrics.record_output(batch.num_rows());
-                Poll::Ready(Some(Ok(batch)))
+            InputBatch::Complete(_) => {
+                // Complete batches are produced only by ScanExec for the
+                // batch-stash path. ShuffleScanExec never sources batches
+                // from the stash, so this variant is unreachable here.
+                unreachable!("ShuffleScanExec does not produce Complete batches")
             }
         };
 

@@ -111,7 +111,7 @@ class CometNativeShuffleWriter[K, V](
         childIter.enableStashMode()
         val handleIter = new CometHandleBatchIterator(childIter)
         CometExec.getCometIteratorWithHandleInputs(
-          Array(handleIter.asInstanceOf[Object]),
+          Array(handleIter),
           outputAttributes.length,
           nativePlan,
           nativeMetrics,

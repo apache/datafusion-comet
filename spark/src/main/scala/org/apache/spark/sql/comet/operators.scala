@@ -51,7 +51,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
-import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
+import org.apache.comet.{CometConf, CometExecIterator, CometHandleBatchIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
@@ -375,7 +375,7 @@ object CometExec {
    * Bypasses the normal CometBatchIterator wrapping.
    */
   def getCometIteratorWithHandleInputs(
-      handleInputs: Array[Object],
+      handleInputs: Array[CometHandleBatchIterator],
       numOutputCols: Int,
       nativePlan: Operator,
       nativeMetrics: CometMetricNode,

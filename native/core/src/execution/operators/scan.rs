@@ -634,9 +634,12 @@ pub enum InputBatch {
     /// i.e. reading empty schema from scan.
     Batch(Vec<ArrayRef>, usize),
 
-    /// A complete RecordBatch retrieved from the BatchStash. May still
-    /// go through `build_record_batch` for schema reconciliation (e.g.,
-    /// timestamp timezone casting) when column counts match.
+    /// A complete RecordBatch retrieved from the BatchStash. The producer's
+    /// output schema may still differ from the consumer's expected schema
+    /// (e.g., timestamp timezone), so when column counts match the batch
+    /// is run through `build_record_batch` for type reconciliation. When
+    /// columns counts differ (e.g., empty schema scan), the batch is
+    /// returned as-is.
     Complete(RecordBatch),
 }
 

@@ -69,7 +69,7 @@ class CometExecIterator(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
-    handleInputs: Array[Object] = Array.empty)
+    handleInputs: Array[CometHandleBatchIterator] = Array.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -87,7 +87,8 @@ class CometExecIterator(
   // Build a mixed array of iterators: CometShuffleBlockIterator for shuffle
   // scan indices, CometBatchIterator for regular scan indices.
   private val inputIterators: Array[Object] = if (handleInputs.nonEmpty) {
-    handleInputs
+    assert(inputs.isEmpty, "handleInputs and inputs are mutually exclusive")
+    handleInputs.map(_.asInstanceOf[Object])
   } else {
     inputs.zipWithIndex.map {
       case (_, idx) if shuffleBlockIterators.contains(idx) =>
