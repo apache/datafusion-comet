@@ -2583,9 +2583,9 @@ index 6080a5e8e4b..ea058d57b4b 100644
            // Note that, if record level filtering is enabled, it should be a single record.
            // If no filter is pushed down to Parquet, it should be the total length of data.
 -          assert(actual > 1 && actual < data.length)
-+          // Only enable Comet test iff it's scan only, since with native execution
++          // Skip when Comet is enabled since with native execution
 +          // `stripSparkFilter` can't remove the native filter
-+          if (!isCometEnabled || isCometScanOnly) {
++          if (!isCometEnabled) {
 +            assert(actual > 1 && actual < data.length)
 +          }
          }
@@ -2596,9 +2596,9 @@ index 6080a5e8e4b..ea058d57b4b 100644
          // Note that, if record level filtering is enabled, it should be a single record.
          // If no filter is pushed down to Parquet, it should be the total length of data.
 -        assert(actual > 1 && actual < data.length)
-+        // Only enable Comet test iff it's scan only, since with native execution
++        // Skip when Comet is enabled since with native execution
 +        // `stripSparkFilter` can't remove the native filter
-+        if (!isCometEnabled || isCometScanOnly) {
++        if (!isCometEnabled) {
 +          assert(actual > 1 && actual < data.length)
 +        }
        }
@@ -3147,6 +3147,47 @@ index 7838e62013d..8fa09652921 100644
  
    import testImplicits._
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala
+index 89f22186f7e..425233f00b2 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/StateStoreSuite.scala
+@@ -32,7 +32,8 @@ import org.apache.hadoop.conf.Configuration
+ import org.apache.hadoop.fs._
+ import org.json4s.DefaultFormats
+ import org.json4s.jackson.JsonMethods
+-import org.scalatest.{BeforeAndAfter, PrivateMethodTester}
++import org.scalactic.source.Position
++import org.scalatest.{BeforeAndAfter, PrivateMethodTester, Tag}
+ import org.scalatest.concurrent.Eventually._
+ import org.scalatest.time.SpanSugar._
+ 
+@@ -40,6 +41,7 @@ import org.apache.spark._
+ import org.apache.spark.LocalSparkContext._
+ import org.apache.spark.sql.SparkSession
+ import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection, UnsafeRow}
++import org.apache.spark.sql.classic.{SparkSession => ClassicSparkSession}
+ import org.apache.spark.sql.catalyst.util.quietly
+ import org.apache.spark.sql.execution.streaming._
+ import org.apache.spark.sql.execution.streaming.state.StateStoreCoordinatorSuite.withCoordinatorRef
+@@ -128,6 +130,18 @@ class StateStoreSuite extends StateStoreSuiteBase[HDFSBackedStateStoreProvider]
+   import StateStoreTestsHelper._
+   import StateStoreCoordinatorSuite._
+ 
++  // Comet: skip this suite under Comet. The tests target streaming state-store internals
++  // (StateStore.get/put/commit), not SQL execution paths, and the `maintenance` test is
++  // flaky in CI. See https://github.com/apache/datafusion-comet/issues/4221
++  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
++      (implicit pos: Position): Unit = {
++    if (ClassicSparkSession.isCometEnabled) {
++      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
++    } else {
++      super.test(testName, testTags: _*)(testFun)
++    }
++  }
++
+   before {
+     StateStore.stop()
+     require(!StateStore.isMaintenanceRunning)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index c4b09c4b289..75c3437788e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
@@ -3596,7 +3637,7 @@ index f0f3f94b811..f77b54dcef9 100644
      if (testTags.exists(_.isInstanceOf[DisableAdaptiveExecution])) {
        super.test(testName, testTags: _*) {
          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-@@ -248,8 +278,24 @@ private[sql] trait SQLTestUtilsBase
+@@ -248,8 +278,15 @@ private[sql] trait SQLTestUtilsBase
      override protected def converter: ColumnNodeToExpressionConverter = self.spark.converter
    }
  
@@ -3604,15 +3645,6 @@ index f0f3f94b811..f77b54dcef9 100644
 +   * Whether Comet extension is enabled
 +   */
 +  protected def isCometEnabled: Boolean = SparkSession.isCometEnabled
-+
-+  /**
-+   * Whether Spark should only apply Comet scan optimization. This is only effective when
-+   * [[isCometEnabled]] returns true.
-+   */
-+  protected def isCometScanOnly: Boolean = {
-+    val v = System.getenv("ENABLE_COMET_SCAN_ONLY")
-+    v != null && v.toBoolean
-+  }
 +
    protected override def withSQLConf[T](pairs: (String, String)*)(f: => T): T = {
      SparkSession.setActiveSession(spark)
@@ -3634,7 +3666,7 @@ diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSessio
 index 245219c1756..a611836f086 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -75,6 +75,27 @@ trait SharedSparkSessionBase
+@@ -75,6 +75,21 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -3645,18 +3677,12 @@ index 245219c1756..a611836f086 100644
 +        .set("spark.comet.enabled", "true")
 +        .set("spark.comet.parquet.respectFilterPushdown", "true")
 +
-+      if (!isCometScanOnly) {
-+        conf
-+          .set("spark.comet.exec.enabled", "true")
-+          .set("spark.shuffle.manager",
-+            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+          .set("spark.comet.exec.shuffle.enabled", "true")
-+          .set("spark.comet.memoryOverhead", "10g")
-+      } else {
-+        conf
-+          .set("spark.comet.exec.enabled", "false")
-+          .set("spark.comet.exec.shuffle.enabled", "false")
-+      }
++      conf
++        .set("spark.comet.exec.enabled", "true")
++        .set("spark.shuffle.manager",
++          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++        .set("spark.comet.exec.shuffle.enabled", "true")
++        .set("spark.comet.memoryOverhead", "10g")
 +
 +    }
      conf.set(
@@ -3783,7 +3809,7 @@ diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.sca
 index a394d0b7393..a4bc3d3fd8e 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-@@ -53,24 +53,41 @@ object TestHive
+@@ -53,24 +53,34 @@ object TestHive
      new SparkContext(
        System.getProperty("spark.sql.test.master", "local[1]"),
        "TestSQLContext",
@@ -3823,18 +3849,11 @@ index a394d0b7393..a4bc3d3fd8e 100644
 +            .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +            .set("spark.comet.enabled", "true")
 +
-+          val v = System.getenv("ENABLE_COMET_SCAN_ONLY")
-+          if (v == null || !v.toBoolean) {
-+            conf
-+              .set("spark.comet.exec.enabled", "true")
-+              .set("spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+              .set("spark.comet.exec.shuffle.enabled", "true")
-+          } else {
-+            conf
-+              .set("spark.comet.exec.enabled", "false")
-+              .set("spark.comet.exec.shuffle.enabled", "false")
-+          }
++          conf
++            .set("spark.comet.exec.enabled", "true")
++            .set("spark.shuffle.manager",
++              "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .set("spark.comet.exec.shuffle.enabled", "true")
 +        }
 +
 +        conf

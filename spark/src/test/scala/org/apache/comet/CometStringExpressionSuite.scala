@@ -582,7 +582,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("substring - decomposed and combining unicode characters") {
-    val data = edgeCases.map(s => (s, "")) :+ ("", "") :+ (null, "")
+    val data = edgeCases.map(s => (s, "")) :+ (("", "")) :+ ((null, ""))
     withParquetTable(data, "tbl") {
       // first code point only — exposes decomposed vs precomposed difference
       checkSparkAnswerAndOperator("SELECT substring(_1, 1, 1) FROM tbl")
