@@ -21,7 +21,7 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[math]-->
 
-### Abs
+## Abs
 
 The following cases are not supported by Comet:
 

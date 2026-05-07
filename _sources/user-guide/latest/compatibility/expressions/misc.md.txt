@@ -21,31 +21,31 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[misc]-->
 
-### CheckOverflow
+## CheckOverflow
 
 The following cases are not supported by Comet:
 
 - Only `DecimalType` is supported
 
-### KnownFloatingPointNormalized
+## KnownFloatingPointNormalized
 
 The following cases are not supported by Comet:
 
 - Only supports `NormalizeNaNAndZero` child expressions
 
-### Literal
+## Literal
 
 The following cases are not supported by Comet:
 
 - Not all data types are supported for literal values
 
-### MakeDecimal
+## MakeDecimal
 
 The following cases are not supported by Comet:
 
 - Only `LongType` input is supported
 
-### SortOrder
+## SortOrder
 
 The following incompatibilities cause `SortOrder` to fall back to Spark by default. Set `spark.comet.expression.SortOrder.allowIncompatible=true` to enable Comet acceleration despite these differences.
 

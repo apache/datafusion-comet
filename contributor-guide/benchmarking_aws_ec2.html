@@ -65,6 +65,8 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="TPC-DS Benchmarking with spark-sql-perf" href="benchmarking_spark_sql_perf.html" />
+    <link rel="prev" title="Comet Benchmarking on macOS" href="benchmarking_macos.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -148,22 +150,22 @@ under the License.
   <ul class="bd-navbar-elements navbar-nav">
     
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../user-guide/index.html">
     User Guide
   </a>
 </li>
 
 
-<li class="nav-item ">
+<li class="nav-item current active">
   <a class="nav-link nav-internal" href="index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -243,8 +245,6 @@ under the License.
       
       
       
-        
-      
       <dialog id="pst-primary-sidebar-modal"></dialog>
       <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
         
@@ -262,22 +262,22 @@ under the License.
   <ul class="bd-navbar-elements navbar-nav">
     
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../user-guide/index.html">
     User Guide
   </a>
 </li>
 
 
-<li class="nav-item ">
+<li class="nav-item current active">
   <a class="nav-link nav-internal" href="index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -349,10 +349,41 @@ under the License.
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="../about/index.html">Comet Overview</a></li>
+<ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="index.html">Contributor Guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Contributor Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql_error_propagation.html">ANSI Error Propagation</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="benchmark-results/tpc-h.html">Apache DataFusion Comet: Benchmarks Derived From TPC-H</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-results/tpc-ds.html">Apache DataFusion Comet: Benchmarks Derived From TPC-DS</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmarking_macos.html">Comet Benchmarking on macOS</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Comet Benchmarking in EC2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark_expressions_support.html">Supported Spark Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="profiling.html">Profiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l2"><a class="reference internal" href="release_process.html">Release Process</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../about/gluten_comparison.html">Comparison with Gluten</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
 </ul>
 
@@ -396,6 +427,12 @@ under the License.
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="benchmarking.html" class="nav-link">Comet Benchmarking Guide</a></li>
+    
     <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comet Benchmarking in EC2</span></li>
   </ul>
 </nav>
@@ -568,6 +605,24 @@ python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class
                 <footer class="prev-next-footer d-print-none">
                   
 <div class="prev-next-area">
+    <a class="left-prev"
+       href="benchmarking_macos.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Comet Benchmarking on macOS</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="benchmarking_spark_sql_perf.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">TPC-DS Benchmarking with spark-sql-perf</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
 </div>
                 </footer>
               

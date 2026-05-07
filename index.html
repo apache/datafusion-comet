@@ -65,7 +65,7 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Comet Overview" href="about/index.html" />
+    <link rel="next" title="Comet User Guide" href="user-guide/index.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -149,13 +149,6 @@ under the License.
   <ul class="bd-navbar-elements navbar-nav">
     
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="user-guide/index.html">
     User Guide
   </a>
@@ -165,6 +158,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -263,13 +263,6 @@ under the License.
   <ul class="bd-navbar-elements navbar-nav">
     
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="user-guide/index.html">
     User Guide
   </a>
@@ -279,6 +272,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -351,9 +351,9 @@ under the License.
   <div class="bd-toc-item active">
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="about/index.html">Comet Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="user-guide/index.html">User Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="contributor-guide/index.html">Contributor Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="about/gluten_comparison.html">Comparison with Gluten</a></li>
 <li class="toctree-l1"><a class="reference internal" href="asf/index.html">ASF Links</a></li>
 </ul>
 
@@ -425,16 +425,11 @@ Spark ecosystem without requiring any code changes.</p>
 <section id="run-spark-queries-at-datafusion-speeds">
 <h2>Run Spark Queries at DataFusion Speeds<a class="headerlink" href="#run-spark-queries-at-datafusion-speeds" title="Link to this heading">#</a></h2>
 <p>Comet delivers a performance speedup for many queries, enabling faster data processing and shorter time-to-insights.</p>
-<p>The following chart shows the time it takes to run the 22 TPC-H queries against 100 GB of data in Parquet format
-using a single executor with 8 cores. See the <a class="reference external" href="https://datafusion.apache.org/comet/contributor-guide/benchmarking.html">Comet Benchmarking Guide</a>
-for details of the environment used for these benchmarks.</p>
-<p>When using Comet, the overall run time is reduced from 687 seconds to 302 seconds, a 2.2x speedup.</p>
-<p><img alt="" src="_static/images/benchmark-results/0.11.0/tpch_allqueries.png" /></p>
+<p>The following charts demonstrate Comet accelerating TPC-H &#64; 1 TB. See the <a class="reference external" href="https://datafusion.apache.org/comet/contributor-guide/benchmarking.html">Comet Benchmarking Guide</a>
+for details.</p>
+<p><img alt="" src="_images/tpch_allqueries.png" /></p>
 <p>Here is a breakdown showing relative performance of Spark and Comet for each TPC-H query.</p>
-<p><img alt="" src="_static/images/benchmark-results/0.11.0/tpch_queries_compare.png" /></p>
-<p>These benchmarks can be reproduced in any environment using the documentation in the
-<a class="reference internal" href="contributor-guide/benchmarking.html"><span class="std std-doc">Comet Benchmarking Guide</span></a>. We encourage
-you to run your own benchmarks.</p>
+<p><img alt="" src="_images/tpch_queries_compare.png" /></p>
 </section>
 <section id="use-commodity-hardware">
 <h2>Use Commodity Hardware<a class="headerlink" href="#use-commodity-hardware" title="Link to this heading">#</a></h2>
@@ -447,12 +442,22 @@ ensures cost-effectiveness and scalability for your Spark deployments.</p>
 <p>Comet aims for 100% compatibility with all supported versions of Apache Spark, allowing you to integrate Comet into
 your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
 the benefits of Comet’s acceleration capabilities without disrupting your Spark applications.</p>
+<p>The project strives to keep feature parity with Apache Spark, that is, users should expect the same behavior (w.r.t
+features, configurations, query results, etc) with Comet turned on or turned off in their Spark jobs. In addition,
+the Comet extension automatically detects unsupported features and falls back to the Spark engine.</p>
 </section>
 <section id="tight-integration-with-apache-datafusion">
 <h2>Tight Integration with Apache DataFusion<a class="headerlink" href="#tight-integration-with-apache-datafusion" title="Link to this heading">#</a></h2>
 <p>Comet tightly integrates with the core Apache DataFusion project, leveraging its powerful execution engine. With
 seamless interoperability between Comet and DataFusion, you can achieve optimal performance and efficiency in your
 Spark workloads.</p>
+</section>
+<section id="architecture">
+<h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h2>
+<p>The following diagram provides an overview of Comet’s architecture.</p>
+<p><img alt="Comet Overview" src="_images/comet-overview.png" /></p>
+<p>The following diagram shows how Comet integrates with Apache Spark.</p>
+<p><img alt="Comet System Diagram" src="_images/comet-system-diagram.png" /></p>
 </section>
 <section id="active-community">
 <h2>Active Community<a class="headerlink" href="#active-community" title="Link to this heading">#</a></h2>
@@ -465,7 +470,6 @@ capabilities of Apache DataFusion and accelerating the performance of Apache Spa
 <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/installation.html">installation instructions</a>. Join the
 <a class="reference external" href="https://datafusion.apache.org/contributor-guide/communication.html">DataFusion Slack and Discord channels</a> to connect
 with other users, ask questions, and share your experiences with Comet.</p>
-<p>Follow <a class="reference external" href="https://datafusion.apache.org/comet/about/index.html">Apache DataFusion Comet Overview</a> to get more detailed information</p>
 </section>
 <section id="contributing">
 <h2>Contributing<a class="headerlink" href="#contributing" title="Link to this heading">#</a></h2>
@@ -489,11 +493,11 @@ shaping the future of Comet. Check out our
                   
 <div class="prev-next-area">
     <a class="right-next"
-       href="about/index.html"
+       href="user-guide/index.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comet Overview</p>
+        <p class="prev-next-title">Comet User Guide</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

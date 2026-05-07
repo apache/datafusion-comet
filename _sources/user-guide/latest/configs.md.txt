@@ -27,7 +27,6 @@ Comet provides the following configuration settings.
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
-| `spark.comet.scan.enabled` | Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. | true |
 | `spark.comet.scan.icebergNative.dataFileConcurrencyLimit` | The number of Iceberg data files to read concurrently within a single task. Higher values improve throughput for tables with many small files by overlapping I/O latency, but increase memory usage. Values between 2 and 8 are suggested. | 1 |
 | `spark.comet.scan.icebergNative.enabled` | Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark's DataSource V2 API for better performance. | true |
 | `spark.comet.scan.unsignedSmallIntSafetyCheck` | Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to ShortType. When this config is true (default), Comet falls back to Spark for ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned UINT_8 (may produce different results). Set to false to allow native execution of ShortType columns if you know your data does not contain unsigned UINT_8 columns from improperly encoded Parquet files. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/compatibility.html). | true |
@@ -147,6 +146,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.memoryOverhead` | The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. | 1024 MiB |
 | `spark.comet.parquet.write.enabled` | Whether to enable native Parquet write through Comet. When enabled, Comet will intercept Parquet write operations and execute them natively. This feature is highly experimental and only partially implemented. It should not be used in production. It can be overridden by the environment variable `ENABLE_COMET_WRITE`. | false |
 | `spark.comet.scan.csv.v2.enabled` | Whether to use the native Comet V2 CSV reader for improved performance. Default: false (uses standard Spark CSV reader) Experimental: Performance benefits are workload-dependent. | false |
+| `spark.comet.scan.enabled` | Whether to enable native scans. Intended for use in Comet's own test suites to selectively disable native scans; not intended for production use. | true |
 | `spark.comet.testing.strict` | Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason. It can be overridden by the environment variable `ENABLE_COMET_STRICT_TESTING`. | false |
 <!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->

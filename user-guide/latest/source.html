@@ -149,13 +149,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="../index.html">
     User Guide
@@ -166,6 +159,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -261,13 +261,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="../index.html">
     User Guide
@@ -278,6 +271,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -350,7 +350,6 @@ under the License.
   <div class="bd-toc-item active">
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
 <ul class="current">
-<li class="toctree-l1"><a class="reference internal" href="../../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">User Guide</a><ul class="current">
 <li class="toctree-l2 current"><a class="reference internal" href="index.html">0.16.0-SNAPSHOT</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="installation.html">Installing Comet</a></li>
@@ -375,6 +374,7 @@ under the License.
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../contributor-guide/index.html">Contributor Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../about/gluten_comparison.html">Comparison with Gluten</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../asf/index.html">ASF Links</a></li>
 </ul>
 
@@ -464,20 +464,8 @@ under the License.
 <p>It is sometimes preferable to build from source for a specific platform.</p>
 <section id="using-a-published-source-release">
 <h2>Using a Published Source Release<a class="headerlink" href="#using-a-published-source-release" title="Link to this heading">#</a></h2>
-<p>Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/</p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>Pick<span class="w"> </span>the<span class="w"> </span>latest<span class="w"> </span>version
-<span class="go">export COMET_VERSION=0.16.0-SNAPSHOT</span>
-<span class="gp"># </span>Download<span class="w"> </span>the<span class="w"> </span>tarball
-<span class="go">curl -O &quot;https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.16.0-SNAPSHOT/apache-datafusion-comet-0.16.0-SNAPSHOT.tar.gz&quot;</span>
-<span class="gp"># </span>Unpack
-<span class="go">tar -xzf apache-datafusion-comet-0.16.0-SNAPSHOT.tar.gz</span>
-<span class="go">cd apache-datafusion-comet-0.16.0-SNAPSHOT</span>
-</pre></div>
-</div>
-<p>Build</p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">make release-nogit PROFILES=&quot;-Pspark-4.1&quot;</span>
-</pre></div>
-</div>
+<p>This documentation is for the current development version of Comet. Published source releases are only available for released versions.
+To use this version of Comet, see the following section on building from the GitHubn repository.</p>
 </section>
 <section id="building-from-the-github-repository">
 <h2>Building from the GitHub repository<a class="headerlink" href="#building-from-the-github-repository" title="Link to this heading">#</a></h2>

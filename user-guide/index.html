@@ -66,7 +66,7 @@ under the License.
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Comet 0.16.0-SNAPSHOT User Guide" href="latest/index.html" />
-    <link rel="prev" title="Comparison of Comet and Gluten" href="../about/gluten_comparison.html" />
+    <link rel="prev" title="Comet Accelerator for Apache Spark and Apache Iceberg" href="../index.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -149,13 +149,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="#">
     User Guide
@@ -166,6 +159,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -261,13 +261,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="#">
     User Guide
@@ -278,6 +271,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -350,7 +350,6 @@ under the License.
   <div class="bd-toc-item active">
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
 <ul class="current">
-<li class="toctree-l1"><a class="reference internal" href="../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">User Guide</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="latest/index.html">0.16.0-SNAPSHOT</a></li>
 <li class="toctree-l2"><a class="reference internal" href="0.15/index.html">0.15.x</a></li>
@@ -360,6 +359,7 @@ under the License.
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributor-guide/index.html">Contributor Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../about/gluten_comparison.html">Comparison with Gluten</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
 </ul>
 
@@ -440,86 +440,12 @@ under the License.
 -->
 <section id="comet-user-guide">
 <h1>Comet User Guide<a class="headerlink" href="#comet-user-guide" title="Link to this heading">#</a></h1>
+<p>The Comet user guide covers installation, configuration, supported data sources, supported operators
+and expressions, and tuning advice for running Apache Spark with Comet acceleration.</p>
+<p>User guides are published for each release. The development snapshot tracks the upcoming release and
+may include features and fixes that are not yet generally available. Select a version from the
+navigation menu to view its guide.</p>
 <div class="toctree-wrapper compound">
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guides</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="latest/index.html">0.16.0-SNAPSHOT</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="latest/installation.html">Installing Comet</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/source.html">Building From Source</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/operators.html">Supported Operators</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/expressions.html">Supported Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/configs.html">Configuration Settings</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/compatibility/index.html">Compatibility Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/understanding-comet-plans.html">Understanding Comet Plans</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/tuning.html">Tuning Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/metrics.html">Metrics Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="latest/kubernetes.html">Kubernetes Guide</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="0.15/index.html">0.15.x</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="0.15/installation.html">Installing Comet</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/source.html">Building From Source</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/operators.html">Supported Operators</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/expressions.html">Supported Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/configs.html">Configuration Settings</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/compatibility.html">Compatibility Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/tuning.html">Tuning Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/metrics.html">Metrics Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.15/kubernetes.html">Kubernetes Guide</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="0.14/index.html">0.14.x</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="0.14/installation.html">Installing Comet</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/source.html">Building From Source</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/operators.html">Supported Operators</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/expressions.html">Supported Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/configs.html">Configuration Settings</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/compatibility.html">Compatibility Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/tuning.html">Tuning Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/metrics.html">Metrics Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.14/kubernetes.html">Kubernetes Guide</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="0.13/index.html">0.13.x</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="0.13/installation.html">Installing Comet</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/source.html">Building From Source</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/operators.html">Supported Operators</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/expressions.html">Supported Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/configs.html">Configuration Settings</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/compatibility.html">Compatibility Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/tuning.html">Tuning Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/metrics.html">Metrics Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.13/kubernetes.html">Kubernetes Guide</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="0.12/index.html">0.12.x</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="0.12/installation.html">Installing Comet</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/source.html">Building From Source</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/operators.html">Supported Operators</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/expressions.html">Supported Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/configs.html">Configuration Settings</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/compatibility.html">Compatibility Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/tuning.html">Tuning Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/metrics.html">Metrics Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="0.12/kubernetes.html">Kubernetes Guide</a></li>
-</ul>
-</li>
-</ul>
 </div>
 </section>
 
@@ -534,12 +460,12 @@ under the License.
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="../about/gluten_comparison.html"
+       href="../index.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Comparison of Comet and Gluten</p>
+        <p class="prev-next-title">Comet Accelerator for Apache Spark and Apache Iceberg</p>
       </div>
     </a>
     <a class="right-next"

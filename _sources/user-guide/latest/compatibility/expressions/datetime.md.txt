@@ -44,7 +44,7 @@ If you need to process dates far in the future with accurate timezone handling, 
 
 <!--BEGIN:EXPR_COMPAT[datetime]-->
 
-### DateFormatClass
+## DateFormatClass
 
 The following incompatibilities cause `DateFormatClass` to fall back to Spark by default. Set `spark.comet.expression.DateFormatClass.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
@@ -77,31 +77,31 @@ The following cases are not supported by Comet:
   - `yyyyMM`
   - `yyyyMMdd`
 
-### FromUnixTime
+## FromUnixTime
 
 The following incompatibilities cause `FromUnixTime` to fall back to Spark by default. Set `spark.comet.expression.FromUnixTime.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`. DataFusion's valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)
 
-### Hour
+## Hour
 
 The following incompatibilities cause `Hour` to fall back to Spark by default. Set `spark.comet.expression.Hour.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
 
-### Minute
+## Minute
 
 The following incompatibilities cause `Minute` to fall back to Spark by default. Set `spark.comet.expression.Minute.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
 
-### Second
+## Second
 
 The following incompatibilities cause `Second` to fall back to Spark by default. Set `spark.comet.expression.Second.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
 
-### TruncDate
+## TruncDate
 
 The following incompatibilities cause `TruncDate` to fall back to Spark by default. Set `spark.comet.expression.TruncDate.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
@@ -111,13 +111,13 @@ The following cases are not supported by Comet:
 
 - Only the following formats are supported: year, yyyy, yy, quarter, mon, month, mm, week
 
-### TruncTimestamp
+## TruncTimestamp
 
 The following incompatibilities cause `TruncTimestamp` to fall back to Spark by default. Set `spark.comet.expression.TruncTimestamp.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)
 
-### UnixTimestamp
+## UnixTimestamp
 
 The following cases are not supported by Comet:
 

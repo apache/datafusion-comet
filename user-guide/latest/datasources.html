@@ -149,13 +149,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="../index.html">
     User Guide
@@ -166,6 +159,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -261,13 +261,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="../index.html">
     User Guide
@@ -278,6 +271,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -350,7 +350,6 @@ under the License.
   <div class="bd-toc-item active">
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
 <ul class="current">
-<li class="toctree-l1"><a class="reference internal" href="../../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">User Guide</a><ul class="current">
 <li class="toctree-l2 current"><a class="reference internal" href="index.html">0.16.0-SNAPSHOT</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="installation.html">Installing Comet</a></li>
@@ -375,6 +374,7 @@ under the License.
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../contributor-guide/index.html">Contributor Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../about/gluten_comparison.html">Comparison with Gluten</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../asf/index.html">ASF Links</a></li>
 </ul>
 
@@ -465,10 +465,9 @@ under the License.
 <h2>File Formats<a class="headerlink" href="#file-formats" title="Link to this heading">#</a></h2>
 <section id="parquet">
 <h3>Parquet<a class="headerlink" href="#parquet" title="Link to this heading">#</a></h3>
-<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.enabled</span></code> is enabled, Parquet scans will be performed natively by Comet if all data types
-in the schema are supported. When this option is not enabled, the scan will fall back to Spark. In this case,
-enabling <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.parquet.enabled</span></code> will immediately convert the data into Arrow format, allowing native
-execution to happen after that, but the process may not be efficient.</p>
+<p>Parquet scans are performed natively by Comet if all data types in the schema are supported. When the scan
+falls back to Spark, enabling <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.parquet.enabled</span></code> will immediately convert the data into
+Arrow format, allowing native execution to happen after that, but the process may not be efficient.</p>
 </section>
 <section id="apache-iceberg">
 <h3>Apache Iceberg<a class="headerlink" href="#apache-iceberg" title="Link to this heading">#</a></h3>

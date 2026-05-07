@@ -21,50 +21,50 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[string]-->
 
-### Concat
+## Concat
 
 The following incompatibilities cause `Concat` to fall back to Spark by default. Set `spark.comet.expression.Concat.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - CONCAT supports only string input parameters
 
-### GetJsonObject
+## GetJsonObject
 
 The following incompatibilities cause `GetJsonObject` to fall back to Spark by default. Set `spark.comet.expression.GetJsonObject.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Spark allows single-quoted JSON and unescaped control characters which Comet does not support
 
-### InitCap
+## InitCap
 
 The following incompatibilities cause `InitCap` to fall back to Spark by default. Set `spark.comet.expression.InitCap.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Treats hyphen as a word separator (e.g. `robert rose-smith` produces `Robert Rose-Smith` instead of Spark's `Robert Rose-smith`) (https://github.com/apache/datafusion-comet/issues/1052)
 
-### Left
+## Left
 
 The following cases are not supported by Comet:
 
 - Only supports `BinaryType` and `StringType` input
 - The length argument must be a literal value
 
-### Length
+## Length
 
 The following cases are not supported by Comet:
 
 - `BinaryType` input is not supported
 
-### Lower
+## Lower
 
 The following incompatibilities cause `Lower` to fall back to Spark by default. Set `spark.comet.expression.Lower.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` to enable.
 
-### RLike
+## RLike
 
 The following incompatibilities cause `RLike` to fall back to Spark by default. Set `spark.comet.expression.RLike.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Uses Rust regexp engine, which has different behavior to Java regexp engine
 
-### RegExpReplace
+## RegExpReplace
 
 The following incompatibilities cause `RegExpReplace` to fall back to Spark by default. Set `spark.comet.expression.RegExpReplace.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
@@ -74,43 +74,43 @@ The following cases are not supported by Comet:
 
 - Only supports `regexp_replace` with an offset of 1 (no offset)
 
-### Reverse
+## Reverse
 
 The following incompatibilities cause `Reverse` to fall back to Spark by default. Set `spark.comet.expression.Reverse.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - reverse on array containing binary is not supported
 
-### Right
+## Right
 
 The following cases are not supported by Comet:
 
 - Only supports `StringType` input
 
-### StringLPad
+## StringLPad
 
 The following cases are not supported by Comet:
 
 - Scalar values are not supported for the `str` argument. Only scalar values are supported for the `pad` argument.
 
-### StringRPad
+## StringRPad
 
 The following cases are not supported by Comet:
 
 - Scalar values are not supported for the `str` argument. Only scalar values are supported for the `pad` argument.
 
-### StringRepeat
+## StringRepeat
 
 The following differences from Spark are always present and do not require any additional configuration:
 
 - A negative argument for the number of times to repeat throws an exception instead of returning an empty string as Spark does
 
-### StringSplit
+## StringSplit
 
 The following incompatibilities cause `StringSplit` to fall back to Spark by default. Set `spark.comet.expression.StringSplit.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Regex engine differences between Java and Rust
 
-### Upper
+## Upper
 
 The following incompatibilities cause `Upper` to fall back to Spark by default. Set `spark.comet.expression.Upper.allowIncompatible=true` to enable Comet acceleration despite these differences.
 

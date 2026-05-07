@@ -149,13 +149,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="../../../index.html">
     User Guide
@@ -166,6 +159,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../../../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -261,13 +261,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="../../../index.html">
     User Guide
@@ -278,6 +271,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../../../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -350,7 +350,6 @@ under the License.
   <div class="bd-toc-item active">
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
 <ul class="current">
-<li class="toctree-l1"><a class="reference internal" href="../../../../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../../../index.html">User Guide</a><ul class="current">
 <li class="toctree-l2 current"><a class="reference internal" href="../../index.html">0.16.0-SNAPSHOT</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="../../installation.html">Installing Comet</a></li>
@@ -383,6 +382,7 @@ under the License.
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../contributor-guide/index.html">Contributor Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../about/gluten_comparison.html">Comparison with Gluten</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../asf/index.html">ASF Links</a></li>
 </ul>
 
@@ -498,8 +498,9 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>Falling back to Spark for these specific operations</p></li>
 </ul>
 <!--BEGIN:EXPR_COMPAT[datetime]-->
+</section>
 <section id="dateformatclass">
-<h3>DateFormatClass<a class="headerlink" href="#dateformatclass" title="Link to this heading">#</a></h3>
+<h2>DateFormatClass<a class="headerlink" href="#dateformatclass" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">DateFormatClass</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateFormatClass.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Non-UTC timezones may produce different results than Spark</p></li>
@@ -536,35 +537,35 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 </ul>
 </section>
 <section id="fromunixtime">
-<h3>FromUnixTime<a class="headerlink" href="#fromunixtime" title="Link to this heading">#</a></h3>
+<h2>FromUnixTime<a class="headerlink" href="#fromunixtime" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">FromUnixTime</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Only supports the default datetime format pattern <code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code>. DataFusion’s valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)</p></li>
 </ul>
 </section>
 <section id="hour">
-<h3>Hour<a class="headerlink" href="#hour" title="Link to this heading">#</a></h3>
+<h2>Hour<a class="headerlink" href="#hour" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Hour</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Hour.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
 </ul>
 </section>
 <section id="minute">
-<h3>Minute<a class="headerlink" href="#minute" title="Link to this heading">#</a></h3>
+<h2>Minute<a class="headerlink" href="#minute" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Minute</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Minute.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
 </ul>
 </section>
 <section id="second">
-<h3>Second<a class="headerlink" href="#second" title="Link to this heading">#</a></h3>
+<h2>Second<a class="headerlink" href="#second" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Second</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Second.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
 </ul>
 </section>
 <section id="truncdate">
-<h3>TruncDate<a class="headerlink" href="#truncdate" title="Link to this heading">#</a></h3>
+<h2>TruncDate<a class="headerlink" href="#truncdate" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">TruncDate</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncDate.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Non-literal format strings will throw an exception instead of returning NULL</p></li>
@@ -575,20 +576,19 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 </ul>
 </section>
 <section id="trunctimestamp">
-<h3>TruncTimestamp<a class="headerlink" href="#trunctimestamp" title="Link to this heading">#</a></h3>
+<h2>TruncTimestamp<a class="headerlink" href="#trunctimestamp" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)</p></li>
 </ul>
 </section>
 <section id="unixtimestamp">
-<h3>UnixTimestamp<a class="headerlink" href="#unixtimestamp" title="Link to this heading">#</a></h3>
+<h2>UnixTimestamp<a class="headerlink" href="#unixtimestamp" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">DateType</span></code> inputs are supported. <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> is not supported because Comet incorrectly applies timezone conversion to TimestampNTZ values.</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
-</section>
 </section>
 </section>
 

@@ -23,23 +23,11 @@ It is sometimes preferable to build from source for a specific platform.
 
 ## Using a Published Source Release
 
-Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/
 
-```console
-# Pick the latest version
-export COMET_VERSION=0.16.0-SNAPSHOT
-# Download the tarball
-curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.16.0-SNAPSHOT/apache-datafusion-comet-0.16.0-SNAPSHOT.tar.gz"
-# Unpack
-tar -xzf apache-datafusion-comet-0.16.0-SNAPSHOT.tar.gz
-cd apache-datafusion-comet-0.16.0-SNAPSHOT
-```
+This documentation is for the current development version of Comet. Published source releases are only available for released versions.
+To use this version of Comet, see the following section on building from the GitHubn repository.
 
-Build
 
-```console
-make release-nogit PROFILES="-Pspark-4.1"
-```
 
 ## Building from the GitHub repository
 

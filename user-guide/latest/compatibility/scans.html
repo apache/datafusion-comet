@@ -149,13 +149,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="../../index.html">
     User Guide
@@ -166,6 +159,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -261,13 +261,6 @@ under the License.
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../about/index.html">
-    Comet Overview
-  </a>
-</li>
-
-
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="../../index.html">
     User Guide
@@ -278,6 +271,13 @@ under the License.
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../../contributor-guide/index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../about/gluten_comparison.html">
+    Comparison with Gluten
   </a>
 </li>
 
@@ -350,7 +350,6 @@ under the License.
   <div class="bd-toc-item active">
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
 <ul class="current">
-<li class="toctree-l1"><a class="reference internal" href="../../../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../../index.html">User Guide</a><ul class="current">
 <li class="toctree-l2 current"><a class="reference internal" href="../index.html">0.16.0-SNAPSHOT</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="../installation.html">Installing Comet</a></li>
@@ -383,6 +382,7 @@ under the License.
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../../contributor-guide/index.html">Contributor Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../about/gluten_comparison.html">Comparison with Gluten</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../asf/index.html">ASF Links</a></li>
 </ul>
 
@@ -510,7 +510,6 @@ columns are always safe because they can only come from signed <code class="docu
 <li><p>Spark’s Datasource V2 API. When <code class="docutils literal notranslate"><span class="pre">spark.sql.sources.useV1SourceList</span></code> does not include <code class="docutils literal notranslate"><span class="pre">parquet</span></code>, Spark uses the
 V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API.</p></li>
 <li><p>Spark metadata columns (e.g., <code class="docutils literal notranslate"><span class="pre">_metadata.file_path</span></code>)</p></li>
-<li><p>No support for AQE Dynamic Partition Pruning (DPP). Non-AQE DPP is supported.</p></li>
 </ul>
 <p>The following shared limitation may produce incorrect results without falling back to Spark:</p>
 <ul class="simple">
@@ -543,6 +542,21 @@ The <code class="docutils literal notranslate"><span class="pre">native_datafusi
 <li><p>Duplicate field names in case-insensitive mode (e.g., a Parquet file with both <code class="docutils literal notranslate"><span class="pre">B</span></code> and <code class="docutils literal notranslate"><span class="pre">b</span></code> columns)
 are detected at read time and raise a <code class="docutils literal notranslate"><span class="pre">SparkRuntimeException</span></code> with error class <code class="docutils literal notranslate"><span class="pre">_LEGACY_ERROR_TEMP_2093</span></code>,
 matching Spark’s behavior.</p></li>
+</ul>
+<p>The following <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> limitations may produce incorrect results on Spark versions prior to 4.0
+without falling back to Spark:</p>
+<ul class="simple">
+<li><p>Reading <code class="docutils literal notranslate"><span class="pre">TimestampLTZ</span></code> as <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code>. On Spark 3.x, Spark raises an error per
+<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-36182">SPARK-36182</a> because LTZ encodes UTC-adjusted instants
+that cannot be safely reinterpreted as timezone-free values. Comet does not raise this error and instead
+returns the raw UTC instant as a <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code> value. This applies to all LTZ physical encodings (INT96,
+TIMESTAMP_MICROS, TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
+(<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-47447">SPARK-47447</a>) and Comet matches Spark’s behavior.
+See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4219">#4219</a>.</p></li>
+<li><p>Unsupported Parquet type conversions. Spark raises schema incompatibility errors for certain conversions
+(e.g., reading INT32 as BIGINT, reading BINARY as TIMESTAMP, unsupported decimal precision changes).
+The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan may not detect these mismatches and could return unexpected values instead
+of raising an error. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3720">#3720</a>.</p></li>
 </ul>
 </section>
 <section id="native-iceberg-compat-limitations">

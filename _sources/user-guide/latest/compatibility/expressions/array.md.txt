@@ -21,19 +21,19 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[array]-->
 
-### ArrayExcept
+## ArrayExcept
 
 The following incompatibilities cause `ArrayExcept` to fall back to Spark by default. Set `spark.comet.expression.ArrayExcept.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Null handling and ordering may differ from Spark
 
-### ArrayFilter
+## ArrayFilter
 
 The following cases are not supported by Comet:
 
 - Only supports `array_filter` when the function is `IsNotNull` (used by `array_compact`)
 
-### ArrayIntersect
+## ArrayIntersect
 
 The following incompatibilities cause `ArrayIntersect` to fall back to Spark by default. Set `spark.comet.expression.ArrayIntersect.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
@@ -43,31 +43,31 @@ The following cases are not supported by Comet:
 
 - array_intersect on collated strings is not supported.
 
-### ArrayJoin
+## ArrayJoin
 
 The following incompatibilities cause `ArrayJoin` to fall back to Spark by default. Set `spark.comet.expression.ArrayJoin.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Null handling may differ from Spark
 
-### ArraysZip
+## ArraysZip
 
 The following cases are not supported by Comet:
 
 - Not all input data types are supported; falls back to Spark for unsupported types
 
-### ElementAt
+## ElementAt
 
 The following cases are not supported by Comet:
 
 - Input must be an array. `Map` inputs are not supported.
 
-### Size
+## Size
 
 The following cases are not supported by Comet:
 
 - Only supports `ArrayType` input; `MapType` input is not supported
 
-### SortArray
+## SortArray
 
 The following incompatibilities cause `SortArray` to fall back to Spark by default. Set `spark.comet.expression.SortArray.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
