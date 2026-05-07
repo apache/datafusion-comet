@@ -2088,6 +2088,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("group by array of map falls back to Spark (issue #4123)") {
+    assume(isSpark41Plus, "Spark 4.1+ supports grouping on map-containing types")
     withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
       checkSparkAnswerAndFallbackReason(
         """SELECT a, COUNT(*)
