@@ -61,11 +61,25 @@ Comet aims for 100% compatibility with all supported versions of Apache Spark, a
 your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
 the benefits of Comet's acceleration capabilities without disrupting your Spark applications.
 
+The project strives to keep feature parity with Apache Spark, that is, users should expect the same behavior (w.r.t
+features, configurations, query results, etc) with Comet turned on or turned off in their Spark jobs. In addition,
+the Comet extension automatically detects unsupported features and falls back to the Spark engine.
+
 ## Tight Integration with Apache DataFusion
 
 Comet tightly integrates with the core Apache DataFusion project, leveraging its powerful execution engine. With
 seamless interoperability between Comet and DataFusion, you can achieve optimal performance and efficiency in your
 Spark workloads.
+
+## Architecture
+
+The following diagram provides an overview of Comet's architecture.
+
+![Comet Overview](_static/images/comet-overview.png)
+
+The following diagram shows how Comet integrates with Apache Spark.
+
+![Comet System Diagram](_static/images/comet-system-diagram.png)
 
 ## Active Community
 
@@ -79,8 +93,6 @@ To get started with Apache DataFusion Comet, follow the
 [DataFusion Slack and Discord channels](https://datafusion.apache.org/contributor-guide/communication.html) to connect
 with other users, ask questions, and share your experiences with Comet.
 
-Follow [Apache DataFusion Comet Overview](https://datafusion.apache.org/comet/about/index.html) to get more detailed information
-
 ## Contributing
 
 We welcome contributions from the community to help improve and enhance Apache DataFusion Comet. Whether it's fixing
@@ -93,8 +105,8 @@ shaping the future of Comet. Check out our
 :caption: Index
 :hidden:
 
-Comet Overview <about/index>
 User Guide <user-guide/index>
 Contributor Guide <contributor-guide/index>
+Comparison with Gluten <about/gluten_comparison>
 ASF Links <asf/index>
 ```
