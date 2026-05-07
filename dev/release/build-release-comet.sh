@@ -209,7 +209,10 @@ LOCAL_REPO=$(mktemp -d /tmp/comet-staging-repo-XXXXX)
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.4 -P scala-2.13  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.12  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.13  -DskipTests install
-./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.0 -P scala-2.13  -DskipTests install
+# The spark-4.x profiles pin their own Scala 2.13.x patch versions to match the
+# corresponding Spark release, so the scala-2.13 profile is not used here.
+./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.0                 -DskipTests install
+./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.1                 -DskipTests install
 
 echo "Installed to local repo: ${LOCAL_REPO}"
 

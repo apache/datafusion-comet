@@ -356,15 +356,15 @@
 - [x] `/`
 - [x] abs
 - [x] acos
-- [ ] acosh
+- [x] acosh
 - [x] asin
-- [ ] asinh
+- [x] asinh
 - [x] atan
 - [x] atan2
-- [ ] atanh
+- [x] atanh
 - [x] bin
 - [ ] bround
-- [ ] cbrt
+- [x] cbrt
 - [x] ceil
 - [x] ceiling
 - [ ] conv
@@ -372,7 +372,7 @@
 - [x] cosh
 - [x] cot
 - [ ] csc
-- [ ] degrees
+- [x] degrees
 - [ ] div
 - [ ] e
 - [x] exp
@@ -390,12 +390,12 @@
 - [x] log2
 - [x] mod
 - [x] negative
-- [ ] pi
+- [x] pi
 - [ ] pmod
 - [x] positive
 - [x] pow
 - [x] power
-- [ ] radians
+- [x] radians
 - [x] rand
 - [x] randn
 - [ ] random
