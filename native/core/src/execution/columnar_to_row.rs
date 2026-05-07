@@ -674,6 +674,7 @@ impl<'a> TypedElements<'a> {
             TypedElements::Float64(arr) => bulk_copy_range!(arr, 8),
             TypedElements::Date32(arr) => bulk_copy_range!(arr, 4),
             TypedElements::TimestampMicro(arr) => bulk_copy_range!(arr, 8),
+            TypedElements::Time64Nano(arr) => bulk_copy_range!(arr, 8),
             _ => {} // Should not reach here due to supports_bulk_copy check
         }
     }
@@ -846,7 +847,8 @@ fn is_fixed_width(data_type: &DataType) -> bool {
         | DataType::Float32
         | DataType::Float64
         | DataType::Date32
-        | DataType::Timestamp(TimeUnit::Microsecond, _) => true,
+        | DataType::Timestamp(TimeUnit::Microsecond, _)
+        | DataType::Time64(TimeUnit::Nanosecond) => true,
         DataType::Decimal128(p, _) => *p <= MAX_LONG_DIGITS,
         _ => false,
     }
@@ -1254,6 +1256,15 @@ impl ColumnarToRowContext {
                 TimestampMicrosecondArray,
                 |v: i64| v
             ),
+            DataType::Time64(TimeUnit::Nanosecond) => write_fixed_column_primitive!(
+                self,
+                array,
+                row_size,
+                field_offset_in_row,
+                num_rows,
+                Time64NanosecondArray,
+                |v: i64| v
+            ),
             DataType::Decimal128(precision, _) if *precision <= MAX_LONG_DIGITS => {
                 write_fixed_column_primitive!(
                     self,
@@ -1378,6 +1389,9 @@ fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> Co
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             get_field_value_primitive!(array, row_idx, TimestampMicrosecondArray, |v: i64| v)
+        }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            get_field_value_primitive!(array, row_idx, Time64NanosecondArray, |v: i64| v)
         }
         DataType::Decimal128(precision, _) if *precision <= MAX_LONG_DIGITS => {
             get_field_value_primitive!(array, row_idx, Decimal128Array, |v: i128| v as i64)

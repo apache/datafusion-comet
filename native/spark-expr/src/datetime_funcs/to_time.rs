@@ -333,7 +333,7 @@ mod tests {
             Some(1_000 * NANOS_PER_MICRO)
         );
         // 6 digits
-        assert_eq!(string_to_time("00:00:00.000001"), Some(1 * NANOS_PER_MICRO));
+        assert_eq!(string_to_time("00:00:00.000001"), Some(NANOS_PER_MICRO));
         // Full precision
         assert_eq!(
             string_to_time("23:59:59.999999"),
@@ -351,12 +351,12 @@ mod tests {
         // Single digit hour, minute, second
         assert_eq!(
             string_to_time("1:2:3"),
-            Some(1 * NANOS_PER_HOUR + 2 * NANOS_PER_MINUTE + 3 * NANOS_PER_SECOND)
+            Some(NANOS_PER_HOUR + 2 * NANOS_PER_MINUTE + 3 * NANOS_PER_SECOND)
         );
         assert_eq!(
             string_to_time("1:2:3.04"),
             Some(
-                1 * NANOS_PER_HOUR
+                NANOS_PER_HOUR
                     + 2 * NANOS_PER_MINUTE
                     + 3 * NANOS_PER_SECOND
                     + 40_000 * NANOS_PER_MICRO
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(
             string_to_time("T1:02:3.04"),
             Some(
-                1 * NANOS_PER_HOUR
+                NANOS_PER_HOUR
                     + 2 * NANOS_PER_MINUTE
                     + 3 * NANOS_PER_SECOND
                     + 40_000 * NANOS_PER_MICRO
@@ -386,7 +386,7 @@ mod tests {
         // 12:00:00 AM = midnight
         assert_eq!(string_to_time("12:00:00 AM"), Some(0));
         // 1:00:00 AM
-        assert_eq!(string_to_time("1:00:00 AM"), Some(1 * NANOS_PER_HOUR));
+        assert_eq!(string_to_time("1:00:00 AM"), Some(NANOS_PER_HOUR));
         // 11:59:59 AM
         assert_eq!(
             string_to_time("11:59:59 AM"),
