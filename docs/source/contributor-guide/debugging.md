@@ -73,7 +73,6 @@ process handle -n true -p true -s false SIGBUS SIGSEGV SIGILL
 ### In CLion
 
 1. After the breakpoint is hit in IntelliJ, in Clion (or LLDB from terminal or editor) -
-
    1. Attach to the jvm process (make sure the PID matches). In CLion, this is `Run -> Attach to process`
 
    1. Put your breakpoint in the native code
