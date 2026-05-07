@@ -154,11 +154,10 @@ scala> spark.sql("select * from t1 where a > 5").explain
 Comet will log output similar to:
 
 ```shell
-INFO src/lib.rs: Comet native library initialized
-  == Physical Plan ==
-  CometNativeColumnarToRow
-    +- CometFilter [a#6], (isnotnull(a#6) AND (a#6 > 5))
-+- CometNativeScan parquet [a#6] Batched: true, DataFilters: [isnotnull(a#6), (a#6 > 5)], Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
+== Physical Plan ==
+CometNativeColumnarToRow
++- CometFilter [a#6], (isnotnull(a#6) AND (a#6 > 5))
+   +- CometNativeScan parquet [a#6] Batched: true, DataFilters: [isnotnull(a#6), (a#6 > 5)], Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
 ```
 
 ## Additional Configuration
