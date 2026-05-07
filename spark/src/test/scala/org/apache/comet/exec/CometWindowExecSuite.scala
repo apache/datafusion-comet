@@ -338,8 +338,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: AVG with PARTITION BY and ORDER BY not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   test("window: AVG with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
@@ -530,8 +528,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: RANK not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   test("window: RANK with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
@@ -552,8 +548,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: DENSE_RANK not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   test("window: DENSE_RANK with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
@@ -594,10 +588,8 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // Wired to native via the ranking-function path, but NTILE results differ from
-  // Spark (correctness TODO). Expect the mismatch so we catch any wiring regression
-  // while tolerating the known correctness gap.
   test("window: NTILE with PARTITION BY and ORDER BY") {
+    // Correctness issue bug tracked in https://github.com/apache/datafusion-comet/issues/4255
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -609,14 +601,14 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
-        SELECT a, b, c,
+        SELECT a, b,
           NTILE(4) OVER (PARTITION BY a ORDER BY b) as ntile_4
         FROM window_test
       """)
       val e = intercept[org.scalatest.exceptions.TestFailedException] {
         checkSparkAnswerAndOperator(df)
       }
-      assert(e.getMessage.contains("Results do not match"))
+      assert(e.getMessage.contains("Results do not match for query"))
     }
   }
 
@@ -803,8 +795,8 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
-        SELECT a, b, c,
-          NTH_VALUE(c, 2) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as nth_c
+        SELECT a, b,
+          NTH_VALUE(c, 2) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as nth_c
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
@@ -831,7 +823,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: Multiple window functions with mixed frame types (RowFrame and RangeFrame)
   test("window: multiple window functions in single query") {
     withTempDir { dir =>
       (0 until 30)
@@ -855,8 +846,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: Different window specifications not fully supported
-  // Falls back to Spark Project and Window operators
   test("window: different window specifications in single query") {
     withTempDir { dir =>
       (0 until 30)
@@ -879,8 +868,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: ORDER BY DESC with aggregation not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   test("window: ORDER BY DESC with aggregation") {
     withTempDir { dir =>
       (0 until 30)
@@ -901,8 +888,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: Multiple PARTITION BY columns not supported
-  // Falls back to Spark Window operator
   test("window: multiple PARTITION BY columns") {
     withTempDir { dir =>
       (0 until 30)
@@ -923,8 +908,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: Multiple ORDER BY columns not supported
-  // Falls back to Spark Window operator
   test("window: multiple ORDER BY columns") {
     withTempDir { dir =>
       (0 until 30)
@@ -985,8 +968,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: Complex expressions in window functions not fully supported
-  // Falls back to Spark Project operator
   test("window: complex expression in window function") {
     withTempDir { dir =>
       (0 until 30)
@@ -1007,8 +988,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: Window function with WHERE clause not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   test("window: window function with WHERE clause") {
     withTempDir { dir =>
       (0 until 30)
@@ -1030,8 +1009,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: Window function with GROUP BY not fully supported
-  // Falls back to Spark Project and Window operators
   test("window: window function with GROUP BY") {
     withTempDir { dir =>
       (0 until 30)
@@ -1053,7 +1030,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: ROWS BETWEEN with negative offset produces incorrect results
   test("window: ROWS BETWEEN with negative offset") {
     withTempDir { dir =>
       (0 until 30)
@@ -1066,15 +1042,14 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
-        SELECT a, b, c,
-          AVG(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING) as avg_c
+        SELECT a, b,
+          AVG(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING) as avg_c
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: All ranking functions together produce incorrect row_num values
   test("window: all ranking functions together") {
     withTempDir { dir =>
       (0 until 30)
@@ -1087,7 +1062,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
-        SELECT a, b, c,
+        SELECT a, b,
           ROW_NUMBER() OVER (PARTITION BY a ORDER BY b) as row_num,
           RANK() OVER (PARTITION BY a ORDER BY b) as rnk,
           DENSE_RANK() OVER (PARTITION BY a ORDER BY b) as dense_rnk,

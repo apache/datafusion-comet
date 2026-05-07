@@ -2077,41 +2077,31 @@ impl PhysicalPlanner {
                 let final_plan: Arc<dyn ExecutionPlan> = {
                     let agg_schema = window_agg.schema();
                     let input_field_count = input_schema.fields().len();
-                    let needs_cast = wnd.window_expr.iter().enumerate().any(|(i, w)| {
-                        w.result_type
-                            .as_ref()
-                            .map(|t| {
-                                let expected = to_arrow_datatype(t);
-                                let actual = agg_schema.field(input_field_count + i).data_type();
-                                &expected != actual
-                            })
-                            .unwrap_or(false)
-                    });
-
-                    if needs_cast {
-                        let mut proj_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> =
-                            Vec::with_capacity(agg_schema.fields().len());
-                        for (idx, field) in agg_schema.fields().iter().enumerate() {
-                            let col: Arc<dyn PhysicalExpr> =
-                                Arc::new(Column::new(field.name(), idx));
-                            let expr: Arc<dyn PhysicalExpr> = if idx >= input_field_count {
-                                let w = &wnd.window_expr[idx - input_field_count];
-                                match &w.result_type {
-                                    Some(t) => {
-                                        let expected = to_arrow_datatype(t);
-                                        if &expected != field.data_type() {
-                                            Arc::new(CastExpr::new(col, expected, None))
-                                        } else {
-                                            col
-                                        }
+                    let mut needs_cast = false;
+                    let mut proj_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> =
+                        Vec::with_capacity(agg_schema.fields().len());
+                    for (idx, field) in agg_schema.fields().iter().enumerate() {
+                        let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), idx));
+                        let expr: Arc<dyn PhysicalExpr> = if idx >= input_field_count {
+                            let w = &wnd.window_expr[idx - input_field_count];
+                            match &w.result_type {
+                                Some(t) => {
+                                    let expected = to_arrow_datatype(t);
+                                    if &expected != field.data_type() {
+                                        needs_cast = true;
+                                        Arc::new(CastExpr::new(col, expected, None))
+                                    } else {
+                                        col
                                     }
-                                    None => col,
                                 }
-                            } else {
-                                col
-                            };
-                            proj_exprs.push((expr, field.name().to_string()));
-                        }
+                                None => col,
+                            }
+                        } else {
+                            col
+                        };
+                        proj_exprs.push((expr, field.name().to_string()));
+                    }
+                    if needs_cast {
                         Arc::new(ProjectionExec::try_new(proj_exprs, window_agg)?)
                     } else {
                         window_agg
