@@ -465,11 +465,11 @@ tpchgen-cli<span class="w"> </span>-s<span class="w"> </span><span class="m">100
 </section>
 <section id="install-spark">
 <h2>Install Spark<a class="headerlink" href="#install-spark" title="Link to this heading">#</a></h2>
-<p>Install Apache Spark. This example refers to 3.5.4 version.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>wget<span class="w"> </span>https://archive.apache.org/dist/spark/spark-3.5.4/spark-3.5.4-bin-hadoop3.tgz
-tar<span class="w"> </span>xzf<span class="w"> </span>spark-3.5.4-bin-hadoop3.tgz
-sudo<span class="w"> </span>mv<span class="w"> </span>spark-3.5.4-bin-hadoop3<span class="w"> </span>/opt
-<span class="nb">export</span><span class="w"> </span><span class="nv">SPARK_HOME</span><span class="o">=</span>/opt/spark-3.5.4-bin-hadoop3/
+<p>Install Apache Spark. This example refers to 4.1.1 version.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>wget<span class="w"> </span>https://archive.apache.org/dist/spark/spark-4.1.1/spark-4.1.1-bin-hadoop3.tgz
+tar<span class="w"> </span>xzf<span class="w"> </span>spark-4.1.1-bin-hadoop3.tgz
+sudo<span class="w"> </span>mv<span class="w"> </span>spark-4.1.1-bin-hadoop3<span class="w"> </span>/opt
+<span class="nb">export</span><span class="w"> </span><span class="nv">SPARK_HOME</span><span class="o">=</span>/opt/spark-4.1.1-bin-hadoop3/
 </pre></div>
 </div>
 <p>Start Spark in standalone mode:</p>
@@ -525,7 +525,7 @@ In order to start local Apache Spark cluster on <code class="docutils literal no
 </pre></div>
 </div>
 <p>Set <code class="docutils literal notranslate"><span class="pre">COMET_JAR</span></code> to point to the location of the Comet jar file. Example for Comet 0.8</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/target/comet-spark-spark4.1_2.13-0.8.0-SNAPSHOT.jar
 </pre></div>
 </div>
 <p>Run the following command (the <code class="docutils literal notranslate"><span class="pre">--data</span></code> parameter will need to be updated to point to your S3 bucket):</p>

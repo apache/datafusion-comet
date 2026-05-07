@@ -447,8 +447,8 @@ partitioning and writing to Parquet format automatically.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Java 17 (for Spark 3.5+)</p></li>
-<li><p>Apache Spark 3.5.x</p></li>
+<li><p>Java 17</p></li>
+<li><p>Apache Spark 4.1.x</p></li>
 <li><p>SBT (Scala Build Tool)</p></li>
 <li><p>C compiler toolchain (<code class="docutils literal notranslate"><span class="pre">gcc</span></code>, <code class="docutils literal notranslate"><span class="pre">make</span></code>, <code class="docutils literal notranslate"><span class="pre">flex</span></code>, <code class="docutils literal notranslate"><span class="pre">bison</span></code>, <code class="docutils literal notranslate"><span class="pre">byacc</span></code>)</p></li>
 </ul>
@@ -613,7 +613,7 @@ mkdir<span class="w"> </span>-p<span class="w"> </span>/tmp/spark-events
 <h3>Run with Comet<a class="headerlink" href="#run-with-comet" title="Link to this heading">#</a></h3>
 <p>Build Comet from source and launch <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> with both the Comet and spark-sql-perf JARs:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>release
-<span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span>/spark/target/comet-spark-spark3.5_2.12-*.jar
+<span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span>/spark/target/comet-spark-spark4.1_2.13-*.jar
 
 <span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--master<span class="w"> </span><span class="nv">$SPARK_MASTER</span><span class="w"> </span><span class="se">\</span>

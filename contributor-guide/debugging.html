@@ -558,7 +558,7 @@ Eventually it will be cleaned up when you reboot possibly after a software updat
 </pre></div>
 </div>
 <p>Set <code class="docutils literal notranslate"><span class="pre">RUST_BACKTRACE=1</span></code> for the Spark worker/executor process, or for <code class="docutils literal notranslate"><span class="pre">spark-submit</span></code> if running in local mode.</p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true</span>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark4.1_2.13-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true</span>
 </pre></div>
 </div>
 <p>Get the expanded exception details</p>
