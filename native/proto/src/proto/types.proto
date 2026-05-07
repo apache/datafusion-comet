@@ -91,6 +91,14 @@ message DataType {
     repeated string field_names = 1;
     repeated DataType field_datatypes = 2;
     repeated bool field_nullable = 3;
+    // Parallel to field_names. Each entry holds Spark field metadata for the
+    // corresponding nested field. Currently used to carry parquet.field.id
+    // through to the native side. Empty when no fields carry metadata.
+    repeated FieldMetadata field_metadata = 4;
+  }
+
+  message FieldMetadata {
+    map<string, string> metadata = 1;
   }
 
   DataTypeInfo type_info = 2;

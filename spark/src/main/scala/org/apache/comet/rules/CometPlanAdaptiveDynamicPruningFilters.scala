@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, BindReferences, Dynamic
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometNativeScanExec, CometSubqueryAdaptiveBroadcastExec, CometSubqueryBroadcastExec}
+import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
@@ -34,7 +34,7 @@ import org.apache.comet.shims.{ShimPrepareExecutedPlan, ShimSubqueryBroadcast}
 
 /**
  * Converts CometSubqueryAdaptiveBroadcastExec (wrapped AQE DPP) to CometSubqueryBroadcastExec
- * inside CometNativeScanExec's partitionFilters.
+ * inside CometNativeScanExec's partitionFilters and CometIcebergNativeScanExec's runtimeFilters.
  *
  * CometExecRule wraps SubqueryAdaptiveBroadcastExec in CometSubqueryAdaptiveBroadcastExec during
  * queryStagePreparationRules to prevent Spark's PlanAdaptiveDynamicPruningFilters from replacing
@@ -48,6 +48,11 @@ import org.apache.comet.shims.{ShimPrepareExecutedPlan, ShimSubqueryBroadcast}
  * Also handles the dual-filter problem: CometNativeScanExec.partitionFilters and
  * CometScanExec.partitionFilters are separate InSubqueryExec instances. Both must be converted
  * because CometScanExec.dynamicallySelectedPartitions evaluates its own partitionFilters.
+ *
+ * For CometIcebergNativeScanExec, runtimeFilters is a top-level constructor field and
+ * originalPlan.runtimeFilters mirrors it (sharing the same InSubqueryExec instances). The Iceberg
+ * case rewrites both in lockstep so the wrapper's expressions tree and the inner BatchScanExec's
+ * runtime filters stay aligned.
  *
  * @see
  *   PlanAdaptiveDynamicPruningFilters (Spark's equivalent for BroadcastHashJoinExec)
@@ -74,10 +79,30 @@ case object CometPlanAdaptiveDynamicPruningFilters
       case nativeScan: CometNativeScanExec if nativeScan.partitionFilters.exists(hasCometSAB) =>
         logDebug("Converting AQE DPP for CometNativeScanExec")
         convertNativeScanDPP(nativeScan, plan)
-      case p: SparkPlan if !p.isInstanceOf[CometNativeScanExec] && hasWrappedSAB(p) =>
+      case icebergScan: CometIcebergNativeScanExec
+          if icebergScan.runtimeFilters.exists(hasCometSAB) =>
+        logDebug("Converting AQE DPP for CometIcebergNativeScanExec")
+        convertIcebergScanDPP(icebergScan, plan)
+      case p: SparkPlan
+          if !p.isInstanceOf[CometNativeScanExec]
+            && !p.isInstanceOf[CometIcebergNativeScanExec]
+            && hasWrappedSAB(p) =>
         logDebug(s"Converting AQE DPP for non-Comet node: ${p.nodeName}")
         convertNonCometNodeDPP(p, plan)
     }
+  }
+
+  private def convertIcebergScanDPP(
+      icebergScan: CometIcebergNativeScanExec,
+      stagePlan: SparkPlan): CometIcebergNativeScanExec = {
+    val newFilters = icebergScan.runtimeFilters.map(f => convertFilter(f, stagePlan))
+    if (newFilters == icebergScan.runtimeFilters) return icebergScan
+    // Top-level runtimeFilters is the single source of truth.
+    // CometIcebergNativeScanExec.serializedPartitionData rebuilds originalPlan from the top-level
+    // field at serialization time, so we don't need to sync originalPlan.runtimeFilters here.
+    val newScan = icebergScan.copy(runtimeFilters = newFilters)
+    icebergScan.logicalLink.foreach(newScan.setLogicalLink)
+    newScan
   }
 
   private def convertNativeScanDPP(
@@ -156,6 +181,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
         case _ => None
       }
     }
+
     inSub.plan match {
       // ReusedSubqueryExec extends BaseSubqueryExec, so unwrap it before dispatching
       // to `BaseSubqueryExec`. The order is load-bearing: if the general case runs
@@ -179,7 +205,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * (correct results, scans all partitions).
    *
    * 3. No reusable broadcast + onlyInBroadcast=false: Aggregate SubqueryExec on the build side
-   * (DPP via separate execution, matching Spark's PlanAdaptiveDynamicPruningFilters lines 68-79).
+   * (DPP via separate execution, matching Spark's PlanAdaptiveDynamicPruningFilters case 3).
    */
   private def convertSAB(
       inSub: InSubqueryExec,
@@ -215,10 +241,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
     val canReuse = conf.exchangeReuseEnabled && matchingJoin.isDefined
 
     if (canReuse) {
-      // Case 1: broadcast reuse. Matches Spark's PlanAdaptiveDynamicPruningFilters
-      // lines 44-64: construct a NEW exchange wrapping adaptivePlan.executedPlan,
-      // then wrap in a new ASPE. AQE's stageCache ensures the broadcast runs once
-      // via ReusedExchangeExec (same canonical form as the join's exchange).
+      // Case 1: broadcast reuse. Mirrors Spark's PlanAdaptiveDynamicPruningFilters case 1:
+      // construct a fresh exchange wrapping the build subtree, then wrap in a new ASPE.
+      // AQE's stageCache ensures the broadcast runs once via ReusedExchangeExec (same
+      // canonical form as the join's exchange).
       val (broadcastChild, isComet) = matchingJoin.get
       val buildSidePlan = adaptivePlan.executedPlan
       logDebug(
@@ -227,7 +253,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
           s"${broadcastChild.getClass.getSimpleName}")
 
       // Construct the exchange from buildSidePlan (not from the existing exchange),
-      // matching Spark's PlanAdaptiveDynamicPruningFilters lines 44-48. The existing
+      // mirroring Spark's PlanAdaptiveDynamicPruningFilters case 1. The existing
       // exchange may belong to a different plan context (e.g., the main query) with
       // different attribute IDs than the current SAB's build side (e.g., a scalar
       // subquery). Using the existing exchange's output/mode would cause schema
@@ -274,7 +300,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // Case 3: no reusable broadcast, but the optimizer says DPP is worthwhile
       // even without broadcast reuse. Create an aggregate SubqueryExec on the build
       // side to get distinct partition key values for pruning.
-      // Matches Spark's PlanAdaptiveDynamicPruningFilters lines 68-79.
+      // Matches Spark's PlanAdaptiveDynamicPruningFilters case 3.
       val aliases =
         sab.indices.map(idx => Alias(sab.buildKeys(idx), sab.buildKeys(idx).toString)())
       val aggregate = Aggregate(aliases, aliases, sab.buildPlan)
@@ -425,6 +451,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * CometNativeScanExec.partitionFilters has CometSubqueryAdaptiveBroadcastExec (wrapped by
    * CometExecRule). The inner CometScanExec.partitionFilters may have the original
    * SubqueryAdaptiveBroadcastExec (unwrapped, because CometScanExec is
+   *
    * @transient).
    */
   private def hasCometSAB(e: Expression): Boolean =
