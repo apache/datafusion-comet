@@ -146,6 +146,7 @@ trait CometExprShim extends CommonStringExprs {
       // In Spark 4.0, StructsToJson is a RuntimeReplaceable whose replacement is
       // Invoke(Literal(StructsToJsonEvaluator), "evaluate", ...). Reconstruct the
       // original StructsToJson and recurse so support-level checks apply.
+      // ToTime (Spark 4.1) resolves to Invoke(Literal(ToTimeParser), "parse", TimeType(), ...).
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
@@ -153,6 +154,27 @@ trait CometExprShim extends CommonStringExprs {
               StructsToJson(evaluator.options, child, evaluator.timeZoneId),
               inputs,
               binding)
+          case (Literal(parser: ToTimeParser, _), "parse", args)
+              if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty =>
+            val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
+            val optExpr =
+              scalarFunctionExprToProtoWithReturnType("to_time", i.dataType, true, childExprs: _*)
+            optExprWithInfo(optExpr, i, args: _*)
+          case _ => None
+        }
+
+      // try_to_time resolves to TryEval(Invoke(Literal(ToTimeParser), "parse", ...))
+      case TryEval(i: Invoke) =>
+        (i.targetObject, i.functionName, i.arguments) match {
+          case (Literal(parser: ToTimeParser, _), "parse", args)
+              if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty =>
+            val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
+            val optExpr = scalarFunctionExprToProtoWithReturnType(
+              "to_time",
+              i.dataType,
+              false,
+              childExprs: _*)
+            optExprWithInfo(optExpr, expr, args: _*)
           case _ => None
         }
 
