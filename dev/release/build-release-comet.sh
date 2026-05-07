@@ -125,6 +125,13 @@ docker build --no-cache \
 # Clean previous Java build
 pushd $COMET_HOME_DIR && ./mvnw clean && popd
 
+# Clean previous native build. This is required because common/pom.xml has
+# unconditional resource entries that bundle libcomet.dylib from
+# native/target/{x86_64,aarch64}-apple-darwin/release. If a release manager
+# previously cross-compiled those targets locally, stale dylibs would leak
+# into the release jars. See https://github.com/apache/datafusion-comet/issues/2232
+pushd $COMET_HOME_DIR/native && cargo clean && popd
+
 # Run the builder container for each architecture. The entrypoint script will build the binaries
 
 # AMD64
