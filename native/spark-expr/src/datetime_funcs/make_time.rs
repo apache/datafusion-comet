@@ -80,8 +80,10 @@ fn make_time(hours: i32, minutes: i32, secs_and_micros_unscaled: i128) -> Result
         )));
     }
 
-    let total_nanos =
-        hours as i64 * 3_600 * NANOS_PER_SECOND + minutes as i64 * 60 * NANOS_PER_SECOND + secs as i64 * NANOS_PER_SECOND + nanos;
+    let total_nanos = hours as i64 * 3_600 * NANOS_PER_SECOND
+        + minutes as i64 * 60 * NANOS_PER_SECOND
+        + secs as i64 * NANOS_PER_SECOND
+        + nanos;
 
     Ok(total_nanos)
 }
@@ -121,19 +123,19 @@ impl ScalarUDFImpl for SparkMakeTime {
         let hours_arr = cast_to_int32(&hours_arr)?;
         let minutes_arr = cast_to_int32(&minutes_arr)?;
 
-        let hours_array = hours_arr.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-            DataFusionError::Execution("make_time: failed to cast hours to Int32".to_string())
-        })?;
+        let hours_array = hours_arr
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_time: failed to cast hours to Int32".to_string())
+            })?;
 
-        let minutes_array =
-            minutes_arr
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .ok_or_else(|| {
-                    DataFusionError::Execution(
-                        "make_time: failed to cast minutes to Int32".to_string(),
-                    )
-                })?;
+        let minutes_array = minutes_arr
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_time: failed to cast minutes to Int32".to_string())
+            })?;
 
         let secs_array = secs_arr
             .as_any()
@@ -190,10 +192,7 @@ mod tests {
         // 1.5 seconds (unscaled: 1_500_000)
         assert_eq!(make_time(0, 0, 1_500_000).unwrap(), 1_500_000_000);
         // 23:59:59.999999 (unscaled: 59_999_999)
-        assert_eq!(
-            make_time(23, 59, 59_999_999).unwrap(),
-            86_399_999_999_000
-        );
+        assert_eq!(make_time(23, 59, 59_999_999).unwrap(), 86_399_999_999_000);
         // 12:30:45.123456 (unscaled: 45_123_456)
         assert_eq!(
             make_time(12, 30, 45_123_456).unwrap(),

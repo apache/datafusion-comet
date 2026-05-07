@@ -108,6 +108,12 @@ object Utils extends CometTypeShim with Logging {
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH =>
       YearMonthIntervalType()
     case di: ArrowType.Interval if di.getUnit == IntervalUnit.DAY_TIME => DayTimeIntervalType()
+    case t: ArrowType.Time if t.getUnit == TimeUnit.NANOSECOND && t.getBitWidth == 64 =>
+      // scalastyle:off classforname
+      val clazz = Class.forName("org.apache.spark.sql.types.TimeType$")
+      // scalastyle:on classforname
+      val module = clazz.getField("MODULE$").get(null)
+      clazz.getMethod("apply").invoke(module).asInstanceOf[DataType]
     case _ => throw new UnsupportedOperationException(s"Unsupported data type: ${dt.toString}")
   }
 
@@ -142,6 +148,8 @@ object Utils extends CometTypeShim with Logging {
         }
       case TimestampNTZType =>
         new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)
+      case dt if dt.getClass.getSimpleName.startsWith("TimeType") =>
+        new ArrowType.Time(TimeUnit.NANOSECOND, 64)
       case _ =>
         throw new UnsupportedOperationException(
           s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")

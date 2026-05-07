@@ -23,8 +23,8 @@ mod hours;
 mod make_date;
 mod make_time;
 mod seconds_to_timestamp;
-mod to_time;
 mod timestamp_trunc;
+mod to_time;
 mod unix_timestamp;
 
 pub use date_diff::SparkDateDiff;
@@ -37,6 +37,6 @@ pub use hours::SparkHoursTransform;
 pub use make_date::SparkMakeDate;
 pub use make_time::SparkMakeTime;
 pub use seconds_to_timestamp::SparkSecondsToTimestamp;
-pub use to_time::{spark_to_time, to_time_return_type};
 pub use timestamp_trunc::TimestampTruncExpr;
+pub use to_time::{spark_to_time, to_time_return_type};
 pub use unix_timestamp::SparkUnixTimestamp;

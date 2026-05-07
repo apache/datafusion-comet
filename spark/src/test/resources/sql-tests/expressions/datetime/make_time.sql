@@ -16,6 +16,7 @@
 -- under the License.
 
 -- MinSparkVersion: 4.1
+-- Config: spark.sql.timeType.enabled=true
 
 statement
 CREATE TABLE test_make_time(hours int, minutes int, secs decimal(16,6)) USING parquet
@@ -32,16 +33,16 @@ INSERT INTO test_make_time VALUES
   (12, 30, NULL),
   (NULL, NULL, NULL)
 
--- column arguments
-query
+-- column arguments (spark_answer_only: shuffle does not support TimeType yet)
+query spark_answer_only
 SELECT hours, minutes, secs, make_time(hours, minutes, secs) FROM test_make_time ORDER BY hours, minutes, secs
 
--- literal hour, column minutes and secs
-query
+-- literal hour, column minutes and secs (spark_answer_only: shuffle does not support TimeType yet)
+query spark_answer_only
 SELECT make_time(10, minutes, secs) FROM test_make_time ORDER BY minutes, secs
 
--- column hours, literal minutes and secs
-query
+-- column hours, literal minutes and secs (spark_answer_only: shuffle does not support TimeType yet)
+query spark_answer_only
 SELECT make_time(hours, 15, 30.5) FROM test_make_time ORDER BY hours
 
 -- all literals

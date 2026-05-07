@@ -201,9 +201,10 @@ impl<'a> TypedArray<'a> {
             DataType::Timestamp(TimeUnit::Microsecond, _) => Ok(TypedArray::TimestampMicro(
                 downcast_array!(array, TimestampMicrosecondArray)?,
             )),
-            DataType::Time64(TimeUnit::Nanosecond) => Ok(TypedArray::Time64Nano(
-                downcast_array!(array, Time64NanosecondArray)?,
-            )),
+            DataType::Time64(TimeUnit::Nanosecond) => Ok(TypedArray::Time64Nano(downcast_array!(
+                array,
+                Time64NanosecondArray
+            )?)),
             DataType::Decimal128(p, _) => Ok(TypedArray::Decimal128(
                 downcast_array!(array, Decimal128Array)?,
                 *p,
