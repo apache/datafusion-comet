@@ -58,16 +58,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         return None
     }.toArray
 
-    // Offset window functions (LAG, LEAD) support arbitrary partition and order specs, so skip
-    // the validatePartitionAndSortSpecsForWindowFunc check which requires partition columns to
-    // equal order columns. That stricter check is only needed for aggregate window functions.
-//    val hasOnlyOffsetFunctions = winExprs.nonEmpty &&
-//      winExprs.forall(e => e.windowFunction.isInstanceOf[FrameLessOffsetWindowFunction])
-//    if (!hasOnlyOffsetFunctions && op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty &&
-//      !validatePartitionAndSortSpecsForWindowFunc(op.partitionSpec, op.orderSpec, op)) {
-//      return None
-//    }
-
     val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
     val partitionExprs = op.partitionSpec.map(exprToProto(_, op.child.output))
 
@@ -197,12 +187,11 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           (None, scalarFunctionExprToProto("ntile", bucketsExpr), false)
         case nv: NthValue =>
           val inputExpr = exprToProto(nv.input, output)
-          // DataFusion's nth_value (aggregate UDF path, picked first by
-          // find_df_window_function) requires the position argument to be a
-          // ScalarValue::Int64 literal. Spark's NthValue.offset is IntegerType,
-          // which would serialize as Int32 and trigger
-          // "nth_value not supported for n: <expr>" at plan time. Fold the
-          // (foldable) offset to a Long literal so the native side sees Int64.
+          // DataFusion's `nth_value` requires the position argument to be a
+          // `ScalarValue::Int64` literal. Spark's `NthValue.offset` is
+          // IntegerType, which would serialize as Int32 and fail planning
+          // with "nth_value not supported for n: <expr>". Fold the (foldable)
+          // offset to a Long literal so the native side sees Int64.
           val offsetExpr = nv.offset.eval() match {
             case n: Number =>
               exprToProto(Literal(n.longValue(), LongType), output)
@@ -411,67 +400,37 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     if (rawValue == null) {
       return None
     }
-    val signum = rawValue match {
-      case b: java.lang.Byte => Integer.signum(b.intValue())
-      case s: java.lang.Short => Integer.signum(s.intValue())
-      case i: java.lang.Integer => Integer.signum(i.intValue())
-      case l: java.lang.Long => java.lang.Long.signum(l.longValue())
-      case f: java.lang.Float => Math.signum(f.doubleValue()).toInt
-      case d: java.lang.Double => Math.signum(d.doubleValue()).toInt
-      case d: Decimal => d.toBigDecimal.signum
+    // Taking the absolute value of the narrow signed MIN_VALUE constants
+    // overflows silently (Math.abs(Byte.MinValue).toByte == Byte.MinValue),
+    // which would flip the sign and produce an incorrect frame bound. Reject
+    // those pathological inputs up front.
+    val (signum, absValue): (Int, Any) = rawValue match {
+      case b: java.lang.Byte =>
+        if (b.byteValue() == Byte.MinValue) return None
+        (Integer.signum(b.intValue()), java.lang.Byte.valueOf(Math.abs(b.intValue()).toByte))
+      case s: java.lang.Short =>
+        if (s.shortValue() == Short.MinValue) return None
+        (Integer.signum(s.intValue()), java.lang.Short.valueOf(Math.abs(s.intValue()).toShort))
+      case i: java.lang.Integer =>
+        if (i.intValue() == Int.MinValue) return None
+        (Integer.signum(i.intValue()), java.lang.Integer.valueOf(Math.abs(i.intValue())))
+      case l: java.lang.Long =>
+        if (l.longValue() == Long.MinValue) return None
+        (java.lang.Long.signum(l.longValue()), java.lang.Long.valueOf(Math.abs(l.longValue())))
+      case f: java.lang.Float =>
+        (Math.signum(f.doubleValue()).toInt, java.lang.Float.valueOf(Math.abs(f.floatValue())))
+      case d: java.lang.Double =>
+        (Math.signum(d.doubleValue()).toInt, java.lang.Double.valueOf(Math.abs(d.doubleValue())))
+      case d: Decimal =>
+        (d.toBigDecimal.signum, d.abs)
       case _ => return None
     }
     if (isLower && signum > 0) return None
     if (!isLower && signum < 0) return None
 
-    val absValue: Any = rawValue match {
-      case b: java.lang.Byte => java.lang.Byte.valueOf(Math.abs(b.intValue()).toByte)
-      case s: java.lang.Short => java.lang.Short.valueOf(Math.abs(s.intValue()).toShort)
-      case i: java.lang.Integer => java.lang.Integer.valueOf(Math.abs(i.intValue()))
-      case l: java.lang.Long => java.lang.Long.valueOf(Math.abs(l.longValue()))
-      case f: java.lang.Float => java.lang.Float.valueOf(Math.abs(f.floatValue()))
-      case d: java.lang.Double => java.lang.Double.valueOf(Math.abs(d.doubleValue()))
-      case d: Decimal => d.abs
-      case _ => return None
-    }
-
     exprToProto(Literal(absValue, bound.dataType), output).flatMap { exprProto =>
       if (exprProto.hasLiteral) Some(exprProto.getLiteral) else None
     }
-  }
-
-  private def validatePartitionAndSortSpecsForWindowFunc(
-      partitionSpec: Seq[Expression],
-      orderSpec: Seq[SortOrder],
-      op: SparkPlan): Boolean = {
-    if (partitionSpec.length != orderSpec.length) {
-      return false
-    }
-
-//    val partitionColumnNames = partitionSpec.collect {
-//      case a: AttributeReference => a.name
-//      case other =>
-//        withInfo(op, s"Unsupported partition expression: ${other.getClass.getSimpleName}")
-//        return false
-//    }
-//
-//    val orderColumnNames = orderSpec.collect { case s: SortOrder =>
-//      s.child match {
-//        case a: AttributeReference => a.name
-//        case other =>
-//          withInfo(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
-//          return false
-//      }
-//    }
-
-//    if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
-//        partCol != orderCol
-//      }) {
-//      withInfo(op, "Partitioning and sorting specifications must be the same.")
-//      return false
-//    }
-
-    true
   }
 
 }
