@@ -48,8 +48,7 @@ macro_rules! impl_append_to_builder {
             // SAFETY: element_offset points to contiguous element data of length num_elements.
             debug_assert!(self.element_offset != 0, "element_offset is null");
             let ptr = self.element_offset as *const $element_type;
-            let aligned =
-                (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>());
+            let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>());
 
             if NULLABLE {
                 let null_words = self.null_bitset_ptr();
