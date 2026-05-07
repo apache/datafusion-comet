@@ -590,6 +590,20 @@ commit into the release branch.</p>
 </section>
 <section id="build-the-jars">
 <h3>Build the jars<a class="headerlink" href="#build-the-jars" title="Link to this heading">#</a></h3>
+<section id="a-note-on-workspace-cleanliness">
+<h4>A note on workspace cleanliness<a class="headerlink" href="#a-note-on-workspace-cleanliness" title="Link to this heading">#</a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">common/pom.xml</span></code> resource configuration unconditionally bundles
+<code class="docutils literal notranslate"><span class="pre">native/target/{x86_64,aarch64}-apple-darwin/release/libcomet.dylib</span></code> into the
+<code class="docutils literal notranslate"><span class="pre">common</span></code> jar when those files exist on disk. Maven’s <code class="docutils literal notranslate"><span class="pre">clean</span></code> removes
+<code class="docutils literal notranslate"><span class="pre">common/target</span></code> but does not touch Cargo’s <code class="docutils literal notranslate"><span class="pre">native/target</span></code> directory, so a
+stale dylib left over from a prior local <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code> or <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release-linux</span></code>
+on the release manager’s workstation can silently end up in a release jar
+(see <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2232">#2232</a> for the
+incident in 0.9.1).</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">build-release-comet.sh</span></code> script now runs <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">clean</span></code> for you, but as a
+defensive measure, prefer running the release build from a fresh clone of the
+repository rather than your day-to-day working tree.</p>
+</section>
 <section id="setup-to-do-the-build">
 <h4>Setup to do the build<a class="headerlink" href="#setup-to-do-the-build" title="Link to this heading">#</a></h4>
 <p>The build process requires Docker. Download the latest Docker Desktop from https://www.docker.com/products/docker-desktop/.
