@@ -125,8 +125,8 @@ To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.
 
 When Comet can only accelerate a small fraction of the operators in a query, the overhead from transitions between
 Spark and Comet execution may outweigh the benefit of native execution. The `spark.comet.exec.coverageThreshold`
-configuration allows you to set a minimum coverage percentage. If the fraction of operators that Comet can convert
-falls below this threshold, Comet will fall back to the original Spark plan for the entire query.
+configuration sets a minimum operator-coverage fraction. If the fraction of converted operators in the final plan
+falls below this threshold, Comet falls back to the original Spark plan for the entire query.
 
 For example, to require that at least 50% of eligible operators are converted before using Comet:
 
@@ -134,8 +134,29 @@ For example, to require that at least 50% of eligible operators are converted be
 spark.comet.exec.coverageThreshold=0.5
 ```
 
-The default value is `0.0`, which disables the check and preserves the existing behavior of always using Comet when
-possible. When the threshold is triggered, a warning is logged with the coverage statistics.
+The default value is `0.0`, which disables the check. When the threshold is triggered, a warning is logged with the
+coverage statistics and the reason is attached to the plan for extended explain output.
+
+### AQE behavior
+
+The decision is made once, on the initial plan, before AQE starts executing stages. If the initial plan falls below
+the threshold, every stage of that query stays on Spark even if a sub-plan in isolation would have crossed the
+threshold. This avoids per-stage flip-flop where some stages run native and others run on Spark.
+
+### Limitations
+
+- **Operator-count metric.** Each operator counts equally regardless of cost. A plan with one expensive Spark scan
+  feeding many cheap native projections looks well-covered, but the slow scan dominates runtime. A plan with one
+  small native filter and a few Spark aggregates looks under-covered, but the aggregates may dominate.
+- **No row or byte weighting.** A native node consuming millions of rows and a Spark node consuming a handful are
+  counted the same.
+- **Transitions are not part of the metric.** A plan can have full operator coverage and still incur many Spark to
+  Comet transitions. The threshold does not catch this case; the transition count is reported in the warning string
+  for diagnostic purposes only.
+- **Single global value.** The threshold applies to every query in the session. There is no per-query override.
+
+Treat the threshold as a coarse safety valve for workloads where partial Comet coverage has been observed to
+regress, not as a fine-grained cost model.
 
 ## Shuffle
 

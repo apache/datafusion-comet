@@ -676,26 +676,40 @@ case class CometExecRule(session: SparkSession, applyThresholdCheck: Boolean = f
           op
       }
 
-      // Coverage threshold: decide once on the canonical first pass, never re-evaluate later.
-      // The first pass is the queryStagePrep registration in AQE, or preColumnarTransitions
-      // in non-AQE mode. AQE per-stage re-entries skip the check (and the SKIP_COMET_PLAN_TAG
-      // guard at the top of _apply makes any prior fallback decision sticky).
-      val threshold = CometConf.COMET_EXEC_COVERAGE_THRESHOLD.get(conf)
-      val isFirstPass = applyThresholdCheck || !conf.adaptiveExecutionEnabled
-      if (threshold > 0.0 && isFirstPass) {
-        val stats = CometCoverageStats.forPlan(finalPlan)
-        if (stats.eligible > 0 && stats.coverageFraction < threshold) {
-          val reason =
-            s"Comet native coverage ${(stats.coverageFraction * 100).toInt}% " +
-              s"is below threshold ${(threshold * 100).toInt}% ($stats)"
-          logWarning(s"$reason. Falling back to Spark plan.")
-          withInfo(plan, reason)
-          plan.foreach(_.setTagValue(CometExecRule.SKIP_COMET_PLAN_TAG, ()))
-          return plan
-        }
-      }
+      applyCoverageThreshold(plan, finalPlan)
+    }
+  }
 
-      finalPlan
+  /**
+   * Decide once on the canonical first pass whether the converted plan covers enough operators to
+   * justify Comet acceleration. The first pass is the AQE queryStagePrep registration, or
+   * preColumnarTransitions in non-AQE mode; AQE per-stage re-entries skip the check entirely.
+   *
+   * On fallback, the original plan is tagged on every node with
+   * [[CometExecRule.SKIP_COMET_PLAN_TAG]] so any subsequent rule application (e.g. AQE per-stage)
+   * honors the decision instead of re-evaluating coverage on a sub-plan, and the reason is
+   * attached via [[withInfo]] for extended explain output.
+   */
+  private def applyCoverageThreshold(
+      originalPlan: SparkPlan,
+      convertedPlan: SparkPlan): SparkPlan = {
+    val threshold = CometConf.COMET_EXEC_COVERAGE_THRESHOLD.get(conf)
+    val isFirstPass = applyThresholdCheck || !conf.adaptiveExecutionEnabled
+    if (threshold <= 0.0 || !isFirstPass) {
+      convertedPlan
+    } else {
+      val stats = CometCoverageStats.forPlan(convertedPlan)
+      if (stats.eligible == 0 || stats.coverageFraction >= threshold) {
+        convertedPlan
+      } else {
+        val reason =
+          s"Comet native coverage ${(stats.coverageFraction * 100).toInt}% " +
+            s"is below threshold ${(threshold * 100).toInt}% ($stats)"
+        logWarning(s"$reason. Falling back to Spark plan.")
+        withInfo(originalPlan, reason)
+        originalPlan.foreach(_.setTagValue(CometExecRule.SKIP_COMET_PLAN_TAG, ()))
+        originalPlan
+      }
     }
   }
 
