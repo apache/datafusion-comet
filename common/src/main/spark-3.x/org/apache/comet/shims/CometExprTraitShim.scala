@@ -35,4 +35,8 @@ trait CometExprTraitShim {
   // elsewhere in `canHandle`, so treating all scalar expressions as non-stateful here is
   // conservative-correct on this profile.
   def isStateful(expr: Expression): Boolean = false
+
+  // No collation / `ResolvedCollation` concept in 3.x, so no `Unevaluable` leaf slips past the
+  // dispatcher's guard here.
+  def isCodegenInertUnevaluable(expr: Expression): Boolean = false
 }

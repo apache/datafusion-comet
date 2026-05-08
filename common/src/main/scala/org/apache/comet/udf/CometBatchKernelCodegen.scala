@@ -170,6 +170,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     //   - CodegenFallback: opts out of `doGenCode`, which our compile path assumes works.
     //     Passing one in would emit interpreted-eval glue that our kernel can't splice cleanly.
     //   - Unevaluable: unresolved plan markers. Shouldn't reach a serde, but cheap to guard.
+    //     `isCodegenInertUnevaluable` lets the shim exclude version-specific leaves that are
+    //     `Unevaluable` but never touched by codegen (e.g. Spark 4.0's `ResolvedCollation`, which
+    //     lives in `Collate.collation` as a type marker; `Collate.genCode` delegates to its child).
     //
     // Nondeterministic and stateful expressions are accepted: the dispatcher allocates one
     // kernel instance per partition (per `CometCodegenDispatchUDF.ensureKernel`) and calls
@@ -180,6 +183,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
       case _: CodegenFallback => true
+      case u: Unevaluable if isCodegenInertUnevaluable(u) => false
       case _: Unevaluable => true
       case _ => false
     } match {
