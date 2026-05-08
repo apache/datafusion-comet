@@ -22,9 +22,9 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Concat, Expression, LeafExpression, Length, Literal, Nondeterministic, RegExpReplace, RLike, Unevaluable, Upper}
-import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, CodegenFallback, ExprCode}
-import org.apache.spark.sql.types.{DataType, IntegerType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Concat, Expression, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
+import org.apache.spark.sql.types.{DataType, IntegerType, LongType, StringType}
 
 import org.apache.comet.udf.CometBatchKernelCodegen
 import org.apache.comet.udf.CometBatchKernelCodegen.ArrowColumnSpec
@@ -227,6 +227,42 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       reason.get.contains("FakeUnevaluable"),
       s"expected reason to name the rejected expression class; got: ${reason.get}")
+  }
+
+  test("CSE collapses a repeated subtree to one evaluation in the generated body") {
+    // `Add(Length(Upper(c0)), Length(Upper(c0)))` has `Length(Upper(c0))` as a common subtree.
+    // Upper.doGenCode emits `CollationSupport.Upper.exec(...)` via `defineCodeGen`. Spark's CSE
+    // pass (when invoked via `subexpressionEliminationForWholeStageCodegen`) hoists the repeated
+    // subtree into one evaluation, so `CollationSupport.Upper.exec` appears exactly once in the
+    // body. Before CSE is wired in, Spark's bare `genCode` evaluates each Add child independently
+    // and the string appears twice. Used as a behavioral regression guard for the CSE wiring.
+    val upperOrd0 = Upper(BoundReference(0, StringType, nullable = true))
+    val lenUpper = Length(upperOrd0)
+    val expr = Add(lenUpper, lenUpper)
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(nullableString))
+    val occurrences = "CollationSupport\\.Upper\\.exec".r.findAllIn(result.body).size
+    assert(
+      occurrences == 1,
+      s"expected CSE to collapse repeated Upper evaluation to 1, got $occurrences; " +
+        s"src=\n${CodeFormatter.format(result.code)}")
+  }
+
+  test("CSE does not fire on non-deterministic expressions (regression guard)") {
+    // `Add(Rand(0), Rand(0))` is two structurally identical non-deterministic subtrees. CSE must
+    // not collapse them: each Rand call must produce an independent draw. Spark's CSE
+    // (`EquivalentExpressions.updateExprInMap`) filters non-deterministic expressions via
+    // `expr.deterministic`, so the two Rands stay separate. This test is a regression guard
+    // against Spark ever relaxing that check and against us accidentally applying CSE outside
+    // the `generateExpressions` path (which respects the filter). `Rand.doGenCode` emits one
+    // `$rng.nextDouble()` call per evaluation, so two Rands produce two `.nextDouble()` calls
+    // in the body; one-call output would indicate incorrect CSE.
+    val expr = Add(Rand(Literal(0L, LongType)), Rand(Literal(0L, LongType)))
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq.empty)
+    val occurrences = "\\.nextDouble\\(\\)".r.findAllIn(result.body).size
+    assert(
+      occurrences == 2,
+      s"expected two independent Rand evaluations (no CSE on nondeterministic), " +
+        s"got $occurrences; src=\n${CodeFormatter.format(result.code)}")
   }
 }
 

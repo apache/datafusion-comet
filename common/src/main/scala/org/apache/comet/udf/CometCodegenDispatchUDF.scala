@@ -224,7 +224,34 @@ object CometCodegenDispatchUDF {
 
   private val CacheCapacity: Int = 128
 
-  /** Cache key: serialized expression bytes + per-column compile-time invariants. */
+  /**
+   * Cache key: serialized expression bytes + per-column compile-time invariants.
+   *
+   * TODO(perf): Every batch invocation walks `bytesKey` once for `hashCode` (and again for
+   * `equals` on hash collision / final confirm in `ensureKernel`), so HashMap lookup is
+   * O(bytes.length) per batch. For small expressions (a few KB) this is single-digit μs and
+   * invisible; for large ScalaUDF closures with heavy encoders (tens to hundreds of KB) it can
+   * climb to tens of μs per batch, measurable at ~1-10% of hot-path time. If a workload shows
+   * this on a profile, three succinct alternatives worth exploring:
+   *
+   *   1. Driver-side precomputed hash piggybacked through the Arrow transport as a small tag
+   *      (e.g. 8 bytes). Executor uses the tag directly as the key. O(1) per batch, and the tag
+   *      is tiny versus the full byte array. 2. Per-UDF-instance byte-identity fast path.
+   *      `CometCodegenDispatchUDF` is per-thread; the expression is invariant for the life of one
+   *      task. Memoize the last-seen `(Arrow data buffer address, offset, length)` tuple and skip
+   *      the HashMap entirely when it matches. `VarBinaryVector.get(0)` allocates a fresh
+   *      `byte[]` each call, so identity-on-the-array won't hit, but the underlying Arrow buffer
+   *      address should be stable within a task. 3. Two-level cache with source-string outer
+   *      tier. Keep bytes-based L1 as today; add an L2 keyed on `generateSource(expr).code.body`
+   *      that stores only the Janino-compiled class (no references). On L1 miss + L2 hit, skip
+   *      Janino compile and reuse the class with fresh per-call references. Captures the "same
+   *      lambda, different closure identity" cross-query reuse case (e.g. the same `udf((i: Int)
+   *      \=> i + 1)` registered across sessions produces identical source but different
+   *      serialized bytes).
+   *
+   * None of these are worth doing until a profile shows lookup in the hot path. Today's bytes-
+   * based key is correct and simple.
+   */
   final case class CacheKey(bytesKey: ByteBuffer, specs: IndexedSeq[ArrowColumnSpec])
 
   private case class CacheEntry(

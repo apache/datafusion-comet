@@ -24,6 +24,7 @@ import org.apache.arrow.vector.{BaseVariableWidthViewVector, BigIntVector, BitVe
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, RegExpReplace, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeAndComment, CodeFormatter, CodegenContext, CodeGenerator, CodegenFallback, GeneratedClass}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometArrowAllocator
@@ -85,6 +86,51 @@ import org.apache.comet.shims.CometExprTraitShim
  *     Spark's `NullIntolerant` marker trait (null in any input -> null output), the emitter
  *     prepends an input-nullity pre-check that skips expression evaluation entirely for null
  *     rows, not just the output write.
+ *
+ * ==Subexpression elimination (CSE)==
+ *
+ * CSE hoists repeated subtrees into a single evaluation per row. Spark exposes two entry points:
+ *
+ *   - `subexpressionElimination` (via `ctx.generateExpressions(..., doSubexpressionElimination =
+ *     true)` + `ctx.subexprFunctionsCode`). Each common subexpression becomes a helper method
+ *     that writes its result into class-level mutable state allocated via `addMutableState`. The
+ *     main expression's `genCode` references those class fields. This is what
+ *     `GeneratePredicate`, `GenerateMutableProjection`, and `GenerateUnsafeProjection` use.
+ *   - `subexpressionEliminationForWholeStageCodegen`. CSE results live in local variables
+ *     declared in the caller's scope, and the main expression's `genCode` references those
+ *     locals. Only safe when no helper method gets extracted between the locals' declaration site
+ *     and their use.
+ *
+ * We use the '''class-field''' variant. The WSCG variant does not work in our shape without
+ * additional setup: Spark's arithmetic, string, and decimal expressions internally call
+ * `splitExpressionsWithCurrentInputs`, which splits into helper methods unless `currentVars` is
+ * non-null. In our kernel `currentVars` is null (we read from a row, not from materialized
+ * locals), so those splits fire and the helper bodies cannot see CSE-declared locals in the outer
+ * scope. The class-field variant sidesteps this entirely because helper methods can read class
+ * fields freely.
+ *
+ * ==Future WSCG-variant exploration==
+ *
+ * Making the WSCG variant usable would require:
+ *
+ *   - Setting `ctx.currentVars = Seq.fill(numInputs)(null)` before CSE. `BoundReference.genCode`
+ *     checks `currentVars != null && currentVars(ord) != null`, so an all-null `currentVars` lets
+ *     reads fall through to the `INPUT_ROW` path (what we want) while
+ *     `splitExpressionsWithCurrentInputs` sees `currentVars != null` and declines to split (also
+ *     what we want in that variant).
+ *   - Verifying that direct `ctx.splitExpressions` calls (not the `-WithCurrentInputs` wrapper)
+ *     in a handful of expressions (`hash`, `Cast`, `collectionOperations`, `ToStringBase`) remain
+ *     self-contained. They pass explicit args to their split helpers, so they should be fine, but
+ *     that is a per-expression audit.
+ *   - Benchmarking. The potential win is that CSE state lives in local variables rather than
+ *     class fields, so HotSpot has more freedom to keep values in registers. Whether that wins
+ *     over the class-field variant is unclear; CSE state is written once and read 2+ times per
+ *     row, and the expression work usually dominates. Not worth doing until a profile shows
+ *     class-field access on the hot path.
+ *   - If the kernel ever gets integrated into Spark's `WholeStageCodegenExec` pipeline (rather
+ *     than standing alone), the WSCG variant becomes the natural fit and this revisit is forced.
+ *     Until then, the standalone-kernel shape matches Predicate/Projection/UnsafeRow generators,
+ *     which use class-field CSE.
  */
 object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
@@ -179,6 +225,26 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     // `init(partitionIndex)` once on partition entry, so per-row state on `Rand`,
     // `MonotonicallyIncreasingID`, etc. advances correctly across batches in the same
     // partition and resets across partitions.
+    //
+    // `ExecSubqueryExpression` (e.g. `ScalarSubquery`, `InSubqueryExec`) is also accepted, and
+    // works correctly via a four-link invariant:
+    //   1. The surrounding Comet operator inherits `SparkPlan.waitForSubqueries`, which calls
+    //      `updateResult()` on every `ExecSubqueryExpression` in its `expressions` before the
+    //      operator's compute path ever reaches the JVM UDF bridge.
+    //   2. `ScalarSubquery.result` (and equivalents on other subquery expressions) is a plain
+    //      mutable field on the case class. `@volatile` affects cross-thread visibility but
+    //      not serializability: Java/Kryo serializers include it.
+    //   3. `SparkEnv.closureSerializer` captures the populated `result` value in the bytes
+    //      that travel through `CometCodegenDispatchUDF`'s arg-0 transport.
+    //   4. The dispatcher's cache key is those exact bytes (see
+    //      `CometCodegenDispatchUDF.CacheKey`). Different `result` values produce different
+    //      bytes, hence different cache entries, hence a fresh compile per distinct subquery
+    //      value. No cross-query staleness.
+    //
+    // If any of those four links breaks (a different cache-key derivation that drops `result`;
+    // a Comet operator that bypasses `waitForSubqueries`; a transport that strips `@volatile`
+    // fields), subquery correctness regresses. Keep this invariant intact when refactoring the
+    // cache-key or transport layers.
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
@@ -348,9 +414,22 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       case rr: RegExpReplace if canSpecializeRegExpReplace(rr) =>
         (classOf[VarCharVector].getName, specializedRegExpReplaceBody(ctx, rr, inputSchema))
       case _ =>
-        val ev = boundExpr.genCode(ctx)
+        // Class-field CSE. `generateExpressions` runs `subexpressionElimination` under the
+        // hood, which populates `ctx.subexprFunctions` with per-row helper calls that write
+        // common subexpression results into `addMutableState`-allocated fields; the returned
+        // `ExprCode` then references those fields. `subexprFunctionsCode` is the concatenated
+        // helper invocation block, spliced into the per-row body by `defaultBody` (inside the
+        // NullIntolerant else-branch when that short-circuit fires, otherwise before
+        // `ev.code`). See the "Subexpression elimination" section of the object-level
+        // Scaladoc for why we use this variant rather than the WSCG one.
+        val ev = if (SQLConf.get.subexpressionEliminationEnabled) {
+          ctx.generateExpressions(Seq(boundExpr), doSubexpressionElimination = true).head
+        } else {
+          boundExpr.genCode(ctx)
+        }
+        val subExprsCode = ctx.subexprFunctionsCode
         val (cls, snippet) = outputWriter(boundExpr.dataType, ev.value)
-        (cls, defaultBody(boundExpr, ev, snippet))
+        (cls, defaultBody(boundExpr, ev, snippet, subExprsCode))
     }
 
     val typedFieldDecls = inputFieldDecls(inputSchema)
@@ -742,11 +821,19 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    * For other expressions, the standard shape applies: evaluate the expression, then check
    * `ev.isNull` to decide between `setNull` and a write. Null semantics are handled internally by
    * Spark's generated `ev.code`.
+   *
+   * `subExprsCode` is the CSE helper-invocation block (see the "Subexpression elimination"
+   * section of the object-level Scaladoc). It writes common subexpression results into class
+   * fields that `ev.code` reads, so it must run before `ev.code`. In the NullIntolerant short-
+   * circuit case it is placed inside the else branch, skipping CSE evaluation for null rows as
+   * well as main-body evaluation. In the default case it precedes `ev.code`. Empty string when
+   * CSE is disabled or the tree has no common subexpressions.
    */
   private def defaultBody(
       boundExpr: Expression,
       ev: org.apache.spark.sql.catalyst.expressions.codegen.ExprCode,
-      writeSnippet: String): String = {
+      writeSnippet: String,
+      subExprsCode: String): String = {
     boundExpr match {
       case _ if isNullIntolerant(boundExpr) && allNullIntolerant(boundExpr) =>
         // Every node from root to leaf is either NullIntolerant or a leaf. That transitively
@@ -764,12 +851,14 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
            |if ($nullCheck) {
            |  output.setNull(i);
            |} else {
+           |  $subExprsCode
            |  ${ev.code}
            |  $writeSnippet
            |}
          """.stripMargin
       case _ =>
         s"""
+           |$subExprsCode
            |${ev.code}
            |if (${ev.isNull}) {
            |  output.setNull(i);
