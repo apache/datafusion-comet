@@ -183,15 +183,13 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         case _: CumeDist =>
           (None, scalarFunctionExprToProto("cume_dist"), false)
         case nt: NTile =>
-          val bucketsExpr = exprToProto(nt.buckets, output)
-          (None, scalarFunctionExprToProto("ntile", bucketsExpr), false)
+          // Known correctness bug: Comet's NTILE produces different bucket
+          // assignments than Spark; tracked in #4255. Fall back to Spark.
+          withInfo(windowExpr, "NTILE has a correctness bug in Comet tracked in #4255", nt)
+          (None, None, false)
         case nv: NthValue =>
           val inputExpr = exprToProto(nv.input, output)
-          // DataFusion's `nth_value` requires the position argument to be a
-          // `ScalarValue::Int64` literal. Spark's `NthValue.offset` is
-          // IntegerType, which would serialize as Int32 and fail planning
-          // with "nth_value not supported for n: <expr>". Fold the (foldable)
-          // offset to a Long literal so the native side sees Int64.
+
           val offsetExpr = nv.offset.eval() match {
             case n: Number =>
               exprToProto(Literal(n.longValue(), LongType), output)
@@ -203,6 +201,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           }
           val func = scalarFunctionExprToProto("nth_value", inputExpr, offsetExpr)
           (None, func, nv.ignoreNulls)
+
         case other =>
           withInfo(
             windowExpr,
@@ -362,6 +361,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         .newBuilder()
         .setAggFunc(aggExpr.get)
         .setSpec(spec)
+        .setIgnoreNulls(ignoreNulls)
       resultTypeProto.foreach(b.setResultType)
       Some(b.build())
     } else {

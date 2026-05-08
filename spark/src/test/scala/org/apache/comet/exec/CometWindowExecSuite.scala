@@ -589,7 +589,10 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window: NTILE with PARTITION BY and ORDER BY") {
-    // Correctness issue bug tracked in https://github.com/apache/datafusion-comet/issues/4255
+    // Correctness issue bug tracked in https://github.com/apache/datafusion-comet/issues/4255.
+    // CometWindowExec forces NTILE to fall back to Spark via a guard; this test
+    // pins that behavior so it will fail (alerting us to re-enable native NTILE)
+    // once the underlying correctness issue is fixed and the guard removed.
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -605,10 +608,9 @@ class CometWindowExecSuite extends CometTestBase {
           NTILE(4) OVER (PARTITION BY a ORDER BY b) as ntile_4
         FROM window_test
       """)
-      val e = intercept[org.scalatest.exceptions.TestFailedException] {
-        checkSparkAnswerAndOperator(df)
-      }
-      assert(e.getMessage.contains("Results do not match for query"))
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "NTILE has a correctness bug in Comet tracked in #4255")
     }
   }
 
@@ -1070,6 +1072,46 @@ class CometWindowExecSuite extends CometTestBase {
           CUME_DIST() OVER (PARTITION BY a ORDER BY b) as cume_dist,
           NTILE(3) OVER (PARTITION BY a ORDER BY b) as ntile_3
         FROM window_test
+      """)
+      // all functions ok excepting NTILE
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "NTILE has a correctness bug in Comet tracked in #4255")
+    }
+  }
+
+  test("window: FIRST_VALUE/LAST_VALUE/NTH_VALUE IGNORE NULLS with leading nulls") {
+    withTempDir { dir =>
+      Seq(
+        ("eng", 1, Option(100), 2020),
+        ("eng", 2, Option(100), 2021),
+        ("eng", 3, Option(150), 2022),
+        ("eng", 4, Option.empty[Int], 2023),
+        ("eng", 5, Option(200), 2024),
+        ("sales", 6, Option(90), 2020),
+        ("sales", 7, Option(90), 2021),
+        ("sales", 8, Option.empty[Int], 2022),
+        ("sales", 9, Option(110), 2023),
+        ("sales", 10, Option(120), 2024),
+        ("ops", 11, Option.empty[Int], 2020),
+        ("ops", 12, Option.empty[Int], 2021),
+        ("ops", 13, Option(50), 2022))
+        .toDF("dept", "id", "salary", "hire_yr")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("emp")
+      val df = sql("""
+        SELECT dept, id, salary,
+          /*first_value(salary) IGNORE NULLS OVER (PARTITION BY dept ORDER BY id, salary
+                                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS fv_ignore,
+          nth_value(salary, 1) IGNORE NULLS OVER (PARTITION BY dept ORDER BY id, salary
+                                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS nv_ignore,   */
+          last_value(salary) IGNORE NULLS OVER (PARTITION BY dept ORDER BY id, salary
+                                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS lv_ignore
+
+        FROM emp
       """)
       checkSparkAnswerAndOperator(df)
     }
