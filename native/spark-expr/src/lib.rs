@@ -55,9 +55,10 @@ pub use cast::{spark_cast, Cast, SparkCastOptions};
 mod bloom_filter;
 pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain, SparkBloomFilterVersion};
 
+pub mod jvm_udf;
+
 mod conditional_funcs;
 mod conversion_funcs;
-pub mod jvm_udf;
 mod map_funcs;
 pub use map_funcs::spark_map_sort;
 mod math_funcs;
@@ -132,4 +133,8 @@ pub(crate) fn decimal_sum_overflow_error(function_name: &str) -> SparkError {
 
 pub(crate) fn divide_by_zero_error() -> SparkError {
     SparkError::DivideByZero
+}
+
+pub(crate) fn remainder_by_zero_error() -> SparkError {
+    SparkError::RemainderByZero
 }

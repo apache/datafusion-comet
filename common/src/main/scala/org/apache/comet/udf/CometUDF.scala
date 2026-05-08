@@ -29,8 +29,8 @@ import org.apache.arrow.vector.ValueVector
  *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
  *   - The returned vector's length must match the longest input.
  *
- * Implementations must have a public no-arg constructor and should be stateless: instances are
- * cached per executor thread for the lifetime of the JVM.
+ * Implementations must have a public no-arg constructor and must be stateless: a single instance
+ * per class is cached and shared across native worker threads for the lifetime of the JVM.
  */
 trait CometUDF {
   def evaluate(inputs: Array[ValueVector]): ValueVector
