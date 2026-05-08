@@ -199,26 +199,6 @@ class CometCoverageStats {
 }
 
 object CometCoverageStats {
-  def fromPlan(plan: SparkPlan): CometCoverageStats = {
-    val stats = new CometCoverageStats()
-    collectStats(getActualPlan(plan), stats)
-    stats
-  }
-
-  private def collectStats(node: TreeNode[_], stats: CometCoverageStats): Unit = {
-    stats.classifyNode(node)
-    node.innerChildren.foreach {
-      case c: TreeNode[_] => collectStats(getActualPlan(c), stats)
-      case _ =>
-    }
-    node.children.foreach {
-      case c: TreeNode[_] => collectStats(getActualPlan(c), stats)
-      case _ =>
-    }
-  }
-}
-
-object CometCoverageStats {
 
   /**
    * Compute coverage stats for a plan without generating explain string.
