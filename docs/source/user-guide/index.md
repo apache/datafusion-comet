@@ -19,9 +19,17 @@ under the License.
 
 # Comet User Guide
 
+The Comet user guide covers installation, configuration, supported data sources, supported operators
+and expressions, and tuning advice for running Apache Spark with Comet acceleration.
+
+User guides are published for each release. The development snapshot tracks the upcoming release and
+may include features and fixes that are not yet generally available. Select a version from the
+navigation menu to view its guide.
+
 ```{toctree}
 :maxdepth: 2
 :caption: User Guides
+:hidden:
 
 0.16.0-SNAPSHOT <latest/index>
 0.15.x <0.15/index>

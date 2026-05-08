@@ -19,8 +19,7 @@
 
 package org.apache.comet.udf;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
@@ -36,23 +35,10 @@ import org.apache.arrow.vector.ValueVector;
  */
 public class CometUdfBridge {
 
-  // Per-thread, bounded LRU of UDF instances keyed by class name. Comet
-  // native execution threads (Tokio/DataFusion worker pool) are reused
-  // across tasks within an executor, so the effective lifetime of cached
-  // entries is the worker thread (i.e. the executor JVM). This is fine for
-  // stateless UDFs like ArrayExistsUDF; future stateful UDFs would need
-  // explicit per-task isolation.
-  private static final int CACHE_CAPACITY = 64;
-
-  private static final ThreadLocal<LinkedHashMap<String, CometUDF>> INSTANCES =
-      ThreadLocal.withInitial(
-          () ->
-              new LinkedHashMap<String, CometUDF>(CACHE_CAPACITY, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, CometUDF> eldest) {
-                  return size() > CACHE_CAPACITY;
-                }
-              });
+  // Process-wide cache of UDF instances keyed by class name. CometUDF
+  // implementations are required to be stateless (see CometUDF), so a
+  // single shared instance per class is safe across native worker threads.
+  private static final ConcurrentHashMap<String, CometUDF> INSTANCES = new ConcurrentHashMap<>();
 
   /**
    * Called from native via JNI.
@@ -69,23 +55,23 @@ public class CometUdfBridge {
       long[] inputSchemaPtrs,
       long outArrayPtr,
       long outSchemaPtr) {
-    LinkedHashMap<String, CometUDF> cache = INSTANCES.get();
-    CometUDF udf = cache.get(udfClassName);
-    if (udf == null) {
-      try {
-        // Resolve via the executor's context classloader so user-supplied UDF jars
-        // (added via spark.jars / --jars) are visible.
-        ClassLoader cl = Thread.currentThread().getContextClassLoader();
-        if (cl == null) {
-          cl = CometUdfBridge.class.getClassLoader();
-        }
-        udf =
-            (CometUDF) Class.forName(udfClassName, true, cl).getDeclaredConstructor().newInstance();
-      } catch (ReflectiveOperationException e) {
-        throw new RuntimeException("Failed to instantiate CometUDF: " + udfClassName, e);
-      }
-      cache.put(udfClassName, udf);
-    }
+    CometUDF udf =
+        INSTANCES.computeIfAbsent(
+            udfClassName,
+            name -> {
+              try {
+                // Resolve via the executor's context classloader so user-supplied UDF jars
+                // (added via spark.jars / --jars) are visible.
+                ClassLoader cl = Thread.currentThread().getContextClassLoader();
+                if (cl == null) {
+                  cl = CometUdfBridge.class.getClassLoader();
+                }
+                return (CometUDF)
+                    Class.forName(name, true, cl).getDeclaredConstructor().newInstance();
+              } catch (ReflectiveOperationException e) {
+                throw new RuntimeException("Failed to instantiate CometUDF: " + name, e);
+              }
+            });
 
     BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
 
