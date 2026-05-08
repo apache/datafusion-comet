@@ -611,3 +611,42 @@ SELECT dept, id, salary,
   MIN_BY(id, salary)   OVER (PARTITION BY dept) AS min_id_by_salary,
   MODE(salary)         OVER (PARTITION BY dept) AS mode_salary
 FROM emp
+
+-- ############################################################
+-- Section 7: LAG / LEAD respect null values (mirrors Spark
+-- SQLWindowFunctionSuite "lead/lag should respect null values")
+-- ############################################################
+
+statement
+CREATE TABLE lag_lead_nulls(a int, b int, c int) USING parquet
+
+statement
+INSERT INTO lag_lead_nulls VALUES
+  (CAST(NULL AS INT), 1, 3),
+  (CAST(NULL AS INT), 2, 4)
+
+-- ============================================================
+-- 7.1: LAG / LEAD with literal default — input is null but the
+-- default still fires when the offset row does not exist
+-- (RESPECT NULLS is the default behaviour).
+-- ============================================================
+
+query
+SELECT
+  b,
+  LAG(a, 1, 321)  OVER (ORDER BY b) AS lg,
+  LEAD(a, 1, 321) OVER (ORDER BY b) AS ld
+FROM lag_lead_nulls
+
+-- ============================================================
+-- 7.2: LAG / LEAD with a non-literal (column-reference) default
+-- falls back to Spark — Comet's native lag/lead only accepts a
+-- literal default value.
+-- ============================================================
+
+query expect_fallback(default value must be a literal)
+SELECT
+  b,
+  LAG(a, 1, c)  OVER (ORDER BY b) AS lg,
+  LEAD(a, 1, c) OVER (ORDER BY b) AS ld
+FROM lag_lead_nulls
