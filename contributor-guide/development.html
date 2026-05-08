@@ -702,30 +702,113 @@ directory:</p>
 </div>
 <p>Alternatively, use <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test-rust</span></code> which handles the JVM compilation dependency automatically.</p>
 </section>
-<section id="avoid-using-pl-to-select-modules">
-<h3>Avoid Using <code class="docutils literal notranslate"><span class="pre">-pl</span></code> to Select Modules<a class="headerlink" href="#avoid-using-pl-to-select-modules" title="Link to this heading">#</a></h3>
-<p>When running Maven tests, avoid using <code class="docutils literal notranslate"><span class="pre">-pl</span> <span class="pre">spark</span></code> to select only the spark module. This can cause
-Maven to pick up the <code class="docutils literal notranslate"><span class="pre">common</span></code> module from your local Maven repository instead of using the current
-codebase, leading to inconsistent test results:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Avoid this - may use stale common module from local repo</span>
+<section id="never-use-pl-to-select-modules">
+<h3>Never Use <code class="docutils literal notranslate"><span class="pre">-pl</span></code> to Select Modules<a class="headerlink" href="#never-use-pl-to-select-modules" title="Link to this heading">#</a></h3>
+<p>Do not use <code class="docutils literal notranslate"><span class="pre">-pl</span> <span class="pre">spark</span></code> (or any other <code class="docutils literal notranslate"><span class="pre">-pl</span> <span class="pre">&lt;module&gt;</span></code>) when running Maven goals. With <code class="docutils literal notranslate"><span class="pre">-pl</span></code>, Maven
+does not rebuild sibling modules in the reactor and instead resolves them from your local Maven
+repository (<code class="docutils literal notranslate"><span class="pre">~/.m2/repository</span></code>). This leads to two failure modes:</p>
+<ul class="simple">
+<li><p><strong>Stale code.</strong> Tests run against the last <code class="docutils literal notranslate"><span class="pre">mvn</span> <span class="pre">install</span></code>ed version of <code class="docutils literal notranslate"><span class="pre">common</span></code> (or
+<code class="docutils literal notranslate"><span class="pre">spark-shims</span></code>), not against your current edits. You can chase a “failing” test for hours that
+is actually green in your working tree.</p></li>
+<li><p><strong>Cross-worktree corruption.</strong> If you have multiple worktrees open and run <code class="docutils literal notranslate"><span class="pre">mvn</span> <span class="pre">install</span></code> in one
+while running <code class="docutils literal notranslate"><span class="pre">mvn</span> <span class="pre">test</span> <span class="pre">-pl</span> <span class="pre">spark</span></code> in another, the second worktree picks up the first
+worktree’s artifacts from the shared <code class="docutils literal notranslate"><span class="pre">~/.m2/repository</span></code>. Builds and tests then mix code from
+different branches non-deterministically.</p></li>
+</ul>
+<p>Always run Maven from the repo root without <code class="docutils literal notranslate"><span class="pre">-pl</span></code>. Maven’s reactor will compile only what is
+needed:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Wrong: resolves sibling modules from ~/.m2, breaks under concurrent worktrees</span>
 ./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-pl<span class="w"> </span>spark<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;...&quot;</span>
 
-<span class="c1"># Do this instead - builds and tests with current code</span>
+<span class="c1"># Right: reactor build, always uses current source</span>
 ./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;...&quot;</span>
 </pre></div>
 </div>
 </section>
-<section id="use-wildcardsuites-for-running-tests">
-<h3>Use <code class="docutils literal notranslate"><span class="pre">wildcardSuites</span></code> for Running Tests<a class="headerlink" href="#use-wildcardsuites-for-running-tests" title="Link to this heading">#</a></h3>
-<p>When running specific test suites, use <code class="docutils literal notranslate"><span class="pre">wildcardSuites</span></code> instead of <code class="docutils literal notranslate"><span class="pre">suites</span></code> for more flexible
-matching. The <code class="docutils literal notranslate"><span class="pre">wildcardSuites</span></code> parameter allows partial matching of suite names:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run all suites containing &quot;CometCast&quot;</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-DwildcardSuites<span class="o">=</span><span class="s2">&quot;CometCast&quot;</span>
+<section id="running-a-specific-scalatest-suite">
+<h3>Running a Specific ScalaTest Suite<a class="headerlink" href="#running-a-specific-scalatest-suite" title="Link to this heading">#</a></h3>
+<p>To run a single suite (and only that suite), use <code class="docutils literal notranslate"><span class="pre">-Dsuites=</span></code> with the <strong>fully qualified class name</strong>
+and <code class="docutils literal notranslate"><span class="pre">-Dtest=none</span></code>:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run exactly one suite</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span>
 
-<span class="c1"># Run specific suite with filter</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite valid&quot;</span>
+<span class="c1"># Run multiple suites (comma-separated, fully qualified)</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite,org.apache.comet.CometArrayExpressionSuite&quot;</span>
+
+<span class="c1"># Run only tests whose name contains &quot;valid&quot; inside one suite</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite valid&quot;</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">-Dtest=none</span></code> tells the Surefire (JUnit) plugin to skip its tests; without it, Surefire still
+runs the JUnit <code class="docutils literal notranslate"><span class="pre">*Test.java</span></code> matchers in addition to your selected ScalaTest suite.</p>
+<section id="pitfall-dwildcardsuites-runs-everything">
+<h4>Pitfall: <code class="docutils literal notranslate"><span class="pre">-DwildcardSuites=&quot;&quot;</span></code> runs everything<a class="headerlink" href="#pitfall-dwildcardsuites-runs-everything" title="Link to this heading">#</a></h4>
+<p>A common mistake is to combine <code class="docutils literal notranslate"><span class="pre">-Dsuites=...</span></code> with <code class="docutils literal notranslate"><span class="pre">-DwildcardSuites=&quot;&quot;</span></code>:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># WRONG: runs every suite in the project, takes ~1 hour</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span><span class="w"> </span>-DwildcardSuites<span class="o">=</span><span class="s2">&quot;&quot;</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">wildcardSuites</span></code> does substring matching, and the empty string is a substring of every suite
+name, so it expands to “run all suites” and overrides the narrower <code class="docutils literal notranslate"><span class="pre">-Dsuites=</span></code> selection. If you
+want to run a single suite, omit <code class="docutils literal notranslate"><span class="pre">-DwildcardSuites</span></code> entirely. If you want substring matching,
+pass a non-empty pattern:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run every suite whose fully qualified name contains &quot;CometCast&quot;</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-DwildcardSuites<span class="o">=</span><span class="s2">&quot;CometCast&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="pitfall-line-breaks-silently-truncate-the-command">
+<h4>Pitfall: line breaks silently truncate the command<a class="headerlink" href="#pitfall-line-breaks-silently-truncate-the-command" title="Link to this heading">#</a></h4>
+<p>A bare newline ends a shell command. If the command is split across lines without a trailing
+backslash, the shell only runs the first line and treats the rest as separate (failed)
+commands:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># WRONG: shell runs only the first line, which omits -Dsuites and runs every suite</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span><span class="w"> </span>-DfailIfNoTests<span class="o">=</span><span class="nb">false</span>
+</pre></div>
+</div>
+<p>The first line <code class="docutils literal notranslate"><span class="pre">./mvnw</span> <span class="pre">test</span> <span class="pre">-Dtest=none</span></code> runs every ScalaTest suite in the module (about 1800
+tests). The second line errors out trying to execute <code class="docutils literal notranslate"><span class="pre">-Dsuites=...</span></code> as a program, but by then
+the test run is already in progress. Symptom: you asked for one suite and ScalaTest reports
+“Expected test count is: 1797” starting at an alphabetically earlier suite.</p>
+<p>Either keep the command on one line, or use a trailing backslash on every continued line:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DfailIfNoTests<span class="o">=</span><span class="nb">false</span>
+</pre></div>
+</div>
+<p>This is a common trap when copy-pasting commands from chat windows or terminals that wrap text
+without inserting the backslash.</p>
+</section>
+<section id="pitfall-a-successful-run-does-not-mean-your-suite-ran">
+<h4>Pitfall: a “successful” run does not mean your suite ran<a class="headerlink" href="#pitfall-a-successful-run-does-not-mean-your-suite-ran" title="Link to this heading">#</a></h4>
+<p>Maven exits with status <code class="docutils literal notranslate"><span class="pre">0</span></code> whenever the build phases it executed completed without error, even
+when no ScalaTest suite matched your filter or a different suite ran than the one you intended.
+This is especially misleading for automated agents that key off the exit code: an empty or
+mistyped <code class="docutils literal notranslate"><span class="pre">-Dsuites=</span></code> value can produce a green run that tested nothing, or a wrong-but-matching
+suite name can run a much larger set than you wanted.</p>
+<p>Always check the output, not just the exit code. ScalaTest prints a summary line near the end:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Run completed in 12 seconds, 345 milliseconds.
+Total number of tests run: 42
+Suites: completed 1, aborted 0
+Tests: succeeded 42, failed 0, canceled 0, ignored 0, pending 0
+All tests passed.
+</pre></div>
+</div>
+<p>Confirm both that the <strong>suite count</strong> matches what you asked for (typically <code class="docutils literal notranslate"><span class="pre">1</span></code>) and that the
+<strong>test count</strong> is in the expected range for that suite. A run that reports <code class="docutils literal notranslate"><span class="pre">Total</span> <span class="pre">number</span> <span class="pre">of</span> <span class="pre">tests</span> <span class="pre">run:</span> <span class="pre">0</span></code> or one that reports thousands of tests when you asked for a single suite is a
+filter problem, not a successful run.</p>
+</section>
+</section>
+<section id="skip-scalastyle-when-iterating">
+<h3>Skip Scalastyle When Iterating<a class="headerlink" href="#skip-scalastyle-when-iterating" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">scalastyle:check</span></code> goal runs in every Maven test invocation and re-scans every Scala source
+file even when nothing relevant changed. When iterating on a single test, skip it:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span><span class="w"> </span>-Dscalastyle.skip<span class="o">=</span><span class="nb">true</span>
+</pre></div>
+</div>
+<p>CI still enforces scalastyle, so this is purely a local iteration shortcut.</p>
 </section>
 </section>
 <section id="development-environment">
@@ -828,13 +911,16 @@ However if the tests is related to the native side. Please make sure to run <cod
 </section>
 <section id="running-tests-from-command-line">
 <h3>Running Tests from command line<a class="headerlink" href="#running-tests-from-command-line" title="Link to this heading">#</a></h3>
-<p>It is possible to specify which ScalaTest suites you want to run from the CLI using the <code class="docutils literal notranslate"><span class="pre">suites</span></code>
-argument, for example if you only want to execute the test cases that contains <em>valid</em>
-in their name in <code class="docutils literal notranslate"><span class="pre">org.apache.comet.CometCastSuite</span></code> you can use</p>
+<p>Specify which ScalaTest suites to run with the <code class="docutils literal notranslate"><span class="pre">suites</span></code> argument and disable Surefire’s JUnit
+discovery with <code class="docutils literal notranslate"><span class="pre">-Dtest=none</span></code>. For example, to run only the test cases containing <em>valid</em> in
+their name from <code class="docutils literal notranslate"><span class="pre">org.apache.comet.CometCastSuite</span></code>:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite valid&quot;</span>
 </pre></div>
 </div>
-<p>Other options for selecting specific suites are described in the <a class="reference external" href="https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin">ScalaTest Maven Plugin documentation</a></p>
+<p>See <a class="reference internal" href="#running-a-specific-scalatest-suite">Running a Specific ScalaTest Suite</a> above for the full
+list of common patterns and pitfalls (including why <code class="docutils literal notranslate"><span class="pre">-DwildcardSuites=&quot;&quot;</span></code> silently runs every
+suite). Other options for selecting specific suites are described in the
+<a class="reference external" href="https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin">ScalaTest Maven Plugin documentation</a>.</p>
 </section>
 </section>
 <section id="plan-stability-testing">
