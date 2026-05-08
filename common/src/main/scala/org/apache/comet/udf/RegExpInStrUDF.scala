@@ -20,7 +20,7 @@
 package org.apache.comet.udf
 
 import java.nio.charset.StandardCharsets
-import java.util
+import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.Pattern
 
 import org.apache.arrow.vector.{IntVector, ValueVector, VarCharVector}
@@ -42,11 +42,7 @@ import org.apache.comet.CometArrowAllocator
  */
 class RegExpInStrUDF extends CometUDF {
 
-  private val patternCache =
-    new util.LinkedHashMap[String, Pattern](RegExpInStrUDF.PatternCacheCapacity, 0.75f, true) {
-      override def removeEldestEntry(eldest: util.Map.Entry[String, Pattern]): Boolean =
-        size() > RegExpInStrUDF.PatternCacheCapacity
-    }
+  private val patternCache = new ConcurrentHashMap[String, Pattern]()
 
   override def evaluate(inputs: Array[ValueVector]): ValueVector = {
     require(inputs.length == 3, s"RegExpInStrUDF expects 3 inputs, got ${inputs.length}")
@@ -95,8 +91,4 @@ class RegExpInStrUDF extends CometUDF {
     out.setValueCount(n)
     out
   }
-}
-
-object RegExpInStrUDF {
-  private val PatternCacheCapacity: Int = 128
 }

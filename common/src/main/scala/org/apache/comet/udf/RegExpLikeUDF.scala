@@ -20,7 +20,7 @@
 package org.apache.comet.udf
 
 import java.nio.charset.StandardCharsets
-import java.util
+import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.Pattern
 
 import org.apache.arrow.vector.{BitVector, ValueVector, VarCharVector}
@@ -38,13 +38,7 @@ import org.apache.comet.CometArrowAllocator
  */
 class RegExpLikeUDF extends CometUDF {
 
-  // Bounded LRU so a workload with many distinct patterns does not retain
-  // Pattern objects for the executor's lifetime.
-  private val patternCache =
-    new util.LinkedHashMap[String, Pattern](RegExpLikeUDF.PatternCacheCapacity, 0.75f, true) {
-      override def removeEldestEntry(eldest: util.Map.Entry[String, Pattern]): Boolean =
-        size() > RegExpLikeUDF.PatternCacheCapacity
-    }
+  private val patternCache = new ConcurrentHashMap[String, Pattern]()
 
   override def evaluate(inputs: Array[ValueVector]): ValueVector = {
     require(inputs.length == 2, s"RegExpLikeUDF expects 2 inputs, got ${inputs.length}")
@@ -82,8 +76,4 @@ class RegExpLikeUDF extends CometUDF {
     out.setValueCount(n)
     out
   }
-}
-
-object RegExpLikeUDF {
-  private val PatternCacheCapacity: Int = 128
 }

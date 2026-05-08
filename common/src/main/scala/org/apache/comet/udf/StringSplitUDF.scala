@@ -20,7 +20,7 @@
 package org.apache.comet.udf
 
 import java.nio.charset.StandardCharsets
-import java.util
+import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.Pattern
 
 import org.apache.arrow.vector.ValueVector
@@ -44,11 +44,7 @@ import org.apache.comet.CometArrowAllocator
  */
 class StringSplitUDF extends CometUDF {
 
-  private val patternCache =
-    new util.LinkedHashMap[String, Pattern](StringSplitUDF.PatternCacheCapacity, 0.75f, true) {
-      override def removeEldestEntry(eldest: util.Map.Entry[String, Pattern]): Boolean =
-        size() > StringSplitUDF.PatternCacheCapacity
-    }
+  private val patternCache = new ConcurrentHashMap[String, Pattern]()
 
   override def evaluate(inputs: Array[ValueVector]): ValueVector = {
     require(inputs.length == 3, s"StringSplitUDF expects 3 inputs, got ${inputs.length}")
@@ -105,8 +101,4 @@ class StringSplitUDF extends CometUDF {
     out.setValueCount(n)
     out
   }
-}
-
-object StringSplitUDF {
-  private val PatternCacheCapacity: Int = 128
 }
