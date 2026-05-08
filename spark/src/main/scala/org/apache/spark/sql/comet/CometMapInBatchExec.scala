@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.comet.shims.ShimCometPythonMapInArrow
+import org.apache.spark.sql.comet.shims.ShimCometMapInBatch
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.python.{BatchIterator, PythonSQLMetrics}
@@ -35,29 +35,26 @@ import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.vectorized.{ArrowColumnVector, ColumnarBatch}
 
 /**
- * An optimized version of Spark's MapInBatchExec (PythonMapInArrowExec / MapInPandasExec) that
- * accepts columnar input directly from Comet operators, avoiding unnecessary Arrow -> Row ->
- * Arrow conversions.
+ * Comet replacement for Spark's `MapInBatchExec` family (`PythonMapInArrowExec` /
+ * `MapInArrowExec` in 4.1+ / `MapInPandasExec`). Accepts columnar input directly from a Comet
+ * child instead of going through the per-row `UnsafeProjection` that `ColumnarToRowExec` applies,
+ * and keeps the Python runner output as `ColumnarBatch` so downstream Comet operators consume it
+ * natively.
  *
- * Normal Spark flow: CometNativeExec (Arrow) -> ColumnarToRow -> PythonMapInArrowExec
- * (internally: rows -> Arrow -> Python -> Arrow -> rows)
- *
- * Optimized flow: CometNativeExec (Arrow) -> CometPythonMapInArrowExec (batch.rowIterator() ->
- * Arrow -> Python -> Arrow columnar output)
- *
- * This eliminates:
- *   1. The UnsafeProjection in ColumnarToRow (expensive copy) 2. The output Arrow->Row conversion
- *      (keeps Python output as ColumnarBatch)
+ * What this eliminates: two `UnsafeProjection` copies (input and output) and the row transition
+ * between Comet and the Python operator. The internal row-to-Arrow IPC re-encoding inside
+ * `ArrowPythonRunner` is unchanged; full round-trip elimination is tracked in #4240.
  */
-case class CometPythonMapInArrowExec(
+case class CometMapInBatchExec(
     func: Expression,
     output: Seq[Attribute],
     child: SparkPlan,
     isBarrier: Boolean,
     pythonEvalType: Int)
     extends UnaryExecNode
+    with CometPlan
     with PythonSQLMetrics
-    with ShimCometPythonMapInArrow {
+    with ShimCometMapInBatch {
 
   override def supportsColumnar: Boolean = true
 
@@ -71,6 +68,9 @@ case class CometPythonMapInArrowExec(
     "numInputRows" -> SQLMetrics.createMetric(sparkContext, "number of input rows")) ++
     pythonMetrics
 
+  // Fallback for row-consuming parents (e.g. a top-level `collect()` that produces rows).
+  // Wraps this columnar exec in `ColumnarToRowExec`, reintroducing exactly the row transition
+  // this operator otherwise eliminates. Only fires when nothing downstream consumes columnar.
   override def doExecute(): RDD[InternalRow] = {
     ColumnarToRowExec(this).doExecute()
   }
@@ -81,21 +81,15 @@ case class CometPythonMapInArrowExec(
     val numInputRows = longMetric("numInputRows")
 
     val pythonUDF = func.asInstanceOf[PythonUDF]
-    val localOutput = output
-    val localChildSchema = child.schema
+    val outputAttrs = output
+    val childSchema = child.schema
     val batchSize = conf.arrowMaxRecordsPerBatch
-    val sessionLocalTimeZone = conf.sessionLocalTimeZone
-    val useLargeVarTypes = largeVarTypes(conf)
-    val pythonRunnerConf = getPythonRunnerConfMap(conf)
-    val localPythonEvalType = pythonEvalType
-    val localPythonMetrics = pythonMetrics
-    val jobArtifactUUID = currentJobArtifactUUID()
+    val evalType = pythonEvalType
+    val sqlConf = conf
+    val metricsCopy = pythonMetrics
 
     val inputRDD = child.executeColumnar()
 
-    // Run on every partition. Identical to what MapInBatchExec does, except the input
-    // is columnar; we intentionally avoid the UnsafeProjection copy that ColumnarToRow
-    // would do.
     def processPartition(batches: Iterator[ColumnarBatch]): Iterator[ColumnarBatch] = {
       val context = TaskContext.get()
       val argOffsets = Array(Array(0))
@@ -115,22 +109,18 @@ case class CometPythonMapInArrowExec(
 
       val columnarBatchIter = computeArrowPython(
         pythonUDF,
-        localPythonEvalType,
+        evalType,
         argOffsets,
-        StructType(Array(StructField("struct", localChildSchema))),
-        sessionLocalTimeZone,
-        useLargeVarTypes,
-        pythonRunnerConf,
-        localPythonMetrics,
-        jobArtifactUUID,
+        StructType(Array(StructField("struct", childSchema))),
+        sqlConf,
+        metricsCopy,
         batchIter,
         context.partitionId(),
         context)
 
       columnarBatchIter.map { batch =>
-        // Python returns a StructType column; flatten to individual columns
         val structVector = batch.column(0).asInstanceOf[ArrowColumnVector]
-        val outputVectors = localOutput.indices.map(structVector.getChild)
+        val outputVectors = outputAttrs.indices.map(structVector.getChild)
         val flattenedBatch = new ColumnarBatch(outputVectors.toArray)
         flattenedBatch.setNumRows(batch.numRows())
         numOutputRows += flattenedBatch.numRows()
@@ -148,6 +138,6 @@ case class CometPythonMapInArrowExec(
     }
   }
 
-  override protected def withNewChildInternal(newChild: SparkPlan): CometPythonMapInArrowExec =
+  override protected def withNewChildInternal(newChild: SparkPlan): CometMapInBatchExec =
     copy(child = newChild)
 }

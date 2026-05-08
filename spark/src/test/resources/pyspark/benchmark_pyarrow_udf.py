@@ -20,7 +20,7 @@
 End-to-end wall-clock benchmark for Comet's PyArrow UDF acceleration.
 
 Times `df.mapInArrow(passthrough, schema).count()` and the equivalent
-`mapInPandas` query with `spark.comet.exec.pythonMapInArrow.enabled` set
+`mapInPandas` query with `spark.comet.exec.pyarrowUdf.enabled` set
 to false (vanilla Spark path) and true (Comet's optimized path). Both
 modes run the same Python worker, so the measured delta covers what the
 optimization actually changes for users:
@@ -33,6 +33,12 @@ Results are wall-clock seconds, so they include Python interpreter,
 Arrow IPC, and downstream count() costs. That's intentional: the
 optimization's user-visible value is what fraction of end-to-end time
 it shaves off, not the JVM-side delta in isolation.
+
+Caveat: the workload here is `passthrough_udf` + `count()` on `local[2]`,
+so most of the wall time is Spark's Python fork/IPC overhead with very
+little real Python work. Real UDFs (PyArrow compute, pandas ops, model
+inference) increase the per-row Python cost, which dilutes the JVM-side
+savings and shrinks the speedup ratio relative to what you see here.
 
 Usage:
     # Build Comet (release for representative numbers):
@@ -50,48 +56,20 @@ Override defaults via environment variables:
 """
 
 import contextlib
-import glob
 import os
 import statistics
+import sys
 import tempfile
 import time
 
 from pyspark.sql import SparkSession
 
-
-REPO_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..")
-)
-
-
-def _resolve_comet_jar() -> str:
-    explicit = os.environ.get("COMET_JAR")
-    if explicit:
-        return explicit
-    import pyspark
-
-    major_minor = ".".join(pyspark.__version__.split(".")[:2])
-    spark_tag = f"spark{major_minor}"
-    scala_tag = "_2.12" if major_minor.startswith("3.") else "_2.13"
-    pattern = os.path.join(
-        REPO_ROOT,
-        f"spark/target/comet-spark-{spark_tag}{scala_tag}-*-SNAPSHOT.jar",
-    )
-    candidates = [
-        m
-        for m in sorted(glob.glob(pattern))
-        if "sources" not in os.path.basename(m) and "tests" not in os.path.basename(m)
-    ]
-    if not candidates:
-        raise FileNotFoundError(
-            "Comet jar not found. Set COMET_JAR or run `make release`. "
-            f"Looked under {pattern}."
-        )
-    return candidates[-1]
+sys.path.insert(0, os.path.dirname(__file__))
+from conftest import resolve_comet_jar
 
 
 def _build_spark() -> SparkSession:
-    jar = _resolve_comet_jar()
+    jar = resolve_comet_jar()
     os.environ["PYSPARK_SUBMIT_ARGS"] = (
         f"--jars {jar} --driver-class-path {jar} pyspark-shell"
     )
@@ -165,7 +143,7 @@ def _temp_parquet(spark: SparkSession, build_df, n: int):
 
 def _time_run(spark: SparkSession, parquet_path: str, accelerate: bool, api: str) -> float:
     spark.conf.set(
-        "spark.comet.exec.pythonMapInArrow.enabled",
+        "spark.comet.exec.pyarrowUdf.enabled",
         "true" if accelerate else "false",
     )
     df = spark.read.parquet(parquet_path)
@@ -189,7 +167,7 @@ def main() -> None:
 
     print(f"\nrows per run: {rows:,}")
     print(f"warmup iters: {warmup}, measured iters: {iters}")
-    print(f"jar: {_resolve_comet_jar()}\n")
+    print(f"jar: {resolve_comet_jar()}\n")
 
     header = "  {:<14} {:<10} {:>10} {:>10} {:>10} {:>13} {:>9}".format(
         "api", "mode", "min (s)", "median (s)", "max (s)", "rows/s", "speedup"

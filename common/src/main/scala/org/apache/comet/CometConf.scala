@@ -314,8 +314,8 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_PYTHON_MAP_IN_ARROW_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.exec.pythonMapInArrow.enabled")
+  val COMET_PYARROW_UDF_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.pyarrowUdf.enabled")
       .category(CATEGORY_EXEC)
       .doc(
         "Experimental: whether to enable optimized execution of PyArrow UDFs " +

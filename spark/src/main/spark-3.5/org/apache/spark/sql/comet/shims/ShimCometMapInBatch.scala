@@ -20,67 +20,65 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.{JobArtifactSet, TaskContext}
-import org.apache.spark.api.python.ChainedPythonFunctions
+import org.apache.spark.api.python.{ChainedPythonFunctions, PythonEvalType}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, PythonUDF}
+import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.execution.python.{ArrowPythonRunner, MapInArrowExec, MapInPandasExec}
+import org.apache.spark.sql.execution.python.{ArrowPythonRunner, MapInPandasExec, PythonMapInArrowExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-trait ShimCometPythonMapInArrow {
+trait ShimCometMapInBatch {
 
-  protected def matchMapInArrow(
-      plan: SparkPlan): Option[(Expression, Seq[Attribute], SparkPlan, Boolean, Int)] =
+  protected def matchMapInArrow(plan: SparkPlan): Option[MapInBatchInfo] =
     plan match {
-      case p: MapInArrowExec =>
-        Some((p.func, p.output, p.child, p.isBarrier, p.func.asInstanceOf[PythonUDF].evalType))
+      case p: PythonMapInArrowExec =>
+        Some(
+          MapInBatchInfo(
+            p.func,
+            p.output,
+            p.child,
+            p.isBarrier,
+            PythonEvalType.SQL_MAP_ARROW_ITER_UDF))
       case _ => None
     }
 
-  protected def matchMapInPandas(
-      plan: SparkPlan): Option[(Expression, Seq[Attribute], SparkPlan, Boolean, Int)] =
+  protected def matchMapInPandas(plan: SparkPlan): Option[MapInBatchInfo] =
     plan match {
       case p: MapInPandasExec =>
-        Some((p.func, p.output, p.child, p.isBarrier, p.func.asInstanceOf[PythonUDF].evalType))
+        Some(
+          MapInBatchInfo(
+            p.func,
+            p.output,
+            p.child,
+            p.isBarrier,
+            PythonEvalType.SQL_MAP_PANDAS_ITER_UDF))
       case _ => None
     }
-
-  protected def currentJobArtifactUUID(): Option[String] =
-    JobArtifactSet.getCurrentJobArtifactState.map(_.uuid)
-
-  protected def largeVarTypes(conf: SQLConf): Boolean = conf.arrowUseLargeVarTypes
-
-  protected def getPythonRunnerConfMap(conf: SQLConf): Map[String, String] =
-    ArrowPythonRunner.getPythonRunnerConfMap(conf)
 
   protected def computeArrowPython(
       pythonUDF: PythonUDF,
       evalType: Int,
       argOffsets: Array[Array[Int]],
       schema: StructType,
-      timeZoneId: String,
-      largeVarTypes: Boolean,
-      pythonRunnerConf: Map[String, String],
+      conf: SQLConf,
       pythonMetrics: Map[String, SQLMetric],
-      jobArtifactUUID: Option[String],
       batchIter: Iterator[Iterator[InternalRow]],
       partitionId: Int,
       context: TaskContext): Iterator[ColumnarBatch] = {
-    val chainedFunc =
-      Seq((ChainedPythonFunctions(Seq(pythonUDF.func)), pythonUDF.resultId.id))
+    val chainedFunc = Seq(ChainedPythonFunctions(Seq(pythonUDF.func)))
+    val jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid)
     new ArrowPythonRunner(
       chainedFunc,
       evalType,
       argOffsets,
       schema,
-      timeZoneId,
-      largeVarTypes,
-      pythonRunnerConf,
+      conf.sessionLocalTimeZone,
+      conf.arrowUseLargeVarTypes,
+      ArrowPythonRunner.getPythonRunnerConfMap(conf),
       pythonMetrics,
-      jobArtifactUUID,
-      None).compute(batchIter, partitionId, context)
+      jobArtifactUUID).compute(batchIter, partitionId, context)
   }
 }

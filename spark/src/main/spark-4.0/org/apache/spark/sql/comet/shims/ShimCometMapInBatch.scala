@@ -21,48 +21,36 @@ package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.TaskContext
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, PythonUDF}
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.execution.python.ArrowPythonRunner
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-/**
- * Spark 3.4 shim for the PyArrow UDF acceleration support.
- *
- * Spark 3.4 lacks several APIs that the optimization relies on (`isBarrier` on `MapInBatchExec`,
- * `arrowUseLargeVarTypes`, `JobArtifactSet`, the modern `ArrowPythonRunner` constructor), so the
- * matchers return `None` and the runner factory throws. The optimization is effectively a no-op
- * on Spark 3.4.
- */
-trait ShimCometPythonMapInArrow {
-
-  protected def matchMapInArrow(
-      plan: SparkPlan): Option[(Expression, Seq[Attribute], SparkPlan, Boolean, Int)] = None
-
-  protected def matchMapInPandas(
-      plan: SparkPlan): Option[(Expression, Seq[Attribute], SparkPlan, Boolean, Int)] = None
-
-  protected def currentJobArtifactUUID(): Option[String] = None
-
-  protected def largeVarTypes(conf: SQLConf): Boolean = false
-
-  protected def getPythonRunnerConfMap(conf: SQLConf): Map[String, String] = Map.empty
+trait ShimCometMapInBatch extends Spark4xMapInBatchSupport {
 
   protected def computeArrowPython(
       pythonUDF: PythonUDF,
       evalType: Int,
       argOffsets: Array[Array[Int]],
       schema: StructType,
-      timeZoneId: String,
-      largeVarTypes: Boolean,
-      pythonRunnerConf: Map[String, String],
+      conf: SQLConf,
       pythonMetrics: Map[String, SQLMetric],
-      jobArtifactUUID: Option[String],
       batchIter: Iterator[Iterator[InternalRow]],
       partitionId: Int,
-      context: TaskContext): Iterator[ColumnarBatch] =
-    throw new UnsupportedOperationException(
-      "CometPythonMapInArrowExec is not supported on Spark 3.4")
+      context: TaskContext): Iterator[ColumnarBatch] = {
+    val r = runnerInputs(pythonUDF, conf)
+    new ArrowPythonRunner(
+      r.chainedFunc,
+      evalType,
+      argOffsets,
+      schema,
+      r.timeZoneId,
+      r.largeVarTypes,
+      r.pythonRunnerConf,
+      pythonMetrics,
+      r.jobArtifactUUID,
+      None).compute(batchIter, partitionId, context)
+  }
 }

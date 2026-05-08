@@ -40,22 +40,43 @@ Steps 2 and 3 are redundant since the data starts and ends in Arrow format.
 
 ## How Comet Optimizes This
 
-When enabled, Comet detects `PythonMapInArrowExec` and `MapInPandasExec` operators in the physical plan
-and replaces them with `CometPythonMapInArrowExec`, which:
+When enabled, Comet detects `PythonMapInArrowExec` / `MapInArrowExec` and `MapInPandasExec`
+operators in the physical plan and replaces them with `CometMapInBatchExec`, which:
 
 - Reads Arrow columnar batches directly from the upstream Comet operator
 - Feeds them to the Python runner without the expensive UnsafeProjection copy
 - Keeps the Python output in columnar format for downstream operators
 
 This eliminates the ColumnarToRow transition and the output row conversion, reducing CPU overhead
-and memory allocations.
+and memory allocations. The internal row-to-Arrow IPC re-encoding inside Spark's
+`ArrowPythonRunner` is unchanged in this version; full round-trip elimination is tracked in
+[#4240](https://github.com/apache/datafusion-comet/issues/4240).
+
+### Plan flow
+
+Without Comet's optimization:
+
+```
+PythonMapInArrow / MapInArrow / MapInPandas
++- ColumnarToRow         <- Arrow -> Row copy
+   +- CometNativeExec    <- Arrow batch
+      +- CometScan
+```
+
+With the optimization enabled:
+
+```
+CometMapInBatch          <- Arrow batch in/out, Python runner attached
++- CometNativeExec
+   +- CometScan
+```
 
 ## Configuration
 
 The optimization is experimental and disabled by default. Enable it with:
 
 ```
-spark.comet.exec.pythonMapInArrow.enabled=true
+spark.comet.exec.pyarrowUdf.enabled=true
 ```
 
 The default is `false` while the feature stabilizes.
@@ -79,7 +100,7 @@ spark = SparkSession.builder \
     .config("spark.plugins", "org.apache.spark.CometPlugin") \
     .config("spark.comet.enabled", "true") \
     .config("spark.comet.exec.enabled", "true") \
-    .config("spark.comet.exec.pythonMapInArrow.enabled", "true") \
+    .config("spark.comet.exec.pyarrowUdf.enabled", "true") \
     .config("spark.memory.offHeap.enabled", "true") \
     .config("spark.memory.offHeap.size", "2g") \
     .getOrCreate()
@@ -102,7 +123,7 @@ result = df.mapInArrow(transform, output_schema)
 
 ## Verifying the Optimization
 
-Use `explain()` to verify that `CometPythonMapInArrow` appears in your plan:
+Use `explain()` to verify that `CometMapInBatch` appears in your plan:
 
 ```python
 result.explain(mode="extended")
@@ -111,7 +132,7 @@ result.explain(mode="extended")
 You should see:
 
 ```
-CometPythonMapInArrow ...
+CometMapInBatch ...
 +- CometNativeExec ...
    +- CometScan ...
 ```
@@ -137,8 +158,15 @@ AdaptiveSparkPlan isFinalPlan=false
 
 To see the optimized plan, run an action first (for example `result.collect()` or
 `result.cache(); result.count()`) and then call `explain()`. The post-execution
-plan shows the materialized stages and includes `CometPythonMapInArrow` if the
+plan shows the materialized stages and includes `CometMapInBatch` if the
 optimization fired.
+
+## Barrier execution
+
+`mapInArrow(..., barrier=True)` and `mapInPandas(..., barrier=True)` are honored: the
+optimized operator propagates `isBarrier` through `RDD.barrier()`, so all tasks are
+gang-scheduled and `BarrierTaskContext.barrier()` works inside the UDF the same way it does
+on the unoptimized path.
 
 ## Limitations
 

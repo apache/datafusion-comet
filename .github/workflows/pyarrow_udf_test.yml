@@ -58,7 +58,7 @@ env:
 
 jobs:
   pyarrow-udf:
-    name: PyArrow UDF (Spark 3.5, JDK 17, Python 3.11)
+    name: PyArrow UDF (Spark 4.0, JDK 17, Python 3.11)
     runs-on: ubuntu-latest
     container:
       # Pinned to the Debian 12 (bookworm) base so the system `python3` is 3.11. The default
@@ -86,10 +86,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Build Comet (release, Spark 3.5 / Scala 2.12)
+      - name: Build Comet (debug, Spark 4.0 / Scala 2.13)
         run: |
-          cd native && cargo build --release
-          cd .. && ./mvnw -B -Prelease install -DskipTests -Pspark-3.5 -Pscala-2.12
+          cd native && cargo build
+          cd .. && ./mvnw -B install -DskipTests -Pspark-4.0 -Pscala-2.13
 
       - name: Install Python 3.11 and pip
         run: |
@@ -97,7 +97,7 @@ jobs:
           apt-get install -y --no-install-recommends python3 python3-venv python3-pip
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install --upgrade pip
-          /tmp/venv/bin/pip install "pyspark==3.5.8" "pyarrow>=14" pandas pytest
+          /tmp/venv/bin/pip install "pyspark==4.0.1" "pyarrow>=14" pandas pytest
 
       - name: Run PyArrow UDF pytest
         env:
@@ -108,8 +108,5 @@ jobs:
           PYSPARK_PYTHON: /tmp/venv/bin/python
           PYSPARK_DRIVER_PYTHON: /tmp/venv/bin/python
         run: |
-          jar=$(ls "$PWD"/spark/target/comet-spark-spark3.5_2.12-*-SNAPSHOT.jar \
-                | grep -v sources | grep -v tests | head -n1)
-          echo "Using $jar"
-          COMET_JAR="$jar" /tmp/venv/bin/python -m pytest -v \
+          /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf.py

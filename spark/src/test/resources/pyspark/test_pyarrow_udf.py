@@ -20,14 +20,14 @@
 Pytest-driven integration tests for Comet's PyArrow UDF acceleration.
 
 Each test runs against two execution paths:
-  - "accelerated": spark.comet.exec.pythonMapInArrow.enabled=true
-                   (plan should contain CometPythonMapInArrow and no ColumnarToRow)
-  - "fallback":    spark.comet.exec.pythonMapInArrow.enabled=false
-                   (plan should contain vanilla PythonMapInArrow)
+  - "accelerated": spark.comet.exec.pyarrowUdf.enabled=true
+                   (plan should contain CometMapInBatch and no ColumnarToRow)
+  - "fallback":    spark.comet.exec.pyarrowUdf.enabled=false
+                   (plan should contain vanilla PythonMapInArrow / MapInArrow)
 
 Usage:
     # Build Comet first:
-    make release
+    make
 
     # Then either let the test discover the jar from spark/target, or pass it
     # explicitly via COMET_JAR:
@@ -38,7 +38,6 @@ Usage:
 """
 
 import datetime as dt
-import glob
 import os
 from decimal import Decimal
 
@@ -46,52 +45,12 @@ import pyarrow as pa
 import pytest
 from pyspark.sql import SparkSession, types as T
 
-
-REPO_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..")
-)
-
-
-def _resolve_comet_jar() -> str:
-    explicit = os.environ.get("COMET_JAR")
-    if explicit:
-        if any(ch in explicit for ch in "*?["):
-            matches = sorted(glob.glob(explicit))
-            if not matches:
-                raise FileNotFoundError(
-                    f"COMET_JAR pattern matched nothing: {explicit}"
-                )
-            return matches[-1]
-        return explicit
-
-    # Pick the jar that matches the installed pyspark major.minor version. The
-    # Comet jars are published per Spark version (e.g., comet-spark-spark3.5_2.12-*.jar);
-    # using the wrong one yields ClassNotFoundException on Scala stdlib classes.
-    import pyspark
-
-    major_minor = ".".join(pyspark.__version__.split(".")[:2])
-    spark_tag = f"spark{major_minor}"
-    scala_tag = "_2.12" if major_minor.startswith("3.") else "_2.13"
-    pattern = os.path.join(
-        REPO_ROOT,
-        f"spark/target/comet-spark-{spark_tag}{scala_tag}-*-SNAPSHOT.jar",
-    )
-    candidates = [
-        m
-        for m in sorted(glob.glob(pattern))
-        if "sources" not in os.path.basename(m) and "tests" not in os.path.basename(m)
-    ]
-    if not candidates:
-        raise FileNotFoundError(
-            "Comet jar not found. Set COMET_JAR or run `make release`. "
-            f"Looked under {pattern}."
-        )
-    return candidates[-1]
+from conftest import resolve_comet_jar
 
 
 @pytest.fixture(scope="session")
 def spark():
-    jar = _resolve_comet_jar()
+    jar = resolve_comet_jar()
     # PYSPARK_SUBMIT_ARGS is consumed when pyspark launches its JVM. Setting
     # --jars puts the Comet jar on both driver and executor classpaths so the
     # CometPlugin can be loaded.
@@ -117,7 +76,7 @@ def spark():
 @pytest.fixture(params=[True, False], ids=["accelerated", "fallback"])
 def accelerated(request, spark) -> bool:
     spark.conf.set(
-        "spark.comet.exec.pythonMapInArrow.enabled",
+        "spark.comet.exec.pyarrowUdf.enabled",
         "true" if request.param else "false",
     )
     return request.param
@@ -128,18 +87,18 @@ def _executed_plan(df) -> str:
 
 
 def _assert_plan_matches_mode(
-    plan: str, accelerated: bool, vanilla_node: str = "PythonMapInArrow"
+    plan: str, accelerated: bool, vanilla_node: str = "MapInArrow"
 ) -> None:
     if accelerated:
-        assert "CometPythonMapInArrow" in plan, (
-            f"expected CometPythonMapInArrow in accelerated plan, got:\n{plan}"
+        assert "CometMapInBatch" in plan, (
+            f"expected CometMapInBatch in accelerated plan, got:\n{plan}"
         )
         assert "ColumnarToRow" not in plan, (
             f"unexpected ColumnarToRow in accelerated plan:\n{plan}"
         )
     else:
-        assert "CometPythonMapInArrow" not in plan, (
-            f"unexpected CometPythonMapInArrow in fallback plan:\n{plan}"
+        assert "CometMapInBatch" not in plan, (
+            f"unexpected CometMapInBatch in fallback plan:\n{plan}"
         )
         assert vanilla_node in plan, (
             f"expected {vanilla_node} in fallback plan, got:\n{plan}"
@@ -174,6 +133,11 @@ def test_map_in_arrow_doubles_value(spark, tmp_path, accelerated):
         assert row["id"] == original[0]
         assert abs(row["value"] - original[1] * 2) < 1e-6
         assert row["name"] == original[2]
+
+
+# All other tests use the default `vanilla_node="MapInArrow"`. The mapInPandas tests below
+# pass `MapInPandas` explicitly. The substring is the same on Spark 3.5 (PythonMapInArrowExec)
+# and Spark 4.x (MapInArrowExec) since the latter is a substring of the former.
 
 
 def test_map_in_arrow_changes_schema(spark, tmp_path, accelerated):
