@@ -135,9 +135,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     val sizeBefore = CometCodegenDispatchUDF.stats().cacheSize
     f
     val after = CometCodegenDispatchUDF.stats()
-    assert(
-      after.compileCount <= 1,
-      s"expected <= 1 compile for the composed subtree, got $after")
+    assert(after.compileCount <= 1, s"expected <= 1 compile for the composed subtree, got $after")
     val grew = after.cacheSize - sizeBefore
     assert(grew <= 1, s"expected cache to grow by <= 1 entry, grew by $grew; stats=$after")
     assert(
