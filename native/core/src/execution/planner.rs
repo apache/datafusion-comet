@@ -2729,15 +2729,24 @@ impl PhysicalPlanner {
                     }
                 },
                 LowerFrameBoundStruct::Preceding(offset) => {
-                    let offset_value = offset.offset.abs();
+                    // Spark encodes ROWS bound direction via the sign of the offset:
+                    // negative => PRECEDING, positive => FOLLOWING. The proto
+                    // `LowerWindowFrameBound` only carries a `Preceding` variant, so
+                    // Comet overloads it for both cases. Route to the matching
+                    // DataFusion `WindowFrameBound` based on the sign.
                     match units {
-                        WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(
-                            Some(offset_value as u64),
-                        )),
+                        WindowFrameUnits::Rows => {
+                            let abs = offset.offset.unsigned_abs();
+                            if offset.offset < 0 {
+                                WindowFrameBound::Preceding(ScalarValue::UInt64(Some(abs)))
+                            } else {
+                                WindowFrameBound::Following(ScalarValue::UInt64(Some(abs)))
+                            }
+                        }
                         WindowFrameUnits::Range => {
                             let scalar = match offset.range_offset.as_ref() {
                                 Some(lit) => numeric_literal_to_scalar(lit)?,
-                                None => ScalarValue::Int64(Some(offset_value)),
+                                None => ScalarValue::Int64(Some(offset.offset.abs())),
                             };
                             WindowFrameBound::Preceding(scalar)
                         }
@@ -2782,7 +2791,16 @@ impl PhysicalPlanner {
                 },
                 UpperFrameBoundStruct::Following(offset) => match units {
                     WindowFrameUnits::Rows => {
-                        WindowFrameBound::Following(ScalarValue::UInt64(Some(offset.offset as u64)))
+                        // Mirror the lower-bound sign handling: the upper proto
+                        // variant is `Following`, but Spark encodes the bound
+                        // direction via sign. Negative => PRECEDING, positive =>
+                        // FOLLOWING.
+                        let abs = offset.offset.unsigned_abs();
+                        if offset.offset < 0 {
+                            WindowFrameBound::Preceding(ScalarValue::UInt64(Some(abs)))
+                        } else {
+                            WindowFrameBound::Following(ScalarValue::UInt64(Some(abs)))
+                        }
                     }
                     WindowFrameUnits::Range => {
                         let scalar = match offset.range_offset.as_ref() {
@@ -2958,14 +2976,20 @@ impl PhysicalPlanner {
     /// Find DataFusion's built-in window function by name.
     fn find_df_window_function(&self, name: &str) -> Option<WindowFunctionDefinition> {
         let registry = &self.session_ctx.state();
+        // Prefer the WindowUDF (frame-aware) over the AggregateUDF when both exist.
+        // Functions like `nth_value` are registered twice in DataFusion: once as an
+        // aggregate and once as a window function. The window variant has the
+        // correct IGNORE NULLS / frame semantics for an OVER clause; the aggregate
+        // variant wrapped into PlainAggregateWindowExpr does not. Aggregate-only
+        // functions (count/sum/min/max/avg/...) have no UDWF and fall through.
         registry
-            .udaf(name)
-            .map(WindowFunctionDefinition::AggregateUDF)
+            .udwf(name)
+            .map(WindowFunctionDefinition::WindowUDF)
             .ok()
             .or_else(|| {
                 registry
-                    .udwf(name)
-                    .map(WindowFunctionDefinition::WindowUDF)
+                    .udaf(name)
+                    .map(WindowFunctionDefinition::AggregateUDF)
                     .ok()
             })
     }
