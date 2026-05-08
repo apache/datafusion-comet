@@ -1914,7 +1914,6 @@ impl PhysicalPlanner {
                     InputOrderMode::Sorted,
                     !partition_exprs.is_empty(),
                 )?);
-
                 Ok((
                     scans,
                     shuffle_scans,
