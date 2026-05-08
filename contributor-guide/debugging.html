@@ -633,6 +633,69 @@ For example, see: <a class="reference external" href="https://github.com/apache/
 </div>
 <p>When backtraces are enabled (see earlier section) then backtraces will be included for failed allocations.</p>
 </section>
+<section id="dumping-native-stream-output-with-the-debug-module">
+<h3>Dumping native stream output with the <code class="docutils literal notranslate"><span class="pre">debug</span></code> module<a class="headerlink" href="#dumping-native-stream-output-with-the-debug-module" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">native/core/src/debug/</span></code> module ships small wrappers that print every
+<code class="docutils literal notranslate"><span class="pre">RecordBatch</span></code> (and, at expression granularity, every <code class="docutils literal notranslate"><span class="pre">ColumnarValue</span></code>) flowing
+through a node. They are gated behind <code class="docutils literal notranslate"><span class="pre">#[cfg(debug_assertions)]</span></code> in
+<code class="docutils literal notranslate"><span class="pre">native/core/src/lib.rs</span></code>, so they exist in every <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">check</span></code> / <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code>
+/ <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">core</span></code> build but are stripped from <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code>. CI builds them on
+every run, so the wrappers cannot bitrot.</p>
+<p>Two types are exposed:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DebugExecutionDataStream</span></code> — wraps an <code class="docutils literal notranslate"><span class="pre">Arc&lt;dyn</span> <span class="pre">ExecutionPlan&gt;</span></code>, prints each batch it
+produces.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DebugExecutionDataPhyExpr</span></code> — wraps an <code class="docutils literal notranslate"><span class="pre">Arc&lt;dyn</span> <span class="pre">PhysicalExpr&gt;</span></code>, prints the input
+batch and output <code class="docutils literal notranslate"><span class="pre">ColumnarValue</span></code> for every <code class="docutils literal notranslate"><span class="pre">evaluate()</span></code> call.</p></li>
+</ul>
+<p>Output is <code class="docutils literal notranslate"><span class="pre">eprintln!</span></code> + <code class="docutils literal notranslate"><span class="pre">dbg!</span></code>, i.e. plain stderr of the executor process — the
+same place <code class="docutils literal notranslate"><span class="pre">rust-gdb</span></code> / <code class="docutils literal notranslate"><span class="pre">dbg!</span></code> output lands. It is not routed through <code class="docutils literal notranslate"><span class="pre">log4rs</span></code>,
+so <code class="docutils literal notranslate"><span class="pre">spark.comet.debug.enabled</span></code> and <code class="docutils literal notranslate"><span class="pre">COMET_LOG_LEVEL</span></code> do not affect it.</p>
+<section id="example-dumping-window-operator-output">
+<h4>Example: dumping window operator output<a class="headerlink" href="#example-dumping-window-operator-output" title="Link to this heading">#</a></h4>
+<p>In <code class="docutils literal notranslate"><span class="pre">PhysicalPlanner::create_plan</span></code> in <code class="docutils literal notranslate"><span class="pre">native/core/src/execution/planner.rs</span></code>,
+the <code class="docutils literal notranslate"><span class="pre">OpStruct::Window</span></code> arm builds a <code class="docutils literal notranslate"><span class="pre">BoundedWindowAggExec</span></code> and hands it to
+<code class="docutils literal notranslate"><span class="pre">SparkPlan::new</span></code>. Wrap the node between those two steps:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">window_agg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">BoundedWindowAggExec</span><span class="p">::</span><span class="n">try_new</span><span class="p">(</span>
+<span class="w">    </span><span class="n">window_expr</span><span class="o">?</span><span class="p">,</span>
+<span class="w">    </span><span class="n">Arc</span><span class="p">::</span><span class="n">clone</span><span class="p">(</span><span class="o">&amp;</span><span class="n">child</span><span class="p">.</span><span class="n">native_plan</span><span class="p">),</span>
+<span class="w">    </span><span class="n">InputOrderMode</span><span class="p">::</span><span class="n">Sorted</span><span class="p">,</span>
+<span class="w">    </span><span class="o">!</span><span class="n">partition_exprs</span><span class="p">.</span><span class="n">is_empty</span><span class="p">(),</span>
+<span class="p">)</span><span class="o">?</span><span class="p">);</span>
+
+<span class="cp">#[cfg(debug_assertions)]</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">window_agg</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::</span><span class="n">physical_plan</span><span class="p">::</span><span class="n">ExecutionPlan</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">use</span><span class="w"> </span><span class="k">crate</span><span class="p">::</span><span class="n">debug</span><span class="p">::</span><span class="n">DebugExecutionDataStream</span><span class="p">;</span>
+<span class="w">    </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">DebugExecutionDataStream</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;window-output&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">window_agg</span><span class="p">))</span>
+<span class="p">};</span>
+
+<span class="nb">Ok</span><span class="p">((</span>
+<span class="w">    </span><span class="n">scans</span><span class="p">,</span>
+<span class="w">    </span><span class="n">shuffle_scans</span><span class="p">,</span>
+<span class="w">    </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">SparkPlan</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">spark_plan</span><span class="p">.</span><span class="n">plan_id</span><span class="p">,</span><span class="w"> </span><span class="n">window_agg</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">child</span><span class="p">])),</span>
+<span class="p">))</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">let</span></code> rebinding keeps the original <code class="docutils literal notranslate"><span class="pre">window_agg</span></code> typed concretely on release
+builds (where the <code class="docutils literal notranslate"><span class="pre">cfg</span></code> block is compiled out) and re-binds it to
+<code class="docutils literal notranslate"><span class="pre">Arc&lt;dyn</span> <span class="pre">ExecutionPlan&gt;</span></code> when the debug module is active. No annotation is
+needed on the first <code class="docutils literal notranslate"><span class="pre">let</span></code> because release builds use the original binding
+directly.</p>
+<p>Rebuild with <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">core</span></code> and run a window test, for example:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.exec.CometWindowExecSuite window query with rangeBetween&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+</pre></div>
+</div>
+<p>Sample stderr excerpt (abbreviated):</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[comet-debug] DebugExecutionDataStream[window-output] execute(partition=0)
+[core/src/debug/debug_batch_stream.rs:30] batch = RecordBatch { columns: [...], row_count: 4 }
+[core/src/debug/debug_batch_stream.rs:37] col_idx = 0
+[core/src/debug/debug_batch_stream.rs:37] column = PrimitiveArray&lt;Int32&gt; [1, 1, 2, 2]
+[core/src/debug/debug_batch_stream.rs:37] column.nulls() = None
+...
+</pre></div>
+</div>
+</section>
+</section>
 </section>
 </section>
 
