@@ -50,12 +50,6 @@ trait CometBenchmarkBase
       .setAppName("CometReadBenchmark")
       // Since `spark.master` always exists, overrides this value
       .set("spark.master", "local[1]")
-      // Required for native Comet shuffle (CometShuffleExchangeExec); must be set
-      // at session start. Without this, shuffles fall back to JVM Spark and break
-      // the native chain across exchanges.
-      .set(
-        "spark.shuffle.manager",
-        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
       .setIfMissing("spark.driver.memory", "3g")
       .setIfMissing("spark.executor.memory", "3g")
 
