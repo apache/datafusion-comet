@@ -20,9 +20,12 @@ import json
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+QUERY_KEY_RE = re.compile(r'^(\d+)([a-z]*)$')
 
 def geomean(data):
     return np.prod(data) ** (1 / len(data))
@@ -34,19 +37,20 @@ def get_durations(result, query_key):
         return value["durations"]
     return value
 
+def query_sort_key(key):
+    """Sort key for query labels like "14", "14a", "14b" so sub-queries sit between 14 and 15."""
+    m = QUERY_KEY_RE.match(str(key))
+    if m:
+        return (int(m.group(1)), m.group(2))
+    return (float('inf'), str(key))
+
 def get_all_queries(results):
-    """Return the sorted union of all query keys across all result sets."""
+    """Return the sorted union of query keys across all result sets, as strings."""
     all_keys = set()
     for result in results:
         all_keys.update(result.keys())
-    # Filter to numeric query keys and sort numerically
-    numeric_keys = []
-    for k in all_keys:
-        try:
-            numeric_keys.append(int(k))
-        except ValueError:
-            pass
-    return sorted(numeric_keys)
+    query_keys = [str(k) for k in all_keys if QUERY_KEY_RE.match(str(k))]
+    return sorted(query_keys, key=query_sort_key)
 
 def get_common_queries(results, labels):
     """Return queries present in ALL result sets, warning about queries missing from some files."""
