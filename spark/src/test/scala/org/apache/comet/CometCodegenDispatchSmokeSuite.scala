@@ -117,6 +117,35 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   /**
+   * Stronger form of [[assertCodegenDidWork]] for composition tests. Asserts that the full
+   * expression subtree compiled into at most one kernel. The "one JNI crossing per nesting level"
+   * alternative (the PR description's foil) would produce one `(bytes, specs)` cache entry per
+   * nested sub-expression, so `compileCount` would be N and the cache would grow by N after the
+   * first batch. Asserting `compileCount <= 1` and `cacheSize` growth `<= 1` directly falsifies
+   * that shape.
+   *
+   * Uses `<=` rather than `==` because the compile cache is JVM-wide and shared across tests; a
+   * prior test that already compiled the same `(expression bytes, input schema)` pair will make
+   * this run a cache hit (`compileCount == 0`). The dispatcher-activity check guards against a
+   * silent fallback where the query runs through Spark and the first two assertions pass
+   * vacuously.
+   */
+  private def assertOneKernelForSubtree(f: => Unit): Unit = {
+    CometCodegenDispatchUDF.resetStats()
+    val sizeBefore = CometCodegenDispatchUDF.stats().cacheSize
+    f
+    val after = CometCodegenDispatchUDF.stats()
+    assert(
+      after.compileCount <= 1,
+      s"expected <= 1 compile for the composed subtree, got $after")
+    val grew = after.cacheSize - sizeBefore
+    assert(grew <= 1, s"expected cache to grow by <= 1 entry, grew by $grew; stats=$after")
+    assert(
+      after.compileCount + after.cacheHitCount >= 1,
+      s"expected codegen dispatcher activity, got $after")
+  }
+
+  /**
    * Assert that the dispatcher's compile cache contains a kernel compiled for the given input
    * Arrow vector classes (in ordinal order) and output Spark `DataType`. This is a specialization
    * check: the dispatcher is supposed to bake the concrete Arrow vector class into the generated
@@ -473,14 +502,18 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   test("codegen: three-deep ScalaUDF composition lvl3(lvl2(lvl1(s)))") {
-    // Three user UDFs stacked in one tree: String -> String -> String -> Int. Single Janino
-    // compile, three `ctx.addReferenceObj` calls in the fused method. Verifies the dispatcher
-    // doesn't flatten or reorder the chain.
+    // Three user UDFs stacked in one tree: String -> String -> String -> Int. The fused kernel
+    // carries three `ctx.addReferenceObj` calls. `assertOneKernelForSubtree` asserts that the
+    // whole chain collapses into a single compile rather than one per nesting level.
+    // Input rows intentionally exclude nulls: per-batch nullability is a cache-key dimension
+    // (`nullable()` reads `getNullCount != 0`), so a null-present batch compiles a second kernel
+    // specialized for `nullable=true`. Null handling through composed UDFs is covered by the
+    // other composition tests above.
     spark.udf.register("lvl1", (s: String) => if (s == null) null else s.toUpperCase)
     spark.udf.register("lvl2", (s: String) => if (s == null) null else s.reverse)
     spark.udf.register("lvl3", (s: String) => if (s == null) -1 else s.length)
-    withSubjects("abc", null, "hello world", "x") {
-      assertCodegenDidWork {
+    withSubjects("abc", "hello world", "x") {
+      assertOneKernelForSubtree {
         checkSparkAnswerAndOperator(sql("SELECT lvl3(lvl2(lvl1(s))) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
@@ -490,14 +523,16 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   test("codegen: multi-column ScalaUDF composition join(upperU(c1), lowerU(c2))") {
     // One multi-arg user UDF consuming two other user UDFs, each on a different input column.
     // The bound tree has two BoundReferences, and the kernel is specialized on two VarCharVector
-    // columns. Proves multi-column composition of pure user UDFs works with zero Spark helpers.
+    // columns. `assertOneKernelForSubtree` asserts that the two-branch composition fuses into a
+    // single kernel rather than one per branch or one per UDF.
+    // Input rows intentionally exclude nulls (see note on the three-deep test above).
     spark.udf.register("upperU", (s: String) => if (s == null) null else s.toUpperCase)
     spark.udf.register("lowerU", (s: String) => if (s == null) null else s.toLowerCase)
     spark.udf.register(
       "joinU",
       (a: String, b: String) => if (a == null || b == null) null else s"$a-$b")
-    withTwoStringCols(("Abc", "XYZ"), ("Foo", null), (null, "Bar"), ("Hi", "Lo")) {
-      assertCodegenDidWork {
+    withTwoStringCols(("Abc", "XYZ"), ("Foo", "bar"), ("baz", "Bar"), ("Hi", "Lo")) {
+      assertOneKernelForSubtree {
         checkSparkAnswerAndOperator(sql("SELECT joinU(upperU(c1), lowerU(c2)) FROM t"))
       }
       assertKernelSignaturePresent(
