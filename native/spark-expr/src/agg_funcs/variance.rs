@@ -272,9 +272,9 @@ impl Accumulator for VarianceAccumulator {
 /// `VarianceAccumulator` but runs the Welford recurrence per group_index.
 #[derive(Debug)]
 pub(crate) struct VarianceGroupsAccumulator {
-    counts: Vec<f64>,
-    means: Vec<f64>,
-    m2s: Vec<f64>,
+    pub(super) counts: Vec<f64>,
+    pub(super) means: Vec<f64>,
+    pub(super) m2s: Vec<f64>,
     stats_type: StatsType,
     null_on_divide_by_zero: bool,
 }

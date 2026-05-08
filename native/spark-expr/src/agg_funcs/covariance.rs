@@ -336,10 +336,10 @@ impl Accumulator for CovarianceAccumulator {
 /// Spark wire format used by the per-row `CovarianceAccumulator`.
 #[derive(Debug)]
 pub(crate) struct CovarianceGroupsAccumulator {
-    counts: Vec<f64>,
-    mean1s: Vec<f64>,
-    mean2s: Vec<f64>,
-    algo_consts: Vec<f64>,
+    pub(super) counts: Vec<f64>,
+    pub(super) mean1s: Vec<f64>,
+    pub(super) mean2s: Vec<f64>,
+    pub(super) algo_consts: Vec<f64>,
     stats_type: StatsType,
     null_on_divide_by_zero: bool,
 }
@@ -354,13 +354,6 @@ impl CovarianceGroupsAccumulator {
             stats_type,
             null_on_divide_by_zero,
         }
-    }
-
-    /// Returns a slice of the per-group counts. Used by the correlation
-    /// grouped accumulator to apply the count==0 / count==1 branches before
-    /// the children's `evaluate()` consumes their state.
-    pub(crate) fn counts(&self) -> &[f64] {
-        &self.counts
     }
 
     fn resize(&mut self, total_num_groups: usize) {

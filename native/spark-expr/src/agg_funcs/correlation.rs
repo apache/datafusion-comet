@@ -17,13 +17,12 @@
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Float64Array};
 use arrow::compute::{and, is_not_null};
-use arrow::datatypes::{DataType, Field, FieldRef, Float64Type};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use std::{any::Any, sync::Arc};
 
 use crate::agg_funcs::covariance::{CovarianceAccumulator, CovarianceGroupsAccumulator};
 use crate::agg_funcs::stddev::StddevAccumulator;
 use crate::agg_funcs::variance::VarianceGroupsAccumulator;
-use arrow::array::AsArray;
 use arrow::compute::filter;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -277,10 +276,15 @@ struct CorrelationGroupsAccumulator {
 
 impl CorrelationGroupsAccumulator {
     fn new(null_on_divide_by_zero: bool) -> Self {
+        // Children run with StatsType::Population, which never hits the
+        // count == 1 sample-divide-by-zero branch, so the children's
+        // null_on_divide_by_zero is dead code. The top-level evaluate()
+        // applies the count <= 1 rule. Pass `false` to children to keep
+        // that intent explicit.
         Self {
-            covar: CovarianceGroupsAccumulator::new(StatsType::Population, null_on_divide_by_zero),
-            var1: VarianceGroupsAccumulator::new(StatsType::Population, null_on_divide_by_zero),
-            var2: VarianceGroupsAccumulator::new(StatsType::Population, null_on_divide_by_zero),
+            covar: CovarianceGroupsAccumulator::new(StatsType::Population, false),
+            var1: VarianceGroupsAccumulator::new(StatsType::Population, false),
+            var2: VarianceGroupsAccumulator::new(StatsType::Population, false),
             null_on_divide_by_zero,
         }
     }
@@ -295,26 +299,36 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 2, "two arguments to update_batch");
-        // Combine the caller's filter with a "neither column null" mask so
-        // both child accumulators see exactly the rows that should contribute.
-        let null_mask = and(&is_not_null(&values[0])?, &is_not_null(&values[1])?)?;
-        let combined: BooleanArray = match opt_filter {
-            Some(f) => and(f, &null_mask)?,
-            None => null_mask,
+        // Fast path: when both inputs are fully non-null, skip the
+        // is_not_null/and combination and forward the caller's filter as-is.
+        // Mirrors the per-row CorrelationAccumulator short-circuit.
+        let dense = values[0].null_count() == 0 && values[1].null_count() == 0;
+        let combined: Option<BooleanArray> = if dense {
+            None
+        } else {
+            let null_mask = and(&is_not_null(&values[0])?, &is_not_null(&values[1])?)?;
+            Some(match opt_filter {
+                Some(f) => and(f, &null_mask)?,
+                None => null_mask,
+            })
+        };
+        let filter_for_children: Option<&BooleanArray> = match (&combined, opt_filter) {
+            (Some(c), _) => Some(c),
+            (None, f) => f,
         };
 
         self.covar
-            .update_batch(values, group_indices, Some(&combined), total_num_groups)?;
+            .update_batch(values, group_indices, filter_for_children, total_num_groups)?;
         self.var1.update_batch(
             &values[0..1],
             group_indices,
-            Some(&combined),
+            filter_for_children,
             total_num_groups,
         )?;
         self.var2.update_batch(
             &values[1..2],
             group_indices,
-            Some(&combined),
+            filter_for_children,
             total_num_groups,
         )?;
         Ok(())
@@ -356,25 +370,28 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
-        // Snapshot per-group counts BEFORE the children's evaluate() consumes
-        // their state. This lets us apply the count==0 / count==1 branches the
-        // way the per-row CorrelationAccumulator does.
-        let counts: Vec<f64> = match emit_to {
-            EmitTo::All => self.covar.counts().to_vec(),
-            EmitTo::First(n) => self.covar.counts()[..n].to_vec(),
-        };
+        // All three children see the same rows (combined null-mask in
+        // update_batch / shared count column on merge), so counts and means
+        // are duplicated. We only need: covar.counts, covar.algo_consts,
+        // var1.m2s, var2.m2s. Drain everything once and compute correlation
+        // inline rather than calling each child's evaluate() (which would
+        // allocate three Float64Arrays we'd then unpack and discard).
+        let counts = emit_to.take_needed(&mut self.covar.counts);
+        let _ = emit_to.take_needed(&mut self.covar.mean1s);
+        let _ = emit_to.take_needed(&mut self.covar.mean2s);
+        let algo_consts = emit_to.take_needed(&mut self.covar.algo_consts);
+        let _ = emit_to.take_needed(&mut self.var1.counts);
+        let _ = emit_to.take_needed(&mut self.var1.means);
+        let m2_1s = emit_to.take_needed(&mut self.var1.m2s);
+        let _ = emit_to.take_needed(&mut self.var2.counts);
+        let _ = emit_to.take_needed(&mut self.var2.means);
+        let m2_2s = emit_to.take_needed(&mut self.var2.m2s);
 
-        let covar = self.covar.evaluate(emit_to)?;
-        let var1 = self.var1.evaluate(emit_to)?;
-        let var2 = self.var2.evaluate(emit_to)?;
-        let covar = covar.as_primitive::<Float64Type>();
-        let var1 = var1.as_primitive::<Float64Type>();
-        let var2 = var2.as_primitive::<Float64Type>();
-
-        let n = covar.len();
+        let n = counts.len();
         let mut values = Vec::with_capacity(n);
         let mut validity = Vec::with_capacity(n);
-        for (i, &count) in counts.iter().enumerate().take(n) {
+        for i in 0..n {
+            let count = counts[i];
             if count == 0.0 {
                 values.push(0.0);
                 validity.push(false);
@@ -390,20 +407,16 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
                 }
                 continue;
             }
-            if covar.is_null(i) || var1.is_null(i) || var2.is_null(i) {
+            // Population stats: divide m2 / count, c / count. The 1/count
+            // factors cancel in c / (s1 * s2), so we work with raw moments.
+            let s1_sq = m2_1s[i];
+            let s2_sq = m2_2s[i];
+            if s1_sq == 0.0 || s2_sq == 0.0 {
                 values.push(0.0);
                 validity.push(false);
                 continue;
             }
-            let c = covar.value(i);
-            let s1 = var1.value(i).sqrt();
-            let s2 = var2.value(i).sqrt();
-            if s1 == 0.0 || s2 == 0.0 {
-                values.push(0.0);
-                validity.push(false);
-                continue;
-            }
-            values.push(c / (s1 * s2));
+            values.push(algo_consts[i] / (s1_sq * s2_sq).sqrt());
             validity.push(true);
         }
 
@@ -441,6 +454,7 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
 mod groups_tests {
     use super::*;
     use arrow::array::AsArray;
+    use arrow::datatypes::Float64Type;
 
     fn acc(legacy: bool) -> CorrelationGroupsAccumulator {
         // null_on_divide_by_zero = !legacy
