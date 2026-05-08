@@ -261,7 +261,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     val occurrences = "\\.nextDouble\\(\\)".r.findAllIn(result.body).size
     assert(
       occurrences == 2,
-      s"expected two independent Rand evaluations (no CSE on nondeterministic), " +
+      "expected two independent Rand evaluations (no CSE on nondeterministic), " +
         s"got $occurrences; src=\n${CodeFormatter.format(result.code)}")
   }
 }
