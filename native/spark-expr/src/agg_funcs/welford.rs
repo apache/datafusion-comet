@@ -20,6 +20,9 @@
 //! variance/stddev/covariance/correlation. Counts are `f64` to match
 //! Spark's wire-format state.
 
+use arrow::buffer::NullBuffer;
+use datafusion::physical_expr::expressions::StatsType;
+
 #[inline]
 pub(crate) fn variance_update(count: f64, mean: f64, m2: f64, value: f64) -> (f64, f64, f64) {
     let new_count = count + 1.0;
@@ -90,6 +93,47 @@ pub(crate) fn covariance_retract(
     let new_mean2 = delta2 / new_count + mean2;
     let new_c = c - delta1 * (new_mean2 - v2);
     (new_count, new_mean1, new_mean2, new_c)
+}
+
+/// Compute the per-group result and a null buffer for a Welford-style
+/// moment (variance `m2` or covariance `algo_const`) following Spark
+/// semantics shared by variance/covariance grouped accumulators:
+/// count == 0 => null, count == 1 && Sample => NaN or null depending on
+/// `null_on_divide_by_zero`, otherwise `numerator / divisor`.
+pub(crate) fn finalize_moments(
+    counts: Vec<f64>,
+    numerators: Vec<f64>,
+    stats_type: StatsType,
+    null_on_divide_by_zero: bool,
+) -> (Vec<f64>, NullBuffer) {
+    let mut values = Vec::with_capacity(counts.len());
+    let mut validity = Vec::with_capacity(counts.len());
+
+    for (count, numerator) in counts.into_iter().zip(numerators) {
+        if count == 0.0 {
+            values.push(0.0);
+            validity.push(false);
+            continue;
+        }
+        let divisor = match stats_type {
+            StatsType::Population => count,
+            StatsType::Sample if count > 1.0 => count - 1.0,
+            StatsType::Sample => {
+                if null_on_divide_by_zero {
+                    values.push(0.0);
+                    validity.push(false);
+                } else {
+                    values.push(f64::NAN);
+                    validity.push(true);
+                }
+                continue;
+            }
+        };
+        values.push(numerator / divisor);
+        validity.push(true);
+    }
+
+    (values, NullBuffer::from(validity))
 }
 
 #[inline]

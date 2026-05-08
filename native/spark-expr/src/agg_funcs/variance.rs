@@ -296,45 +296,11 @@ impl VarianceGroupsAccumulator {
         self.m2s.resize(total_num_groups, 0.0);
     }
 
-    /// Compute the per-group result and a null buffer following Spark
-    /// semantics: count == 0 => null, count == 1 && Sample => NaN or null,
-    /// otherwise m2 / divisor.
     fn finalize(&mut self, emit_to: EmitTo) -> (Vec<f64>, NullBuffer) {
         let counts = emit_to.take_needed(&mut self.counts);
         let _ = emit_to.take_needed(&mut self.means);
         let m2s = emit_to.take_needed(&mut self.m2s);
-
-        let stats_type = self.stats_type;
-        let null_on_divide_by_zero = self.null_on_divide_by_zero;
-
-        let mut values = Vec::with_capacity(counts.len());
-        let mut validity = Vec::with_capacity(counts.len());
-
-        for (count, m2) in counts.into_iter().zip(m2s) {
-            if count == 0.0 {
-                values.push(0.0);
-                validity.push(false);
-                continue;
-            }
-            let divisor = match stats_type {
-                StatsType::Population => count,
-                StatsType::Sample if count > 1.0 => count - 1.0,
-                StatsType::Sample => {
-                    if null_on_divide_by_zero {
-                        values.push(0.0);
-                        validity.push(false);
-                    } else {
-                        values.push(f64::NAN);
-                        validity.push(true);
-                    }
-                    continue;
-                }
-            };
-            values.push(m2 / divisor);
-            validity.push(true);
-        }
-
-        (values, NullBuffer::from(validity))
+        super::welford::finalize_moments(counts, m2s, self.stats_type, self.null_on_divide_by_zero)
     }
 }
 

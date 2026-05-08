@@ -375,38 +375,7 @@ impl CovarianceGroupsAccumulator {
         let _ = emit_to.take_needed(&mut self.mean1s);
         let _ = emit_to.take_needed(&mut self.mean2s);
         let cs = emit_to.take_needed(&mut self.algo_consts);
-
-        let stats_type = self.stats_type;
-        let null_on_divide_by_zero = self.null_on_divide_by_zero;
-
-        let mut values = Vec::with_capacity(counts.len());
-        let mut validity = Vec::with_capacity(counts.len());
-
-        for (count, c) in counts.into_iter().zip(cs) {
-            if count == 0.0 {
-                values.push(0.0);
-                validity.push(false);
-                continue;
-            }
-            let divisor = match stats_type {
-                StatsType::Population => count,
-                StatsType::Sample if count > 1.0 => count - 1.0,
-                StatsType::Sample => {
-                    if null_on_divide_by_zero {
-                        values.push(0.0);
-                        validity.push(false);
-                    } else {
-                        values.push(f64::NAN);
-                        validity.push(true);
-                    }
-                    continue;
-                }
-            };
-            values.push(c / divisor);
-            validity.push(true);
-        }
-
-        (values, NullBuffer::from(validity))
+        super::welford::finalize_moments(counts, cs, self.stats_type, self.null_on_divide_by_zero)
     }
 }
 
