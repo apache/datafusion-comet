@@ -74,14 +74,18 @@ pub(crate) fn init_datasource_exec(
     return_null_struct_if_all_fields_missing: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
+    use_field_id: bool,
+    ignore_missing_field_id: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, spark_parquet_options) = get_options(
+    let (table_parquet_options, mut spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
         return_null_struct_if_all_fields_missing,
         &object_store_url,
         encryption_enabled,
     );
+    spark_parquet_options.use_field_id = use_field_id;
+    spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full

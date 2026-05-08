@@ -29,12 +29,14 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions._
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
@@ -91,10 +93,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private[comet] val mathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Acos] -> CometScalarFunction("acos"),
+    classOf[Acosh] -> CometScalarFunction("acosh"),
     classOf[Add] -> CometAdd,
     classOf[Asin] -> CometScalarFunction("asin"),
+    classOf[Asinh] -> CometScalarFunction("asinh"),
     classOf[Atan] -> CometScalarFunction("atan"),
+    classOf[Atanh] -> CometScalarFunction("atanh"),
     classOf[Atan2] -> CometAtan2,
+    classOf[Cbrt] -> CometScalarFunction("cbrt"),
     classOf[Ceil] -> CometCeil,
     classOf[Cos] -> CometScalarFunction("cos"),
     classOf[Cosh] -> CometScalarFunction("cosh"),
@@ -110,6 +116,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Log10] -> CometLog10,
     classOf[Logarithm] -> CometLogarithm,
     classOf[Multiply] -> CometMultiply,
+    classOf[Pi] -> CometScalarFunction("pi"),
     classOf[Pow] -> CometScalarFunction("pow"),
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
@@ -122,6 +129,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Subtract] -> CometSubtract,
     classOf[Tan] -> CometScalarFunction("tan"),
     classOf[Tanh] -> CometScalarFunction("tanh"),
+    classOf[ToDegrees] -> CometScalarFunction("degrees"),
+    classOf[ToRadians] -> CometScalarFunction("radians"),
     classOf[Cot] -> CometScalarFunction("cot"),
     classOf[UnaryMinus] -> CometUnaryMinus,
     classOf[Unhex] -> CometUnhex,
@@ -453,6 +462,21 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         struct.addAllFieldNames(fieldNames)
         struct.addAllFieldDatatypes(fieldDatatypes.map(_.get).asJava)
         struct.addAllFieldNullable(fieldNullable)
+
+        val fieldIds = s.fields.map { f =>
+          if (ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f)) else None
+        }
+        if (fieldIds.exists(_.isDefined)) {
+          // Emit one FieldMetadata entry per nested field, parallel to field_names. Entries
+          // for fields without an ID are empty so the slot index stays aligned.
+          fieldIds.foreach { idOpt =>
+            val metaBuilder = Types.DataType.FieldMetadata.newBuilder()
+            idOpt.foreach { id =>
+              metaBuilder.putMetadata(CometParquetUtils.PARQUET_FIELD_ID_META_KEY, id.toString)
+            }
+            struct.addFieldMetadata(metaBuilder.build())
+          }
+        }
 
         info.setStruct(struct)
         builder.setTypeInfo(info.build()).build()

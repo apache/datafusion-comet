@@ -48,7 +48,6 @@ The following features are not supported by either scan implementation, and Come
 - Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
   V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API.
 - Spark metadata columns (e.g., `_metadata.file_path`)
-- No support for AQE Dynamic Partition Pruning (DPP). Non-AQE DPP is supported.
 
 The following shared limitation may produce incorrect results without falling back to Spark:
 
@@ -80,6 +79,22 @@ requires `spark.comet.exec.enabled=true` because the scan node must be wrapped b
 - Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
   are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
   matching Spark's behavior.
+
+The following `native_datafusion` limitations may produce incorrect results on Spark versions prior to 4.0
+without falling back to Spark:
+
+- Reading `TimestampLTZ` as `TimestampNTZ`. On Spark 3.x, Spark raises an error per
+  [SPARK-36182](https://issues.apache.org/jira/browse/SPARK-36182) because LTZ encodes UTC-adjusted instants
+  that cannot be safely reinterpreted as timezone-free values. Comet does not raise this error and instead
+  returns the raw UTC instant as a `TimestampNTZ` value. This applies to all LTZ physical encodings (INT96,
+  TIMESTAMP_MICROS, TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
+  ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's behavior.
+  See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
+
+- Unsupported Parquet type conversions. Spark raises schema incompatibility errors for certain conversions
+  (e.g., reading INT32 as BIGINT, reading BINARY as TIMESTAMP, unsupported decimal precision changes).
+  The `native_datafusion` scan may not detect these mismatches and could return unexpected values instead
+  of raising an error. See [#3720](https://github.com/apache/datafusion-comet/issues/3720).
 
 ## `native_iceberg_compat` Limitations
 

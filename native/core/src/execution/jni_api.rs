@@ -62,6 +62,9 @@ use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
+use datafusion_spark::function::url::try_url_decode::TryUrlDecode as SparkTryUrlDecode;
+use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
+use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
 use futures::poll;
 use futures::stream::StreamExt;
 use futures::FutureExt;
@@ -567,6 +570,9 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStrToMap::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlDecode::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryUrlDecode::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -989,7 +995,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     _ => CompressionCodec::Lz4Frame,
                 };
 
-                let (written_bytes, checksum) = process_sorted_row_partition(
+                let (written_bytes, checksum, encode_nanos) = process_sorted_row_partition(
                     row_num,
                     batch_size as usize,
                     row_addresses_ptr,
@@ -1011,8 +1017,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     i64::MIN
                 };
 
-                let long_array = env.new_long_array(2)?;
-                long_array.set_region(env, 0, &[written_bytes, checksum])?;
+                // results[0] = bytes written, results[1] = checksum, results[2] = encode nanos
+                let long_array = env.new_long_array(3)?;
+                long_array.set_region(env, 0, &[written_bytes, checksum, encode_nanos])?;
 
                 Ok(long_array.into_raw())
             },

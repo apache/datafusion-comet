@@ -17,7 +17,7 @@
 
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::physical_expr::expressions::Column;
@@ -30,6 +30,7 @@ use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
     PhysicalExprAdapterFactory,
 };
+use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -59,39 +60,176 @@ impl SparkPhysicalExprAdapterFactory {
     }
 }
 
-/// Remap physical schema field names to match logical schema field names using
-/// case-insensitive matching. This allows the DefaultPhysicalExprAdapter (which
-/// uses exact name matching) to correctly find columns when the parquet file has
-/// different casing than the table schema (e.g., file has "a" but table has "A").
-fn remap_physical_schema_names(
+/// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
+fn parse_field_id(field: &Field) -> Option<i32> {
+    field
+        .metadata()
+        .get(PARQUET_FIELD_ID_META_KEY)
+        .and_then(|v| v.parse::<i32>().ok())
+}
+
+fn schema_has_field_ids(schema: &SchemaRef) -> bool {
+    schema.fields().iter().any(|f| parse_field_id(f).is_some())
+}
+
+/// Remap physical schema field names to match logical schema field names. Mirrors Spark's
+/// `clipParquetGroupFields`: prefer ID match for any logical field that carries a
+/// `PARQUET:field_id`, fall back to case-insensitive name match otherwise.
+///
+/// The remap only changes top-level field NAMES so that `DefaultPhysicalExprAdapter`'s
+/// exact-name lookup hits. Indices, types, nullability, and metadata stay as in the file.
+/// Returns the rewritten schema and a `logical_name -> original_physical_name` map used
+/// downstream to restore the original physical names before stream consumption.
+fn remap_physical_schema(
     logical_schema: &SchemaRef,
     physical_schema: &SchemaRef,
-) -> SchemaRef {
-    let remapped_fields: Vec<_> = physical_schema
+    case_sensitive: bool,
+    use_field_id: bool,
+    ignore_missing_field_id: bool,
+) -> DataFusionResult<(SchemaRef, HashMap<String, String>)> {
+    let should_match_by_id = use_field_id && schema_has_field_ids(logical_schema);
+
+    if should_match_by_id && !ignore_missing_field_id && !schema_has_field_ids(physical_schema) {
+        // Mirrors `ParquetReadSupport.inferSchema`'s eager check (Spark throws a runtime
+        // error rather than silently returning null columns).
+        return Err(DataFusionError::External(Box::new(
+            SparkError::ParquetMissingFieldIds,
+        )));
+    }
+
+    // Build id -> all matching physical field names. We need the full list so we can mirror
+    // Spark's `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" error when an ID-bearing
+    // logical field would resolve to more than one physical field.
+    let mut id_to_phys_names: HashMap<i32, Vec<String>> = HashMap::new();
+    if should_match_by_id {
+        for pf in physical_schema.fields() {
+            if let Some(id) = parse_field_id(pf) {
+                id_to_phys_names
+                    .entry(id)
+                    .or_default()
+                    .push(pf.name().clone());
+            }
+        }
+        for lf in logical_schema.fields() {
+            if let Some(id) = parse_field_id(lf) {
+                if let Some(matches) = id_to_phys_names.get(&id) {
+                    if matches.len() > 1 {
+                        return Err(DataFusionError::External(Box::new(
+                            SparkError::DuplicateFieldByFieldId {
+                                required_id: id,
+                                matched_fields: matches.join(", "),
+                            },
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    // Pre-build id -> first matching logical field for the per-physical rename pass below.
+    let id_to_logical: HashMap<i32, &FieldRef> = if should_match_by_id {
+        let mut map = HashMap::new();
+        for lf in logical_schema.fields() {
+            if let Some(id) = parse_field_id(lf) {
+                map.entry(id).or_insert(lf);
+            }
+        }
+        map
+    } else {
+        HashMap::new()
+    };
+
+    // Names of ID-bearing logical fields whose ID is not present in the file. Any physical
+    // field that shares one of these names must be renamed to something the
+    // `DefaultPhysicalExprAdapter` cannot name-match, otherwise the read would silently fall
+    // through to a name match. Spark's `matchIdField` solves the same problem with
+    // `generateFakeColumnName` (see `ParquetReadSupport.scala`).
+    let unmatched_id_logical_names: std::collections::HashSet<String> = if should_match_by_id {
+        logical_schema
+            .fields()
+            .iter()
+            .filter_map(|lf| {
+                parse_field_id(lf).and_then(|id| {
+                    if id_to_phys_names.contains_key(&id) {
+                        None
+                    } else {
+                        Some(lf.name().clone())
+                    }
+                })
+            })
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+    let mut fake_counter: usize = 0;
+
+    let mut name_map: HashMap<String, String> = HashMap::new();
+    let remapped_fields: Vec<FieldRef> = physical_schema
         .fields()
         .iter()
         .map(|field| {
-            if let Some(logical_field) = logical_schema
-                .fields()
-                .iter()
-                .find(|lf| lf.name().eq_ignore_ascii_case(field.name()))
-            {
-                if logical_field.name() != field.name() {
-                    Arc::new(Field::new(
-                        logical_field.name(),
-                        field.data_type().clone(),
-                        field.is_nullable(),
-                    ))
-                } else {
-                    Arc::clone(field)
+            // ID match first when the logical schema is ID-bearing.
+            if should_match_by_id {
+                if let Some(phys_id) = parse_field_id(field) {
+                    if let Some(logical_field) = id_to_logical.get(&phys_id) {
+                        if logical_field.name() != field.name() {
+                            name_map.insert(logical_field.name().clone(), field.name().clone());
+                            return Arc::new(
+                                Field::new(
+                                    logical_field.name(),
+                                    field.data_type().clone(),
+                                    field.is_nullable(),
+                                )
+                                .with_metadata(field.metadata().clone()),
+                            );
+                        }
+                        return Arc::clone(field);
+                    }
                 }
-            } else {
-                Arc::clone(field)
             }
+
+            // Block accidental name match for ID-bearing logical fields whose ID is missing
+            // from the file. Mirrors Spark's `generateFakeColumnName` in `matchIdField`.
+            if should_match_by_id
+                && unmatched_id_logical_names
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(field.name()))
+            {
+                fake_counter += 1;
+                let fake_name = format!("__comet_unmatched_field_id_{}", fake_counter);
+                return Arc::new(
+                    Field::new(fake_name, field.data_type().clone(), field.is_nullable())
+                        .with_metadata(field.metadata().clone()),
+                );
+            }
+
+            // Name match. Spark's `matchIdField` does not fall through to a name match for
+            // ID-bearing logical fields, so skip those when the schema is ID-bearing.
+            if !case_sensitive {
+                let logical_field = logical_schema.fields().iter().find(|lf| {
+                    let lf_has_id = should_match_by_id && parse_field_id(lf).is_some();
+                    !lf_has_id && lf.name().eq_ignore_ascii_case(field.name())
+                });
+                if let Some(logical_field) = logical_field {
+                    if logical_field.name() != field.name() {
+                        name_map.insert(logical_field.name().clone(), field.name().clone());
+                        return Arc::new(
+                            Field::new(
+                                logical_field.name(),
+                                field.data_type().clone(),
+                                field.is_nullable(),
+                            )
+                            .with_metadata(field.metadata().clone()),
+                        );
+                    }
+                }
+            }
+
+            Arc::clone(field)
         })
         .collect();
 
-    Arc::new(Schema::new(remapped_fields))
+    Ok((Arc::new(Schema::new(remapped_fields)), name_map))
 }
 
 /// Check if a specific column name has duplicate matches in the physical schema
@@ -117,34 +255,28 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         logical_file_schema: SchemaRef,
         physical_file_schema: SchemaRef,
     ) -> DataFusionResult<Arc<dyn PhysicalExprAdapter>> {
-        // When case-insensitive, remap physical schema field names to match logical
-        // field names. The DefaultPhysicalExprAdapter uses exact name matching, so
-        // without this remapping, columns like "a" won't match logical "A" and will
-        // be filled with nulls.
+        // Remap physical schema field names to match logical names by Parquet field id
+        // (when the logical schema carries IDs and `use_field_id` is set) and/or by
+        // case-insensitive name match. The DefaultPhysicalExprAdapter uses exact name
+        // matching, so without this remapping, columns whose file names differ from the
+        // logical names won't match and will be filled with NULLs.
         //
-        // We also build a reverse map (logical name -> physical name) so that after
-        // the default adapter produces expressions, we can remap column names back
+        // We also keep a reverse map (logical name -> original physical name) so that
+        // after the default adapter produces expressions, we can remap column names back
         // to the original physical names. This is necessary because downstream code
-        // (reassign_expr_columns) looks up columns by name in the actual stream
-        // schema, which uses the original physical file column names.
+        // (reassign_expr_columns) looks up columns by name in the actual stream schema,
+        // which uses the original physical file column names.
+        let needs_remap = !self.parquet_options.case_sensitive
+            || (self.parquet_options.use_field_id && schema_has_field_ids(&logical_file_schema));
         let (adapted_physical_schema, logical_to_physical_names, original_physical_schema) =
-            if !self.parquet_options.case_sensitive {
-                let logical_to_physical: HashMap<String, String> = logical_file_schema
-                    .fields()
-                    .iter()
-                    .filter_map(|logical_field| {
-                        physical_file_schema
-                            .fields()
-                            .iter()
-                            .find(|pf| {
-                                pf.name().eq_ignore_ascii_case(logical_field.name())
-                                    && pf.name() != logical_field.name()
-                            })
-                            .map(|pf| (logical_field.name().clone(), pf.name().clone()))
-                    })
-                    .collect();
-                let remapped =
-                    remap_physical_schema_names(&logical_file_schema, &physical_file_schema);
+            if needs_remap {
+                let (remapped, logical_to_physical) = remap_physical_schema(
+                    &logical_file_schema,
+                    &physical_file_schema,
+                    self.parquet_options.case_sensitive,
+                    self.parquet_options.use_field_id,
+                    self.parquet_options.ignore_missing_field_id,
+                )?;
                 (
                     remapped,
                     if logical_to_physical.is_empty() {
@@ -152,8 +284,13 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                     } else {
                         Some(logical_to_physical)
                     },
-                    // Keep original physical schema for per-column duplicate detection
-                    Some(Arc::clone(&physical_file_schema)),
+                    // Keep original physical schema for per-column duplicate detection.
+                    // Only meaningful in case-insensitive mode (matches existing behavior).
+                    if !self.parquet_options.case_sensitive {
+                        Some(Arc::clone(&physical_file_schema))
+                    } else {
+                        None
+                    },
                 )
             } else {
                 (Arc::clone(&physical_file_schema), None, None)
