@@ -18,9 +18,9 @@
 use std::{any::Any, sync::Arc};
 
 use crate::agg_funcs::variance::{VarianceAccumulator, VarianceGroupsAccumulator};
-use arrow::array::{Array, ArrayRef, BooleanArray, Float64Array};
+use arrow::array::{ArrayRef, AsArray, BooleanArray, Float64Array};
 use arrow::datatypes::FieldRef;
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::{DataType, Field, Float64Type};
 use datafusion::common::types::NativeType;
 use datafusion::common::{internal_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -245,14 +245,10 @@ impl GroupsAccumulator for StddevGroupsAccumulator {
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
         let arr = self.inner.evaluate(emit_to)?;
-        let f64arr = arr.as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-            datafusion::common::DataFusionError::Internal(
-                "stddev expected Float64 result from variance".into(),
-            )
-        })?;
-        let nulls = f64arr.nulls().cloned();
-        let values: Vec<f64> = f64arr.values().iter().map(|v| v.sqrt()).collect();
-        Ok(Arc::new(Float64Array::new(values.into(), nulls)))
+        // Run sqrt across the buffer in place via PrimitiveArray::unary
+        // rather than allocating an intermediate Vec<f64>.
+        let sqrted: Float64Array = arr.as_primitive::<Float64Type>().unary(|v| v.sqrt());
+        Ok(Arc::new(sqrted))
     }
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
@@ -298,5 +294,36 @@ mod groups_tests {
             .iter()
             .collect();
         assert_eq!(result[1], None);
+    }
+
+    #[test]
+    fn sample_single_row_nan_legacy() {
+        // Stddev wraps variance, but pin the contract here too: legacy mode
+        // (null_on_divide_by_zero = false) emits sqrt(NaN) = NaN for a single
+        // sample-stddev row.
+        let mut acc = StddevGroupsAccumulator::new(StatsType::Sample, false);
+        let values: ArrayRef = Arc::new(Float64Array::from(vec![42.0]));
+        acc.update_batch(&[values], &[0], None, 1).unwrap();
+        let result: Vec<Option<f64>> = acc
+            .evaluate(EmitTo::All)
+            .unwrap()
+            .as_primitive::<Float64Type>()
+            .iter()
+            .collect();
+        assert!(result[0].unwrap().is_nan());
+    }
+
+    #[test]
+    fn sample_single_row_null_when_flag_set() {
+        let mut acc = StddevGroupsAccumulator::new(StatsType::Sample, true);
+        let values: ArrayRef = Arc::new(Float64Array::from(vec![42.0]));
+        acc.update_batch(&[values], &[0], None, 1).unwrap();
+        let result: Vec<Option<f64>> = acc
+            .evaluate(EmitTo::All)
+            .unwrap()
+            .as_primitive::<Float64Type>()
+            .iter()
+            .collect();
+        assert_eq!(result[0], None);
     }
 }
