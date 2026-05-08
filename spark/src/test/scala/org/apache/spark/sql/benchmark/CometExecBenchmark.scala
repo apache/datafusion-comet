@@ -84,7 +84,13 @@ object CometExecBenchmark extends CometBenchmarkBase {
           spark.sql("select c2 + 1, c1 + 2 from parquetV1Table where c1 + 1 > 0").noop()
         }
 
-        benchmark.addCase("SQL Parquet - Comet") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+            spark.sql("select c2 + 1, c1 + 2 from parquetV1Table where c1 + 1 > 0").noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -122,7 +128,15 @@ object CometExecBenchmark extends CometBenchmarkBase {
               "col2, col3 FROM parquetV1Table")
         }
 
-        benchmark.addCase("SQL Parquet - Comet") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+            spark.sql(
+              "SELECT (SELECT max(col1) AS parquetV1Table FROM parquetV1Table) AS a, " +
+                "col2, col3 FROM parquetV1Table")
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -150,7 +164,13 @@ object CometExecBenchmark extends CometBenchmarkBase {
           spark.sql("select * from parquetV1Table").sortWithinPartitions("value").noop()
         }
 
-        benchmark.addCase("SQL Parquet - Comet") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+            spark.sql("select * from parquetV1Table").sortWithinPartitions("value").noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -179,7 +199,16 @@ object CometExecBenchmark extends CometBenchmarkBase {
             .noop()
         }
 
-        benchmark.addCase("SQL Parquet - Comet") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+            spark
+              .sql("SELECT col1, col2, SUM(col3) FROM parquetV1Table " +
+                "GROUP BY col1, col2 GROUPING SETS ((col1), (col2))")
+              .noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -222,7 +251,13 @@ object CometExecBenchmark extends CometBenchmarkBase {
           spark.sql(query).noop()
         }
 
-        benchmark.addCase("SQL Parquet - Comet (BloomFilterAgg)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Scan) (BloomFilterAgg)") { _ =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+            spark.sql(query).noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Scan, Exec) (BloomFilterAgg)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {

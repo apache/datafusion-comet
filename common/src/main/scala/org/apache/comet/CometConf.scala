@@ -380,6 +380,46 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val REGEXP_ENGINE_RUST = "rust"
+  val REGEXP_ENGINE_JAVA = "java"
+
+  val COMET_REGEXP_ENGINE: ConfigEntry[String] =
+    conf("spark.comet.exec.regexp.engine")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental. Selects the engine used to evaluate supported regular-expression " +
+          s"expressions. `$REGEXP_ENGINE_RUST` uses the native DataFusion regexp engine. " +
+          s"`$REGEXP_ENGINE_JAVA` routes through a JVM-side UDF (java.util.regex.Pattern) for " +
+          "Spark-compatible semantics, at the cost of JNI roundtrips per batch. Expressions " +
+          "routed when set to java: rlike, regexp_extract, regexp_extract_all, regexp_replace, " +
+          "regexp_instr, and split.")
+      .stringConf
+      .transform(_.toLowerCase(Locale.ROOT))
+      .checkValues(Set(REGEXP_ENGINE_RUST, REGEXP_ENGINE_JAVA))
+      .createWithDefault(REGEXP_ENGINE_JAVA)
+
+  val CODEGEN_DISPATCH_AUTO = "auto"
+  val CODEGEN_DISPATCH_DISABLED = "disabled"
+  val CODEGEN_DISPATCH_FORCE = "force"
+
+  val COMET_CODEGEN_DISPATCH_MODE: ConfigEntry[String] =
+    conf("spark.comet.exec.codegenDispatch.mode")
+      .category(CATEGORY_EXEC)
+      .doc("Controls whether Comet routes eligible scalar expressions through the Arrow-direct " +
+        "codegen dispatcher (`CometCodegenDispatchUDF`) rather than through a native " +
+        s"DataFusion implementation or a hand-coded JVM UDF. `$CODEGEN_DISPATCH_AUTO` lets " +
+        "each expression's serde decide its preferred path based on measured evidence " +
+        "(e.g. for regex, codegen is preferred when " +
+        s"spark.comet.exec.regexp.engine=$REGEXP_ENGINE_JAVA). " +
+        s"`$CODEGEN_DISPATCH_DISABLED` never uses codegen dispatch. `$CODEGEN_DISPATCH_FORCE` " +
+        "inverts the chain: every serde tries codegen first and falls through to its next " +
+        "preferred path only when `canHandle` rejects the expression. Useful for debugging " +
+        "and benchmarking.")
+      .stringConf
+      .transform(_.toLowerCase(Locale.ROOT))
+      .checkValues(Set(CODEGEN_DISPATCH_AUTO, CODEGEN_DISPATCH_DISABLED, CODEGEN_DISPATCH_FORCE))
+      .createWithDefault(CODEGEN_DISPATCH_AUTO)
+
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
       .category(CATEGORY_SHUFFLE)

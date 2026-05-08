@@ -15,14 +15,20 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_regexp_replace(s string) USING parquet
+-- Test RLIKE with Rust regexp engine (patterns expected to fallback)
+-- Config: spark.comet.exec.regexp.engine=rust
 
 statement
-INSERT INTO test_regexp_replace VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
+CREATE TABLE test_rlike(s string) USING parquet
+
+statement
+INSERT INTO test_rlike VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
 
 query expect_fallback(Regexp pattern)
-SELECT regexp_replace(s, '(\\d+)', 'X') FROM test_regexp_replace
+SELECT s RLIKE '^[0-9]+$' FROM test_rlike
 
 query expect_fallback(Regexp pattern)
-SELECT regexp_replace(s, '(\\d+)', 'X', 1) FROM test_regexp_replace
+SELECT s RLIKE '^[a-z]+$' FROM test_rlike
+
+query spark_answer_only
+SELECT s RLIKE '' FROM test_rlike

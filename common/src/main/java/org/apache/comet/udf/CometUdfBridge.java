@@ -19,7 +19,8 @@
 
 package org.apache.comet.udf;
 
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
@@ -35,10 +36,23 @@ import org.apache.arrow.vector.ValueVector;
  */
 public class CometUdfBridge {
 
-  // Process-wide cache of UDF instances keyed by class name. CometUDF
-  // implementations are required to be stateless (see CometUDF), so a
-  // single shared instance per class is safe across native worker threads.
-  private static final ConcurrentHashMap<String, CometUDF> INSTANCES = new ConcurrentHashMap<>();
+  // Per-thread, bounded LRU of UDF instances keyed by class name. Comet
+  // native execution threads (Tokio/DataFusion worker pool) are reused
+  // across tasks within an executor, so the effective lifetime of cached
+  // entries is the worker thread (i.e. the executor JVM). This is fine for
+  // stateless UDFs like RegExpLikeUDF; future stateful UDFs would need
+  // explicit per-task isolation.
+  private static final int CACHE_CAPACITY = 64;
+
+  private static final ThreadLocal<LinkedHashMap<String, CometUDF>> INSTANCES =
+      ThreadLocal.withInitial(
+          () ->
+              new LinkedHashMap<String, CometUDF>(CACHE_CAPACITY, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CometUDF> eldest) {
+                  return size() > CACHE_CAPACITY;
+                }
+              });
 
   /**
    * Called from native via JNI.
@@ -48,30 +62,35 @@ public class CometUdfBridge {
    * @param inputSchemaPtrs addresses of pre-allocated FFI_ArrowSchema structs (one per input)
    * @param outArrayPtr address of pre-allocated FFI_ArrowArray for the result
    * @param outSchemaPtr address of pre-allocated FFI_ArrowSchema for the result
+   * @param numRows number of rows in the current batch. Mirrors DataFusion's
+   *     {@code ScalarFunctionArgs.number_rows} and gives UDFs an explicit batch-size signal for
+   *     cases where no input arg is a batch-length array (e.g. a zero-arg non-deterministic
+   *     ScalaUDF). UDFs that already read size from their input vectors can ignore it.
    */
   public static void evaluate(
       String udfClassName,
       long[] inputArrayPtrs,
       long[] inputSchemaPtrs,
       long outArrayPtr,
-      long outSchemaPtr) {
-    CometUDF udf =
-        INSTANCES.computeIfAbsent(
-            udfClassName,
-            name -> {
-              try {
-                // Resolve via the executor's context classloader so user-supplied UDF jars
-                // (added via spark.jars / --jars) are visible.
-                ClassLoader cl = Thread.currentThread().getContextClassLoader();
-                if (cl == null) {
-                  cl = CometUdfBridge.class.getClassLoader();
-                }
-                return (CometUDF)
-                    Class.forName(name, true, cl).getDeclaredConstructor().newInstance();
-              } catch (ReflectiveOperationException e) {
-                throw new RuntimeException("Failed to instantiate CometUDF: " + name, e);
-              }
-            });
+      long outSchemaPtr,
+      int numRows) {
+    LinkedHashMap<String, CometUDF> cache = INSTANCES.get();
+    CometUDF udf = cache.get(udfClassName);
+    if (udf == null) {
+      try {
+        // Resolve via the executor's context classloader so user-supplied UDF jars
+        // (added via spark.jars / --jars) are visible.
+        ClassLoader cl = Thread.currentThread().getContextClassLoader();
+        if (cl == null) {
+          cl = CometUdfBridge.class.getClassLoader();
+        }
+        udf =
+            (CometUDF) Class.forName(udfClassName, true, cl).getDeclaredConstructor().newInstance();
+      } catch (ReflectiveOperationException e) {
+        throw new RuntimeException("Failed to instantiate CometUDF: " + udfClassName, e);
+      }
+      cache.put(udfClassName, udf);
+    }
 
     BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
 
@@ -84,23 +103,17 @@ public class CometUdfBridge {
         inputs[i] = Data.importVector(allocator, inArr, inSch, null);
       }
 
-      result = udf.evaluate(inputs);
+      result = udf.evaluate(inputs, numRows);
       if (!(result instanceof FieldVector)) {
         throw new RuntimeException(
             "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());
       }
-      // Result length must match the longest input. Scalar (length-1) inputs
-      // are allowed to be shorter, but a vector input bounds the output.
-      int expectedLen = 0;
-      for (ValueVector v : inputs) {
-        expectedLen = Math.max(expectedLen, v.getValueCount());
-      }
-      if (result.getValueCount() != expectedLen) {
+      if (result.getValueCount() != numRows) {
         throw new RuntimeException(
             "CometUDF.evaluate() returned "
                 + result.getValueCount()
                 + " rows, expected "
-                + expectedLen);
+                + numRows);
       }
       ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
       ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);

@@ -15,17 +15,35 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_rlike(s string) USING parquet
+-- Test RLIKE via JVM regex engine (default engine)
 
 statement
-INSERT INTO test_rlike VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
+CREATE TABLE test_rlike_java(s string) USING parquet
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[0-9]+$' FROM test_rlike
+statement
+INSERT INTO test_rlike_java VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123'), ('aa'), ('ab')
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[a-z]+$' FROM test_rlike
+query
+SELECT s RLIKE '^\d+$' FROM test_rlike_java
 
-query spark_answer_only
-SELECT s RLIKE '' FROM test_rlike
+query
+SELECT s RLIKE '^[a-z]+$' FROM test_rlike_java
+
+query
+SELECT s RLIKE '' FROM test_rlike_java
+
+-- backreference (Java-only)
+query
+SELECT s RLIKE '^(\w)\1$' FROM test_rlike_java
+
+-- lookahead (Java-only)
+query
+SELECT s RLIKE 'abc(?=\d)' FROM test_rlike_java
+
+-- embedded flags (Java-only)
+query
+SELECT s RLIKE '(?i)hello' FROM test_rlike_java
+
+-- literal arguments
+query
+SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^\d+$', '' RLIKE '', NULL RLIKE 'a'

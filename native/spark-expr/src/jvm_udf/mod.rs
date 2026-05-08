@@ -110,10 +110,10 @@ impl PhysicalExpr for JvmScalarUdfExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DFResult<ColumnarValue> {
-        // Step 1: evaluate child expressions to get Arrow arrays. Scalar children
-        // (e.g. literal patterns) are sent as length-1 vectors rather than expanded
-        // to batch-row count, so the JVM bridge does not pay an O(rows) copy for
-        // values that never vary across the batch.
+        // Scalar children (e.g. literal patterns) are sent as length-1 vectors rather than
+        // expanded to batch-row count, so the JVM bridge does not pay an O(rows) copy for
+        // values that never vary across the batch. The JVM side gets `numRows` directly via
+        // the bridge so it doesn't need the scalar to carry batch length.
         let arrays: Vec<ArrayRef> = self
             .args
             .iter()
@@ -123,7 +123,6 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             })
             .collect::<DFResult<_>>()?;
 
-        // Step 2: allocate FFI structs on the Rust heap and collect their raw pointers.
         // The JVM writes into the out_array/out_schema slots and reads from the in_ slots.
         let in_ffi_arrays: Vec<Box<FFI_ArrowArray>> = arrays
             .iter()
@@ -147,7 +146,6 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             .map(|b| b.as_ref() as *const FFI_ArrowSchema as i64)
             .collect();
 
-        // Allocate output FFI slots.
         let mut out_array = Box::new(FFI_ArrowArray::empty());
         let mut out_schema = Box::new(FFI_ArrowSchema::empty());
         let out_arr_ptr = out_array.as_mut() as *mut FFI_ArrowArray as i64;
@@ -156,22 +154,20 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         let class_name = self.class_name.clone();
         let n_args = arrays.len();
 
-        // Step 3: attach a JNI env for this thread and call the static bridge method.
         JVMClasses::with_env(|env| {
             let bridge = JVMClasses::get().comet_udf_bridge.as_ref().ok_or_else(|| {
                 CometError::from(ExecutionError::GeneralError(
                     "JVM UDF bridge unavailable: org.apache.comet.udf.CometUdfBridge \
-                     class was not found on the JVM classpath."
+                     class was not found on the JVM classpath. Set \
+                     spark.comet.exec.regexp.engine=rust to disable this path."
                         .to_string(),
                 ))
             })?;
 
-            // Build the JVM String for the class name.
             let jclass_name = env
                 .new_string(&class_name)
                 .map_err(|e| CometError::JNI { source: e })?;
 
-            // Build the long[] arrays for input pointers.
             let in_arr_java = env
                 .new_long_array(n_args)
                 .map_err(|e| CometError::JNI { source: e })?;
@@ -186,7 +182,6 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 .set_region(env, 0, &in_sch_ptrs)
                 .map_err(|e| CometError::JNI { source: e })?;
 
-            // Call CometUdfBridge.evaluate(String, long[], long[], long, long)
             let ret = unsafe {
                 env.call_static_method_unchecked(
                     &bridge.class,
@@ -198,6 +193,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                         JValue::Object(JObject::from(in_sch_java).as_ref()).as_jni(),
                         JValue::Long(out_arr_ptr).as_jni(),
                         JValue::Long(out_sch_ptr).as_jni(),
+                        JValue::Int(batch.num_rows() as i32).as_jni(),
                     ],
                 )
             };
@@ -210,7 +206,6 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             Ok(())
         })?;
 
-        // Step 4: import the result from the FFI slots filled by the JVM.
         // SAFETY: `*out_array` moves the FFI_ArrowArray out of the Box (the heap
         // allocation is freed by the move), and `from_ffi` wraps it in an Arc that
         // keeps the JVM-installed release callback alive until the resulting
@@ -218,7 +213,19 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         // exactly once when the Box drops at end of scope.
         let result_data = unsafe { from_ffi(*out_array, &out_schema) }
             .map_err(|e| CometError::Arrow { source: e })?;
-        Ok(ColumnarValue::Array(make_array(result_data)))
+        let result_array = make_array(result_data);
+
+        // The JVM may produce arrays with different field names (e.g. Arrow Java's
+        // ListVector uses "$data$" for child fields) than what DataFusion expects
+        // (e.g. "item"). Cast to the declared return_type to normalize schema.
+        let result_array = if result_array.data_type() != &self.return_type {
+            arrow::compute::cast(&result_array, &self.return_type)
+                .map_err(|e| CometError::Arrow { source: e })?
+        } else {
+            result_array
+        };
+
+        Ok(ColumnarValue::Array(result_array))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {

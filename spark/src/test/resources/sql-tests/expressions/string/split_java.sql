@@ -15,21 +15,38 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test regexp_replace() with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.expression.regexp.allowIncompatible=true
+-- Test split via JVM regex engine (default engine)
 
 statement
-CREATE TABLE test_regexp_replace_enabled(s string) USING parquet
+CREATE TABLE test_split_java(s string) USING parquet
 
 statement
-INSERT INTO test_regexp_replace_enabled VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
+INSERT INTO test_split_java VALUES ('one,two,three'), ('hello'), (''), (NULL), ('a::b::c'), ('aXbXc')
 
+-- basic split on comma
 query
-SELECT regexp_replace(s, '(\d+)', 'X') FROM test_regexp_replace_enabled
+SELECT split(s, ',', -1) FROM test_split_java
 
+-- split with limit
 query
-SELECT regexp_replace(s, '(\d+)', 'X', 1) FROM test_regexp_replace_enabled
+SELECT split(s, ',', 2) FROM test_split_java
 
--- literal + literal + literal
+-- split on regex pattern
 query
-SELECT regexp_replace('100-200', '(\d+)', 'X'), regexp_replace('abc', '(\d+)', 'X'), regexp_replace(NULL, '(\d+)', 'X')
+SELECT split(s, '[,:]', -1) FROM test_split_java
+
+-- split on multi-char separator
+query
+SELECT split(s, '::', -1) FROM test_split_java
+
+-- lookahead in pattern (Java-only)
+query
+SELECT split(s, '(?=X)', -1) FROM test_split_java
+
+-- embedded flags (Java-only)
+query
+SELECT split(s, '(?i)x', -1) FROM test_split_java
+
+-- literal arguments
+query
+SELECT split('a,b,c', ',', -1), split('hello', ',', -1), split(NULL, ',', -1)

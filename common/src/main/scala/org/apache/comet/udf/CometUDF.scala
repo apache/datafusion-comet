@@ -27,11 +27,16 @@ import org.apache.arrow.vector.ValueVector
  *
  *   - Vector arguments arrive at the row count of the current batch.
  *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
- *   - The returned vector's length must match the longest input.
+ *   - The returned vector's length must match `numRows`.
  *
- * Implementations must have a public no-arg constructor and must be stateless: a single instance
- * per class is cached and shared across native worker threads for the lifetime of the JVM.
+ * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
+ * UDFs that always have at least one batch-length input can read length from it and ignore
+ * `numRows`; UDFs that may be called with zero data columns (e.g. a zero-arg ScalaUDF through
+ * the codegen dispatcher) need `numRows` to know how many rows to produce.
+ *
+ * Implementations must have a public no-arg constructor and should be stateless: instances are
+ * cached per executor thread for the lifetime of the JVM.
  */
 trait CometUDF {
-  def evaluate(inputs: Array[ValueVector]): ValueVector
+  def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector
 }

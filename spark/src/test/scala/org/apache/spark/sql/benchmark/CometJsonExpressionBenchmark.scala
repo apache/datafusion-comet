@@ -32,7 +32,7 @@ import org.apache.comet.CometConf
  * @param query
  *   SQL query to benchmark
  * @param extraCometConfigs
- *   Additional Comet configurations for the Comet case
+ *   Additional Comet configurations for the scan+exec case
  */
 case class JsonExprConfig(
     name: String,
