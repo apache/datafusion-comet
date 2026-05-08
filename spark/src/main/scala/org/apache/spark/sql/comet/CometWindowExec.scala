@@ -165,12 +165,20 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       (aggExprToProto(agg, output, true, conf), None, ignoreNulls)
     } else {
       windowExpr.windowFunction match {
+        case lag: Lag if !lag.default.isInstanceOf[Literal] =>
+          // https://github.com/apache/datafusion-comet/issues/4268
+          withInfo(windowExpr, "Lag default value must be a literal", lag.default)
+          (None, None, false)
         case lag: Lag =>
           val inputExpr = exprToProto(lag.input, output)
           val offsetExpr = exprToProto(lag.inputOffset, output)
           val defaultExpr = exprToProto(lag.default, output)
           val func = scalarFunctionExprToProto("lag", inputExpr, offsetExpr, defaultExpr)
           (None, func, lag.ignoreNulls)
+        case lead: Lead if !lead.default.isInstanceOf[Literal] =>
+          // https://github.com/apache/datafusion-comet/issues/4268
+          withInfo(windowExpr, "Lead default value must be a literal", lead.default)
+          (None, None, false)
         case lead: Lead =>
           val inputExpr = exprToProto(lead.input, output)
           val offsetExpr = exprToProto(lead.offset, output)
