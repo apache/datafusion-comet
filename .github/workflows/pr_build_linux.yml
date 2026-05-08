@@ -318,6 +318,7 @@ jobs:
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.comet.CometFuzzIcebergSuite
               org.apache.comet.CometFuzzMathSuite
+              org.apache.comet.CometCodegenDispatchFuzzSuite
               org.apache.comet.DataGeneratorSuite
           - name: "shuffle"
             value: |
@@ -394,6 +395,9 @@ jobs:
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
+              org.apache.comet.CometCodegenDispatchSmokeSuite
+              org.apache.comet.CometCodegenSourceSuite
+              org.apache.comet.CometRegExpJvmSuite
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite

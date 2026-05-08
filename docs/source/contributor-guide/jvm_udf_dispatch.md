@@ -120,21 +120,21 @@ Before this serde, any `ScalaUDF` in a plan forced Comet to fall back to Spark i
 
 ### What's covered
 
-| What users write | Spark expression class | Route through codegen |
-|---|---|---|
-| `udf((x: T) => ...)` or `spark.udf.register` (Scala) | `ScalaUDF` | yes |
-| `spark.udf.register("f", new UDF1[...]{...})` (Java) | `ScalaUDF` (Spark wraps the Java functional interface) | yes, transparently |
-| `CREATE FUNCTION foo AS 'com.example.MyUDF'` (SQL registration) | `ScalaUDF` | yes, if the user class is reachable on the executor classpath |
+| What users write                                                | Spark expression class                                 | Route through codegen                                         |
+| --------------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------- |
+| `udf((x: T) => ...)` or `spark.udf.register` (Scala)            | `ScalaUDF`                                             | yes                                                           |
+| `spark.udf.register("f", new UDF1[...]{...})` (Java)            | `ScalaUDF` (Spark wraps the Java functional interface) | yes, transparently                                            |
+| `CREATE FUNCTION foo AS 'com.example.MyUDF'` (SQL registration) | `ScalaUDF`                                             | yes, if the user class is reachable on the executor classpath |
 
 ### What's not covered
 
-| What users write | Spark expression class | Why not |
-|---|---|---|
-| Aggregate UDF | `ScalaAggregator`, `TypedImperativeAggregate`, old `UserDefinedAggregateFunction` | accumulator-based; needs a different bridge contract (accumulate + merge + finalize) |
-| Table UDF / generator | `UserDefinedTableFunction` | 1 row → N rows; `canHandle` rejects `Generator` |
-| Python `@udf` | `PythonUDF` | subprocess runtime, not JVM |
-| Pandas `@pandas_udf` | `PandasUDF` | Arrow-via-subprocess runtime |
-| Hive `GenericUDF` / `SimpleUDF` | `HiveGenericUDF` / `HiveSimpleUDF` | separate expression classes; would need their own serde |
+| What users write                | Spark expression class                                                            | Why not                                                                              |
+| ------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Aggregate UDF                   | `ScalaAggregator`, `TypedImperativeAggregate`, old `UserDefinedAggregateFunction` | accumulator-based; needs a different bridge contract (accumulate + merge + finalize) |
+| Table UDF / generator           | `UserDefinedTableFunction`                                                        | 1 row → N rows; `canHandle` rejects `Generator`                                      |
+| Python `@udf`                   | `PythonUDF`                                                                       | subprocess runtime, not JVM                                                          |
+| Pandas `@pandas_udf`            | `PandasUDF`                                                                       | Arrow-via-subprocess runtime                                                         |
+| Hive `GenericUDF` / `SimpleUDF` | `HiveGenericUDF` / `HiveSimpleUDF`                                                | separate expression classes; would need their own serde                              |
 
 ### Constraints within the ScalaUDF path
 
@@ -158,18 +158,18 @@ There is no native or hand-coded fallback for arbitrary user functions; codegen 
 
 All scalar Spark types that map to a single Arrow vector:
 
-| Spark type | Arrow vector class | `InternalRow` getter |
-|---|---|---|
-| BooleanType | BitVector | `getBoolean` |
-| ByteType | TinyIntVector | `getByte` |
-| ShortType | SmallIntVector | `getShort` |
-| IntegerType, DateType | IntVector, DateDayVector | `getInt` |
-| LongType, TimestampType, TimestampNTZType | BigIntVector, TimeStampMicroVector, TimeStampMicroTZVector | `getLong` |
-| FloatType | Float4Vector | `getFloat` |
-| DoubleType | Float8Vector | `getDouble` |
-| DecimalType | DecimalVector | `getDecimal(ord, precision, scale)` |
-| StringType | VarCharVector, ViewVarCharVector | `getUTF8String` (zero-copy via `UTF8String.fromAddress`) |
-| BinaryType | VarBinaryVector, ViewVarBinaryVector | `getBinary` (allocates `byte[]`) |
+| Spark type                                | Arrow vector class                                         | `InternalRow` getter                                     |
+| ----------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------- |
+| BooleanType                               | BitVector                                                  | `getBoolean`                                             |
+| ByteType                                  | TinyIntVector                                              | `getByte`                                                |
+| ShortType                                 | SmallIntVector                                             | `getShort`                                               |
+| IntegerType, DateType                     | IntVector, DateDayVector                                   | `getInt`                                                 |
+| LongType, TimestampType, TimestampNTZType | BigIntVector, TimeStampMicroVector, TimeStampMicroTZVector | `getLong`                                                |
+| FloatType                                 | Float4Vector                                               | `getFloat`                                               |
+| DoubleType                                | Float8Vector                                               | `getDouble`                                              |
+| DecimalType                               | DecimalVector                                              | `getDecimal(ord, precision, scale)`                      |
+| StringType                                | VarCharVector, ViewVarCharVector                           | `getUTF8String` (zero-copy via `UTF8String.fromAddress`) |
+| BinaryType                                | VarBinaryVector, ViewVarBinaryVector                       | `getBinary` (allocates `byte[]`)                         |
 
 Widening: add cases to `CometBatchKernelCodegen.typedInputAccessors` and accept the new vector classes in `CometCodegenDispatchUDF.evaluate`'s input pattern match.
 
@@ -185,14 +185,14 @@ All scalar Spark types that map to a single Arrow vector: `Boolean`, `Byte`, `Sh
 
 ## Choosing between approaches
 
-| Criterion | Hand-coded | Codegen dispatch |
-|---|---|---|
-| Classes per expression | one | zero |
-| Per-row loop | hand-written Scala | compiled Java |
-| Arrow read / write | hand-written | compiled Java |
-| Expression evaluation | hand-written | compiled via Spark `doGenCode`, inlined into the fused loop |
-| Composed expression trees | no (without native support for children) | yes |
-| Adding a new expression | new UDF class + serde branch | free within the supported type surface |
+| Criterion                 | Hand-coded                               | Codegen dispatch                                            |
+| ------------------------- | ---------------------------------------- | ----------------------------------------------------------- |
+| Classes per expression    | one                                      | zero                                                        |
+| Per-row loop              | hand-written Scala                       | compiled Java                                               |
+| Arrow read / write        | hand-written                             | compiled Java                                               |
+| Expression evaluation     | hand-written                             | compiled via Spark `doGenCode`, inlined into the fused loop |
+| Composed expression trees | no (without native support for children) | yes                                                         |
+| Adding a new expression   | new UDF class + serde branch             | free within the supported type surface                      |
 
 Rule of thumb: pick hand-coded when the expression is hot enough to justify per-expression maintenance or has specialization the generic path cannot match; pick codegen dispatch when you would otherwise fall back to Spark, or when the expression composes naturally with others and you want the free composition.
 

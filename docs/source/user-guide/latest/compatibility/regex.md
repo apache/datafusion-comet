@@ -29,12 +29,12 @@ spark.comet.exec.regexp.engine=rust
 
 ## Choosing an engine
 
-| | Java engine | Rust engine |
-|---|---|---|
-| **Compatibility** | 100% compatible with Spark | Pattern-dependent differences |
+|                      | Java engine                                                                                                         | Rust engine                             |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| **Compatibility**    | 100% compatible with Spark                                                                                          | Pattern-dependent differences           |
 | **Feature coverage** | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`) | `rlike`, `regexp_replace`, `split` only |
-| **Performance** | One JNI round-trip per batch (Arrow vectors stay columnar) | Fully native, no JNI overhead |
-| **Pattern support** | All Java regex features (backreferences, lookaround, etc.) | Linear-time subset only |
+| **Performance**      | One JNI round-trip per batch (Arrow vectors stay columnar)                                                          | Fully native, no JNI overhead           |
+| **Pattern support**  | All Java regex features (backreferences, lookaround, etc.)                                                          | Linear-time subset only                 |
 
 The **Java engine** (default) is recommended for correctness-sensitive workloads. It evaluates expressions by
 passing Arrow vectors to a JVM-side UDF that uses `java.util.regex`, producing identical results to Spark for
