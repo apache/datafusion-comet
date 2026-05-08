@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -43,6 +43,14 @@ class CometExecRuleSuite extends CometTestBase {
   /** Helper method to apply CometExecRule and return the transformed plan */
   private def applyCometExecRule(plan: SparkPlan): SparkPlan = {
     CometExecRule(spark).apply(stripAQEPlan(plan))
+  }
+
+  /**
+   * Apply CometExecRule with the threshold check active, simulating the AQE queryStagePrep
+   * registration path.
+   */
+  private def applyCometExecRuleWithThreshold(plan: SparkPlan): SparkPlan = {
+    CometExecRule(spark, applyThresholdCheck = true).apply(stripAQEPlan(plan))
   }
 
   /** Create a test data frame that is used in all tests */
@@ -310,6 +318,111 @@ class CometExecRuleSuite extends CometTestBase {
 
         assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
         assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 1)
+      }
+    }
+  }
+
+  test("coverage threshold: default 0.0 disables the check") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false") {
+        // Project is disabled, so coverage is partial. With threshold = 0.0 the rule still
+        // converts whatever it can.
+        val transformedPlan = applyCometExecRuleWithThreshold(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[CometFilterExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[ProjectExec]) == 1)
+      }
+    }
+  }
+
+  test("coverage threshold: above coverage falls back to original Spark plan") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_COVERAGE_THRESHOLD.key -> "0.99") {
+        val transformedPlan = applyCometExecRuleWithThreshold(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[CometProjectExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[CometFilterExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[ProjectExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[FilterExec]) == 1)
+      }
+    }
+  }
+
+  test("coverage threshold: below coverage proceeds with native conversion") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_COVERAGE_THRESHOLD.key -> "0.5") {
+        // Everything converts, coverage is 100% which is well above 0.5.
+        val transformedPlan = applyCometExecRuleWithThreshold(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[CometProjectExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[CometFilterExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[ProjectExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[FilterExec]) == 0)
+      }
+    }
+  }
+
+  test("coverage threshold: fallback reason is recorded in extension info") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_COVERAGE_THRESHOLD.key -> "0.99") {
+        val transformedPlan = applyCometExecRuleWithThreshold(sparkPlan)
+        val reasons = transformedPlan
+          .getTagValue(CometExplainInfo.EXTENSION_INFO)
+          .getOrElse(Set.empty[String])
+        assert(reasons.exists(_.contains("below threshold")), reasons.toString)
+      }
+    }
+  }
+
+  test("coverage threshold: prior fallback decision is sticky on AQE per-stage re-entry") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_COVERAGE_THRESHOLD.key -> "0.99") {
+        // First pass: queryStagePrep registration falls back due to threshold.
+        val firstPassPlan = applyCometExecRuleWithThreshold(sparkPlan)
+        assert(countOperators(firstPassPlan, classOf[CometFilterExec]) == 0)
+      }
+
+      // Re-flip the configs so a fresh apply would normally convert. The prior fallback decision
+      // must still be honored because the plan tree carries SKIP_COMET_PLAN_TAG markers.
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_COVERAGE_THRESHOLD.key -> "0.0") {
+        val secondPassPlan = applyCometExecRule(sparkPlan)
+        assert(countOperators(secondPassPlan, classOf[CometProjectExec]) == 0)
+        assert(countOperators(secondPassPlan, classOf[CometFilterExec]) == 0)
+        assert(countOperators(secondPassPlan, classOf[ProjectExec]) == 1)
+        assert(countOperators(secondPassPlan, classOf[FilterExec]) == 1)
       }
     }
   }

@@ -103,12 +103,21 @@ object CometExecRule {
    */
   val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
+
+  /**
+   * Tag set on every node of a plan when the coverage threshold check has decided to fall back to
+   * Spark. AQE re-applies `CometExecRule` per stage via `preColumnarTransitions` after the
+   * initial decision was made; checking this tag on re-entry keeps the decision sticky and
+   * prevents per-stage flip-flop where individual stage sub-plans might cross the threshold.
+   */
+  val SKIP_COMET_PLAN_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
+    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometPlan")
 }
 
 /**
  * Spark physical optimizer rule for replacing Spark operators with Comet operators.
  */
-case class CometExecRule(session: SparkSession)
+case class CometExecRule(session: SparkSession, applyThresholdCheck: Boolean = false)
     extends Rule[SparkPlan]
     with ShimSubqueryBroadcast {
 
@@ -545,6 +554,10 @@ case class CometExecRule(session: SparkSession)
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
+    // The coverage threshold pass on the initial plan tagged this plan to stay native Spark.
+    // Honor that decision on AQE per-stage re-entry without re-evaluating per stage.
+    if (plan.exists(_.getTagValue(CometExecRule.SKIP_COMET_PLAN_TAG).isDefined)) return plan
+
     // Comet does not support structured streaming. Fall back to Spark for any plan that
     // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).
     if (ShimCometStreaming.isStreamingPlan(plan)) return plan
@@ -663,16 +676,21 @@ case class CometExecRule(session: SparkSession)
           op
       }
 
-      // Check coverage threshold - if the fraction of converted operators is too low,
-      // fall back to the original Spark plan.
+      // Coverage threshold: decide once on the canonical first pass, never re-evaluate later.
+      // The first pass is the queryStagePrep registration in AQE, or preColumnarTransitions
+      // in non-AQE mode. AQE per-stage re-entries skip the check (and the SKIP_COMET_PLAN_TAG
+      // guard at the top of _apply makes any prior fallback decision sticky).
       val threshold = CometConf.COMET_EXEC_COVERAGE_THRESHOLD.get(conf)
-      if (threshold > 0.0) {
+      val isFirstPass = applyThresholdCheck || !conf.adaptiveExecutionEnabled
+      if (threshold > 0.0 && isFirstPass) {
         val stats = CometCoverageStats.forPlan(finalPlan)
         if (stats.eligible > 0 && stats.coverageFraction < threshold) {
-          logWarning(
+          val reason =
             s"Comet native coverage ${(stats.coverageFraction * 100).toInt}% " +
-              s"is below threshold ${(threshold * 100).toInt}% " +
-              s"($stats). Falling back to Spark plan.")
+              s"is below threshold ${(threshold * 100).toInt}% ($stats)"
+          logWarning(s"$reason. Falling back to Spark plan.")
+          withInfo(plan, reason)
+          plan.foreach(_.setTagValue(CometExecRule.SKIP_COMET_PLAN_TAG, ()))
           return plan
         }
       }
