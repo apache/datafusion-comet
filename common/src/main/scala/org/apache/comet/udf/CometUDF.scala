@@ -31,8 +31,8 @@ import org.apache.arrow.vector.ValueVector
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
  * UDFs that always have at least one batch-length input can read length from it and ignore
- * `numRows`; UDFs that may be called with zero data columns (e.g. a zero-arg ScalaUDF through
- * the codegen dispatcher) need `numRows` to know how many rows to produce.
+ * `numRows`; UDFs that may be called with zero data columns (e.g. a zero-arg ScalaUDF through the
+ * codegen dispatcher) need `numRows` to know how many rows to produce.
  *
  * Implementations must have a public no-arg constructor and should be stateless: instances are
  * cached per executor thread for the lifetime of the JVM.

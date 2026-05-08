@@ -188,7 +188,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     val src = gen(expr, nullable1, nullable2)
     assert(
       !src.contains("this.col0.isNull(i) || this.col1.isNull(i)"),
-      s"expected no pre-null short-circuit when Concat breaks the NullIntolerant chain; " +
+      "expected no pre-null short-circuit when Concat breaks the NullIntolerant chain; " +
         s"got:\n$src")
   }
 

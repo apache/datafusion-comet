@@ -62,10 +62,10 @@ public class CometUdfBridge {
    * @param inputSchemaPtrs addresses of pre-allocated FFI_ArrowSchema structs (one per input)
    * @param outArrayPtr address of pre-allocated FFI_ArrowArray for the result
    * @param outSchemaPtr address of pre-allocated FFI_ArrowSchema for the result
-   * @param numRows number of rows in the current batch. Mirrors DataFusion's
-   *     {@code ScalarFunctionArgs.number_rows} and gives UDFs an explicit batch-size signal for
-   *     cases where no input arg is a batch-length array (e.g. a zero-arg non-deterministic
-   *     ScalaUDF). UDFs that already read size from their input vectors can ignore it.
+   * @param numRows number of rows in the current batch. Mirrors DataFusion's {@code
+   *     ScalarFunctionArgs.number_rows} and gives UDFs an explicit batch-size signal for cases
+   *     where no input arg is a batch-length array (e.g. a zero-arg non-deterministic ScalaUDF).
+   *     UDFs that already read size from their input vectors can ignore it.
    */
   public static void evaluate(
       String udfClassName,

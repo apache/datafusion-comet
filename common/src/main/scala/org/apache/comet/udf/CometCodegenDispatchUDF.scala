@@ -94,7 +94,7 @@ class CometCodegenDispatchUDF extends CometUDF {
   override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
     require(
       inputs.length >= 1,
-      s"CometCodegenDispatchUDF requires at least 1 input (serialized expression), " +
+      "CometCodegenDispatchUDF requires at least 1 input (serialized expression), " +
         s"got ${inputs.length}")
     val exprVec = inputs(0).asInstanceOf[VarBinaryVector]
     require(
@@ -338,7 +338,7 @@ object CometCodegenDispatchUDF {
       expr: Expression,
       specs: IndexedSeq[ArrowColumnSpec]): Expression = {
     expr.transform {
-      case b @ BoundReference(ord, dt, true)
+      case BoundReference(ord, dt, true)
           if ord >= 0 && ord < specs.length && !specs(ord).nullable =>
         BoundReference(ord, dt, nullable = false)
       // Fall through unchanged: non-BoundReference nodes and BoundReferences that are already

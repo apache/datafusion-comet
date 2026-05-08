@@ -435,19 +435,10 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    * devirtualize. Each getter switches on the column ordinal so the call site (with an inlined
    * constant ordinal from `BoundReference.genCode`) folds down to a single branch.
    *
-   * Current coverage: `isNullAt` plus `getUTF8String` for `VarCharVector` and
-   * `ViewVarCharVector`. Widen by adding vector class cases and new getters for primitive /
-   * decimal / binary / date / timestamp types.
-   *
-   * TODO: the kernel's `isNullAt(int ordinal)` switch has a `return false;` case for every column
-   * with `ArrowColumnSpec.nullable=false`, and every `BoundReference(ord, ...)` in the expression
-   * tree produces a call site `this.isNullAt(ord)` with `ord` known as a compile-time constant.
-   * JIT is expected to inline the method, fold the switch on the constant ordinal, and reduce the
-   * call to `false` at that call site, so `BoundReference.genCode`'s `isNull` branch
-   * constant-folds away too. A tighter pass would rewrite the deserialized `Expression` tree,
-   * setting the matching `BoundReference.nullable=false` so the generated `ev.code` simply omits
-   * the `isNull` branch at source level rather than relying on the JIT. Cheap to do once we start
-   * flipping per-batch nullability (e.g. `v.getNullCount == 0`).
+   * Current coverage: `isNullAt` plus getters for boolean, byte, short, int (including
+   * `DateDayVector`), long (including `TimeStampMicroVector` and its TZ variant), float, double,
+   * decimal, binary, and UTF8 (for both `VarCharVector` and `ViewVarCharVector`). Widen by adding
+   * further vector-class cases to the existing switches.
    */
   private def typedInputAccessors(inputSchema: Seq[ArrowColumnSpec]): String = {
     val withOrd = inputSchema.zipWithIndex
@@ -679,7 +670,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     val subjectClass = inputSchema(subjectOrd).vectorClass
     require(
       subjectClass == classOf[VarCharVector] || subjectClass == classOf[ViewVarCharVector],
-      s"specializedRegExpReplaceBody expects VarCharVector or ViewVarCharVector at ordinal " +
+      "specializedRegExpReplaceBody expects VarCharVector or ViewVarCharVector at ordinal " +
         s"$subjectOrd, got ${subjectClass.getSimpleName}")
 
     val patternStr = rr.regexp.eval().toString

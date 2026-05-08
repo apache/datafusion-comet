@@ -91,7 +91,7 @@ object CometScalaUDFCompositionBenchmark extends CometBenchmarkBase {
           prepareTable(
             dir,
             spark.sql(
-              s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1, " +
+              "SELECT REPEAT(CAST(value AS STRING), 10) AS c1, " +
                 s"CAST(value AS STRING) AS c2 FROM $tbl"))
 
           registerMultiColUdfs()

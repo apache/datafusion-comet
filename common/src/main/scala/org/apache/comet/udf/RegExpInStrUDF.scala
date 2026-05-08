@@ -70,7 +70,7 @@ class RegExpInStrUDF extends CometUDF {
         compiled
       }
     }
-    val idx = idxVec.get(0)
+    idxVec.get(0)
 
     val n = subject.getValueCount
     val out = new IntVector("regexp_instr_result", CometArrowAllocator)
