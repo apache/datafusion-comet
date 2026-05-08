@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, AttributeReference, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Size, SortArray}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -31,6 +31,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
+import org.apache.comet.udf.CometLambdaRegistry
 
 object CometArrayRemove
     extends CometExpressionSerde[ArrayRemove]
@@ -810,5 +811,73 @@ trait ArraysBase {
         false
       case _ => false
     }
+  }
+}
+
+object CometArrayExists extends CometExpressionSerde[ArrayExists] {
+
+  private def isElementTypeSupported(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+        _: DecimalType | DateType | TimestampType | StringType =>
+      true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: ArrayExists): SupportLevel = {
+    val ArrayType(elementType, _) = expr.argument.dataType
+    if (!isElementTypeSupported(elementType)) {
+      return Unsupported(Some(s"Unsupported array element type: $elementType"))
+    }
+    // Only support lambdas that reference the lambda variable alone (no captured columns)
+    expr.function match {
+      case LambdaFunction(body, Seq(_: NamedLambdaVariable), _) =>
+        val capturedRefs = body.collect { case a: AttributeReference => a }
+        if (capturedRefs.nonEmpty) {
+          Unsupported(Some("Lambda references columns outside the array element"))
+        } else {
+          Compatible()
+        }
+      case _ =>
+        Unsupported(Some("Only single-argument lambda functions are supported"))
+    }
+  }
+
+  override def convert(
+      expr: ArrayExists,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayProto = exprToProtoInternal(expr.argument, inputs, binding)
+    if (arrayProto.isEmpty) {
+      withInfo(expr, "Failed to serialize array argument")
+      return None
+    }
+
+    val registryKey = CometLambdaRegistry.register(expr)
+    val keyLiteral = Literal(registryKey)
+    val keyProto = exprToProtoInternal(keyLiteral, inputs, binding)
+    if (keyProto.isEmpty) {
+      CometLambdaRegistry.remove(registryKey)
+      withInfo(expr, "Failed to serialize registry key literal")
+      return None
+    }
+
+    val returnType = serializeDataType(BooleanType).getOrElse {
+      CometLambdaRegistry.remove(registryKey)
+      return None
+    }
+
+    val udfBuilder = ExprOuterClass.JvmScalarUdf
+      .newBuilder()
+      .setClassName("org.apache.comet.udf.ArrayExistsUDF")
+      .addArgs(arrayProto.get)
+      .addArgs(keyProto.get)
+      .setReturnType(returnType)
+      .setReturnNullable(expr.nullable)
+
+    Some(
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setJvmScalarUdf(udfBuilder.build())
+        .build())
   }
 }

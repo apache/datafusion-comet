@@ -156,6 +156,39 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def arrayExistsBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(s"""SELECT
+               |  array(
+               |    cast(value % 100 as int),
+               |    cast((value + 1) % 100 as int),
+               |    cast((value + 2) % 100 as int),
+               |    cast((value + 3) % 100 as int),
+               |    cast((value + 4) % 100 as int),
+               |    cast((value + 5) % 100 as int),
+               |    cast((value + 6) % 100 as int),
+               |    cast((value + 7) % 100 as int),
+               |    cast((value + 8) % 100 as int),
+               |    cast((value + 9) % 100 as int)
+               |  ) as int_arr
+               |FROM $tbl""".stripMargin))
+
+        runExpressionBenchmark(
+          "array_exists - int array (x -> x > 50)",
+          values,
+          "SELECT exists(int_arr, x -> x > 50) FROM parquetV1Table")
+
+        runExpressionBenchmark(
+          "array_exists - int array (x -> x < 0)",
+          values,
+          "SELECT exists(int_arr, x -> x < 0) FROM parquetV1Table")
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 4 * 1024 * 1024
 
@@ -177,6 +210,10 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
 
     runBenchmarkWithTable("ArrayPosition", values) { v =>
       arrayPositionBenchmark(v)
+    }
+
+    runBenchmarkWithTable("ArrayExists", values) { v =>
+      arrayExistsBenchmark(v)
     }
   }
 }

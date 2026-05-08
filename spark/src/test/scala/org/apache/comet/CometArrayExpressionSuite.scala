@@ -243,7 +243,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val df = spark.read
           .parquet(path.toString)
           .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-          .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
+          .withColumn("idx", org.apache.spark.sql.functions.udf((_: Int) => 1).apply(col("_4")))
           .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
         checkSparkAnswerAndFallbackReasons(
           df.select("arrUnsupportedArgs"),
@@ -1086,6 +1086,47 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           errorMessage.contains("select element_at(arr, 0) from test_element_at_zero"),
           s"Error message should contain SQL query text but got: $errorMessage")
       }
+    }
+  }
+
+  test("array_exists - integer predicate") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<INT>) USING parquet")
+      sql("INSERT INTO t VALUES (array(1, 2, 3)), (array(4, 5, 6)), (array(-1, -2)), (NULL)")
+      checkSparkAnswerAndOperator(sql("SELECT exists(arr, x -> x > 2) FROM t"))
+    }
+  }
+
+  test("array_exists - string predicate") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<STRING>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES (array('hello', 'world')), (array('foo')), (array(NULL, 'bar')), (NULL)")
+      checkSparkAnswerAndOperator(sql("SELECT exists(arr, x -> x = 'world') FROM t"))
+    }
+  }
+
+  test("array_exists - null elements with three-valued logic") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<INT>) USING parquet")
+      sql("INSERT INTO t VALUES (array(1, NULL, 3)), (array(NULL, NULL)), (array(4, 5))")
+      checkSparkAnswerAndOperator(sql("SELECT exists(arr, x -> x > 10) FROM t"))
+    }
+  }
+
+  test("array_exists - all elements match") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<INT>) USING parquet")
+      sql("INSERT INTO t VALUES (array(10, 20, 30)), (array(1, 2, 3))")
+      checkSparkAnswerAndOperator(sql("SELECT exists(arr, x -> x > 0) FROM t"))
+    }
+  }
+
+  test("array_exists - empty array") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<INT>) USING parquet")
+      sql("INSERT INTO t VALUES (array()), (array(1))")
+      checkSparkAnswerAndOperator(sql("SELECT exists(arr, x -> x > 0) FROM t"))
     }
   }
 }

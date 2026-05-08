@@ -71,7 +71,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Flatten] -> CometFlatten,
     classOf[GetArrayItem] -> CometGetArrayItem,
     classOf[Size] -> CometSize,
-    classOf[ArraysZip] -> CometArraysZip)
+    classOf[ArraysZip] -> CometArraysZip,
+    classOf[ArrayExists] -> CometArrayExists)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
