@@ -37,6 +37,8 @@ import org.apache.parquet.hadoop.example.{ExampleParquetWriter, GroupWriteSuppor
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
+import org.apache.spark.sql.catalyst.plans.logical
+import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
@@ -128,7 +130,7 @@ abstract class CometTestBase
     if (withTol.isDefined) {
       checkAnswerWithTolerance(dfComet, expected, withTol.get)
     } else {
-      checkAnswer(dfComet, expected)
+      checkCometAnswer(dfComet, expected)
     }
 
     if (assertCometNative) {
@@ -188,6 +190,32 @@ abstract class CometTestBase
       df: => DataFrame,
       absTol: Double): (SparkPlan, SparkPlan) = {
     internalCheckSparkAnswer(df, assertCometNative = false, withTol = Some(absTol))
+  }
+
+  /**
+   * Assert that the schema produced by a Comet-enabled execution matches the schema produced by
+   * vanilla Spark for the same logical plan. Useful for catching regressions where Comet modifies
+   * expression result types (e.g. decimal precision promotion).
+   */
+  protected def checkSparkSchema(df: DataFrame): Unit = {
+    var sparkSchema: StructType = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkSchema = datasetOfRows(spark, df.logicalPlan).schema
+    }
+    assert(
+      df.schema == sparkSchema,
+      s"Schema mismatch:\nSpark:  $sparkSchema\nComet: ${df.schema}")
+  }
+
+  /**
+   * Check that the query returns the correct results when Comet is enabled and that Comet
+   * replaced all possible operators. Use the provided `absTol` when comparing floating-point
+   * results.
+   */
+  protected def checkSparkAnswerAndOperatorWithTolerance(
+      query: String,
+      absTol: Double = 1e-6): (SparkPlan, SparkPlan) = {
+    checkSparkAnswerAndOperatorWithTol(sql(query), absTol)
   }
 
   /**
@@ -330,6 +358,81 @@ abstract class CometTestBase
       case _ =>
         (expected.failed.toOption, actual.failed.toOption)
     }
+  }
+
+  /**
+   * Compares the Comet DataFrame result against the expected Spark answer, using labels that
+   * correctly identify which side is Comet and which is Spark. This avoids the misleading "Spark
+   * Answer" label that Spark's built-in `checkAnswer` would apply to the Comet result.
+   */
+  protected def checkCometAnswer(cometDf: DataFrame, sparkAnswer: Seq[Row]): Unit = {
+    val isSorted = cometDf.logicalPlan.collect { case s: logical.Sort => s }.nonEmpty
+    val cometAnswer =
+      try cometDf.collect().toSeq
+      catch {
+        case e: Exception =>
+          fail(s"""Exception thrown while executing query in Comet:
+             |${cometDf.queryExecution}
+             |== Exception ==
+             |$e
+             |${org.apache.spark.sql.catalyst.util.stackTraceToString(e)}
+           """.stripMargin)
+      }
+    val preparedSpark = prepareCometAnswer(sparkAnswer, isSorted)
+    val preparedComet = prepareCometAnswer(cometAnswer, isSorted)
+    if (!QueryTest.compare(preparedSpark, preparedComet)) {
+      val getRowType: Option[Row] => String = row =>
+        row
+          .map(r => if (r.schema == null) "struct<>" else r.schema.catalogString)
+          .getOrElse("struct<>")
+      fail(s"""Results do not match for query:
+           |Timezone: ${java.util.TimeZone.getDefault}
+           |Timezone Env: ${sys.env.getOrElse("TZ", "")}
+           |
+           |${cometDf.queryExecution}
+           |== Results ==
+           |${sideBySide(
+               s"== Spark Answer - ${sparkAnswer.size} ==" +:
+                 getRowType(sparkAnswer.headOption) +:
+                 preparedSpark.map(_.toString()),
+               s"== Comet Answer - ${cometAnswer.size} ==" +:
+                 getRowType(cometAnswer.headOption) +:
+                 preparedComet.map(_.toString())).mkString("\n")}
+         """.stripMargin)
+    }
+  }
+
+  /**
+   * Like `QueryTest.prepareAnswer` but recursively converts nested arrays to seqs. Spark's
+   * version only normalizes top-level `Array[_]`, leaving inner arrays (e.g. `Array[Byte]` from
+   * `array<binary>`) intact. Their default `toString` is the JVM identity (`[B@<hex>`), which
+   * makes the toString-based sort in `prepareAnswer` non-deterministic and causes spurious
+   * mismatches between the two sides.
+   */
+  private def prepareCometAnswer(answer: Seq[Row], isSorted: Boolean): Seq[Row] = {
+    val converted = answer.map(prepareCometRow)
+    if (isSorted) converted else converted.sortBy(_.toString())
+  }
+
+  private def prepareCometRow(row: Row): Row = {
+    Row.fromSeq(row.toSeq.map(normalizeForComparison))
+  }
+
+  private def normalizeForComparison(value: Any): Any = value match {
+    case null => null
+    case bd: java.math.BigDecimal => BigDecimal(bd)
+    case row: Row => prepareCometRow(row)
+    case arr: Array[_] => arr.toSeq.map(normalizeForComparison)
+    case map: scala.collection.Map[_, _] =>
+      map.map { case (k, v) => normalizeForComparison(k) -> normalizeForComparison(v) }
+    case seq: scala.collection.Iterable[_] => seq.map(normalizeForComparison).toSeq
+    case b: java.lang.Byte => b.byteValue
+    case s: java.lang.Short => s.shortValue
+    case i: java.lang.Integer => i.intValue
+    case l: java.lang.Long => l.longValue
+    case f: java.lang.Float => f.floatValue
+    case d: java.lang.Double => d.doubleValue
+    case x => x
   }
 
   /**

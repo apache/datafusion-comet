@@ -25,7 +25,8 @@ use datafusion::logical_expr::ScalarUDF;
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use datafusion_comet_proto::spark_expression::Expr;
 use datafusion_comet_spark_expr::{
-    SparkHour, SparkMinute, SparkSecond, SparkUnixTimestamp, TimestampTruncExpr,
+    SparkHour, SparkHoursTransform, SparkMinute, SparkSecond, SparkUnixTimestamp,
+    TimestampTruncExpr,
 };
 
 use crate::execution::{
@@ -158,5 +159,31 @@ impl ExpressionBuilder for TruncTimestampBuilder {
         let timezone = expr.timezone.clone();
 
         Ok(Arc::new(TimestampTruncExpr::new(child, format, timezone)))
+    }
+}
+
+pub struct HoursTransformBuilder;
+
+impl ExpressionBuilder for HoursTransformBuilder {
+    fn build(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+        planner: &PhysicalPlanner,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let expr = extract_expr!(spark_expr, HoursTransform);
+        let child = planner.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let args = vec![child];
+        let comet_hours_transform = Arc::new(ScalarUDF::new_from_impl(SparkHoursTransform::new()));
+        let field_ref = Arc::new(Field::new("hours_transform", DataType::Int32, true));
+        let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+            "hours_transform",
+            comet_hours_transform,
+            args,
+            field_ref,
+            Arc::new(ConfigOptions::default()),
+        );
+
+        Ok(Arc::new(expr))
     }
 }

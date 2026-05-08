@@ -20,7 +20,8 @@ use jni::{
     errors::Result as JniResult,
     objects::{JClass, JMethodID},
     signature::ReturnType,
-    JNIEnv,
+    strings::JNIString,
+    Env,
 };
 
 /// A struct that holds all the JNI methods and fields for JVM `CometShuffleBlockIterator` class.
@@ -38,23 +39,27 @@ pub struct CometShuffleBlockIterator<'a> {
 impl<'a> CometShuffleBlockIterator<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/comet/CometShuffleBlockIterator";
 
-    pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometShuffleBlockIterator<'a>> {
-        let class = env.find_class(Self::JVM_CLASS)?;
+    pub fn new(env: &mut Env<'a>) -> JniResult<CometShuffleBlockIterator<'a>> {
+        let class = env.find_class(JNIString::new(Self::JVM_CLASS))?;
 
         Ok(CometShuffleBlockIterator {
             class,
-            method_has_next: env.get_method_id(Self::JVM_CLASS, "hasNext", "()I")?,
+            method_has_next: env.get_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("hasNext"),
+                jni::jni_sig!("()I"),
+            )?,
             method_has_next_ret: ReturnType::Primitive(Primitive::Int),
             method_get_buffer: env.get_method_id(
-                Self::JVM_CLASS,
-                "getBuffer",
-                "()Ljava/nio/ByteBuffer;",
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("getBuffer"),
+                jni::jni_sig!("()Ljava/nio/ByteBuffer;"),
             )?,
             method_get_buffer_ret: ReturnType::Object,
             method_get_current_block_length: env.get_method_id(
-                Self::JVM_CLASS,
-                "getCurrentBlockLength",
-                "()I",
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("getCurrentBlockLength"),
+                jni::jni_sig!("()I"),
             )?,
             method_get_current_block_length_ret: ReturnType::Primitive(Primitive::Int),
         })

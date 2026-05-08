@@ -18,8 +18,10 @@
 use jni::{
     errors::Result as JniResult,
     objects::{JClass, JMethodID},
+    signature::RuntimeMethodSignature,
     signature::{Primitive, ReturnType},
-    JNIEnv,
+    strings::JNIString,
+    Env,
 };
 
 /// A struct that holds all the JNI methods and fields for JVM CometMetricNode class.
@@ -37,22 +39,28 @@ pub struct CometMetricNode<'a> {
 impl<'a> CometMetricNode<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/spark/sql/comet/CometMetricNode";
 
-    pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometMetricNode<'a>> {
-        let class = env.find_class(Self::JVM_CLASS)?;
+    pub fn new(env: &mut Env<'a>) -> JniResult<CometMetricNode<'a>> {
+        let class = env.find_class(JNIString::new(Self::JVM_CLASS))?;
+        let get_child_node_sig =
+            RuntimeMethodSignature::from_str(format!("(I)L{};", Self::JVM_CLASS))?;
 
         Ok(CometMetricNode {
             method_get_child_node: env.get_method_id(
-                Self::JVM_CLASS,
-                "getChildNode",
-                format!("(I)L{:};", Self::JVM_CLASS).as_str(),
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("getChildNode"),
+                get_child_node_sig.method_signature(),
             )?,
             method_get_child_node_ret: ReturnType::Object,
-            method_set: env.get_method_id(Self::JVM_CLASS, "set", "(Ljava/lang/String;J)V")?,
+            method_set: env.get_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("set"),
+                jni::jni_sig!("(Ljava/lang/String;J)V"),
+            )?,
             method_set_ret: ReturnType::Primitive(Primitive::Void),
             method_set_all_from_bytes: env.get_method_id(
-                Self::JVM_CLASS,
-                "set_all_from_bytes",
-                "([B)V",
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("set_all_from_bytes"),
+                jni::jni_sig!("([B)V"),
             )?,
             method_set_all_from_bytes_ret: ReturnType::Primitive(Primitive::Void),
             class,

@@ -24,15 +24,26 @@
 use jni::objects::JClass;
 use jni::{
     errors::Error,
-    objects::{JMethodID, JObject, JString, JThrowable, JValueGen, JValueOwned},
+    objects::{JMethodID, JObject, JString, JThrowable, JValueOwned},
     signature::ReturnType,
-    AttachGuard, JNIEnv, JavaVM,
+    Env, JavaVM, DEFAULT_LOCAL_FRAME_CAPACITY,
 };
 use once_cell::sync::OnceCell;
 
 use errors::{CometError, CometResult};
 
 pub mod errors;
+
+enum LocalFrameError<E> {
+    Closure(E),
+    Jni(jni::errors::Error),
+}
+
+impl<E> From<jni::errors::Error> for LocalFrameError<E> {
+    fn from(source: jni::errors::Error) -> Self {
+        Self::Jni(source)
+    }
+}
 
 /// Global reference to the Java VM, initialized during native library setup.
 pub static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
@@ -127,15 +138,15 @@ macro_rules! jni_new_global_ref {
 /// Wrapper for JString. Because we cannot implement `TryFrom` trait for `JString` as they
 /// are defined in different crates.
 pub struct StringWrapper<'a> {
-    value: JString<'a>,
+    value: JObject<'a>,
 }
 
 impl<'a> StringWrapper<'a> {
-    pub fn new(value: JString<'a>) -> StringWrapper<'a> {
+    pub fn new(value: JObject<'a>) -> StringWrapper<'a> {
         Self { value }
     }
 
-    pub fn get(&self) -> &JString<'_> {
+    pub fn get(&self) -> &JObject<'_> {
         &self.value
     }
 }
@@ -159,7 +170,7 @@ impl<'a> TryFrom<JValueOwned<'a>> for StringWrapper<'a> {
 
     fn try_from(value: JValueOwned<'a>) -> Result<StringWrapper<'a>, Error> {
         match value {
-            JValueGen::Object(b) => Ok(StringWrapper::new(JString::from(b))),
+            JValueOwned::Object(b) => Ok(StringWrapper::new(b)),
             _ => Err(Error::WrongJValueType("object", value.type_name())),
         }
     }
@@ -170,7 +181,7 @@ impl<'a> TryFrom<JValueOwned<'a>> for BinaryWrapper<'a> {
 
     fn try_from(value: JValueOwned<'a>) -> Result<BinaryWrapper<'a>, Error> {
         match value {
-            JValueGen::Object(b) => Ok(BinaryWrapper::new(b)),
+            JValueOwned::Object(b) => Ok(BinaryWrapper::new(b)),
             _ => Err(Error::WrongJValueType("object", value.type_name())),
         }
     }
@@ -181,11 +192,13 @@ pub use comet_exec::*;
 mod batch_iterator;
 mod comet_metric_node;
 mod comet_task_memory_manager;
+mod comet_udf_bridge;
 mod shuffle_block_iterator;
 
 use batch_iterator::CometBatchIterator;
 pub use comet_metric_node::*;
 pub use comet_task_memory_manager::*;
+use comet_udf_bridge::CometUdfBridge;
 use shuffle_block_iterator::CometShuffleBlockIterator;
 
 /// The JVM classes that are used in the JNI calls.
@@ -217,6 +230,9 @@ pub struct JVMClasses<'a> {
     /// The CometTaskMemoryManager used for interacting with JVM side to
     /// acquire & release native memory.
     pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
+    /// The CometUdfBridge class used to dispatch JVM scalar UDFs.
+    /// `None` if the class is not on the classpath.
+    pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -228,29 +244,47 @@ static JVM_CLASSES: OnceCell<JVMClasses> = OnceCell::new();
 
 impl JVMClasses<'_> {
     /// Creates a new JVMClasses struct.
-    pub fn init(env: &mut JNIEnv) {
+    pub fn init(env: &mut Env) {
         JVM_CLASSES.get_or_init(|| {
-            // A hack to make the `JNIEnv` static. It is not safe but we don't really use the
-            // `JNIEnv` except for creating the global references of the classes.
-            let env = unsafe { std::mem::transmute::<&mut JNIEnv, &'static mut JNIEnv>(env) };
+            // A hack to make the `Env` static. It is not safe but we don't really use the
+            // `Env` except for creating the global references of the classes.
+            let env = unsafe { std::mem::transmute::<&mut Env, &'static mut Env>(env) };
 
-            let java_lang_object = env.find_class("java/lang/Object").unwrap();
+            let java_lang_object = env.find_class(jni::jni_str!("java/lang/Object")).unwrap();
             let object_get_class_method = env
-                .get_method_id(&java_lang_object, "getClass", "()Ljava/lang/Class;")
+                .get_method_id(
+                    &java_lang_object,
+                    jni::jni_str!("getClass"),
+                    jni::jni_sig!("()Ljava/lang/Class;"),
+                )
                 .unwrap();
 
-            let java_lang_class = env.find_class("java/lang/Class").unwrap();
+            let java_lang_class = env.find_class(jni::jni_str!("java/lang/Class")).unwrap();
             let class_get_name_method = env
-                .get_method_id(&java_lang_class, "getName", "()Ljava/lang/String;")
+                .get_method_id(
+                    &java_lang_class,
+                    jni::jni_str!("getName"),
+                    jni::jni_sig!("()Ljava/lang/String;"),
+                )
                 .unwrap();
 
-            let java_lang_throwable = env.find_class("java/lang/Throwable").unwrap();
+            let java_lang_throwable = env
+                .find_class(jni::jni_str!("java/lang/Throwable"))
+                .unwrap();
             let throwable_get_message_method = env
-                .get_method_id(&java_lang_throwable, "getMessage", "()Ljava/lang/String;")
+                .get_method_id(
+                    &java_lang_throwable,
+                    jni::jni_str!("getMessage"),
+                    jni::jni_sig!("()Ljava/lang/String;"),
+                )
                 .unwrap();
 
             let throwable_get_cause_method = env
-                .get_method_id(&java_lang_throwable, "getCause", "()Ljava/lang/Throwable;")
+                .get_method_id(
+                    &java_lang_throwable,
+                    jni::jni_str!("getCause"),
+                    jni::jni_sig!("()Ljava/lang/Throwable;"),
+                )
                 .unwrap();
 
             // SAFETY: According to the documentation for `JMethodID`, it is our
@@ -269,6 +303,13 @@ impl JVMClasses<'_> {
                 comet_batch_iterator: CometBatchIterator::new(env).unwrap(),
                 comet_shuffle_block_iterator: CometShuffleBlockIterator::new(env).unwrap(),
                 comet_task_memory_manager: CometTaskMemoryManager::new(env).unwrap(),
+                comet_udf_bridge: {
+                    let bridge = CometUdfBridge::new(env).ok();
+                    if env.exception_check() {
+                        env.exception_clear();
+                    }
+                    bridge
+                },
             }
         });
     }
@@ -281,27 +322,49 @@ impl JVMClasses<'_> {
         unsafe { JVM_CLASSES.get_unchecked() }
     }
 
-    /// Gets the JNIEnv for the current thread.
-    pub fn get_env() -> CometResult<AttachGuard<'static>> {
+    /// Runs a closure with an attached JNI environment for the current thread.
+    ///
+    /// The closure executes inside a JNI local frame. All JNI local references
+    /// created inside the closure are freed when the frame is popped on return.
+    /// Callers must return only Rust values (e.g. `Vec`, `ArrayRef`, scalars);
+    /// returning a raw JNI local reference will produce a dangling reference
+    /// after the frame is popped. Panic safety is guaranteed by
+    /// `jni::Env::with_local_frame`, which pops the frame even on unwinding.
+    pub fn with_env<T, E, F>(f: F) -> Result<T, E>
+    where
+        F: FnOnce(&mut Env) -> Result<T, E>,
+        E: From<CometError>,
+    {
         debug_assert!(
             JAVA_VM.get().is_some(),
-            "JVMClasses::get_env: JAVA_VM not initialized"
+            "JVMClasses::with_env: JAVA_VM not initialized"
         );
         unsafe {
             let java_vm = JAVA_VM.get_unchecked();
-            java_vm.attach_current_thread().map_err(|e| {
-                CometError::Internal(format!(
-                    "JVMClasses::get_env() failed to attach current thread: {e}"
-                ))
-            })
+            let mut scope = jni::ScopeToken::default();
+            let mut guard = java_vm
+                .attach_current_thread_guard(Default::default, &mut scope)
+                .map_err(CometError::from)
+                .map_err(E::from)?;
+            guard
+                .borrow_env_mut()
+                .with_local_frame(DEFAULT_LOCAL_FRAME_CAPACITY, |env| {
+                    f(env).map_err(LocalFrameError::Closure)
+                })
+                .map_err(|err| match err {
+                    LocalFrameError::Closure(err) => err,
+                    LocalFrameError::Jni(err) => E::from(CometError::from(err)),
+                })
         }
     }
 }
 
-pub fn check_exception(env: &mut JNIEnv) -> CometResult<Option<CometError>> {
-    let result = if env.exception_check()? {
-        let exception = env.exception_occurred()?;
-        env.exception_clear()?;
+pub fn check_exception(env: &mut Env) -> CometResult<Option<CometError>> {
+    let result = if env.exception_check() {
+        let exception = env
+            .exception_occurred()
+            .expect("exception_check returned true without an exception");
+        env.exception_clear();
         let exception_err = convert_exception(env, &exception)?;
         Some(exception_err)
     } else {
@@ -315,7 +378,7 @@ pub fn check_exception(env: &mut JNIEnv) -> CometResult<Option<CometError>> {
 ///  1. get the `Class` object of the input `throwable` via `Object#getClass` method
 ///  2. get the exception class name via calling `Class#getName` on the above object
 fn get_throwable_class_name(
-    env: &mut JNIEnv,
+    env: &mut Env,
     jvm_classes: &JVMClasses,
     throwable: &JThrowable,
 ) -> CometResult<String> {
@@ -328,16 +391,17 @@ fn get_throwable_class_name(
                 &[],
             )?
             .l()?;
+        let class_obj = JClass::from_raw(env, class_obj.into_raw());
         let class_name = env
             .call_method_unchecked(
-                class_obj,
+                &class_obj,
                 jvm_classes.class_get_name_method,
                 ReturnType::Object,
                 &[],
             )?
-            .l()?
-            .into();
-        let class_name_str = env.get_string(&class_name)?.into();
+            .l()?;
+        let class_name = JString::from_raw(env, class_name.into_raw());
+        let class_name_str = class_name.try_to_string(env)?;
 
         Ok(class_name_str)
     }
@@ -345,7 +409,7 @@ fn get_throwable_class_name(
 
 /// Get the exception message via calling `Throwable#getMessage` on the throwable object
 fn get_throwable_message(
-    env: &mut JNIEnv,
+    env: &mut Env,
     jvm_classes: &JVMClasses,
     throwable: &JThrowable,
 ) -> CometResult<String> {
@@ -357,10 +421,10 @@ fn get_throwable_message(
                 ReturnType::Object,
                 &[],
             )?
-            .l()?
-            .into();
+            .l()
+            .map(|obj| JString::from_raw(env, obj.into_raw()))?;
         let message_str = if !message.is_null() {
-            env.get_string(&message)?.into()
+            message.try_to_string(env)?
         } else {
             String::from("null")
         };
@@ -372,8 +436,8 @@ fn get_throwable_message(
                 ReturnType::Object,
                 &[],
             )?
-            .l()?
-            .into();
+            .l()
+            .map(|obj| JThrowable::from_raw(env, obj.into_raw()))?;
 
         if !cause.is_null() {
             let cause_class_name = get_throwable_class_name(env, jvm_classes, &cause)?;
@@ -391,7 +455,7 @@ fn get_throwable_message(
 /// this converts it into a `CometError::JavaException` with the exception class name
 /// and exception message. This error can then be populated to the JVM side to let
 /// users know the cause of the native side error.
-pub fn convert_exception(env: &mut JNIEnv, throwable: &JThrowable) -> CometResult<CometError> {
+pub fn convert_exception(env: &mut Env, throwable: &JThrowable) -> CometResult<CometError> {
     let cache = JVMClasses::get();
     let exception_class_name_str = get_throwable_class_name(env, cache, throwable)?;
     let message_str = get_throwable_message(env, cache, throwable)?;

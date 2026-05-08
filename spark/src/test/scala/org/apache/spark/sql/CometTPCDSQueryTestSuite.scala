@@ -25,11 +25,12 @@ import java.nio.file.{Files, Paths}
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.sql.catalyst.util.{fileToString, resourceToString, stringToFile}
+import org.apache.spark.sql.catalyst.util.{resourceToString, stringToFile}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 /**
  * Because we need to modify some methods of Spark `TPCDSQueryTestSuite` but they are private, we
@@ -68,8 +69,7 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
   protected val baseResourcePath: String = {
     // use the same way as `SQLQueryTestSuite` to get the resource path
     getWorkspaceFilePath(
-      "sql",
-      "core",
+      "spark",
       "src",
       "test",
       "resources",
@@ -118,7 +118,7 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
 
         // Read back the golden file.
         val (expectedSchema, expectedOutput) = {
-          val goldenOutput = fileToString(goldenFile)
+          val goldenOutput = Files.readString(goldenFile.toPath)
           val segments = goldenOutput.split("-- !query.*\n")
 
           // query has 3 segments, plus the header
@@ -161,7 +161,9 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
           val configs = conf.map { case (k, v) =>
             s"$k=$v"
           }
-          throw new Exception(s"${e.getMessage}\nError using configs:\n${configs.mkString("\n")}")
+          throw new Exception(
+            s"${e.getMessage}\nError using configs:\n${configs.mkString("\n")}",
+            e)
       }
     }
   }
@@ -232,7 +234,10 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
         s"tpcds-v2.7.0/$name.sql",
         classLoader = Thread.currentThread().getContextClassLoader)
       test(s"$name-v2.7") {
-        val goldenFile = new File(s"$baseResourcePath/v2_7", s"$name.sql.out")
+        val spark4File = new File(s"$baseResourcePath/v2_7-spark4_0", s"$name.sql.out")
+        val goldenFile =
+          if (isSpark40Plus && spark4File.exists()) spark4File
+          else new File(s"$baseResourcePath/v2_7", s"$name.sql.out")
         joinConfs.foreach { conf =>
           val sortMergeJoin = sortMergeJoinConf == conf
           // Skip q72 for sort-merge join because it uses too many resources

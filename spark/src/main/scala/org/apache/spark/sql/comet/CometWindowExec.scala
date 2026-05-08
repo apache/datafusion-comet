@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, NamedExpression, RangeFrame, RowFrame, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, FrameLessOffsetWindowFunction, Lag, Lead, NamedExpression, RangeFrame, RowFrame, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -36,7 +36,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto}
 
 object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
@@ -72,7 +72,12 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       return None
     }
 
-    if (op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty &&
+    // Offset window functions (LAG, LEAD) support arbitrary partition and order specs, so skip
+    // the validatePartitionAndSortSpecsForWindowFunc check which requires partition columns to
+    // equal order columns. That stricter check is only needed for aggregate window functions.
+    val hasOnlyOffsetFunctions = winExprs.nonEmpty &&
+      winExprs.forall(e => e.windowFunction.isInstanceOf[FrameLessOffsetWindowFunction])
+    if (!hasOnlyOffsetFunctions && op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty &&
       !validatePartitionAndSortSpecsForWindowFunc(op.partitionSpec, op.orderSpec, op)) {
       return None
     }
@@ -141,12 +146,27 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       }
     }.toArray
 
-    val (aggExpr, builtinFunc) = if (aggregateExpressions.nonEmpty) {
+    val (aggExpr, builtinFunc, ignoreNulls) = if (aggregateExpressions.nonEmpty) {
       val modes = aggregateExpressions.map(_.mode).distinct
       assert(modes.size == 1 && modes.head == Complete)
-      (aggExprToProto(aggregateExpressions.head, output, true, conf), None)
+      (aggExprToProto(aggregateExpressions.head, output, true, conf), None, false)
     } else {
-      (None, exprToProto(windowExpr.windowFunction, output))
+      windowExpr.windowFunction match {
+        case lag: Lag =>
+          val inputExpr = exprToProto(lag.input, output)
+          val offsetExpr = exprToProto(lag.inputOffset, output)
+          val defaultExpr = exprToProto(lag.default, output)
+          val func = scalarFunctionExprToProto("lag", inputExpr, offsetExpr, defaultExpr)
+          (None, func, lag.ignoreNulls)
+        case lead: Lead =>
+          val inputExpr = exprToProto(lead.input, output)
+          val offsetExpr = exprToProto(lead.offset, output)
+          val defaultExpr = exprToProto(lead.default, output)
+          val func = scalarFunctionExprToProto("lead", inputExpr, offsetExpr, defaultExpr)
+          (None, func, lead.ignoreNulls)
+        case _ =>
+          (None, exprToProto(windowExpr.windowFunction, output), false)
+      }
     }
 
     if (aggExpr.isEmpty && builtinFunc.isEmpty) {
@@ -254,6 +274,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           .newBuilder()
           .setBuiltInWindowFunction(builtinFunc.get)
           .setSpec(spec)
+          .setIgnoreNulls(ignoreNulls)
           .build())
     } else if (aggExpr.isDefined) {
       Some(

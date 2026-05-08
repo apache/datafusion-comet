@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 -- compare true/false to negative zero
 statement
 CREATE TABLE test(col1 boolean, col2 float) USING parquet

@@ -286,13 +286,7 @@ impl<'a> TypedArray<'a> {
     #[inline]
     fn get_fixed_value(&self, row_idx: usize) -> i64 {
         match self {
-            TypedArray::Boolean(arr) => {
-                if arr.value(row_idx) {
-                    1i64
-                } else {
-                    0i64
-                }
-            }
+            TypedArray::Boolean(arr) => arr.value(row_idx) as i64,
             TypedArray::Int8(arr) => arr.value(row_idx) as i64,
             TypedArray::Int16(arr) => arr.value(row_idx) as i64,
             TypedArray::Int32(arr) => arr.value(row_idx) as i64,
@@ -301,13 +295,10 @@ impl<'a> TypedArray<'a> {
             TypedArray::Float64(arr) => arr.value(row_idx).to_bits() as i64,
             TypedArray::Date32(arr) => arr.value(row_idx) as i64,
             TypedArray::TimestampMicro(arr) => arr.value(row_idx),
-            TypedArray::Decimal128(arr, precision) => {
-                if *precision <= MAX_LONG_DIGITS {
-                    arr.value(row_idx) as i64
-                } else {
-                    0 // Variable-length decimal, handled elsewhere
-                }
+            TypedArray::Decimal128(arr, precision) if *precision <= MAX_LONG_DIGITS => {
+                arr.value(row_idx) as i64
             }
+            TypedArray::Decimal128(_, _) => 0, // Variable-length decimal, handled elsewhere
             // Variable-length types return 0, actual value written separately
             _ => 0,
         }
@@ -521,13 +512,7 @@ impl<'a> TypedElements<'a> {
     #[inline]
     fn get_fixed_value(&self, idx: usize) -> i64 {
         match self {
-            TypedElements::Boolean(arr) => {
-                if arr.value(idx) {
-                    1
-                } else {
-                    0
-                }
-            }
+            TypedElements::Boolean(arr) => arr.value(idx) as i64,
             TypedElements::Int8(arr) => arr.value(idx) as i64,
             TypedElements::Int16(arr) => arr.value(idx) as i64,
             TypedElements::Int32(arr) => arr.value(idx) as i64,
@@ -1353,7 +1338,7 @@ fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> Co
     match actual_type {
         DataType::Boolean => {
             let arr = downcast_array!(array, BooleanArray)?;
-            Ok(if arr.value(row_idx) { 1i64 } else { 0i64 })
+            Ok(arr.value(row_idx) as i64)
         }
         DataType::Int8 => get_field_value_primitive!(array, row_idx, Int8Array, |v: i8| v as i64),
         DataType::Int16 => {

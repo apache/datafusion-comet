@@ -20,7 +20,8 @@ use jni::{
     errors::Result as JniResult,
     objects::{JClass, JMethodID},
     signature::ReturnType,
-    JNIEnv,
+    strings::JNIString,
+    Env,
 };
 
 /// A struct that holds all the JNI methods and fields for JVM `CometBatchIterator` class.
@@ -40,25 +41,33 @@ pub struct CometBatchIterator<'a> {
 impl<'a> CometBatchIterator<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/comet/CometBatchIterator";
 
-    pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometBatchIterator<'a>> {
-        let class = env.find_class(Self::JVM_CLASS)?;
+    pub fn new(env: &mut Env<'a>) -> JniResult<CometBatchIterator<'a>> {
+        let class = env.find_class(JNIString::new(Self::JVM_CLASS))?;
 
         Ok(CometBatchIterator {
             class,
-            method_has_next: env.get_method_id(Self::JVM_CLASS, "hasNext", "()I")?,
+            method_has_next: env.get_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("hasNext"),
+                jni::jni_sig!("()I"),
+            )?,
             method_has_next_ret: ReturnType::Primitive(Primitive::Int),
-            method_next: env.get_method_id(Self::JVM_CLASS, "next", "([J[J)I")?,
+            method_next: env.get_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("next"),
+                jni::jni_sig!("([J[J)I"),
+            )?,
             method_next_ret: ReturnType::Primitive(Primitive::Int),
             method_has_selection_vectors: env.get_method_id(
-                Self::JVM_CLASS,
-                "hasSelectionVectors",
-                "()Z",
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("hasSelectionVectors"),
+                jni::jni_sig!("()Z"),
             )?,
             method_has_selection_vectors_ret: ReturnType::Primitive(Primitive::Boolean),
             method_export_selection_indices: env.get_method_id(
-                Self::JVM_CLASS,
-                "exportSelectionIndices",
-                "([J[J)I",
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("exportSelectionIndices"),
+                jni::jni_sig!("([J[J)I"),
             )?,
             method_export_selection_indices_ret: ReturnType::Primitive(Primitive::Int),
         })

@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde
 
+import org.apache.spark.sql.types._
+
 sealed trait SupportLevel
 
 /**
@@ -40,3 +42,18 @@ case class Incompatible(notes: Option[String] = None) extends SupportLevel
 
 /** Comet does not support this feature */
 case class Unsupported(notes: Option[String] = None) extends SupportLevel
+
+object SupportLevel {
+
+  /**
+   * Returns true if the given data type contains FloatType or DoubleType at any nesting level.
+   */
+  def containsFloatingPoint(dt: DataType): Boolean = dt match {
+    case FloatType | DoubleType => true
+    case ArrayType(elementType, _) => containsFloatingPoint(elementType)
+    case StructType(fields) => fields.exists(f => containsFloatingPoint(f.dataType))
+    case MapType(keyType, valueType, _) =>
+      containsFloatingPoint(keyType) || containsFloatingPoint(valueType)
+    case _ => false
+  }
+}

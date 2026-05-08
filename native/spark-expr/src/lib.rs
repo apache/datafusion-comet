@@ -53,10 +53,14 @@ pub use agg_funcs::*;
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 
 mod bloom_filter;
-pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
+pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain, SparkBloomFilterVersion};
+
+pub mod jvm_udf;
 
 mod conditional_funcs;
 mod conversion_funcs;
+mod map_funcs;
+pub use map_funcs::spark_map_sort;
 mod math_funcs;
 mod nondetermenistic_funcs;
 
@@ -71,16 +75,17 @@ pub use comet_scalar_funcs::{
 };
 pub use csv_funcs::*;
 pub use datetime_funcs::{
-    SparkDateDiff, SparkDateTrunc, SparkHour, SparkMakeDate, SparkMinute, SparkSecond,
-    SparkUnixTimestamp, TimestampTruncExpr,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkHour, SparkHoursTransform,
+    SparkMakeDate, SparkMinute, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp,
+    TimestampTruncExpr,
 };
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
     create_modulo_expr, create_negate_expr, spark_ceil, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_make_decimal, spark_round, spark_unhex,
-    spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
+    spark_decimal_integral_div, spark_floor, spark_log, spark_make_decimal, spark_round,
+    spark_unhex, spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
     NormalizeNaNAndZero, WideDecimalBinaryExpr, WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
@@ -120,10 +125,16 @@ pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     }
 }
 
-pub(crate) fn decimal_sum_overflow_error() -> SparkError {
-    SparkError::DecimalSumOverflow
+pub(crate) fn decimal_sum_overflow_error(function_name: &str) -> SparkError {
+    SparkError::DecimalSumOverflow {
+        function_name: function_name.to_string(),
+    }
 }
 
 pub(crate) fn divide_by_zero_error() -> SparkError {
     SparkError::DivideByZero
+}
+
+pub(crate) fn remainder_by_zero_error() -> SparkError {
+    SparkError::RemainderByZero
 }

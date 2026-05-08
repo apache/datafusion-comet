@@ -28,11 +28,9 @@ use datafusion::datasource::physical_plan::{
 };
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_expr::expressions::{BinaryExpr, Column};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
@@ -71,15 +69,21 @@ pub(crate) fn init_datasource_exec(
     default_values: Option<HashMap<Column, ScalarValue>>,
     session_timezone: &str,
     case_sensitive: bool,
+    return_null_struct_if_all_fields_missing: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
+    use_field_id: bool,
+    ignore_missing_field_id: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, spark_parquet_options) = get_options(
+    let (table_parquet_options, mut spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
+        return_null_struct_if_all_fields_missing,
         &object_store_url,
         encryption_enabled,
     );
+    spark_parquet_options.use_field_id = use_field_id;
+    spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full
@@ -185,6 +189,7 @@ pub(crate) fn init_datasource_exec(
 fn get_options(
     session_timezone: &str,
     case_sensitive: bool,
+    return_null_struct_if_all_fields_missing: bool,
     object_store_url: &ObjectStoreUrl,
     encryption_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
@@ -196,6 +201,8 @@ fn get_options(
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;
+    spark_parquet_options.return_null_struct_if_all_fields_missing =
+        return_null_struct_if_all_fields_missing;
 
     if encryption_enabled {
         table_parquet_options.crypto.configure_factory(
@@ -207,26 +214,4 @@ fn get_options(
     }
 
     (table_parquet_options, spark_parquet_options)
-}
-
-/// Wraps a `SendableRecordBatchStream` to print each batch as it flows through.
-/// Returns a new `SendableRecordBatchStream` that yields the same batches.
-pub fn dbg_batch_stream(stream: SendableRecordBatchStream) -> SendableRecordBatchStream {
-    use futures::StreamExt;
-    let schema = stream.schema();
-    let printing_stream = stream.map(|batch_result| {
-        match &batch_result {
-            Ok(batch) => {
-                dbg!(batch, batch.schema());
-                for (col_idx, column) in batch.columns().iter().enumerate() {
-                    dbg!(col_idx, column, column.nulls());
-                }
-            }
-            Err(e) => {
-                println!("batch error: {:?}", e);
-            }
-        }
-        batch_result
-    });
-    Box::pin(RecordBatchStreamAdapter::new(schema, printing_stream))
 }

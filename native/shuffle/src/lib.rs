@@ -20,6 +20,7 @@ pub mod ipc;
 pub(crate) mod metrics;
 pub(crate) mod partitioners;
 mod shuffle_writer;
+mod spark_crc32c_hasher;
 pub mod spark_unsafe;
 pub(crate) mod writers;
 

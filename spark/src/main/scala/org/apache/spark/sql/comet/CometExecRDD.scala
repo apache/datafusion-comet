@@ -137,7 +137,6 @@ private[spark] class CometExecRDD(
 
     Option(context).foreach { ctx =>
       ctx.addTaskCompletionListener[Unit] { _ =>
-        it.close()
         subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
       }
     }
