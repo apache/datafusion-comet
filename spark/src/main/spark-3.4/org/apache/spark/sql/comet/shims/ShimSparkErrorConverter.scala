@@ -78,11 +78,7 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.divideByZeroError(sqlCtx(context)))
 
       case "RemainderByZero" =>
-        Some(
-          new SparkException(
-            errorClass = "REMAINDER_BY_ZERO",
-            messageParameters = params.map { case (k, v) => (k, v.toString) },
-            cause = null))
+        Some(QueryExecutionErrors.divideByZeroError(sqlCtx(context)))
 
       case "IntervalDividedByZero" =>
         Some(QueryExecutionErrors.intervalDividedByZeroError(sqlCtx(context)))
