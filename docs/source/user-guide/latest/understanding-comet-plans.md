@@ -166,7 +166,7 @@ they execute as a single fused native block.
 | `CometLocalLimit`            | `LocalLimitExec`                               |
 | `CometGlobalLimit`           | `GlobalLimitExec`                              |
 | `CometExpand`                | `ExpandExec`                                   |
-| `CometExplode`               | `GenerateExec` (for `explode` only)            |
+| `CometExplode`               | `GenerateExec` (for `explode` and `posexplode`)|
 | `CometHashAggregate`         | `HashAggregateExec`, `ObjectHashAggregateExec` |
 | `CometHashJoin`              | `ShuffledHashJoinExec`                         |
 | `CometBroadcastHashJoin`     | `BroadcastHashJoinExec`                        |
