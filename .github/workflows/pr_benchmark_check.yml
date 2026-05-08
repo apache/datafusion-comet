@@ -84,5 +84,7 @@ jobs:
             ${{ runner.os }}-benchmark-maven-
 
       - name: Check Scala compilation and linting
+        # Pinned to spark-4.0 because semanticdb-scalac_2.13.17 (spark-4.1 default)
+        # is not yet published, which breaks the -Psemanticdb scalafix lint.
         run: |
-          ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb -DskipTests
+          ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Pspark-4.0 -Psemanticdb -DskipTests
