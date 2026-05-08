@@ -49,15 +49,7 @@ class RegExpLikeUDF extends CometUDF {
       "RegExpLikeUDF requires a non-null scalar pattern")
 
     val patternStr = new String(patternVec.get(0), StandardCharsets.UTF_8)
-    val pattern = {
-      val cached = patternCache.get(patternStr)
-      if (cached != null) cached
-      else {
-        val compiled = Pattern.compile(patternStr)
-        patternCache.put(patternStr, compiled)
-        compiled
-      }
-    }
+    val pattern = patternCache.computeIfAbsent(patternStr, Pattern.compile)
 
     val n = subject.getValueCount
     val out = new BitVector("rlike_result", CometArrowAllocator)

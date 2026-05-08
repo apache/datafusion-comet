@@ -59,15 +59,7 @@ class RegExpExtractAllUDF extends CometUDF {
       "RegExpExtractAllUDF requires a non-null scalar group index")
 
     val patternStr = new String(patternVec.get(0), StandardCharsets.UTF_8)
-    val pattern = {
-      val cached = patternCache.get(patternStr)
-      if (cached != null) cached
-      else {
-        val compiled = Pattern.compile(patternStr)
-        patternCache.put(patternStr, compiled)
-        compiled
-      }
-    }
+    val pattern = patternCache.computeIfAbsent(patternStr, Pattern.compile)
     val idx = idxVec.get(0)
 
     val n = subject.getValueCount
