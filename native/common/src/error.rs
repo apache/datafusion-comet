@@ -78,7 +78,7 @@ pub enum SparkError {
     #[error("[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     DivideByZero,
 
-    #[error("[REMAINDER_BY_ZERO] Division by zero. Use `try_remainder` to tolerate divisor being 0 and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    #[error("[REMAINDER_BY_ZERO] Remainder by zero. Use `try_mod` to tolerate divisor being 0 and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     RemainderByZero,
 
     #[error("[INTERVAL_DIVIDED_BY_ZERO] Divide by zero in interval arithmetic.")]
@@ -187,6 +187,21 @@ pub enum SparkError {
         matched_fields: String,
     },
 
+    /// Multiple Parquet fields share the same field id when the read schema requested an
+    /// id-based lookup. Mirrors Spark's `_LEGACY_ERROR_TEMP_2094`
+    /// (`foundDuplicateFieldInFieldIdLookupModeError`).
+    #[error("[_LEGACY_ERROR_TEMP_2094] Found duplicate field(s) by id: id={required_id} matches [{matched_fields}] in id-lookup mode")]
+    DuplicateFieldByFieldId {
+        required_id: i32,
+        matched_fields: String,
+    },
+
+    /// The read schema requests Parquet field-id matching but the file carries no field ids.
+    /// Mirrors the runtime error raised in Spark's `ParquetReadSupport` when
+    /// `spark.sql.parquet.fieldId.read.ignoreMissing` is false.
+    #[error("Spark read schema expects field Ids, but Parquet file schema doesn't contain any field Ids. Please remove the field ids from Spark schema or ignore missing ids by setting `spark.sql.parquet.fieldId.read.ignoreMissing = true`")]
+    ParquetMissingFieldIds,
+
     /// Schema mismatch when reading a Parquet column under a requested schema
     /// that's incompatible with the physical column type. Translated by the JVM
     /// shim into Spark's `SchemaColumnConvertNotSupportedException`. The
@@ -273,6 +288,8 @@ impl SparkError {
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
             SparkError::FileNotFound { .. } => "FileNotFound",
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
+            SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
+            SparkError::ParquetMissingFieldIds => "ParquetMissingFieldIds",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
@@ -489,6 +506,15 @@ impl SparkError {
                     "matchedOrcFields": matched_fields,
                 })
             }
+            SparkError::DuplicateFieldByFieldId {
+                required_id,
+                matched_fields,
+            } => {
+                serde_json::json!({
+                    "requiredId": required_id,
+                    "matchedFields": matched_fields,
+                })
+            }
             SparkError::ParquetSchemaConvert {
                 file_path,
                 column,
@@ -577,6 +603,15 @@ impl SparkError {
                 "org/apache/spark/SparkRuntimeException"
             }
 
+            // DuplicateFieldByFieldId - converted to SparkRuntimeException by the shim
+            // (Spark's `foundDuplicateFieldInFieldIdLookupModeError` returns SparkRuntimeException)
+            SparkError::DuplicateFieldByFieldId { .. } => "org/apache/spark/SparkRuntimeException",
+
+            // ParquetMissingFieldIds - converted to a plain RuntimeException by the shim,
+            // matching the `RuntimeException` Spark's ParquetReadSupport throws when the
+            // file lacks field ids and `spark.sql.parquet.fieldId.read.ignoreMissing=false`.
+            SparkError::ParquetMissingFieldIds => "java/lang/RuntimeException",
+
             // ParquetSchemaConvert - converted to SchemaColumnConvertNotSupportedException by the shim
             SparkError::ParquetSchemaConvert { .. } => {
                 "org/apache/spark/sql/execution/datasources/SchemaColumnConvertNotSupportedException"
@@ -660,6 +695,12 @@ impl SparkError {
 
             // Duplicate field in case-insensitive mode
             SparkError::DuplicateFieldCaseInsensitive { .. } => Some("_LEGACY_ERROR_TEMP_2093"),
+
+            // Duplicate field id in id-lookup mode
+            SparkError::DuplicateFieldByFieldId { .. } => Some("_LEGACY_ERROR_TEMP_2094"),
+
+            // ParquetMissingFieldIds is a plain RuntimeException with no error class.
+            SparkError::ParquetMissingFieldIds => None,
 
             // Parquet schema mismatch — translated to SchemaColumnConvertNotSupportedException
             // by the JVM shim. The shim wraps it in the version-appropriate

@@ -355,6 +355,7 @@ jobs:
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.CometNativeSuite
+              org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
               org.apache.spark.CometPluginsDefaultSuite
@@ -450,6 +451,8 @@ jobs:
     runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
+    env:
+      JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
     steps:
       - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
 
@@ -459,7 +462,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 11
+          jdk-version: 17
 
       - name: Download native library
         uses: actions/download-artifact@v8
@@ -504,6 +507,8 @@ jobs:
     runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
+    env:
+      JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
     strategy:
       matrix:
         join: [sort_merge, broadcast, hash]
@@ -517,7 +522,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 11
+          jdk-version: 17
 
       - name: Download native library
         uses: actions/download-artifact@v8
