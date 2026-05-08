@@ -1914,6 +1914,13 @@ impl PhysicalPlanner {
                     InputOrderMode::Sorted,
                     !partition_exprs.is_empty(),
                 )?);
+
+                #[cfg(debug_assertions)]
+                let window_agg: Arc<dyn datafusion::physical_plan::ExecutionPlan> = {
+                    use crate::debug::DebugExecutionDataStream;
+                    Arc::new(DebugExecutionDataStream::new("window-output", window_agg))
+                };
+
                 Ok((
                     scans,
                     shuffle_scans,
