@@ -664,15 +664,23 @@ abstract class CometNativeExec extends CometExec {
   private def findAllPlanData(
       plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
     plan match {
-      // Found an Iceberg scan with planning data
-      case iceberg: CometIcebergNativeScanExec
-          if iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty =>
-        (
-          Map(iceberg.metadataLocation -> iceberg.commonData),
-          Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+      case iceberg: CometIcebergNativeScanExec =>
+        // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
+        // InSubqueryExec values are resolved before commonData is read. Without this,
+        // the parent CometNativeExec.executeQuery flow never invokes the scan's
+        // executeQuery, leaving DPP unresolved and forcing a sync-on-this await inside
+        // the serializedPartitionData lazy val initializer (a known deadlock surface).
+        iceberg.ensureSubqueriesResolved()
+        if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
+          (
+            Map(iceberg.metadataLocation -> iceberg.commonData),
+            Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+        } else {
+          (Map.empty, Map.empty)
+        }
 
-      // Found a NativeScan with planning data
       case nativeScan: CometNativeScanExec =>
+        nativeScan.ensureSubqueriesResolved()
         (
           Map(nativeScan.sourceKey -> nativeScan.commonData),
           Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
@@ -767,7 +775,24 @@ abstract class CometNativeExec extends CometExec {
   }
 }
 
-abstract class CometLeafExec extends CometNativeExec with LeafExecNode
+abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
+
+  /**
+   * Public bridge to Spark's `prepare()` + `waitForSubqueries()` lifecycle. Comet's parent
+   * `CometNativeExec` reads scan data via `findAllPlanData -> commonData` rather than invoking
+   * `executeColumnar` on its scan children, which means Spark's standard `executeQuery` chain
+   * never fires on the scan and DPP InSubqueryExec values are never resolved through
+   * `waitForSubqueries`. Calling this method before reading `commonData` restores the standard
+   * lifecycle: `prepare()` collects subqueries into `runningSubqueries` (via
+   * `prepareSubqueries`), then `waitForSubqueries()` resolves them via `updateResult()`. After
+   * this returns, any `e.values()` access on the scan's runtime/partition filter
+   * `InSubqueryExec`s returns the resolved values directly without further await.
+   */
+  def ensureSubqueriesResolved(): Unit = {
+    prepare()
+    waitForSubqueries()
+  }
+}
 
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode
 
@@ -1317,8 +1342,37 @@ case class CometUnionExec(
     children: Seq[SparkPlan])
     extends CometExec {
 
+  // CometExec's default outputPartitioning delegates to `originalPlan`, which captures the
+  // children that were live at CometExecRule conversion time. AQE post-stage rewrites
+  // (coalesce, skew join, etc.) later re-parent our `children` field but do not update
+  // `originalPlan`, so the partitioning read from the frozen snapshot can describe a
+  // pre-coalesce layout with more partitions than the RDDs will actually produce. Recompute
+  // from current children so SPARK-52921's union-output-partitioning inference is based on
+  // the live plan. Safe on older Spark too: UnionExec.outputPartitioning returns
+  // UnknownPartitioning when UNION_OUTPUT_PARTITIONING is off (the pre-4.1 default).
+  //
+  // Only advertise SinglePartition or HashPartitioningLike — the same whitelist that Spark's
+  // UnionExec.comparePartitioning uses and that ShimCometUnionExec.unionRDDs honors via
+  // SQLPartitioningAwareUnionRDD. For anything else, report UnknownPartitioning so that the
+  // declared partitioning and the RDD layer always agree.
+  override lazy val outputPartitioning: Partitioning = {
+    originalPlan.withNewChildren(children).outputPartitioning match {
+      case p @ (SinglePartition | _: HashPartitioningLike) => p
+      case p => UnknownPartitioning(p.numPartitions)
+    }
+  }
+
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    sparkContext.union(children.map(_.executeColumnar()))
+    // Spark 4.1's UnionExec (SPARK-52921) can report a non-trivial output partitioning when all
+    // children share the same hash/single partitioning, and downstream plans may skip an
+    // otherwise-required shuffle in response. Plain `sparkContext.union` concatenates partitions
+    // (so partition i of the result holds only one child's partition i), which violates that
+    // partitioning claim and silently corrupts aggregates layered above the union. The shim
+    // routes through SQLPartitioningAwareUnionRDD on 4.1+ when a known partitioning is declared.
+    shims.ShimCometUnionExec.unionRDDs(
+      sparkContext,
+      children.map(_.executeColumnar()),
+      outputPartitioning)
   }
 
   override protected def withNewChildrenInternal(newChildren: IndexedSeq[SparkPlan]): SparkPlan =
