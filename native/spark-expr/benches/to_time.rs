@@ -29,15 +29,20 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| spark_to_time(std::slice::from_ref(&hh_mm), true).unwrap());
     });
 
-    let hh_mm_ss = create_string_array(10000, |i| {
-        format!("{}:{:02}:{:02}", i % 24, i % 60, i % 60)
-    });
+    let hh_mm_ss =
+        create_string_array(10000, |i| format!("{}:{:02}:{:02}", i % 24, i % 60, i % 60));
     group.bench_function("hh_mm_ss", |b| {
         b.iter(|| spark_to_time(std::slice::from_ref(&hh_mm_ss), true).unwrap());
     });
 
     let fractional = create_string_array(10000, |i| {
-        format!("{}:{:02}:{:02}.{:06}", i % 24, i % 60, i % 60, i * 7 % 1000000)
+        format!(
+            "{}:{:02}:{:02}.{:06}",
+            i % 24,
+            i % 60,
+            i % 60,
+            i * 7 % 1000000
+        )
     });
     group.bench_function("fractional", |b| {
         b.iter(|| spark_to_time(std::slice::from_ref(&fractional), true).unwrap());
