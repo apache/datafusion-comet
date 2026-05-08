@@ -96,6 +96,32 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   final case class ArrowColumnSpec(vectorClass: Class[_ <: ValueVector], nullable: Boolean)
 
   /**
+   * Resolve an Arrow vector class by its simple name, using the same classloader the codegen uses
+   * internally. Intended for tests: the `common` module shades `org.apache.arrow` to
+   * `org.apache.comet.shaded.arrow`, so `classOf[VarCharVector]` at a call site in an unshaded
+   * module refers to a different [[Class]] object than the one the codegen compares against.
+   * Callers pass a simple name and get back the class the production code actually uses.
+   */
+  def vectorClassBySimpleName(name: String): Class[_ <: ValueVector] = name match {
+    case "BitVector" => classOf[BitVector]
+    case "TinyIntVector" => classOf[TinyIntVector]
+    case "SmallIntVector" => classOf[SmallIntVector]
+    case "IntVector" => classOf[IntVector]
+    case "BigIntVector" => classOf[BigIntVector]
+    case "Float4Vector" => classOf[Float4Vector]
+    case "Float8Vector" => classOf[Float8Vector]
+    case "DecimalVector" => classOf[DecimalVector]
+    case "DateDayVector" => classOf[DateDayVector]
+    case "TimeStampMicroVector" => classOf[TimeStampMicroVector]
+    case "TimeStampMicroTZVector" => classOf[TimeStampMicroTZVector]
+    case "VarCharVector" => classOf[VarCharVector]
+    case "ViewVarCharVector" => classOf[ViewVarCharVector]
+    case "VarBinaryVector" => classOf[VarBinaryVector]
+    case "ViewVarBinaryVector" => classOf[ViewVarBinaryVector]
+    case other => throw new IllegalArgumentException(s"unknown Arrow vector class: $other")
+  }
+
+  /**
    * Result of compiling a bound [[Expression]] into a Janino kernel. The `factory` is the Spark
    * [[GeneratedClass]] produced by Janino and is safe to share across threads and partitions: it
    * holds no mutable state. The `freshReferences` closure regenerates the references array each

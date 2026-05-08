@@ -156,15 +156,22 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
    * `assertCodegenDidWork` (which proves the dispatcher ran in this test), the pair gives both
    * "this test exercised the dispatcher" and "the dispatcher's cache has a kernel of the expected
    * shape".
+   *
+   * Compares by simple name because the `common` module shades `org.apache.arrow`, so a direct
+   * class-identity check against `classOf[VarCharVector]` at this call site (unshaded) misses the
+   * shaded classes the dispatcher actually uses internally.
    */
   private def assertKernelSignaturePresent(
       inputs: Seq[Class[_ <: ValueVector]],
       output: DataType): Unit = {
     val sigs = CometCodegenDispatchUDF.snapshotCompiledSignatures()
-    val target = (inputs.toIndexedSeq, output)
+    val expectedNames = inputs.map(_.getSimpleName).toIndexedSeq
+    val present = sigs.exists { case (cached, dt) =>
+      dt == output && cached.map(_.getSimpleName) == expectedNames
+    }
     assert(
-      sigs.contains(target),
-      s"expected kernel signature ${target._1.map(_.getSimpleName)} -> ${target._2}; " +
+      present,
+      s"expected kernel signature $expectedNames -> $output; " +
         s"cache had ${sigs.map { case (c, d) => (c.map(_.getSimpleName), d) }}")
   }
 

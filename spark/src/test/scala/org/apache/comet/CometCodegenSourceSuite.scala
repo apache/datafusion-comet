@@ -21,7 +21,6 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.arrow.vector.{VarCharVector, ViewVarCharVector}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Concat, Expression, LeafExpression, Length, Literal, Nondeterministic, RegExpReplace, RLike, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, CodegenFallback, ExprCode}
@@ -29,6 +28,11 @@ import org.apache.spark.sql.types.{DataType, IntegerType, StringType}
 
 import org.apache.comet.udf.CometBatchKernelCodegen
 import org.apache.comet.udf.CometBatchKernelCodegen.ArrowColumnSpec
+
+// Resolve Arrow vector classes through the codegen object so tests see the same `Class` objects
+// the shaded `common` module sees. A direct `classOf[org.apache.arrow.vector.VarCharVector]` here
+// would be the unshaded class from the test classpath, which is not `==` to the shaded class the
+// production pattern-matches against.
 
 /**
  * Generated-source inspection tests. These exercise `CometBatchKernelCodegen.generateSource` and
@@ -48,8 +52,13 @@ import org.apache.comet.udf.CometBatchKernelCodegen.ArrowColumnSpec
  */
 class CometCodegenSourceSuite extends AnyFunSuite {
 
-  private val nullableString = ArrowColumnSpec(classOf[VarCharVector], nullable = true)
-  private val nonNullableString = ArrowColumnSpec(classOf[VarCharVector], nullable = false)
+  private val varCharVectorClass =
+    CometBatchKernelCodegen.vectorClassBySimpleName("VarCharVector")
+  private val viewVarCharVectorClass =
+    CometBatchKernelCodegen.vectorClassBySimpleName("ViewVarCharVector")
+
+  private val nullableString = ArrowColumnSpec(varCharVectorClass, nullable = true)
+  private val nonNullableString = ArrowColumnSpec(varCharVectorClass, nullable = false)
 
   private def gen(
       expr: org.apache.spark.sql.catalyst.expressions.Expression,
@@ -94,7 +103,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("ViewVarCharVector getUTF8String branches inline vs referenced without allocating") {
-    val viewSpec = ArrowColumnSpec(classOf[ViewVarCharVector], nullable = true)
+    val viewSpec = ArrowColumnSpec(viewVarCharVectorClass, nullable = true)
     val expr = Length(BoundReference(0, StringType, nullable = true))
     val src = gen(expr, viewSpec)
     // The view case reads the 16-byte view entry and picks inline vs referenced data without a
@@ -177,8 +186,8 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     // being null would skip evaluation, but Concat's null handling differs). Expect the
     // default path without the `if (colX.isNull(i) || colY.isNull(i))` wrapper, letting Spark's
     // own `ev.code` handle nulls correctly.
-    val nullable1 = ArrowColumnSpec(classOf[VarCharVector], nullable = true)
-    val nullable2 = ArrowColumnSpec(classOf[VarCharVector], nullable = true)
+    val nullable1 = ArrowColumnSpec(varCharVectorClass, nullable = true)
+    val nullable2 = ArrowColumnSpec(varCharVectorClass, nullable = true)
     val expr = RLike(
       Concat(
         Seq(
