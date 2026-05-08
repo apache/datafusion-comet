@@ -148,7 +148,7 @@ object Utils extends CometTypeShim with Logging {
         }
       case TimestampNTZType =>
         new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)
-      case dt if dt.getClass.getSimpleName.startsWith("TimeType") =>
+      case dt if isTimeType(dt) =>
         new ArrowType.Time(TimeUnit.NANOSECOND, 64)
       case _ =>
         throw new UnsupportedOperationException(
@@ -401,7 +401,7 @@ object Utils extends CometTypeShim with Logging {
           _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
           _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
           _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: StructVector | _: ListVector |
-          _: MapVector | _: NullVector) =>
+          _: MapVector | _: NullVector | _: TimeNanoVector) =>
         v.asInstanceOf[FieldVector]
       case _ =>
         throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")

@@ -16,7 +16,6 @@
 // under the License.
 
 use arrow::array::{Array, StringArray, Time64NanosecondArray};
-use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
@@ -81,8 +80,15 @@ pub fn spark_to_time(args: &[ColumnarValue], fail_on_error: bool) -> Result<Colu
 /// Parse a time string to nanoseconds from midnight, matching Spark's stringToTime behavior.
 /// Returns None for invalid input.
 fn string_to_time(s: &str) -> Option<i64> {
-    let trimmed = s.trim_end();
+    let trimmed = s.trim();
     if trimmed.is_empty() {
+        return None;
+    }
+
+    // Spark's parseTimestampString gates the T-prefix branch on j == 0 (start of
+    // the trimmed string), so " T12:30" is rejected even though leading whitespace
+    // is trimmed: the original segment start differs from the trimmed position.
+    if trimmed.as_bytes()[0] == b'T' && s.as_bytes()[0].is_ascii_whitespace() {
         return None;
     }
 
@@ -286,11 +292,6 @@ fn parse_fractional(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
     Some((value, pos))
 }
 
-/// Return type for to_time
-pub fn to_time_return_type() -> DataType {
-    DataType::Time64(TimeUnit::Nanosecond)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +335,11 @@ mod tests {
         );
         // 6 digits
         assert_eq!(string_to_time("00:00:00.000001"), Some(NANOS_PER_MICRO));
+        // >6 digits truncated to microseconds
+        assert_eq!(
+            string_to_time("00:00:00.1234567"),
+            Some(123_456 * NANOS_PER_MICRO)
+        );
         // Full precision
         assert_eq!(
             string_to_time("23:59:59.999999"),
@@ -459,8 +465,18 @@ mod tests {
     }
 
     #[test]
-    fn test_leading_space_with_t_prefix() {
-        // Leading space before T should be rejected (Spark only right-trims)
+    fn test_leading_whitespace() {
+        assert_eq!(string_to_time("  12:30"), string_to_time("12:30"));
+        assert_eq!(string_to_time(" 12:30:45"), string_to_time("12:30:45"));
+        assert_eq!(string_to_time(" 12:30:45 "), string_to_time("12:30:45"));
+        assert_eq!(string_to_time("  1:00:00 AM"), string_to_time("1:00:00 AM"));
+        // Tabs and newlines are also trimmed (Spark's isWhitespaceOrISOControl)
+        assert_eq!(string_to_time("\t12:30:45"), string_to_time("12:30:45"));
+        assert_eq!(string_to_time("\n12:30:45"), string_to_time("12:30:45"));
+        // T-prefix is rejected when preceded by whitespace because Spark's
+        // parseTimestampString gates the T-prefix branch on j == 0 (start of
+        // the already-trimmed segment), so leading whitespace moves j past 0.
+        assert_eq!(string_to_time("  T12:30:45"), None);
         assert_eq!(string_to_time(" T12:30"), None);
     }
 }

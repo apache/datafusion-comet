@@ -53,4 +53,7 @@ trait CometTypeShim {
   // variant shredding layout, so reading such a struct natively returns nulls. Detect the marker
   // and force scan fallback.
   def isVariantStruct(s: StructType): Boolean = VariantMetadata.isVariantStruct(s)
+
+  def isTimeType(dt: DataType): Boolean =
+    dt.getClass.getSimpleName.startsWith("TimeType")
 }

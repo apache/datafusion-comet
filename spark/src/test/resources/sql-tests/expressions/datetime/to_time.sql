@@ -32,6 +32,7 @@ INSERT INTO test_to_time VALUES
   ('00:00:00.1'),
   ('00:00:00.001'),
   ('00:00:00.000001'),
+  ('00:00:00.1234567'),
   ('23:59:59.999999'),
   ('1:2:3'),
   ('1:2:3.04'),
@@ -45,9 +46,12 @@ INSERT INTO test_to_time VALUES
   ('12:59:59.999999 PM'),
   ('12:00:00AM'),
   ('1:00:00PM'),
+  (' 12:30:45'),
+  ('   12:30 PM'),
   (NULL)
 
--- column argument: basic time formats (spark_answer_only: shuffle does not support TimeType yet)
+-- column argument: basic time formats (spark_answer_only: shuffle does not support TimeType yet;
+-- TODO: promote to full native-verification once SPARK-51779 lands)
 query spark_answer_only
 SELECT s, to_time(s) FROM test_to_time ORDER BY s
 
@@ -83,6 +87,10 @@ SELECT to_time('00:00:00.000001')
 
 query
 SELECT to_time('23:59:59.999999')
+
+-- more than 6 fractional digits (truncated to microseconds)
+query
+SELECT to_time('00:00:00.1234567')
 
 -- single digit hour/min/sec
 query
@@ -143,6 +151,36 @@ SELECT to_time(NULL)
 query
 SELECT to_time('12:30:45  ')
 
+-- leading whitespace
+query
+SELECT to_time(' 12:30:45')
+
+query
+SELECT to_time('  12:30:45')
+
+query
+SELECT to_time(' 12:30:45 ')
+
+query
+SELECT to_time('  12:30')
+
+query
+SELECT to_time('   12:30 PM')
+
+query
+SELECT to_time(' 1:00:00 PM')
+
+-- leading tab and newline
+query
+SELECT to_time('\t12:30:45')
+
+query
+SELECT to_time('\n12:30:45')
+
+-- leading whitespace with T-prefix is rejected by Spark
+query expect_error(cannot be parsed to a TIME value)
+SELECT to_time('  T12:30:45')
+
 -- invalid inputs - should throw error with to_time
 query expect_error(cannot be parsed to a TIME value)
 SELECT to_time('')
@@ -196,3 +234,14 @@ SELECT try_to_time('0:00:00 AM')
 
 query
 SELECT try_to_time('13:00:00 PM')
+
+-- try_to_time: leading whitespace parses successfully
+query
+SELECT try_to_time(' 12:30:45')
+
+query
+SELECT try_to_time(' 1:00:00 PM')
+
+-- to_time with format pattern falls back to Spark (not supported natively)
+query expect_fallback(invoke is not supported)
+SELECT to_time('12:30:45', 'HH:mm:ss')

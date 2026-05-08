@@ -33,7 +33,8 @@ INSERT INTO test_make_time VALUES
   (12, 30, NULL),
   (NULL, NULL, NULL)
 
--- column arguments (spark_answer_only: shuffle does not support TimeType yet)
+-- column arguments (spark_answer_only: shuffle does not support TimeType yet; TODO: promote to
+-- full native-verification once SPARK-51779 lands)
 query spark_answer_only
 SELECT hours, minutes, secs, make_time(hours, minutes, secs) FROM test_make_time ORDER BY hours, minutes, secs
 

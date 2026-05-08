@@ -75,7 +75,7 @@ pub use comet_scalar_funcs::{
 };
 pub use csv_funcs::*;
 pub use datetime_funcs::{
-    spark_to_time, to_time_return_type, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc,
+    spark_to_time, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc,
     SparkHour, SparkHoursTransform, SparkMakeDate, SparkMakeTime, SparkMinute, SparkSecond,
     SparkSecondsToTimestamp, SparkUnixTimestamp, TimestampTruncExpr,
 };
