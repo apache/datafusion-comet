@@ -237,7 +237,7 @@ object GenerateDocs {
       compat.nonEmpty || incompat.nonEmpty || unsupported.nonEmpty
     }
     for ((name, compat, incompat, unsupported) <- sorted) {
-      w.write(s"\n### $name\n".getBytes)
+      w.write(s"\n## $name\n".getBytes)
       if (compat.nonEmpty) {
         w.write(
           ("\nThe following differences from Spark are always present and do not require" +

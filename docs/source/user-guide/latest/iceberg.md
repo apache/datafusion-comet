@@ -25,13 +25,17 @@ Comet's native Iceberg reader relies on reflection to extract `FileScanTask`s fr
 then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
-The example below uses Spark's package downloader to retrieve Comet 0.14.0 and Iceberg
+The example below uses Spark's package downloader to retrieve Comet $COMET_VERSION and Iceberg
 1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native Iceberg
 reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative.enabled=false`.
 
+The example uses the Spark 3.5 / Scala 2.12 build of Comet; substitute the Comet artifact
+matching your Spark and Scala versions (Comet also ships Spark 3.5 / Scala 2.13 and Spark
+4.0/4.1 / Scala 2.13 jars; see the [installation guide](installation.md) for the full list).
+
 ```shell
 $SPARK_HOME/bin/spark-shell \
-    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
+    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:$COMET_VERSION,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
     --repositories https://repo1.maven.org/maven2/ \
     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
     --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkCatalog \
@@ -39,7 +43,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.spark_catalog.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
@@ -106,7 +109,7 @@ configure Spark to use a REST catalog with Comet's native Iceberg scan:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
-    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
+    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:$COMET_VERSION,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
     --repositories https://repo1.maven.org/maven2/ \
     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
     --conf spark.sql.catalog.rest_cat=org.apache.iceberg.spark.SparkCatalog \
@@ -115,7 +118,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.rest_cat.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
@@ -141,6 +143,8 @@ The following scenarios will fall back to Spark's native Iceberg reader:
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+- Dynamic Partition Pruning under Adaptive Query Execution (non-AQE DPP is supported);
+  see [#3510](https://github.com/apache/datafusion-comet/issues/3510)
 
 ### Task input metrics
 
