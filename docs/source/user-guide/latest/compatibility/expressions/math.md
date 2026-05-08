@@ -20,4 +20,10 @@ under the License.
 # Math Expressions
 
 <!--BEGIN:EXPR_COMPAT[math]-->
+
+## Abs
+
+The following cases are not supported by Comet:
+
+- Only integral, floating-point, and decimal types are supported
 <!--END:EXPR_COMPAT-->

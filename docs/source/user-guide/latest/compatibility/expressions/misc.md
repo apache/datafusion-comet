@@ -20,4 +20,34 @@ under the License.
 # Miscellaneous Expressions
 
 <!--BEGIN:EXPR_COMPAT[misc]-->
+
+## CheckOverflow
+
+The following cases are not supported by Comet:
+
+- Only `DecimalType` is supported
+
+## KnownFloatingPointNormalized
+
+The following cases are not supported by Comet:
+
+- Only supports `NormalizeNaNAndZero` child expressions
+
+## Literal
+
+The following cases are not supported by Comet:
+
+- Not all data types are supported for literal values
+
+## MakeDecimal
+
+The following cases are not supported by Comet:
+
+- Only `LongType` input is supported
+
+## SortOrder
+
+The following incompatibilities cause `SortOrder` to fall back to Spark by default. Set `spark.comet.expression.SortOrder.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- When `spark.comet.exec.strictFloatingPoint=true`, sorting on floating-point types is not 100% compatible with Spark
 <!--END:EXPR_COMPAT-->

@@ -31,4 +31,11 @@ IEEE total ordering for floating-point, which differs from Spark's `Double.compa
 `NaN` and `-0.0`.
 
 <!--BEGIN:EXPR_COMPAT[map]-->
+
+## MapFromEntries
+
+The following incompatibilities cause `MapFromEntries` to fall back to Spark by default. Set `spark.comet.expression.MapFromEntries.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Using BinaryType as Map keys is not allowed in map_from_entries
+- Using BinaryType as Map values is not allowed in map_from_entries
 <!--END:EXPR_COMPAT-->
