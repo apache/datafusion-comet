@@ -38,5 +38,5 @@ pub use make_date::SparkMakeDate;
 pub use make_time::SparkMakeTime;
 pub use seconds_to_timestamp::SparkSecondsToTimestamp;
 pub use timestamp_trunc::TimestampTruncExpr;
-pub use to_time::{spark_to_time, to_time_return_type};
+pub use to_time::spark_to_time;
 pub use unix_timestamp::SparkUnixTimestamp;
