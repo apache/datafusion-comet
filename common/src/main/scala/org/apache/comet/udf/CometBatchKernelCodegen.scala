@@ -1065,6 +1065,16 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         //
         // Off-heap fallback (base == null) is rare on the output side because string functions
         // allocate on-heap; keep the getBytes() path for passthrough of zero-copy input reads.
+        //
+        // TODO(full-zero-copy): the fully symmetric counterpart to the zero-copy input read
+        // would use `handleSafe + Platform.copyMemory` directly into `valueBuffer.memoryAddress
+        // + startOffset`, uniformly handling on-heap and off-heap UTF8Strings without the
+        // `byte[]` intermediate on the off-heap path. The actual win is narrow: Arrow's
+        // `setSafe(int, byte[], int, int)` already performs the unavoidable bytes-into-Arrow
+        // memcpy, so the extra saving is only the `getBytes()` allocation on off-heap
+        // passthrough (a rare shape). Cost is meaningful bookkeeping (offset/validity/lastSet
+        // updates that must stay in sync with Arrow's internal invariants; silent corruption
+        // if wrong). Deferred until a profile shows off-heap passthrough as a hot path.
         val utf8Snippet =
           s"""Object __b = $valueTerm.getBaseObject();
              |int __n = $valueTerm.numBytes();
