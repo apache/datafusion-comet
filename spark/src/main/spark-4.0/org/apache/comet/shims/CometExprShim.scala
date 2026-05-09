@@ -169,6 +169,9 @@ trait CometExprShim extends CommonStringExprs {
           optExprWithInfo(mapSortExpr, ms, ms.child)
         }
 
+      case _ if expr.getClass.getSimpleName == "MinutesOfTime" =>
+        minutesOfTimeToProto(expr, inputs, binding)
+
       case _ => None
     }
   }
