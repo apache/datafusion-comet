@@ -57,6 +57,10 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("initCap", "select initCap(c1) from parquetV1Table"),
     StringExprConfig("instr", "select instr(c1, '123') from parquetV1Table"),
     StringExprConfig("length", "select length(c1) from parquetV1Table"),
+    StringExprConfig("levenshtein", "select levenshtein(c1, 'test') from parquetV1Table"),
+    StringExprConfig(
+      "levenshtein_threshold",
+      "select levenshtein(c1, 'test', 3) from parquetV1Table"),
     StringExprConfig("like", "select c1 like '%123%' from parquetV1Table"),
     StringExprConfig("lower", "select lower(c1) from parquetV1Table"),
     StringExprConfig("lpad", "select lpad(c1, 150, 'x') from parquetV1Table"),

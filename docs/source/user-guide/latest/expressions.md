@@ -66,6 +66,7 @@ of expressions that be disabled.
 | InitCap         |
 | Left            |
 | Length          |
+| Levenshtein     |
 | Like            |
 | Lower           |
 | OctetLength     |
