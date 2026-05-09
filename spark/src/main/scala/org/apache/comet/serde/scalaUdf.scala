@@ -47,8 +47,8 @@ import org.apache.comet.udf.CometCodegenDispatchUDF
  *   - Hive UDFs (`HiveGenericUDF` / `HiveSimpleUDF`) - separate expression classes; would need
  *     their own serde.
  *
- * Mode knob: always prefer codegen in `auto`. There is no native or hand-coded fallback path for
- * `ScalaUDF` in Comet, so `mode=disabled` returns `None` and the plan falls back to Spark.
+ * Mode knob: always prefer codegen in `auto`. `ScalaUDF` has no native fallback path in Comet, so
+ * `mode=disabled` returns `None` and the plan falls back to Spark.
  */
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 

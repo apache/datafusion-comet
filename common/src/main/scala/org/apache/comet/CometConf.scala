@@ -407,7 +407,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc("Controls whether Comet routes eligible scalar expressions through the Arrow-direct " +
         "codegen dispatcher (`CometCodegenDispatchUDF`) rather than through a native " +
-        s"DataFusion implementation or a hand-coded JVM UDF. `$CODEGEN_DISPATCH_AUTO` lets " +
+        s"DataFusion implementation or falling back to Spark. `$CODEGEN_DISPATCH_AUTO` lets " +
         "each expression's serde decide its preferred path based on measured evidence " +
         "(e.g. for regex, codegen is preferred when " +
         s"spark.comet.exec.regexp.engine=$REGEXP_ENGINE_JAVA). " +

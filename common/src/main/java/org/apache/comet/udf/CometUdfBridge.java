@@ -41,9 +41,9 @@ public class CometUdfBridge {
   // Per-thread, bounded LRU of UDF instances keyed by class name. Comet
   // native execution threads (Tokio/DataFusion worker pool) are reused
   // across tasks within an executor, so the effective lifetime of cached
-  // entries is the worker thread (i.e. the executor JVM). This is fine for
-  // stateless UDFs like RegExpLikeUDF; future stateful UDFs would need
-  // explicit per-task isolation.
+  // entries is the worker thread (i.e. the executor JVM). Fine for
+  // stateless UDFs; future stateful UDFs would need explicit per-task
+  // isolation.
   private static final int CACHE_CAPACITY = 64;
 
   private static final ThreadLocal<LinkedHashMap<String, CometUDF>> INSTANCES =

@@ -21,11 +21,13 @@ package org.apache.comet.udf
 
 import org.apache.arrow.memory.ArrowBuf
 import org.apache.arrow.vector.{BaseVariableWidthViewVector, BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, ViewVarBinaryVector, ViewVarCharVector}
+import org.apache.arrow.vector.complex.ListVector
+import org.apache.arrow.vector.types.pojo.{ArrowType, FieldType}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, RegExpReplace, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeAndComment, CodeFormatter, CodegenContext, CodeGenerator, CodegenFallback, ExprCode, GeneratedClass}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometArrowAllocator
 import org.apache.comet.shims.CometExprTraitShim
@@ -67,10 +69,10 @@ import org.apache.comet.shims.CometExprTraitShim
  * ==Specialized path==
  *
  * A per-expression match case in [[compile]] emits custom Java, bypassing `doGenCode`. Used for
- * expressions whose default-path codegen pays a measurable penalty versus hand-coded because
- * Spark's generated code materializes a Java `String` (for example, `java.util.regex.Matcher`
- * requires a `CharSequence`). See [[specializedRegExpReplaceBody]] for the reasoning and the
- * criteria for adding a new specialization.
+ * expressions whose default-path codegen pays a measurable penalty because Spark's generated code
+ * materializes a Java `String` (for example, `java.util.regex.Matcher` requires a
+ * `CharSequence`). See [[specializedRegExpReplaceBody]] for the reasoning and the criteria for
+ * adding a new specialization.
  *
  * ==Optimization menu==
  *
@@ -169,10 +171,54 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
   /**
    * Per-column compile-time invariants. The concrete Arrow vector class and whether the column is
-   * nullable are both baked into the generated kernel's typed fields and branches. Part of the
-   * cache key: different vector classes or nullability produce different kernels.
+   * nullable are baked into the generated kernel's typed fields and branches. Part of the cache
+   * key: different vector classes or nullability produce different kernels.
+   *
+   * Sealed hierarchy so that complex types (array/map/struct) can carry their nested element
+   * shape recursively. Today only scalar and array specs exist; map and struct cases will land as
+   * additional subclasses when the emitter covers them. A companion `apply` /`unapply` preserves
+   * the prior scalar-only construction and extractor shape so existing callers don't need to
+   * change.
    */
-  final case class ArrowColumnSpec(vectorClass: Class[_ <: ValueVector], nullable: Boolean)
+  sealed trait ArrowColumnSpec {
+    def vectorClass: Class[_ <: ValueVector]
+    def nullable: Boolean
+  }
+
+  object ArrowColumnSpec {
+
+    /** Convenience constructor producing a [[ScalarColumnSpec]]. */
+    def apply(vectorClass: Class[_ <: ValueVector], nullable: Boolean): ArrowColumnSpec =
+      ScalarColumnSpec(vectorClass, nullable)
+
+    /**
+     * Backward-compatible extractor for the common scalar case. Callers that want array / future
+     * map / struct specs should pattern match on the subclass directly.
+     */
+    def unapply(spec: ArrowColumnSpec): Option[(Class[_ <: ValueVector], Boolean)] = spec match {
+      case ScalarColumnSpec(c, n) => Some((c, n))
+      case _ => None
+    }
+  }
+
+  /** Scalar column: one Arrow vector class per row slot, no nested structure. */
+  final case class ScalarColumnSpec(vectorClass: Class[_ <: ValueVector], nullable: Boolean)
+      extends ArrowColumnSpec
+
+  /**
+   * Array column: an Arrow `ListVector` wrapping a child spec. `elementSparkType` is the Spark
+   * `DataType` of the element so the nested-class getter emitter can choose the right template
+   * (e.g. `getUTF8String` for `StringType`, `getInt` for `IntegerType`). The child spec carries
+   * the Arrow child vector class. Nested arrays (`Array<Array<...>>`) work by the child being
+   * itself an `ArrayColumnSpec`.
+   */
+  final case class ArrayColumnSpec(
+      nullable: Boolean,
+      elementSparkType: DataType,
+      element: ArrowColumnSpec)
+      extends ArrowColumnSpec {
+    override def vectorClass: Class[_ <: ValueVector] = classOf[ListVector]
+  }
 
   /**
    * Resolve an Arrow vector class by its simple name, using the same classloader the codegen uses
@@ -300,7 +346,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
-   * Input types the kernel has a typed getter for. Widen when [[typedInputAccessors]] adds cases.
+   * Input types the kernel has a typed getter for. Recursive: `ArrayType(inner)` is supported
+   * when `inner` is supported. `canHandle` uses this to gate the serde fallback. When `MapType` /
+   * `StructType` input templates land, their gates go here.
    */
   private def isSupportedInputType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
@@ -310,16 +358,25 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     // `StringType` is a class whose case object is the default UTF8_BINARY instance).
     case _: StringType | _: BinaryType => true
     case DateType | TimestampType | TimestampNTZType => true
+    case ArrayType(inner, _) => isSupportedInputType(inner)
     case _ => false
   }
 
-  /** Output types [[allocateOutput]] and [[outputWriter]] can materialize. */
+  /**
+   * Output types [[allocateOutput]] and [[outputWriter]] can materialize. Recursive: an
+   * `ArrayType(inner)` is supported when `inner` is supported, so once we add Map/Struct their
+   * gates here control the cascade. `canHandle` uses this predicate so the serde fallback lines
+   * up with what the emitter can actually produce.
+   */
   private def isSupportedOutputType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
     case FloatType | DoubleType => true
     case _: DecimalType => true
     case _: StringType | _: BinaryType => true
     case DateType | TimestampType | TimestampNTZType => true
+    case ArrayType(inner, _) => isSupportedOutputType(inner)
+    // MapType / StructType: deliberately gated off until Milestone-4 work lands. Flip to
+    // recursive checks analogous to ArrayType once `emitWrite` has cases for them.
     case _ => false
   }
 
@@ -403,6 +460,29 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         val v = new TimeStampMicroVector(name, CometArrowAllocator)
         v.allocateNew(numRows)
         v
+      case ArrayType(inner, _) =>
+        // Complex-type output: allocate a ListVector with a freshly allocated inner vector of
+        // the element type. The inner vector's own `allocateOutput` run sets up its buffers
+        // (including the pre-sized byte estimate for variable-length element types). After
+        // allocating the inner, we install it as the ListVector's data vector via
+        // `addOrGetVector` and reserve `numRows` entries on the outer list (the offsets +
+        // validity buffers).
+        val list = new ListVector(
+          name,
+          CometArrowAllocator,
+          FieldType.nullable(ArrowType.List.INSTANCE),
+          null)
+        val innerVec = allocateOutput(inner, s"$name.element", numRows, estimatedBytes)
+        list.initializeChildrenFromFields(java.util.Collections.singletonList(innerVec.getField))
+        // Transfer the freshly-allocated inner vector's buffers into the list's data-vector
+        // slot. `addOrGetVector` is the standard Arrow pattern for attaching a pre-allocated
+        // child; transferTo copies the buffer ownership without data copy.
+        val dataVec = list.getDataVector.asInstanceOf[FieldVector]
+        innerVec.makeTransferPair(dataVec).transfer()
+        innerVec.close()
+        list.setInitialCapacity(numRows)
+        list.allocateNew()
+        list
       case other =>
         throw new UnsupportedOperationException(
           s"CometBatchKernelCodegen: unsupported output type $other")
@@ -476,7 +556,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
           boundExpr.genCode(ctx)
         }
         val subExprsCode = ctx.subexprFunctionsCode
-        val (cls, snippet) = outputWriter(boundExpr.dataType, ev.value)
+        val (cls, snippet) = outputWriter(boundExpr.dataType, ev.value, ctx)
         (cls, defaultBody(boundExpr, ev, snippet, subExprsCode))
     }
 
@@ -484,6 +564,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     val typedInputCasts = inputCasts(inputSchema)
     val decimalTypeByOrdinal = decimalPrecisionByOrdinal(boundExpr)
     val getters = typedInputAccessors(inputSchema, decimalTypeByOrdinal)
+    val nestedClasses = nestedArrayClasses(inputSchema)
+    val getArrayMethod = emitGetArrayMethod(inputSchema)
 
     val codeBody =
       s"""
@@ -509,6 +591,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
          |  }
          |
          |  $getters
+         |  $getArrayMethod
          |
          |  @Override
          |  public void process(
@@ -529,6 +612,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
          |  }
          |
          |  ${ctx.declareAddedFunctions()}
+         |
+         |$nestedClasses
          |}
        """.stripMargin
 
@@ -573,17 +658,56 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     CompiledKernel(clazz, freshReferences)
   }
 
-  /** Emit `private $Class col$ord;` declarations, one per input column. */
+  /**
+   * Emit the kernel's per-column field declarations.
+   *
+   * For a scalar spec at ordinal N: `private $Class colN;`
+   *
+   * For an array spec at ordinal N: three fields — the outer `ListVector`, the typed child vector
+   * (its element vector class), and a single pre-allocated nested `ArrayData` instance that
+   * `getArray(N)` will reset and return row by row:
+   * {{{
+   *   private ListVector colN;
+   *   private $ChildVectorClass colN_child;
+   *   private final InputArray_colN colN_arrayData = new InputArray_colN();
+   * }}}
+   */
   private def inputFieldDecls(inputSchema: Seq[ArrowColumnSpec]): String =
     inputSchema.zipWithIndex
-      .map { case (spec, ord) => s"private ${spec.vectorClass.getName} col$ord;" }
-      .mkString("\n")
+      .map {
+        case (arr: ArrayColumnSpec, ord) =>
+          // Array spec: outer ListVector + typed child vector + pre-allocated ArrayData
+          // instance. The instance reference is `final`; what changes per row is its
+          // `startIndex`/`length` state, reset by `getArray`.
+          val listClass = classOf[ListVector].getName
+          val childClass = arr.element.vectorClass.getName
+          s"""private $listClass col$ord;
+             |  private $childClass col${ord}_child;
+             |  private final InputArray_col$ord col${ord}_arrayData = new InputArray_col$ord();""".stripMargin
+        case (spec, ord) =>
+          s"private ${spec.vectorClass.getName} col$ord;"
+      }
+      .mkString("\n  ")
 
-  /** Emit `this.col$ord = ($Class) inputs[$ord];` casts at the top of `process`. */
+  /**
+   * Emit the input-cast statements at the top of `process`.
+   *
+   * Scalar: `this.colN = ($Class) inputs[N];`
+   *
+   * Array: casts the outer ListVector AND its data vector to the typed child class, storing both.
+   * Child vector lookup via `getDataVector` happens once per batch; downstream element reads
+   * (inside the nested ArrayData) go through the cached typed field.
+   */
   private def inputCasts(inputSchema: Seq[ArrowColumnSpec]): String =
     inputSchema.zipWithIndex
-      .map { case (spec, ord) =>
-        s"this.col$ord = (${spec.vectorClass.getName}) inputs[$ord];"
+      .map {
+        case (arr: ArrayColumnSpec, ord) =>
+          val listClass = classOf[ListVector].getName
+          val childClass = arr.element.vectorClass.getName
+          s"""this.col$ord = ($listClass) inputs[$ord];
+             |    this.col${ord}_child = ($childClass) this.col$ord.getDataVector();""".stripMargin
+        case (spec, ord) =>
+          s"this.col$ord = (${spec.vectorClass.getName}) inputs[$ord];"
       }
       .mkString("\n    ")
 
@@ -602,6 +726,17 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    * `BoundReference` of `DecimalType(precision <= 18)` is the only decimal read at that ordinal,
    * the emitted case skips the `BigDecimal` allocation entirely and reads the unscaled long
    * directly. See [[decimalPrecisionByOrdinal]] for how that map is derived.
+   *
+   * TODO(unsafe-readers): today the primitive getter emissions go through Arrow's typed
+   * `v.get(i)` which performs bounds checks against the vector's capacity. Inside the kernel's
+   * `process` loop we already know `i` is in `[0, numRows)` from the loop invariant, so the
+   * bounds check is redundant. Mirror `CometPlainVector`'s pattern by caching each input column's
+   * value/validity/offset buffer addresses at `process()` entry and emitting direct
+   * `Platform.getInt(null, col0_valueAddr + rowIdx * 4L)` (and analogous `getLong`, `getFloat`,
+   * `getDouble`) reads. Saves the bounds check and the ArrowBuf indirection per read. Same idea
+   * applies inside the nested `ArrayData` readers added in Milestone 2. Deferred to a follow-up
+   * because it touches every primitive case and wants a benchmark confirming the win before we
+   * commit.
    */
   private def typedInputAccessors(
       inputSchema: Seq[ArrowColumnSpec],
@@ -757,6 +892,172 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
+   * Emit nested `InputArray_colN` class declarations, one per array-typed input column. Each
+   * class is a `final` subclass of [[CometArrowArrayData]] sized for one column (specialized on
+   * element type). `reset(rowIdx)` reads the list's offsets; subsequent element reads inline the
+   * zero-copy Arrow access for that element type. All unused `ArrayData` getters inherit the base
+   * class's `UnsupportedOperationException` throws.
+   *
+   * Emitted as inner classes of `SpecificCometBatchKernel` so they can reference the outer
+   * `col${N}` (the `ListVector`) and `col${N}_child` (the typed child vector) fields directly.
+   */
+  private def nestedArrayClasses(inputSchema: Seq[ArrowColumnSpec]): String =
+    inputSchema.zipWithIndex
+      .collect { case (spec: ArrayColumnSpec, ord) => emitNestedArrayClass(ord, spec) }
+      .mkString("\n")
+
+  /** Emit one `InputArray_colN` nested class for the given array spec. */
+  private def emitNestedArrayClass(ord: Int, spec: ArrayColumnSpec): String = {
+    val baseClassName = classOf[CometArrayData].getName
+    val elementGetter =
+      emitNestedArrayElementGetter(spec.elementSparkType, s"col${ord}_child")
+    // If the child is non-nullable, `isNullAt` should always return false. When we add
+    // structural nullability tracking to the child spec (ArrowColumnSpec.nullable on the
+    // element), we'll emit a literal `return false;` here.
+    val isNullAt =
+      s"""      @Override
+         |      public boolean isNullAt(int i) {
+         |        return col${ord}_child.isNull(startIndex + i);
+         |      }""".stripMargin
+    s"""  private final class InputArray_col$ord extends $baseClassName {
+       |    private int startIndex;
+       |    private int length;
+       |
+       |    void reset(int rowIdx) {
+       |      this.startIndex = col$ord.getElementStartIndex(rowIdx);
+       |      this.length = col$ord.getElementEndIndex(rowIdx) - this.startIndex;
+       |    }
+       |
+       |    @Override
+       |    public int numElements() {
+       |      return length;
+       |    }
+       |
+       |$isNullAt
+       |
+       |$elementGetter
+       |  }
+       |""".stripMargin
+  }
+
+  /**
+   * Emit the element-type-specific getter override for a nested `InputArray_colN`. Only the one
+   * getter matching the element type is overridden; any other getter the consumer might call
+   * inherits the base class's `UnsupportedOperationException`.
+   */
+  private def emitNestedArrayElementGetter(elemType: DataType, childField: String): String =
+    elemType match {
+      case BooleanType =>
+        s"""      @Override
+         |      public boolean getBoolean(int i) {
+         |        return $childField.get(startIndex + i) == 1;
+         |      }""".stripMargin
+      case ByteType =>
+        s"""      @Override
+         |      public byte getByte(int i) {
+         |        return $childField.get(startIndex + i);
+         |      }""".stripMargin
+      case ShortType =>
+        s"""      @Override
+         |      public short getShort(int i) {
+         |        return $childField.get(startIndex + i);
+         |      }""".stripMargin
+      case IntegerType | DateType =>
+        s"""      @Override
+         |      public int getInt(int i) {
+         |        return $childField.get(startIndex + i);
+         |      }""".stripMargin
+      case LongType | TimestampType | TimestampNTZType =>
+        s"""      @Override
+         |      public long getLong(int i) {
+         |        return $childField.get(startIndex + i);
+         |      }""".stripMargin
+      case FloatType =>
+        s"""      @Override
+         |      public float getFloat(int i) {
+         |        return $childField.get(startIndex + i);
+         |      }""".stripMargin
+      case DoubleType =>
+        s"""      @Override
+         |      public double getDouble(int i) {
+         |        return $childField.get(startIndex + i);
+         |      }""".stripMargin
+      case dt: DecimalType =>
+        // Short-precision fast path mirrors the top-level `getDecimal` specialization: read the
+        // low 8 bytes of the decimal128 slot as a signed long and wrap with `createUnsafe`.
+        // `getDecimal` is called with precision/scale as parameters by Spark's codegen; our
+        // specialization is keyed on the static element type.
+        if (dt.precision <= 18) {
+          s"""      @Override
+           |      public org.apache.spark.sql.types.Decimal getDecimal(
+           |          int i, int precision, int scale) {
+           |        long unscaled = $childField.getDataBuffer()
+           |            .getLong((long) (startIndex + i) * 16L);
+           |        return org.apache.spark.sql.types.Decimal$$.MODULE$$
+           |            .createUnsafe(unscaled, precision, scale);
+           |      }""".stripMargin
+        } else {
+          s"""      @Override
+           |      public org.apache.spark.sql.types.Decimal getDecimal(
+           |          int i, int precision, int scale) {
+           |        java.math.BigDecimal bd = $childField.getObject(startIndex + i);
+           |        return org.apache.spark.sql.types.Decimal$$.MODULE$$
+           |            .apply(bd, precision, scale);
+           |      }""".stripMargin
+        }
+      case _: StringType =>
+        // Zero-copy UTF8 read via `UTF8String.fromAddress` on the child VarCharVector's data
+        // buffer. Mirrors the top-level `getUTF8String` switch case. ViewVarCharVector child
+        // support: deferred; the child vector class check at `canHandle` / spec construction
+        // time will need to branch for view-format children when added.
+        s"""      @Override
+         |      public org.apache.spark.unsafe.types.UTF8String getUTF8String(int i) {
+         |        int s = $childField.getStartOffset(startIndex + i);
+         |        int e = $childField.getEndOffset(startIndex + i);
+         |        long addr = $childField.getDataBuffer().memoryAddress() + s;
+         |        return org.apache.spark.unsafe.types.UTF8String
+         |            .fromAddress(null, addr, e - s);
+         |      }""".stripMargin
+      case BinaryType =>
+        s"""      @Override
+         |      public byte[] getBinary(int i) {
+         |        return $childField.get(startIndex + i);
+         |      }""".stripMargin
+      case other =>
+        throw new UnsupportedOperationException(
+          s"nested ArrayData: unsupported element type $other")
+    }
+
+  /**
+   * Emit the kernel's `@Override public ArrayData getArray(int ordinal)` method when the input
+   * schema has at least one array-typed column; empty string otherwise (the base class's default
+   * throws, same as all other complex-type getters until they're added).
+   *
+   * Each case resets the pre-allocated nested-class instance and returns it. Zero allocation per
+   * row beyond the mutable-field writes inside `reset`.
+   */
+  private def emitGetArrayMethod(inputSchema: Seq[ArrowColumnSpec]): String = {
+    val cases = inputSchema.zipWithIndex.collect { case (_: ArrayColumnSpec, ord) =>
+      s"""      case $ord: {
+         |        this.col${ord}_arrayData.reset(this.rowIdx);
+         |        return this.col${ord}_arrayData;
+         |      }""".stripMargin
+    }
+    if (cases.isEmpty) ""
+    else
+      s"""
+         |  @Override
+         |  public org.apache.spark.sql.catalyst.util.ArrayData getArray(int ordinal) {
+         |    switch (ordinal) {
+         |${cases.mkString("\n")}
+         |      default: throw new UnsupportedOperationException(
+         |          "getArray out of range: " + ordinal);
+         |    }
+         |  }
+         |""".stripMargin
+  }
+
+  /**
    * Build one `@Override`-annotated switch method. Returns an empty string when no input columns
    * use this getter so the generated class does not carry a dead method override.
    */
@@ -842,9 +1143,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
-   * Emit the per-row body for `RegExpReplace`. Matches the hand-coded `RegExpReplaceUDF` loop:
-   * read Arrow subject bytes, decode to Java `String`, run `Matcher.replaceAll` with a cached
-   * `Pattern` and the replacement String, re-encode to bytes, write to Arrow.
+   * Emit the per-row body for `RegExpReplace`. Per-row shape: read Arrow subject bytes, decode to
+   * Java `String`, run `Matcher.replaceAll` with a cached `Pattern` and the replacement String,
+   * re-encode to bytes, write to Arrow.
    *
    * ==Why this specialization exists==
    *
@@ -861,28 +1162,27 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    *              String -> UTF8String -> bytes -> Arrow
    * }}}
    *
-   * On the `replace_wide_match` benchmark (every character of the row gets replaced, so the
-   * output is the full row length), this added ~44% per-row cost versus the hand-coded
-   * `RegExpReplaceUDF`, which has the shape:
+   * On a wide-match workload (every character of the row gets replaced, so the output is the full
+   * row length), the round trip added ~44% per-row cost versus a tight byte-oriented loop with
+   * shape:
    *
    * {{{
-   *   hand-coded:  Arrow bytes -> String -> Matcher -> String -> bytes -> Arrow
+   *   specialized:  Arrow bytes -> String -> Matcher -> String -> bytes -> Arrow
    * }}}
    *
-   * This specialization emits the hand-coded shape directly. No `UTF8String` appears in the
-   * generated per-row loop. Performance becomes equivalent to the hand-coded UDF while the
-   * expression remains a first-class citizen of the dispatcher (plan-time serde, schema-keyed
-   * caching, zero-config for the caller).
+   * This specialization emits the byte-oriented shape directly. No `UTF8String` appears in the
+   * generated per-row loop. The expression remains a first-class citizen of the dispatcher
+   * (plan-time serde, schema-keyed caching, zero-config for the caller).
    *
    * ==When to add a specialization==
    *
    * The general rule: specialize when an expression's `doGenCode` output shape forces conversions
-   * that the Arrow-aware hand-coded equivalent does not pay. The common case is expressions whose
-   * implementation requires a Java `String` (anything using `java.util.regex` and some
+   * that an Arrow-aware byte-oriented implementation does not pay. The common case is expressions
+   * whose implementation requires a Java `String` (anything using `java.util.regex` and some
    * `DateTimeFormatter` expressions), because Spark's `UTF8String <-> String` round-trip is not
-   * free for wide outputs. Specializations should match the hand-coded implementation shape and
-   * nothing more, so the comparison stays honest. Avoid layering optimizations beyond what the
-   * hand-coded path does in the same file.
+   * free for wide outputs. Keep specializations minimal so comparisons stay honest. Avoid
+   * layering speculative optimizations; let the default-path optimization menu handle the common
+   * cases.
    */
   private def specializedRegExpReplaceBody(
       ctx: CodegenContext,
@@ -1013,96 +1313,178 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     }
 
   /**
-   * Returns `(concreteVectorClassName, writeJavaSnippet)` for the expression's output type. The
-   * snippet assumes `output` is already cast to the concrete vector class, `i` is the current row
-   * index, and `$valueTerm` is the Java expression holding the bound expression's evaluated value
-   * (a primitive, `UTF8String`, `byte[]`, or Spark `Decimal` depending on `dataType`).
+   * Returns `(concreteVectorClassName, writeJavaSnippet)` for the expression's output type at the
+   * root of the generated kernel. The snippet assumes `output` is already cast to the concrete
+   * vector class, `i` is the current row index, and `$valueTerm` is the Java expression holding
+   * the bound expression's evaluated value. Delegates to [[emitWrite]] for the actual snippet,
+   * passing `"output"` and `"i"` as the root target and index. Kept as a separate entry point
+   * because [[generateSource]] needs both the vector class (for the cast at the top of `process`)
+   * and the snippet.
    */
-  private def outputWriter(dataType: DataType, valueTerm: String): (String, String) =
-    dataType match {
-      case BooleanType =>
-        // BitVector.set takes int; 0 or 1 encodes false/true.
-        (classOf[BitVector].getName, s"output.set(i, $valueTerm ? 1 : 0);")
-      case ByteType =>
-        (classOf[TinyIntVector].getName, s"output.set(i, $valueTerm);")
-      case ShortType =>
-        (classOf[SmallIntVector].getName, s"output.set(i, $valueTerm);")
-      case IntegerType =>
-        (classOf[IntVector].getName, s"output.set(i, $valueTerm);")
-      case LongType =>
-        (classOf[BigIntVector].getName, s"output.set(i, $valueTerm);")
-      case FloatType =>
-        (classOf[Float4Vector].getName, s"output.set(i, $valueTerm);")
-      case DoubleType =>
-        (classOf[Float8Vector].getName, s"output.set(i, $valueTerm);")
-      case dt: DecimalType =>
-        // Optimization: DecimalOutputShortFastPath.
-        // For precision <= 18, the unscaled value fits in a signed 64-bit long, and
-        // `DecimalVector.setSafe(int, long)` stores it directly into the 16-byte decimal128
-        // slot. `Decimal.toUnscaledLong` returns the backing long directly when the Decimal is
-        // short-stored (the common case for DecimalType(p<=18, s) outputs), so the fast path
-        // avoids the `java.math.BigDecimal` allocation that `DecimalVector.setSafe(int,
-        // BigDecimal)` requires. Mirrors the input-side specialization at codegen time:
-        // precision is baked into the emitted source, no runtime branch.
-        //
-        // For precision > 18, the unscaled value can exceed 64 bits, so keep the BigDecimal
-        // path.
-        if (dt.precision <= 18) {
-          (classOf[DecimalVector].getName, s"output.setSafe(i, $valueTerm.toUnscaledLong());")
-        } else {
-          (classOf[DecimalVector].getName, s"output.setSafe(i, $valueTerm.toJavaBigDecimal());")
-        }
-      case _: StringType =>
-        // Optimization: Utf8OutputOnHeapShortcut.
-        // `UTF8String` is internally a `(base, offset, numBytes)` view. When `base` is a
-        // `byte[]` (the common case: every Spark string function allocates its result on-heap
-        // before wrapping), we already have the byte array backing the value. `getBytes()`
-        // would allocate *another* byte[] and copy; instead, pass the existing byte[] directly
-        // to `VarCharVector.setSafe(int, byte[], int, int)` using the encoded offset.
-        //
-        // `UTF8String.getBaseOffset()` includes `Platform.BYTE_ARRAY_OFFSET` as its on-heap
-        // prefix, so the array-space start is `baseOffset - BYTE_ARRAY_OFFSET`.
-        //
-        // Off-heap fallback (base == null) is rare on the output side because string functions
-        // allocate on-heap; keep the getBytes() path for passthrough of zero-copy input reads.
-        //
-        // TODO(full-zero-copy): the fully symmetric counterpart to the zero-copy input read
-        // would use `handleSafe + Platform.copyMemory` directly into `valueBuffer.memoryAddress
-        // + startOffset`, uniformly handling on-heap and off-heap UTF8Strings without the
-        // `byte[]` intermediate on the off-heap path. The actual win is narrow: Arrow's
-        // `setSafe(int, byte[], int, int)` already performs the unavoidable bytes-into-Arrow
-        // memcpy, so the extra saving is only the `getBytes()` allocation on off-heap
-        // passthrough (a rare shape). Cost is meaningful bookkeeping (offset/validity/lastSet
-        // updates that must stay in sync with Arrow's internal invariants; silent corruption
-        // if wrong). Deferred until a profile shows off-heap passthrough as a hot path.
-        val utf8Snippet =
-          s"""Object __b = $valueTerm.getBaseObject();
-             |int __n = $valueTerm.numBytes();
-             |if (__b instanceof byte[]) {
-             |  output.setSafe(i, (byte[]) __b,
-             |      (int) ($valueTerm.getBaseOffset()
-             |          - org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET),
-             |      __n);
-             |} else {
-             |  byte[] __bb = $valueTerm.getBytes();
-             |  output.setSafe(i, __bb, 0, __bb.length);
-             |}""".stripMargin
-        (classOf[VarCharVector].getName, utf8Snippet)
-      case BinaryType =>
-        // BoundReference produces a `byte[]` directly for BinaryType.
-        (
-          classOf[VarBinaryVector].getName,
-          s"output.setSafe(i, $valueTerm, 0, $valueTerm.length);")
-      case DateType =>
-        // Days since epoch; Spark's codegen for DateType values is plain `int`.
-        (classOf[DateDayVector].getName, s"output.set(i, $valueTerm);")
-      case TimestampType =>
-        // Microseconds since epoch, UTC. Spark's codegen produces `long`.
-        (classOf[TimeStampMicroTZVector].getName, s"output.set(i, $valueTerm);")
-      case TimestampNTZType =>
-        (classOf[TimeStampMicroVector].getName, s"output.set(i, $valueTerm);")
+  private def outputWriter(
+      dataType: DataType,
+      valueTerm: String,
+      ctx: CodegenContext): (String, String) = {
+    val cls = outputVectorClass(dataType)
+    val snippet = emitWrite("output", "i", valueTerm, dataType, ctx)
+    (cls, snippet)
+  }
+
+  /**
+   * Concrete Arrow vector class name for the given output type. The name is used to cast `outRaw`
+   * to the right type at the top of the generated `process` method, so that subsequent writes
+   * through `emitWrite` can call vector-specific methods without further casts.
+   */
+  private def outputVectorClass(dataType: DataType): String = dataType match {
+    case BooleanType => classOf[BitVector].getName
+    case ByteType => classOf[TinyIntVector].getName
+    case ShortType => classOf[SmallIntVector].getName
+    case IntegerType => classOf[IntVector].getName
+    case LongType => classOf[BigIntVector].getName
+    case FloatType => classOf[Float4Vector].getName
+    case DoubleType => classOf[Float8Vector].getName
+    case _: DecimalType => classOf[DecimalVector].getName
+    case _: StringType => classOf[VarCharVector].getName
+    case BinaryType => classOf[VarBinaryVector].getName
+    case DateType => classOf[DateDayVector].getName
+    case TimestampType => classOf[TimeStampMicroTZVector].getName
+    case TimestampNTZType => classOf[TimeStampMicroVector].getName
+    case _: ArrayType => classOf[ListVector].getName
+    case other =>
+      throw new UnsupportedOperationException(
+        s"CometBatchKernelCodegen.outputVectorClass: unsupported output type $other")
+  }
+
+  /**
+   * Composable write emitter. Returns a Java snippet that writes the value produced by `source`
+   * into vector `targetVec` at index `idx`, specialized on the Spark `dataType`.
+   *
+   * Compositional: the `ArrayType` case emits a per-row `startNewValue` / element loop /
+   * `endValue` sequence whose per-element write recurses back into `emitWrite` with the list's
+   * child vector as the new target. `MapType` / `StructType` cases are not yet implemented and
+   * throw; adding them later is a case addition, not a structural change, because the recursion
+   * already flows through this function.
+   *
+   * For scalar types the snippet matches what the previous flat `outputWriter` emitted, including
+   * the decimal short-value fast path ([[DecimalOutputShortFastPath]]) and the UTF8 on-heap
+   * shortcut ([[Utf8OutputOnHeapShortcut]]).
+   */
+  private def emitWrite(
+      targetVec: String,
+      idx: String,
+      source: String,
+      dataType: DataType,
+      ctx: CodegenContext): String = dataType match {
+    case BooleanType =>
+      s"$targetVec.set($idx, $source ? 1 : 0);"
+    case ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType | DateType |
+        TimestampType | TimestampNTZType =>
+      // All scalar primitives and date/time types share the direct `set(idx, value)` shape.
+      // Spark's codegen already emits the correct primitive Java type for each; Arrow's
+      // typed vectors accept the matching primitive in their `set` overloads.
+      s"$targetVec.set($idx, $source);"
+    case dt: DecimalType =>
+      // Optimization: DecimalOutputShortFastPath.
+      // For precision <= 18 the unscaled value fits in a signed long; pass it straight to
+      // `DecimalVector.setSafe(int, long)` and skip the `java.math.BigDecimal` allocation
+      // `setSafe(int, BigDecimal)` requires. For p > 18 the BigDecimal path is unavoidable.
+      if (dt.precision <= 18) {
+        s"$targetVec.setSafe($idx, $source.toUnscaledLong());"
+      } else {
+        s"$targetVec.setSafe($idx, $source.toJavaBigDecimal());"
+      }
+    case _: StringType =>
+      // Optimization: Utf8OutputOnHeapShortcut.
+      // `UTF8String` is internally a `(base, offset, numBytes)` view. When the base is a
+      // `byte[]` (common case: Spark string functions allocate results on-heap), pass the
+      // existing byte[] directly to `VarCharVector.setSafe(int, byte[], int, int)` via the
+      // encoded offset and skip the redundant `getBytes()` allocation. Off-heap passthrough
+      // (rare on output side) falls back to `getBytes()`. See the TODO(full-zero-copy) below
+      // for why we don't go further into Platform.copyMemory territory.
+      val bBase = ctx.freshName("utfBase")
+      val bLen = ctx.freshName("utfLen")
+      val bArr = ctx.freshName("utfArr")
+      s"""Object $bBase = $source.getBaseObject();
+         |int $bLen = $source.numBytes();
+         |if ($bBase instanceof byte[]) {
+         |  $targetVec.setSafe($idx, (byte[]) $bBase,
+         |      (int) ($source.getBaseOffset()
+         |          - org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET),
+         |      $bLen);
+         |} else {
+         |  byte[] $bArr = $source.getBytes();
+         |  $targetVec.setSafe($idx, $bArr, 0, $bArr.length);
+         |}""".stripMargin
+    case BinaryType =>
+      // Spark's BinaryType value is already a `byte[]`.
+      s"$targetVec.setSafe($idx, $source, 0, $source.length);"
+    case ArrayType(elementType, _) =>
+      // Complex-type output: recursive per-row write.
+      // Spark's `doGenCode` for ArrayType-returning expressions produces an `ArrayData` value
+      // (usually `GenericArrayData` / `UnsafeArrayData`). We iterate its elements, write each
+      // one into the Arrow `ListVector`'s child, and bracket with `startNewValue` /
+      // `endValue`. The element write recurses through `emitWrite` on the list's child vector,
+      // so any scalar we support becomes a valid array element. Nested complex types (Array of
+      // Array, Array of Struct, etc.) will work by the same recursion once their `emitWrite`
+      // cases land.
+      val listVar = ctx.freshName("list")
+      val childVar = ctx.freshName("child")
+      val arrVar = ctx.freshName("arr")
+      val nVar = ctx.freshName("n")
+      val childIdx = ctx.freshName("cidx")
+      val jVar = ctx.freshName("j")
+      val listClass = classOf[ListVector].getName
+      val childClass = outputVectorClass(elementType)
+      val elemSource = arrayDataGetter(arrVar, jVar, elementType)
+      val innerWrite = emitWrite(childVar, s"$childIdx + $jVar", elemSource, elementType, ctx)
+      s"""$listClass $listVar = ($listClass) $targetVec;
+         |$childClass $childVar = ($childClass) $listVar.getDataVector();
+         |org.apache.spark.sql.catalyst.util.ArrayData $arrVar = $source;
+         |int $nVar = $arrVar.numElements();
+         |int $childIdx = $listVar.startNewValue($idx);
+         |for (int $jVar = 0; $jVar < $nVar; $jVar++) {
+         |  if ($arrVar.isNullAt($jVar)) {
+         |    $childVar.setNull($childIdx + $jVar);
+         |  } else {
+         |    $innerWrite
+         |  }
+         |}
+         |$listVar.endValue($idx, $nVar);""".stripMargin
+    case _: MapType =>
+      throw new UnsupportedOperationException(
+        "CometBatchKernelCodegen.emitWrite: MapType output not yet implemented")
+    case _: StructType =>
+      throw new UnsupportedOperationException(
+        "CometBatchKernelCodegen.emitWrite: StructType output not yet implemented")
+    case other =>
+      throw new UnsupportedOperationException(
+        s"CometBatchKernelCodegen.emitWrite: unsupported output type $other")
+  }
+
+  /**
+   * Per-element Java expression that reads a typed value out of an `ArrayData` at a given index.
+   * Used by the ArrayType branch of [[emitWrite]] to source each element for its recursive inner
+   * write.
+   */
+  private def arrayDataGetter(arrVar: String, idx: String, elemType: DataType): String =
+    elemType match {
+      case BooleanType => s"$arrVar.getBoolean($idx)"
+      case ByteType => s"$arrVar.getByte($idx)"
+      case ShortType => s"$arrVar.getShort($idx)"
+      case IntegerType | DateType => s"$arrVar.getInt($idx)"
+      case LongType | TimestampType | TimestampNTZType => s"$arrVar.getLong($idx)"
+      case FloatType => s"$arrVar.getFloat($idx)"
+      case DoubleType => s"$arrVar.getDouble($idx)"
+      case dt: DecimalType => s"$arrVar.getDecimal($idx, ${dt.precision}, ${dt.scale})"
+      case _: StringType => s"$arrVar.getUTF8String($idx)"
+      case BinaryType => s"$arrVar.getBinary($idx)"
+      case ArrayType(_, _) => s"$arrVar.getArray($idx)"
+      case _: MapType => s"$arrVar.getMap($idx)"
+      case _: StructType =>
+        val numFields = elemType.asInstanceOf[StructType].fields.length
+        s"$arrVar.getStruct($idx, $numFields)"
       case other =>
         throw new UnsupportedOperationException(
-          s"CometBatchKernelCodegen: unsupported output type $other")
+          s"CometBatchKernelCodegen.arrayDataGetter: unsupported element type $other")
     }
 }

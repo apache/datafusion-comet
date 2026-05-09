@@ -23,10 +23,11 @@ import org.apache.spark.unsafe.types.VariantVal
 
 /**
  * Throwing-default implementations for `SpecializedGetters` methods that were added in Spark 4.0:
- * `getVariant`. The Janino-generated kernel subclasses `CometInternalRow` and must satisfy every
- * abstract method on the interface; without these defaults the compiled class fails its
- * abstract-method check at class-load time. `GeographyVal` and `GeometryVal` were added in 4.1,
- * so this profile's shim does not override those getters.
+ * `getVariant`. The Janino-generated kernel subclasses `CometInternalRow` (rows) and
+ * `CometArrayData` (array inputs), and each must satisfy every abstract method on the interface;
+ * without these defaults the compiled class fails its abstract-method check at class-load time.
+ * `GeographyVal` and `GeometryVal` were added in 4.1, so this profile's shim does not override
+ * those getters.
  */
 trait CometInternalRowShim {
   def getVariant(ordinal: Int): VariantVal =

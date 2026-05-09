@@ -22,12 +22,12 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, Expression, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, ElementAt, Expression, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Size, StringSplit, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
-import org.apache.spark.sql.types.{DataType, DecimalType, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, StringType}
 
 import org.apache.comet.udf.CometBatchKernelCodegen
-import org.apache.comet.udf.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, ScalarColumnSpec}
 
 // Resolve Arrow vector classes through the codegen object so tests see the same `Class` objects
 // the shaded `common` module sees. A direct `classOf[org.apache.arrow.vector.VarCharVector]` here
@@ -424,6 +424,134 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       result.body.contains("output.setNull(i);"),
       "expected setNull branch for a nullable root expression; got:\n" +
         CodeFormatter.format(result.code))
+  }
+
+  test("ArrayType(StringType) output emits ListVector startNewValue/endValue recursion") {
+    // StringSplit produces ArrayType(StringType). emitWrite's ArrayType case should emit:
+    //   - ListVector cast of output
+    //   - child VarCharVector extraction via getDataVector
+    //   - startNewValue + per-element loop + endValue
+    //   - the per-element write recursing into the StringType case (which uses the UTF8 on-heap
+    //     shortcut marker `instanceof byte[]`)
+    // Not asserting exact expression-specific text since Spark's StringSplit.doGenCode may drift
+    // across versions. Focus markers: ListVector cast, VarCharVector child cast, startNewValue,
+    // endValue, and the inner UTF8 shortcut branch.
+    val expr =
+      StringSplit(
+        BoundReference(0, StringType, nullable = true),
+        Literal.create(",", StringType),
+        Literal(-1, IntegerType))
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(nullableString))
+    val src = result.body
+    val formatted = CodeFormatter.format(result.code)
+    assert(src.contains("ListVector"), s"expected ListVector in emitted body; got:\n$formatted")
+    assert(src.contains(".startNewValue("), s"expected startNewValue call; got:\n$formatted")
+    assert(src.contains(".endValue("), s"expected endValue call; got:\n$formatted")
+    assert(
+      src.contains(".getDataVector()"),
+      s"expected child vector extraction; got:\n$formatted")
+    assert(
+      src.contains("instanceof byte[]"),
+      s"expected inner UTF8 on-heap shortcut for string elements; got:\n$formatted")
+  }
+
+  test("ArrayType(StringType) input emits InputArray_col0 nested class with UTF8 child getter") {
+    // Array input with string elements: the kernel must expose a `getArray(0)` that hands Spark's
+    // `doGenCode` a zero-allocation `ArrayData` view onto the Arrow `ListVector`'s child
+    // `VarCharVector`. Markers: the nested class declaration, a `reset(int)` bracketing the
+    // per-row slice, the typed child getter using `fromAddress`, and a `getArray` switch on the
+    // ordinal returning the pre-allocated instance.
+    val varCharChildSpec = ScalarColumnSpec(varCharVectorClass, nullable = true)
+    val arraySpec =
+      ArrayColumnSpec(nullable = true, elementSparkType = StringType, element = varCharChildSpec)
+    val expr = Size(BoundReference(0, ArrayType(StringType), nullable = true))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(arraySpec)).body
+
+    assert(
+      src.contains("class InputArray_col0"),
+      s"expected nested ArrayData class for array col0; got:\n$src")
+    assert(
+      src.contains("col0_child") && src.contains("col0_arrayData"),
+      s"expected typed child-vector field and pre-allocated ArrayData instance; got:\n$src")
+    assert(
+      src.contains("getElementStartIndex(") && src.contains("getElementEndIndex("),
+      s"expected list-offset reads inside `reset`; got:\n$src")
+    assert(
+      src.contains("public org.apache.spark.unsafe.types.UTF8String getUTF8String(int i)"),
+      s"expected element-type-specific UTF8String getter; got:\n$src")
+    assert(
+      src.contains(".fromAddress("),
+      s"expected zero-copy UTF8 read inside the nested ArrayData; got:\n$src")
+    assert(
+      src.contains("public org.apache.spark.sql.catalyst.util.ArrayData getArray(int ordinal)"),
+      s"expected kernel-level getArray switch; got:\n$src")
+    assert(
+      src.contains("col0_arrayData.reset(this.rowIdx)"),
+      s"expected getArray to reset the pre-allocated instance; got:\n$src")
+  }
+
+  test("ArrayType(IntegerType) input emits primitive int getter in nested class") {
+    val intChildSpec = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val arraySpec =
+      ArrayColumnSpec(nullable = true, elementSparkType = IntegerType, element = intChildSpec)
+    val expr = Size(BoundReference(0, ArrayType(IntegerType), nullable = true))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(arraySpec)).body
+
+    assert(
+      src.contains("public int getInt(int i)"),
+      s"expected primitive int getter on nested array class; got:\n$src")
+    // Scalar-element fast path reads directly off the typed child vector; no BigDecimal /
+    // fromAddress scaffolding should leak in.
+    assert(
+      !src.contains(".fromAddress("),
+      s"int element getter should not wrap with UTF8 fromAddress; got:\n$src")
+  }
+
+  test(
+    "ArrayType(DecimalType) short-precision input emits decimal128 fast-path via getLong in " +
+      "nested class") {
+    val decimalChildSpec = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector"),
+      nullable = true)
+    val arraySpec = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = DecimalType(10, 2),
+      element = decimalChildSpec)
+    val expr =
+      ElementAt(
+        BoundReference(0, ArrayType(DecimalType(10, 2)), nullable = true),
+        Literal(1, IntegerType))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(arraySpec)).body
+
+    // Fast path markers: reads the low 8 bytes of the decimal128 slot via getLong + createUnsafe.
+    // The slow path would go through getObject + Decimal.apply.
+    assert(
+      src.contains(".getLong(") && src.contains(".createUnsafe("),
+      s"expected decimal-input short-precision fast path in nested class; got:\n$src")
+    assert(
+      !src.contains(".getObject("),
+      s"short-precision decimal element should not use BigDecimal slow path; got:\n$src")
+  }
+
+  test("ArrayType(DecimalType) long-precision input emits BigDecimal slow path in nested class") {
+    val decimalChildSpec = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector"),
+      nullable = true)
+    val arraySpec = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = DecimalType(30, 2),
+      element = decimalChildSpec)
+    val expr =
+      ElementAt(
+        BoundReference(0, ArrayType(DecimalType(30, 2)), nullable = true),
+        Literal(1, IntegerType))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(arraySpec)).body
+
+    assert(
+      src.contains(".getObject(") && src.contains("Decimal$.MODULE$"),
+      s"expected BigDecimal slow path for p>18 element; got:\n$src")
   }
 }
 

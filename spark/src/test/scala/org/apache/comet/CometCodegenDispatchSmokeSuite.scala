@@ -305,14 +305,16 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   test("codegen: disabled mode bypasses the dispatcher") {
-    // In `disabled`, the rlike serde must skip codegen entirely and route through the hand-coded
-    // JVM UDF path. The dispatcher's counters should not move.
+    // In `disabled`, the rlike serde returns None and the expression falls back to Spark. The
+    // dispatcher's counters should not move. We check the result against Spark's answer but do
+    // not assert the operator is Comet for this query, because rlike itself runs on the JVM
+    // Spark path when the java-engine dispatcher is disabled.
     val pattern = "disabled_mode_marker_[0-9]+"
     CometCodegenDispatchUDF.resetStats()
     withSQLConf(
       CometConf.COMET_CODEGEN_DISPATCH_MODE.key -> CometConf.CODEGEN_DISPATCH_DISABLED) {
       withSubjects("disabled_mode_marker_1", null) {
-        checkSparkAnswerAndOperator(sql(s"SELECT s rlike '$pattern' FROM t"))
+        checkSparkAnswer(sql(s"SELECT s rlike '$pattern' FROM t"))
       }
     }
     val after = CometCodegenDispatchUDF.stats()
@@ -669,6 +671,36 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
+  test("codegen: ScalaUDF returning ArrayType(StringType) (ListVector output writer)") {
+    // First use of the ArrayType output path end-to-end. The UDF returns a `Seq[String]`,
+    // which Spark encodes as `ArrayType(StringType, containsNull = true)`. The dispatcher's
+    // canHandle accepts it (ArrayType is supported when its element type is supported),
+    // allocateOutput builds a ListVector with an inner VarCharVector, and emitWrite recurses
+    // into the StringType case for the per-element UTF8 on-heap shortcut. End-to-end answer
+    // matches Spark.
+    spark.udf.register(
+      "splitComma",
+      (s: String) => if (s == null) null else s.split(",", -1).toSeq)
+    withSubjects("a,b,c", "x", null, "", "one,,three") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT splitComma(s) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF returning ArrayType(IntegerType)") {
+    // Exercises ArrayType output with a primitive element. emitWrite's ArrayType case
+    // recurses into the IntegerType case for the inner write; no byte[] allocation involved.
+    spark.udf.register(
+      "asLengths",
+      (s: String) => if (s == null) null else s.split(",").map(_.length).toSeq)
+    withSubjects("a,bb,ccc", null, "xyzzy") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT asLengths(s) FROM t"))
+      }
+    }
+  }
+
   test("codegen: zero-column ScalaUDF produces one row per input row") {
     // Non-deterministic (so Spark doesn't constant-fold) with a deterministic body (so
     // Spark-vs-Comet comparison stays honest). The expression has no `AttributeReference`,
@@ -855,6 +887,85 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       checkSparkAnswerAndOperator(
         sql("SELECT addOne(x) + (SELECT max(v) FROM t2) AS r " +
           "FROM t WHERE addOne(x) < (SELECT max(v) FROM t2) * 2"))
+    }
+  }
+
+  /**
+   * ArrayType input. The dispatcher emits a nested `InputArray_col0` final class per array-typed
+   * input column; Spark's generated `getArray(ord)` resolves to our kernel's switch which returns
+   * the pre-allocated instance after resetting its start/length against the list's offsets.
+   * Element reads go through the typed child-vector field with no `ArrayData` copy or boxing.
+   *
+   * Each smoke test exercises the same serde/transport path at a different element type so the
+   * nested getter emitter's scalar-element cases are each covered: `StringType` (zero-copy
+   * `UTF8String.fromAddress`), `IntegerType` (primitive direct), and `DecimalType(p <= 18)`
+   * (decimal128 fast path).
+   */
+  private def withArrayTable(colType: String, insertRows: String)(f: => Unit): Unit = {
+    withTable("t") {
+      sql(s"CREATE TABLE t (a $colType) USING parquet")
+      sql(s"INSERT INTO t VALUES $insertRows")
+      f
+    }
+  }
+
+  test("codegen: ScalaUDF taking Seq[String] reads through nested ArrayData class") {
+    spark.udf.register(
+      "headOrNull",
+      (arr: Seq[String]) => if (arr == null || arr.isEmpty) null else arr.head)
+    withArrayTable(
+      "ARRAY<STRING>",
+      "(array('a', 'b', 'c')), (array('x')), (null), (array()), (array('alone'))") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT headOrNull(a) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF taking Seq[String] iterating all elements") {
+    spark.udf.register(
+      "concatArr",
+      (arr: Seq[String]) => if (arr == null) null else arr.mkString("|"))
+    withArrayTable(
+      "ARRAY<STRING>",
+      "(array('one', 'two', 'three')), (array('solo')), (null), (array())") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT concatArr(a) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF taking Seq[Int] hits primitive element getter") {
+    spark.udf.register("sumArr", (arr: Seq[Int]) => if (arr == null) -1 else arr.sum)
+    withArrayTable(
+      "ARRAY<INT>",
+      "(array(1, 2, 3)), (array(-5, 5)), (array()), (null), (array(42))") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT sumArr(a) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF taking Seq[BigDecimal] hits short-precision decimal fast path") {
+    // DecimalType(10, 2) is well inside p <= 18, so the nested-array `getDecimal` emits the
+    // unscaled-long fast path (see `emitNestedArrayElementGetter`). A `BigDecimal` UDF argument
+    // forces Spark's encoder to call `getDecimal(i, 10, 2)` on our nested ArrayData for each
+    // element, which exercises that code path end to end.
+    spark.udf.register(
+      "sumDecArr",
+      (arr: Seq[java.math.BigDecimal]) =>
+        if (arr == null) null
+        else {
+          var acc = java.math.BigDecimal.ZERO
+          arr.foreach(v => if (v != null) acc = acc.add(v))
+          acc
+        })
+    withArrayTable(
+      "ARRAY<DECIMAL(10, 2)>",
+      "(array(1.23, 4.56)), (array(-9.99)), (null), (array())") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT sumDecArr(a) FROM t"))
+      }
     }
   }
 }

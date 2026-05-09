@@ -24,11 +24,12 @@ import java.util.{Collections, LinkedHashMap}
 import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, ViewVarBinaryVector, ViewVarCharVector}
+import org.apache.arrow.vector.complex.ListVector
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
-import org.apache.spark.sql.types.{BinaryType, DataType, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType, TimestampType}
 
-import org.apache.comet.udf.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, ScalarColumnSpec}
 
 /**
  * Arrow-direct codegen dispatcher. For each (bound Spark `Expression`, input Arrow schema) pair,
@@ -62,10 +63,8 @@ import org.apache.comet.udf.CometBatchKernelCodegen.ArrowColumnSpec
  *      Janino compile cost across every thread and every query in the JVM.
  *
  * 2. '''Per-thread UDF instance cache.''' `CometUdfBridge.INSTANCES` is a `ThreadLocal<Map>` that
- * hands each task thread its own `CometCodegenDispatchUDF` object (one per UDF class). Originally
- * introduced so hand-coded UDFs (`RegExpLikeUDF`, etc.) with per- instance pattern caches do not
- * need locking; we inherit the property and use it to make instance fields on this UDF (cache 3
- * below) safe without synchronisation.
+ * hands each task thread its own `CometCodegenDispatchUDF` object (one per UDF class). Lets
+ * instance fields on this UDF (cache 3 below) stay safe without synchronisation.
  *
  * 3. '''Per-partition kernel instance cache.''' Plain mutable fields `activeKernel`, `activeKey`,
  * `activePartition` on each UDF instance, managed by [[ensureKernel]]. The compiled
@@ -117,19 +116,8 @@ class CometCodegenDispatchUDF extends CometUDF {
     var di = 0
     while (di < numDataCols) {
       val v = inputs(di + 1)
-      v match {
-        case _: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector |
-            _: BigIntVector | _: Float4Vector | _: Float8Vector | _: DecimalVector |
-            _: VarCharVector | _: ViewVarCharVector | _: VarBinaryVector |
-            _: ViewVarBinaryVector | _: DateDayVector | _: TimeStampMicroVector |
-            _: TimeStampMicroTZVector =>
-          dataCols(di) = v
-          specs(di) =
-            ArrowColumnSpec(v.getClass.asInstanceOf[Class[_ <: ValueVector]], nullable(v))
-        case other =>
-          throw new UnsupportedOperationException(
-            s"CometCodegenDispatchUDF: unsupported Arrow vector ${other.getClass.getSimpleName}")
-      }
+      dataCols(di) = v
+      specs(di) = specFor(v)
       di += 1
     }
     val n = numRows
@@ -194,6 +182,54 @@ class CometCodegenDispatchUDF extends CometUDF {
    * stable per-column nullability per query, which keeps variance at one kernel per expression.
    */
   private def nullable(v: ValueVector): Boolean = v.getNullCount != 0
+
+  /**
+   * Build the compile-time spec for one input Arrow vector. Recurses on `ListVector`'s data
+   * vector to produce an [[ArrayColumnSpec]] carrying the element's concrete vector class and
+   * Spark element type; scalars produce a [[ScalarColumnSpec]] directly. Unknown vector classes
+   * fall through with an explicit error so the dispatcher surface is a single edit point when
+   * extending to new Arrow types.
+   */
+  private def specFor(v: ValueVector): ArrowColumnSpec = v match {
+    case list: ListVector =>
+      val child = list.getDataVector
+      ArrayColumnSpec(nullable(list), sparkTypeFor(child), specFor(child))
+    case _: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector | _: BigIntVector |
+        _: Float4Vector | _: Float8Vector | _: DecimalVector | _: VarCharVector |
+        _: ViewVarCharVector | _: VarBinaryVector | _: ViewVarBinaryVector | _: DateDayVector |
+        _: TimeStampMicroVector | _: TimeStampMicroTZVector =>
+      ScalarColumnSpec(v.getClass.asInstanceOf[Class[_ <: ValueVector]], nullable(v))
+    case other =>
+      throw new UnsupportedOperationException(
+        s"CometCodegenDispatchUDF: unsupported Arrow vector ${other.getClass.getSimpleName}")
+  }
+
+  /**
+   * Map an Arrow vector to its Spark `DataType`. Used to populate
+   * [[ArrayColumnSpec.elementSparkType]] so the codegen nested-class emitter can pick the right
+   * element-getter template from the element's static Spark type (rather than re-deriving it from
+   * the vector class).
+   */
+  private def sparkTypeFor(v: ValueVector): DataType = v match {
+    case _: BitVector => BooleanType
+    case _: TinyIntVector => ByteType
+    case _: SmallIntVector => ShortType
+    case _: IntVector => IntegerType
+    case _: BigIntVector => LongType
+    case _: Float4Vector => FloatType
+    case _: Float8Vector => DoubleType
+    case d: DecimalVector => DecimalType(d.getPrecision, d.getScale)
+    case _: VarCharVector | _: ViewVarCharVector => StringType
+    case _: VarBinaryVector | _: ViewVarBinaryVector => BinaryType
+    case _: DateDayVector => DateType
+    case _: TimeStampMicroVector => TimestampNTZType
+    case _: TimeStampMicroTZVector => TimestampType
+    case list: ListVector =>
+      ArrayType(sparkTypeFor(list.getDataVector))
+    case other =>
+      throw new UnsupportedOperationException(
+        s"CometCodegenDispatchUDF: no Spark type mapping for ${other.getClass.getSimpleName}")
+  }
 
   /**
    * Estimate output byte capacity for variable-length output types. Sums the data-buffer sizes of
