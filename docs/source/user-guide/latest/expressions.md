@@ -94,32 +94,33 @@ of expressions that be disabled.
 
 ## Date/Time Functions
 
-| Expression     | SQL                          |
-| -------------- | ---------------------------- |
-| DateAdd        | `date_add`                   |
-| DateDiff       | `datediff`                   |
-| DateFormat     | `date_format`                |
-| DateSub        | `date_sub`                   |
-| DatePart       | `date_part(field, source)`   |
-| Days           | `days`                       |
-| Extract        | `extract(field FROM source)` |
-| FromUnixTime   | `from_unixtime`              |
-| Hour           | `hour`                       |
-| LastDay        | `last_day`                   |
-| Minute         | `minute`                     |
-| Second         | `second`                     |
-| TruncDate      | `trunc`                      |
-| TruncTimestamp | `date_trunc`                 |
-| UnixDate       | `unix_date`                  |
-| UnixTimestamp  | `unix_timestamp`             |
-| Year           | `year`                       |
-| Month          | `month`                      |
-| DayOfMonth     | `day`/`dayofmonth`           |
-| DayOfWeek      | `dayofweek`                  |
-| WeekDay        | `weekday`                    |
-| DayOfYear      | `dayofyear`                  |
-| WeekOfYear     | `weekofyear`                 |
-| Quarter        | `quarter`                    |
+| Expression                 | SQL                          |
+| -------------------------- | ---------------------------- |
+| DateAdd                    | `date_add`                   |
+| DateDiff                   | `datediff`                   |
+| DateFormat                 | `date_format`                |
+| DateSub                    | `date_sub`                   |
+| DatePart                   | `date_part(field, source)`   |
+| Days                       | `days`                       |
+| Extract                    | `extract(field FROM source)` |
+| FromUnixTime               | `from_unixtime`              |
+| Hour                       | `hour`                       |
+| LastDay                    | `last_day`                   |
+| Minute                     | `minute`                     |
+| Second                     | `second`                     |
+| TruncDate                  | `trunc`                      |
+| TruncTimestamp             | `date_trunc`                 |
+| UnixDate                   | `unix_date`                  |
+| UnixTimestamp              | `unix_timestamp`             |
+| Year                       | `year`                       |
+| Month                      | `month`                      |
+| DayOfMonth                 | `day`/`dayofmonth`           |
+| DayOfWeek                  | `dayofweek`                  |
+| WeekDay                    | `weekday`                    |
+| DayOfYear                  | `dayofyear`                  |
+| WeekOfYear                 | `weekofyear`                 |
+| Quarter                    | `quarter`                    |
+| PreciseTimestampConversion | `window_time`                |
 
 ## Math Expressions
 

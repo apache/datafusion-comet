@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, SecondsToTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -632,6 +632,28 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
         withInfo(expr, expr.left, expr.right)
         None
     }
+  }
+}
+
+object CometPreciseTimestampConversion extends CometExpressionSerde[PreciseTimestampConversion] {
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq("Only conversions between TimestampType and LongType are supported")
+
+  override def getSupportLevel(expr: PreciseTimestampConversion): SupportLevel = {
+    (expr.fromType, expr.toType) match {
+      case (TimestampType, LongType) | (LongType, TimestampType) =>
+        Compatible()
+      case _ =>
+        Unsupported(Some(s"PreciseTimestampConversion from ${expr.fromType} to ${expr.toType}"))
+    }
+  }
+
+  override def convert(
+      expr: PreciseTimestampConversion,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Both types are i64 micros in Arrow, so no conversion is needed.
+    exprToProtoInternal(expr.child, inputs, binding)
   }
 }
 
