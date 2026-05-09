@@ -24,12 +24,12 @@ import java.util.{Collections, LinkedHashMap}
 import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, ViewVarBinaryVector, ViewVarCharVector}
-import org.apache.arrow.vector.complex.{ListVector, StructVector}
+import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 
-import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
+import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 
 /**
  * Arrow-direct codegen dispatcher. For each (bound Spark `Expression`, input Arrow schema) pair,
@@ -191,6 +191,19 @@ class CometCodegenDispatchUDF extends CometUDF {
    * extending to new Arrow types.
    */
   private def specFor(v: ValueVector): ArrowColumnSpec = v match {
+    case map: MapVector =>
+      // MapVector extends ListVector; its data vector is a StructVector with child 0 = key
+      // and child 1 = value. `specFor` must match MapVector BEFORE ListVector since ListVector
+      // is the parent class.
+      val struct = map.getDataVector.asInstanceOf[StructVector]
+      val keyVec = struct.getChildByOrdinal(0).asInstanceOf[ValueVector]
+      val valueVec = struct.getChildByOrdinal(1).asInstanceOf[ValueVector]
+      MapColumnSpec(
+        nullable = nullable(map),
+        keySparkType = sparkTypeFor(keyVec),
+        valueSparkType = sparkTypeFor(valueVec),
+        key = specFor(keyVec),
+        value = specFor(valueVec))
     case list: ListVector =>
       val child = list.getDataVector
       ArrayColumnSpec(nullable(list), sparkTypeFor(child), specFor(child))
@@ -217,9 +230,8 @@ class CometCodegenDispatchUDF extends CometUDF {
 
   /**
    * Map an Arrow vector to its Spark `DataType`. Used to populate
-   * [[ArrayColumnSpec.elementSparkType]] so the codegen nested-class emitter can pick the right
-   * element-getter template from the element's static Spark type (rather than re-deriving it from
-   * the vector class).
+   * [[ArrayColumnSpec.elementSparkType]] and [[MapColumnSpec]]'s key/value Spark types so the
+   * codegen nested-class emitters can pick the right template from the element's static type.
    */
   private def sparkTypeFor(v: ValueVector): DataType = v match {
     case _: BitVector => BooleanType
@@ -235,6 +247,12 @@ class CometCodegenDispatchUDF extends CometUDF {
     case _: DateDayVector => DateType
     case _: TimeStampMicroVector => TimestampNTZType
     case _: TimeStampMicroTZVector => TimestampType
+    case map: MapVector =>
+      // Must come before ListVector since MapVector extends ListVector.
+      val struct = map.getDataVector.asInstanceOf[StructVector]
+      val keyVec = struct.getChildByOrdinal(0).asInstanceOf[ValueVector]
+      val valueVec = struct.getChildByOrdinal(1).asInstanceOf[ValueVector]
+      MapType(sparkTypeFor(keyVec), sparkTypeFor(valueVec))
     case list: ListVector =>
       ArrayType(sparkTypeFor(list.getDataVector))
     case struct: StructVector =>

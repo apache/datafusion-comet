@@ -23,17 +23,18 @@ import scala.collection.mutable
 
 import org.apache.arrow.memory.ArrowBuf
 import org.apache.arrow.vector.{BaseVariableWidthViewVector, BigIntVector, BitVector, DateDayVector, DecimalVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, VarBinaryVector, VarCharVector, ViewVarBinaryVector, ViewVarCharVector}
-import org.apache.arrow.vector.complex.{ListVector, StructVector}
+import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 
-import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, ScalarColumnSpec, StructColumnSpec}
+import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec}
 
 /**
  * Input-side emitters for the Arrow-direct codegen kernel. Everything that generates source for
  * reading Arrow input into Spark's typed getter surface lives here: kernel field declarations,
  * per-batch input casts, top-level typed-getter switches, nested `InputArray_${path}` /
- * `InputStruct_${path}` classes at every complex level, and the input-side type-support gate.
+ * `InputStruct_${path}` / `InputMap_${path}` classes at every complex level, and the input-side
+ * type-support gate.
  *
  * ==Path encoding for nested complex types==
  *
@@ -43,50 +44,52 @@ import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColum
  *   - root: `col${ord}`
  *   - array element of `P`: `${P}_e`
  *   - struct field `fi` of `P`: `${P}_f${fi}`
- *
- * Example: `Struct<a: Array<Int>>` at ordinal 0 produces vector fields `col0` (StructVector),
- * `col0_f0` (ListVector for the `a` field), and `col0_f0_e` (IntVector, the list's element
- * vector). Nested classes get the same suffix: `InputStruct_col0`, `InputArray_col0_f0`.
+ *   - map key of `P`: `${P}_k`
+ *   - map value of `P`: `${P}_v`
  *
  * ==Nested-class composition==
  *
- * A nested class at path `P` represents a Spark `ArrayData` or `InternalRow` view of its Arrow
- * vector. For any complex element or field one level down (at path `P_e` or `P_f${fi}`), the
- * class holds a pre-allocated instance of the corresponding inner nested class and routes
- * `getArray` / `getStruct` calls to that instance after resetting it. N-deep nesting falls out of
- * this: each level only knows about its immediate child classes; the recursion handles depth.
+ * A nested class at path `P` represents a Spark `ArrayData`, `InternalRow`, or `MapData` view of
+ * its Arrow vector. For any complex child one level down, the class holds a pre-allocated
+ * instance of the corresponding inner nested class and routes `getArray` / `getStruct` / `getMap`
+ * / `keyArray` / `valueArray` calls to that instance after resetting it. N-deep nesting falls out
+ * of this: each level only knows about its immediate children.
+ *
+ * ==Unified reset protocol==
+ *
+ * `InputArray_${path}` and `InputMap_${path}` classes both take `reset(int startIdx, int length)`
+ * and simply capture the slice. Callers (kernel top-level switches, outer complex-getter routers,
+ * map `keyArray` / `valueArray` returns) compute `(startIdx, length)` from the appropriate parent
+ * offsets before calling `reset`. This unifies the view shape across list-backed arrays and map
+ * key/value slices. Structs stay flat-indexed: `InputStruct_${path}` has `reset(int rowIdx)` that
+ * just captures the outer row index.
  *
  * Paired with [[CometBatchKernelCodegenOutput]], which handles the symmetric output side.
  */
 private[udf] object CometBatchKernelCodegenInput {
 
   /**
-   * Input types the kernel has a typed getter for. Recursive: `ArrayType(inner)` is supported
-   * when `inner` is supported; `StructType` is supported when every field is. `canHandle` uses
-   * this to gate the serde fallback.
+   * Input types the kernel has a typed getter for. Recursive: `ArrayType(inner)` supported when
+   * `inner` is supported; `StructType` when every field is; `MapType` when key and value types
+   * are both supported.
    */
   def isSupportedInputType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
     case FloatType | DoubleType => true
     case _: DecimalType => true
-    // `_: StringType` rather than `StringType` matches collated variants too (Spark 4.x's
-    // `StringType` is a class whose case object is the default UTF8_BINARY instance).
     case _: StringType | _: BinaryType => true
     case DateType | TimestampType | TimestampNTZType => true
     case ArrayType(inner, _) => isSupportedInputType(inner)
     case st: StructType => st.fields.forall(f => isSupportedInputType(f.dataType))
+    case mt: MapType => isSupportedInputType(mt.keyType) && isSupportedInputType(mt.valueType)
     case _ => false
   }
 
   /**
    * Emit the kernel's typed vector-field declarations for every level of every input column's
-   * spec tree. For a scalar leaf, one typed field at the leaf path; for complex nodes, one field
-   * for the complex vector itself (`ListVector` or `StructVector`) plus recursive fields for the
-   * children. Top-level complex columns additionally get an instance-field declaration for the
-   * pre-allocated nested class.
-   *
-   * Instance fields for nested-class children one level down live inside the parent nested class,
-   * not on the kernel; see [[emitNestedClasses]].
+   * spec tree. Top-level complex columns additionally get an instance-field declaration for the
+   * pre-allocated nested class. Instance fields for nested-class children one level down live
+   * inside the parent nested class.
    */
   def inputFieldDecls(inputSchema: Seq[ArrowColumnSpec]): String = {
     val lines = new mutable.ArrayBuffer[String]()
@@ -112,6 +115,13 @@ private[udf] object CometBatchKernelCodegenInput {
       st.fields.zipWithIndex.foreach { case (f, fi) =>
         collectVectorFieldDecls(s"${path}_f$fi", f.child, out)
       }
+    case mp: MapColumnSpec =>
+      out += s"private ${classOf[MapVector].getName} $path;"
+      // Key and value vectors live at `${P}_k_e` / `${P}_v_e` so the `InputArray_${P}_k` /
+      // `InputArray_${P}_v` synthetic classes (which follow the array-element convention of
+      // reading from `${path}_e`) resolve their element reads correctly.
+      collectVectorFieldDecls(s"${path}_k_e", mp.key, out)
+      collectVectorFieldDecls(s"${path}_v_e", mp.value, out)
   }
 
   private def collectTopLevelInstanceDecl(
@@ -123,15 +133,16 @@ private[udf] object CometBatchKernelCodegenInput {
       out += s"private final InputArray_$path ${path}_arrayData = new InputArray_$path();"
     case _: StructColumnSpec =>
       out += s"private final InputStruct_$path ${path}_structData = new InputStruct_$path();"
+    case _: MapColumnSpec =>
+      out += s"private final InputMap_$path ${path}_mapData = new InputMap_$path();"
   }
 
   /**
-   * Emit the per-batch cast statements that materialize `inputs[ord]` into the typed vector
-   * fields declared by [[inputFieldDecls]], walking the full spec tree. For a scalar leaf, a
-   * single cast; for complex nodes, cast the complex vector, then recurse into children via
-   * `getDataVector()` for arrays or `getChildByOrdinal(fi)` for structs. All `getDataVector` /
-   * `getChildByOrdinal` calls happen once per batch at the top of `process`; the per-row reads
-   * inside nested classes go through the cached typed fields.
+   * Emit the per-batch cast statements. For a map column, casts the outer `MapVector`, then casts
+   * the inner `StructVector` (via a local variable) to extract key and value children via
+   * `getChildByOrdinal(0)` / `(1)`. For arrays, casts the outer `ListVector` and recurses via
+   * `getDataVector()`. For structs, casts the outer `StructVector` and recurses via
+   * `getChildByOrdinal(fi)`.
    */
   def inputCasts(inputSchema: Seq[ArrowColumnSpec]): String = {
     val lines = new mutable.ArrayBuffer[String]()
@@ -157,33 +168,33 @@ private[udf] object CometBatchKernelCodegenInput {
       st.fields.zipWithIndex.foreach { case (f, fi) =>
         collectCasts(s"${path}_f$fi", f.child, s"this.$path.getChildByOrdinal($fi)", out)
       }
+    case mp: MapColumnSpec =>
+      // MapVector's data vector is a StructVector with key at child 0 and value at child 1.
+      // Grab the struct through a local var and pull out the typed children. The key / value
+      // vectors live at the `_k_e` / `_v_e` paths so the synthetic `InputArray_${P}_k` /
+      // `InputArray_${P}_v` classes read them via the standard array-element convention.
+      val structLocal = s"${path}__mapStruct"
+      out += s"this.$path = (${classOf[MapVector].getName}) $source;"
+      out += s"${classOf[StructVector].getName} $structLocal = " +
+        s"(${classOf[StructVector].getName}) this.$path.getDataVector();"
+      collectCasts(s"${path}_k_e", mp.key, s"$structLocal.getChildByOrdinal(0)", out)
+      collectCasts(s"${path}_v_e", mp.value, s"$structLocal.getChildByOrdinal(1)", out)
   }
 
   /**
    * Emit the kernel's typed-getter overrides. Spark's `InternalRow` provides the base virtual
-   * method; the generated `@Override` on a final class gives the JIT enough information to
-   * devirtualize. Each getter switches on the column ordinal so the call site (with an inlined
-   * constant ordinal from `BoundReference.genCode`) folds down to a single branch.
-   *
-   * Current coverage: `isNullAt` plus getters for boolean, byte, short, int (including
-   * `DateDayVector`), long (including `TimeStampMicroVector` and its TZ variant), float, double,
-   * decimal, binary, and UTF8 (for both `VarCharVector` and `ViewVarCharVector`). Widen by adding
-   * further vector-class cases to the existing switches.
+   * method; the `@Override` on a final class gives the JIT enough information to devirtualize.
+   * Each getter switches on the column ordinal so the call site (with an inlined constant ordinal
+   * from `BoundReference.genCode`) folds down to a single branch.
    *
    * `decimalTypeByOrdinal` lets the decimal getter specialize per ordinal: when a
    * `BoundReference` of `DecimalType(precision <= 18)` is the only decimal read at that ordinal,
-   * the emitted case skips the `BigDecimal` allocation entirely and reads the unscaled long
-   * directly. See [[decimalPrecisionByOrdinal]] for how that map is derived.
+   * the emitted case skips the `BigDecimal` allocation and reads the unscaled long directly.
    *
-   * TODO(unsafe-readers): today the primitive getter emissions go through Arrow's typed
-   * `v.get(i)` which performs bounds checks against the vector's capacity. Inside the kernel's
-   * `process` loop we already know `i` is in `[0, numRows)` from the loop invariant, so the
-   * bounds check is redundant. Mirror `CometPlainVector`'s pattern by caching each input column's
-   * value/validity/offset buffer addresses at `process()` entry and emitting direct
-   * `Platform.getInt(null, col0_valueAddr + rowIdx * 4L)` (and analogous `getLong`, `getFloat`,
-   * `getDouble`) reads. Saves the bounds check and the ArrowBuf indirection per read. Same idea
-   * applies inside the nested `ArrayData` readers. Deferred to a follow-up because it touches
-   * every primitive case and wants a benchmark confirming the win before we commit.
+   * TODO(unsafe-readers): primitive getters go through Arrow's typed `v.get(i)` which performs
+   * bounds checks. Inside the kernel's `process` loop `i` is always in `[0, numRows)`, so the
+   * check is redundant. Mirror `CometPlainVector`'s pattern (cache validity/value/offset buffer
+   * addresses, use direct `Platform.getInt` reads) behind a benchmark.
    */
   def typedInputAccessors(
       inputSchema: Seq[ArrowColumnSpec],
@@ -229,20 +240,6 @@ private[udf] object CometBatchKernelCodegenInput {
     }
     val decimalCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[DecimalVector] =>
-        // Compile-time specialization on the DecimalType precision known at this ordinal.
-        //
-        // Arrow's decimal128 stores each value as a 16-byte little-endian two's complement
-        // integer. When the unscaled value fits in a signed 64-bit long (precision <= 18, i.e.
-        // `Decimal.MAX_LONG_DIGITS`), the low 8 bytes of the slot are the signed long value
-        // directly; the upper 8 bytes are sign-extension. Reading those 8 bytes via
-        // `ArrowBuf.getLong` (little-endian) and wrapping with `Decimal.createUnsafe` bypasses
-        // the `BigDecimal` allocation that `DecimalVector.getObject` performs.
-        //
-        // `decimalTypeByOrdinal(ord)` tells us which branch to emit: `Some(dt)` with
-        // `dt.precision <= 18` emits the fast path only, `Some(dt)` with precision > 18 emits
-        // the slow path only, `None` means either the ordinal has no `BoundReference` in the
-        // tree or has multiple conflicting DecimalTypes. The `None` case emits the runtime
-        // branch as a defensive fallback; it should not normally hit in a well-analyzed plan.
         val known = decimalTypeByOrdinal.getOrElse(ord, None)
         val fastPath =
           s"""        long unscaled = this.col$ord.getDataBuffer()
@@ -270,8 +267,6 @@ private[udf] object CometBatchKernelCodegenInput {
     val binaryCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord)
           if cls == classOf[VarBinaryVector] || cls == classOf[ViewVarBinaryVector] =>
-        // Both vectors expose `byte[] get(int)`; the view variant internally handles the inline
-        // vs referenced branch. Not zero-copy (byte[] must be heap-allocated) but correct.
         s"      case $ord: return this.col$ord.get(this.rowIdx);"
     }
     val utf8Cases = withOrd.flatMap {
@@ -313,8 +308,7 @@ private[udf] object CometBatchKernelCodegenInput {
   /**
    * Build a per-ordinal map of the `DecimalType` observed on `BoundReference`s in the bound
    * expression. Used by [[typedInputAccessors]] to emit a compile-time-specialized `getDecimal`
-   * case per ordinal (fast path for precision <= 18, slow path otherwise, with a runtime branch
-   * only when the precision cannot be determined).
+   * case per ordinal.
    */
   def decimalPrecisionByOrdinal(boundExpr: Expression): Map[Int, Option[DecimalType]] = {
     boundExpr
@@ -330,12 +324,11 @@ private[udf] object CometBatchKernelCodegenInput {
   }
 
   /**
-   * Emit every nested class needed for every complex level of every input column. For each
-   * `ArrayColumnSpec` or `StructColumnSpec` reached during a recursive walk of the spec tree,
-   * emits one `InputArray_${path}` or `InputStruct_${path}` class with the appropriate reset /
-   * getter shape for that level. Nested classes reference each other by name through the
-   * path-suffix convention; forward references are fine because they all live inside the same
-   * outer `SpecificCometBatchKernel` class.
+   * Emit every nested class needed for every complex level of every input column. For an
+   * `ArrayColumnSpec` we emit `InputArray_${path}`; for a `StructColumnSpec`
+   * `InputStruct_${path}`; for a `MapColumnSpec` `InputMap_${path}` plus the `InputArray` classes
+   * for the key and value slices (because Spark's `MapData.keyArray()` / `valueArray()` return
+   * `ArrayData` - same view shape as any other array).
    */
   def nestedClasses(inputSchema: Seq[ArrowColumnSpec]): String = {
     val out = new mutable.ArrayBuffer[String]()
@@ -358,37 +351,63 @@ private[udf] object CometBatchKernelCodegenInput {
       st.fields.zipWithIndex.foreach { case (f, fi) =>
         collectNestedClasses(s"${path}_f$fi", f.child, out)
       }
+    case mp: MapColumnSpec =>
+      out += emitMapClass(path, mp)
+      // Emit InputArray_${path}_k and InputArray_${path}_v - the ArrayData views returned by
+      // `MapData.keyArray()` / `valueArray()`. They follow the standard array-element
+      // convention: each reads from `${classPath}_e` which maps to the key / value vector
+      // emitted at `${path}_k_e` / `${path}_v_e` by [[collectVectorFieldDecls]]. Instance
+      // fields for complex key / value elements (one level deeper) live inside these array
+      // classes via [[instanceDeclaration]].
+      out += emitArrayClass(
+        s"${path}_k",
+        ArrayColumnSpec(nullable = true, elementSparkType = mp.keySparkType, element = mp.key))
+      out += emitArrayClass(
+        s"${path}_v",
+        ArrayColumnSpec(
+          nullable = true,
+          elementSparkType = mp.valueSparkType,
+          element = mp.value))
+      // Recurse into the key / value specs at their canonical paths (${path}_k_e /
+      // ${path}_v_e) so nested complex keys / values get their own nested classes.
+      collectNestedClasses(s"${path}_k_e", mp.key, out)
+      collectNestedClasses(s"${path}_v_e", mp.value, out)
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Shared helpers for complex-getter routing. A "list-backed child reset" computes
+  // `(startIdx, length)` for an inner instance from a ListVector / MapVector's offsets at a
+  // parent-provided index and calls `reset(startIdx, length)`.
+  // ---------------------------------------------------------------------------------------------
+
+  private def emitListBackedChildReset(
+      parentVectorPath: String,
+      indexExpr: String,
+      innerInstanceField: String): String =
+    s"""        int __idx = $indexExpr;
+       |        int __s = $parentVectorPath.getElementStartIndex(__idx);
+       |        int __e = $parentVectorPath.getElementEndIndex(__idx);
+       |        $innerInstanceField.reset(__s, __e - __s);""".stripMargin
+
   /**
-   * Emit one `InputArray_${path}` nested class.
+   * Emit one `InputArray_${path}` nested class. Unified slice-based reset: callers pass
+   * `(startIdx, length)` directly.
    *
-   *   - Holds `startIndex` / `length` captured from the outer list's offsets at row reset time.
-   *   - If the element is complex, also holds a pre-allocated inner nested-class instance.
-   *   - `reset(int rowIdx)` reads offsets from the vector at `path` (the `ListVector`).
-   *   - `isNullAt(int i)` delegates to the element vector's null bit at `startIndex + i`.
-   *   - Element getter: for scalar elements, a direct typed read from the typed child vector at
-   *     `${path}_e`; for complex elements, routes through the inner instance after
-   *     `reset(startIndex + i)`.
+   * Key/value arrays of a map share this exact shape - the instance fields for their complex
+   * elements (if any) are emitted from [[emitArrayElementGetter]]; the vector fields they read
+   * from are at `${path}_e` (following the array-element path convention), which maps to
+   * `col${N}_k_e` or `col${N}_v_e` when the array represents a map key/value slice.
    *
-   * The element vector's path is always `${path}_e`, matching the naming convention used by
-   * [[inputFieldDecls]] / [[inputCasts]].
+   * NOTE: when this class is used for a map's key or value view and the underlying key/value is
+   * scalar, there is no `${path}_e` vector field - the map's key/value vector sits at `${path}`
+   * itself (e.g. `col0_k`). See [[emitArrayElementGetter]] for how that is handled: scalar
+   * element emission reads from `${path}_e`, but for map views the element vector IS the path
+   * itself. We rename the element path in [[emitMapClass]] below.
    */
   private def emitArrayClass(path: String, spec: ArrayColumnSpec): String = {
     val baseClassName = classOf[CometArrayData].getName
     val elemPath = s"${path}_e"
-    val innerInstance = spec.element match {
-      case _: ScalarColumnSpec => ""
-      case _: ArrayColumnSpec =>
-        s"    private final InputArray_$elemPath ${elemPath}_arrayData = " +
-          s"new InputArray_$elemPath();"
-      case _: StructColumnSpec =>
-        s"    private final InputStruct_$elemPath ${elemPath}_structData = " +
-          s"new InputStruct_$elemPath();"
-    }
-    // isNullAt reads the null bit on the element vector at the flat slice index. Works whether
-    // the element vector is a scalar, another ListVector, or a StructVector - each carries its
-    // own validity bitmap over its own rows.
+    val innerInstance = instanceDeclaration(elemPath, spec.element)
     val isNullAt =
       s"""      @Override
          |      public boolean isNullAt(int i) {
@@ -400,9 +419,9 @@ private[udf] object CometBatchKernelCodegenInput {
        |    private int length;
        |$innerInstance
        |
-       |    void reset(int rowIdx) {
-       |      this.startIndex = $path.getElementStartIndex(rowIdx);
-       |      this.length = $path.getElementEndIndex(rowIdx) - this.startIndex;
+       |    void reset(int startIdx, int len) {
+       |      this.startIndex = startIdx;
+       |      this.length = len;
        |    }
        |
        |    @Override
@@ -418,10 +437,9 @@ private[udf] object CometBatchKernelCodegenInput {
   }
 
   /**
-   * Emit the element getter body for a nested `InputArray_${path}` class. Scalar elements get a
-   * direct typed read from the typed child vector at `${path}_e`. Complex elements (array /
-   * struct) get a `getArray` or `getStruct` override that routes through the inner instance after
-   * resetting it to the outer slice index `startIndex + i`.
+   * Emit the element getter body for a nested `InputArray_${path}`. Scalar element → direct typed
+   * read. Complex element → `getArray(i)` / `getStruct(i, n)` / `getMap(i)` that resets the inner
+   * instance.
    */
   private def emitArrayElementGetter(path: String, spec: ArrayColumnSpec): String = {
     val elemPath = s"${path}_e"
@@ -429,25 +447,32 @@ private[udf] object CometBatchKernelCodegenInput {
       case _: ScalarColumnSpec =>
         scalarElementGetter(spec.elementSparkType, elemPath)
       case _: ArrayColumnSpec =>
+        val reset = emitListBackedChildReset(elemPath, "startIndex + i", s"${elemPath}_arrayData")
         s"""      @Override
            |      public org.apache.spark.sql.catalyst.util.ArrayData getArray(int i) {
-           |        ${elemPath}_arrayData.reset(startIndex + i);
+           |$reset
            |        return ${elemPath}_arrayData;
            |      }""".stripMargin
-      case st: StructColumnSpec =>
-        val _ = st // suppress unused warning; numFields is an argument Spark passes at call site
+      case _: StructColumnSpec =>
         s"""      @Override
            |      public org.apache.spark.sql.catalyst.InternalRow getStruct(int i, int numFields) {
            |        ${elemPath}_structData.reset(startIndex + i);
            |        return ${elemPath}_structData;
            |      }""".stripMargin
+      case _: MapColumnSpec =>
+        val reset = emitListBackedChildReset(elemPath, "startIndex + i", s"${elemPath}_mapData")
+        s"""      @Override
+           |      public org.apache.spark.sql.catalyst.util.MapData getMap(int i) {
+           |$reset
+           |        return ${elemPath}_mapData;
+           |      }""".stripMargin
     }
   }
 
   /**
-   * Emit the element-type-specific getter override for a scalar-element array. Only the one
-   * getter matching the element type is overridden; any other getter the consumer might call
-   * inherits the base class's `UnsupportedOperationException`.
+   * Emit the scalar-element getter override for a nested `InputArray_${path}`. Only the getter
+   * matching the element type is overridden; any other getter inherits the base class's
+   * `UnsupportedOperationException`.
    */
   private def scalarElementGetter(elemType: DataType, childField: String): String =
     elemType match {
@@ -487,10 +512,6 @@ private[udf] object CometBatchKernelCodegenInput {
          |        return $childField.get(startIndex + i);
          |      }""".stripMargin
       case dt: DecimalType =>
-        // Short-precision fast path mirrors the top-level `getDecimal` specialization: read the
-        // low 8 bytes of the decimal128 slot as a signed long and wrap with `createUnsafe`.
-        // `getDecimal` is called with precision/scale as parameters by Spark's codegen; our
-        // specialization is keyed on the static element type.
         if (dt.precision <= 18) {
           s"""      @Override
            |      public org.apache.spark.sql.types.Decimal getDecimal(
@@ -510,10 +531,6 @@ private[udf] object CometBatchKernelCodegenInput {
            |      }""".stripMargin
         }
       case _: StringType =>
-        // Zero-copy UTF8 read via `UTF8String.fromAddress` on the child VarCharVector's data
-        // buffer. ViewVarCharVector child support is deferred; the child vector class check at
-        // `canHandle` / spec construction time will need to branch for view-format children
-        // when added.
         s"""      @Override
          |      public org.apache.spark.unsafe.types.UTF8String getUTF8String(int i) {
          |        int s = $childField.getStartOffset(startIndex + i);
@@ -533,16 +550,16 @@ private[udf] object CometBatchKernelCodegenInput {
     }
 
   /**
-   * Emit the kernel's `@Override public ArrayData getArray(int ordinal)` method when the input
-   * schema has at least one array-typed column at the top level; empty string otherwise.
-   *
-   * Each case resets the pre-allocated nested-class instance and returns it. Zero allocation per
-   * row beyond the mutable-field writes inside `reset`.
+   * Emit the kernel's `@Override public ArrayData getArray(int ordinal)` method. Each case reads
+   * `(startIdx, length)` from the outer `ListVector`'s offsets at the current row and calls the
+   * pre-allocated instance's unified `reset(startIdx, length)`.
    */
   def emitGetArrayMethod(inputSchema: Seq[ArrowColumnSpec]): String = {
     val cases = inputSchema.zipWithIndex.collect { case (_: ArrayColumnSpec, ord) =>
+      val reset =
+        emitListBackedChildReset(s"this.col$ord", "this.rowIdx", s"this.col${ord}_arrayData")
       s"""      case $ord: {
-         |        this.col${ord}_arrayData.reset(this.rowIdx);
+         |$reset
          |        return this.col${ord}_arrayData;
          |      }""".stripMargin
     }
@@ -563,34 +580,17 @@ private[udf] object CometBatchKernelCodegenInput {
   }
 
   /**
-   * Emit one `InputStruct_${path}` nested class.
-   *
-   *   - Holds `rowIdx` captured from the outer row index at reset time (struct children are
-   *     flat-indexed, so no offset chain is needed).
-   *   - For each complex field one level down, holds a pre-allocated inner nested-class instance.
-   *   - `reset(int outerRowIdx)` just captures the index.
-   *   - `isNullAt(int ordinal)` switches on field ordinal; non-nullable fields return literal
-   *     `false`, nullable fields delegate to the field's vector.
-   *   - Typed scalar getters (one per appearing scalar type) switch on field ordinal.
-   *   - Complex getters (`getArray(ordinal)` / `getStruct(ordinal, numFields)`) switch on field
-   *     ordinal and route to the appropriate inner instance after resetting it.
+   * Emit one `InputStruct_${path}` nested class. Flat-indexed: `reset(int outerRowIdx)` just
+   * captures the index. Scalar getters switch on field ordinal; complex getters route to inner
+   * instances (offsets computed for array/map children; rowIdx passed through for struct
+   * children).
    */
   private def emitStructClass(path: String, spec: StructColumnSpec): String = {
     val baseClassName = classOf[CometInternalRow].getName
     val innerInstances = spec.fields.zipWithIndex
       .flatMap { case (f, fi) =>
         val fieldPath = s"${path}_f$fi"
-        f.child match {
-          case _: ScalarColumnSpec => None
-          case _: ArrayColumnSpec =>
-            Some(
-              s"    private final InputArray_$fieldPath ${fieldPath}_arrayData = " +
-                s"new InputArray_$fieldPath();")
-          case _: StructColumnSpec =>
-            Some(
-              s"    private final InputStruct_$fieldPath ${fieldPath}_structData = " +
-                s"new InputStruct_$fieldPath();")
-        }
+        Some(instanceDeclaration(fieldPath, f.child)).filter(_.nonEmpty)
       }
       .mkString("\n")
     val isNullCases = spec.fields.zipWithIndex.map {
@@ -629,11 +629,8 @@ private[udf] object CometBatchKernelCodegenInput {
        |""".stripMargin
   }
 
-  /** Emit the scalar-type getter switches for an `InputStruct_${path}` class. */
   private def emitStructScalarGetters(path: String, spec: StructColumnSpec): String = {
     val withOrd = spec.fields.zipWithIndex
-
-    // Scalar fields only; complex fields are handled by emitStructComplexGetters.
     val scalarOrd = withOrd.filter { case (f, _) => f.child.isInstanceOf[ScalarColumnSpec] }
 
     def fieldReadScalar(fi: Int, dt: DataType): String = dt match {
@@ -653,8 +650,6 @@ private[udf] object CometBatchKernelCodegenInput {
            |              .fromAddress(null, addr, e - s);
            |        }""".stripMargin
       case _: DecimalType =>
-        // Decimal is handled in a separate override; the signature takes precision/scale, so
-        // emit a per-field case into that switch, not this one.
         throw new IllegalStateException("decimal handled separately")
       case other =>
         throw new UnsupportedOperationException(
@@ -663,15 +658,18 @@ private[udf] object CometBatchKernelCodegenInput {
 
     val booleanCases =
       scalarOrd.collect {
-        case (f, fi) if f.sparkType == BooleanType => fieldReadScalar(fi, BooleanType)
+        case (f, fi) if f.sparkType == BooleanType =>
+          fieldReadScalar(fi, BooleanType)
       }
     val byteCases =
       scalarOrd.collect {
-        case (f, fi) if f.sparkType == ByteType => fieldReadScalar(fi, ByteType)
+        case (f, fi) if f.sparkType == ByteType =>
+          fieldReadScalar(fi, ByteType)
       }
     val shortCases =
       scalarOrd.collect {
-        case (f, fi) if f.sparkType == ShortType => fieldReadScalar(fi, ShortType)
+        case (f, fi) if f.sparkType == ShortType =>
+          fieldReadScalar(fi, ShortType)
       }
     val intCases = scalarOrd.collect {
       case (f, fi) if f.sparkType == IntegerType || f.sparkType == DateType =>
@@ -685,15 +683,18 @@ private[udf] object CometBatchKernelCodegenInput {
     }
     val floatCases =
       scalarOrd.collect {
-        case (f, fi) if f.sparkType == FloatType => fieldReadScalar(fi, FloatType)
+        case (f, fi) if f.sparkType == FloatType =>
+          fieldReadScalar(fi, FloatType)
       }
     val doubleCases =
       scalarOrd.collect {
-        case (f, fi) if f.sparkType == DoubleType => fieldReadScalar(fi, DoubleType)
+        case (f, fi) if f.sparkType == DoubleType =>
+          fieldReadScalar(fi, DoubleType)
       }
     val binaryCases =
       scalarOrd.collect {
-        case (f, fi) if f.sparkType == BinaryType => fieldReadScalar(fi, BinaryType)
+        case (f, fi) if f.sparkType == BinaryType =>
+          fieldReadScalar(fi, BinaryType)
       }
     val utf8Cases = scalarOrd.collect {
       case (f, fi) if f.sparkType.isInstanceOf[StringType] => fieldReadScalar(fi, f.sparkType)
@@ -737,17 +738,13 @@ private[udf] object CometBatchKernelCodegenInput {
         utf8Cases)).mkString
   }
 
-  /**
-   * Emit the complex-type getter switches (`getArray` / `getStruct`) for an `InputStruct_${path}`
-   * class. Cases route to the pre-allocated inner instance after `reset(this.rowIdx)` (struct is
-   * flat-indexed, so the child vector's row at our own rowIdx is this field's value).
-   */
   private def emitStructComplexGetters(path: String, spec: StructColumnSpec): String = {
     val getArrayCases = spec.fields.zipWithIndex.collect {
       case (f, fi) if f.child.isInstanceOf[ArrayColumnSpec] =>
         val fieldPath = s"${path}_f$fi"
+        val reset = emitListBackedChildReset(fieldPath, "this.rowIdx", s"${fieldPath}_arrayData")
         s"""        case $fi: {
-           |          ${fieldPath}_arrayData.reset(this.rowIdx);
+           |$reset
            |          return ${fieldPath}_arrayData;
            |        }""".stripMargin
     }
@@ -759,6 +756,15 @@ private[udf] object CometBatchKernelCodegenInput {
            |          return ${fieldPath}_structData;
            |        }""".stripMargin
     }
+    val getMapCases = spec.fields.zipWithIndex.collect {
+      case (f, fi) if f.child.isInstanceOf[MapColumnSpec] =>
+        val fieldPath = s"${path}_f$fi"
+        val reset = emitListBackedChildReset(fieldPath, "this.rowIdx", s"${fieldPath}_mapData")
+        s"""        case $fi: {
+           |$reset
+           |          return ${fieldPath}_mapData;
+           |        }""".stripMargin
+    }
     Seq(
       structSwitch(
         "public org.apache.spark.sql.catalyst.util.ArrayData getArray(int ordinal)",
@@ -767,13 +773,98 @@ private[udf] object CometBatchKernelCodegenInput {
       structSwitch(
         "public org.apache.spark.sql.catalyst.InternalRow getStruct(int ordinal, int numFields)",
         "getStruct",
-        getStructCases)).mkString
+        getStructCases),
+      structSwitch(
+        "public org.apache.spark.sql.catalyst.util.MapData getMap(int ordinal)",
+        "getMap",
+        getMapCases)).mkString
   }
 
   /**
-   * Emit one `@Override`-annotated switch method inside an `InputStruct_${path}` class. Returns
-   * an empty string when the struct has no fields matched by this getter.
+   * Emit one `InputMap_${path}` nested class. Holds the slice `(startIndex, length)` and routes
+   * `keyArray()` / `valueArray()` through pre-allocated `InputArray_${path}_k` /
+   * `InputArray_${path}_v` instances (emitted by [[collectNestedClasses]]).
    */
+  private def emitMapClass(path: String, spec: MapColumnSpec): String = {
+    val _ = spec // key/value arrays declared via path convention below
+    val baseClassName = classOf[CometMapData].getName
+    val keyPath = s"${path}_k"
+    val valPath = s"${path}_v"
+    s"""  private final class InputMap_$path extends $baseClassName {
+       |    private int startIndex;
+       |    private int length;
+       |    private final InputArray_$keyPath ${keyPath}_arrayData = new InputArray_$keyPath();
+       |    private final InputArray_$valPath ${valPath}_arrayData = new InputArray_$valPath();
+       |
+       |    void reset(int startIdx, int len) {
+       |      this.startIndex = startIdx;
+       |      this.length = len;
+       |    }
+       |
+       |    @Override
+       |    public int numElements() {
+       |      return length;
+       |    }
+       |
+       |    @Override
+       |    public org.apache.spark.sql.catalyst.util.ArrayData keyArray() {
+       |      ${keyPath}_arrayData.reset(this.startIndex, this.length);
+       |      return ${keyPath}_arrayData;
+       |    }
+       |
+       |    @Override
+       |    public org.apache.spark.sql.catalyst.util.ArrayData valueArray() {
+       |      ${valPath}_arrayData.reset(this.startIndex, this.length);
+       |      return ${valPath}_arrayData;
+       |    }
+       |  }
+       |""".stripMargin
+  }
+
+  /**
+   * Emit the kernel's top-level `@Override public MapData getMap(int ordinal)` method when the
+   * input schema has at least one map-typed column at the top level; empty string otherwise.
+   */
+  def emitGetMapMethod(inputSchema: Seq[ArrowColumnSpec]): String = {
+    val cases = inputSchema.zipWithIndex.collect { case (_: MapColumnSpec, ord) =>
+      val reset =
+        emitListBackedChildReset(s"this.col$ord", "this.rowIdx", s"this.col${ord}_mapData")
+      s"""      case $ord: {
+         |$reset
+         |        return this.col${ord}_mapData;
+         |      }""".stripMargin
+    }
+    if (cases.isEmpty) {
+      ""
+    } else {
+      s"""
+         |  @Override
+         |  public org.apache.spark.sql.catalyst.util.MapData getMap(int ordinal) {
+         |    switch (ordinal) {
+         |${cases.mkString("\n")}
+         |      default: throw new UnsupportedOperationException(
+         |          "getMap out of range: " + ordinal);
+         |    }
+         |  }
+         |""".stripMargin
+    }
+  }
+
+  /**
+   * Return the inner-instance field declaration for one complex spec at the given path, or an
+   * empty string for a scalar spec. Used inside nested-class bodies to declare pre-allocated
+   * child-view instances.
+   */
+  private def instanceDeclaration(path: String, spec: ArrowColumnSpec): String = spec match {
+    case _: ScalarColumnSpec => ""
+    case _: ArrayColumnSpec =>
+      s"    private final InputArray_$path ${path}_arrayData = new InputArray_$path();"
+    case _: StructColumnSpec =>
+      s"    private final InputStruct_$path ${path}_structData = new InputStruct_$path();"
+    case _: MapColumnSpec =>
+      s"    private final InputMap_$path ${path}_mapData = new InputMap_$path();"
+  }
+
   private def structSwitch(methodSig: String, label: String, cases: Seq[String]): String = {
     if (cases.isEmpty) {
       ""
@@ -793,8 +884,7 @@ private[udf] object CometBatchKernelCodegenInput {
 
   /**
    * Emit the kernel's top-level `@Override public InternalRow getStruct(int ordinal, int
-   * numFields)` method when the input schema has at least one struct-typed column at the top
-   * level; empty string otherwise.
+   * numFields)` method when the input schema has at least one struct-typed column.
    */
   def emitGetStructMethod(inputSchema: Seq[ArrowColumnSpec]): String = {
     val cases = inputSchema.zipWithIndex.collect { case (_: StructColumnSpec, ord) =>
@@ -819,11 +909,6 @@ private[udf] object CometBatchKernelCodegenInput {
     }
   }
 
-  /**
-   * Build one `@Override`-annotated switch method for the top-level kernel. Returns an empty
-   * string when no input columns use this getter so the generated class does not carry a dead
-   * method override.
-   */
   private def emitOrdinalSwitch(methodSig: String, label: String, cases: Seq[String]): String = {
     if (cases.isEmpty) {
       ""
@@ -845,18 +930,7 @@ private[udf] object CometBatchKernelCodegenInput {
    * Emit a zero-copy `getUTF8String` case for a `ViewVarCharVector` column at the given ordinal.
    * Reads the 16-byte view entry directly from the view buffer and either points at the inline
    * bytes (length &lt;= INLINE_SIZE=12) or at the referenced data buffer via `(bufferIndex,
-   * offset)` (length &gt; 12). Follows the layout documented on `BaseVariableWidthViewVector` and
-   * the reference decode in its `get(index, holder)` method:
-   *
-   *   - bytes 0..4: length (int, little-endian via ArrowBuf)
-   *   - if length &lt;= 12: bytes 4..16 are inline UTF-8 data
-   *   - else: bytes 4..8 are the prefix (unused here), 8..12 the data buffer index, 12..16 the
-   *     offset into that buffer
-   *
-   * No `byte[]` allocation; `UTF8String.fromAddress` wraps the Arrow buffer address directly.
-   * This is the main reason to route `Utf8View`-shaped columns through the dispatcher rather than
-   * fall back to Spark: native `Utf8View` coverage is uneven, and the zero-copy JVM read matches
-   * the semantics Spark expects.
+   * offset)` (length &gt; 12).
    */
   private def viewUtf8StringCase(ord: Int): String = {
     val elementSize = BaseVariableWidthViewVector.ELEMENT_SIZE

@@ -20,7 +20,7 @@
 package org.apache.comet.udf
 
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, ViewVarBinaryVector, ViewVarCharVector}
-import org.apache.arrow.vector.complex.{ListVector, StructVector}
+import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, RegExpReplace, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeAndComment, CodeFormatter, CodegenContext, CodeGenerator, CodegenFallback, ExprCode, GeneratedClass}
@@ -244,6 +244,24 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       child: ArrowColumnSpec)
 
   /**
+   * Map column: an Arrow `MapVector` (subclass of `ListVector`) whose data vector is a
+   * `StructVector` with a key field at ordinal 0 and a value field at ordinal 1. `key` and
+   * `value` are themselves `ArrowColumnSpec` so nested shapes (`Map<Struct<...>, Array<X>>`,
+   * `Map<Map<...>, ...>`) compose by trait-level recursion. Nullable map entries are controlled
+   * per-column by the outer map's validity; nullable keys and values are carried in the child
+   * specs' `nullable` bit.
+   */
+  final case class MapColumnSpec(
+      nullable: Boolean,
+      keySparkType: DataType,
+      valueSparkType: DataType,
+      key: ArrowColumnSpec,
+      value: ArrowColumnSpec)
+      extends ArrowColumnSpec {
+    override def vectorClass: Class[_ <: ValueVector] = classOf[MapVector]
+  }
+
+  /**
    * Resolve an Arrow vector class by its simple name, using the same classloader the codegen uses
    * internally. Intended for tests: the `common` module shades `org.apache.arrow` to
    * `org.apache.comet.shaded.arrow`, so `classOf[VarCharVector]` at a call site in an unshaded
@@ -464,6 +482,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     val nested = CometBatchKernelCodegenInput.nestedClasses(inputSchema)
     val getArrayMethod = CometBatchKernelCodegenInput.emitGetArrayMethod(inputSchema)
     val getStructMethod = CometBatchKernelCodegenInput.emitGetStructMethod(inputSchema)
+    val getMapMethod = CometBatchKernelCodegenInput.emitGetMapMethod(inputSchema)
 
     val codeBody =
       s"""
@@ -491,6 +510,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
          |  $getters
          |  $getArrayMethod
          |  $getStructMethod
+         |  $getMapMethod
          |
          |  @Override
          |  public void process(

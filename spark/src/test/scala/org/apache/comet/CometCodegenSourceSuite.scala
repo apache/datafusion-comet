@@ -24,10 +24,10 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Size, StringSplit, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
-import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructField, StructType}
 
 import org.apache.comet.udf.CometBatchKernelCodegen
-import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
+import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 
 // Resolve Arrow vector classes through the codegen object so tests see the same `Class` objects
 // the shaded `common` module sees. A direct `classOf[org.apache.arrow.vector.VarCharVector]` here
@@ -486,7 +486,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("public org.apache.spark.sql.catalyst.util.ArrayData getArray(int ordinal)"),
       s"expected kernel-level getArray switch; got:\n$src")
     assert(
-      src.contains("col0_arrayData.reset(this.rowIdx)"),
+      src.contains("col0_arrayData.reset("),
       s"expected getArray to reset the pre-allocated instance; got:\n$src")
   }
 
@@ -581,7 +581,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("class InputArray_col0 ") && src.contains("class InputArray_col0_e "),
       s"expected both outer and inner array classes; got:\n$src")
     assert(
-      src.contains("col0_e_arrayData.reset(startIndex + i)"),
+      src.contains("col0_e_arrayData.reset("),
       s"expected outer class to route getArray via inner instance reset; got:\n$src")
     assert(
       src.contains("public int getInt(int i)"),
@@ -669,8 +669,71 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("class InputStruct_col0 ") && src.contains("class InputArray_col0_f0 "),
       s"expected struct-of-array nested classes; got:\n$src")
     assert(
-      src.contains("col0_f0_arrayData.reset(this.rowIdx)"),
+      src.contains("col0_f0_arrayData.reset("),
       s"expected struct getArray to route to inner array instance; got:\n$src")
+  }
+
+  test("nested: Map<String, Int> emits InputMap_col0 + keyArray / valueArray views") {
+    val keySpec = ScalarColumnSpec(varCharVectorClass, nullable = true)
+    val valueSpec = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val mapSpec = MapColumnSpec(
+      nullable = true,
+      keySparkType = StringType,
+      valueSparkType = IntegerType,
+      key = keySpec,
+      value = valueSpec)
+    val expr = Size(BoundReference(0, MapType(StringType, IntegerType), nullable = true))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(mapSpec)).body
+    assert(
+      src.contains("class InputMap_col0 "),
+      s"expected InputMap_col0 nested class; got:\n$src")
+    assert(
+      src.contains("class InputArray_col0_k ") && src.contains("class InputArray_col0_v "),
+      s"expected key/value array view classes; got:\n$src")
+    assert(
+      src.contains("col0_k_arrayData.reset(this.startIndex, this.length)"),
+      s"expected keyArray to reset with slice; got:\n$src")
+    assert(
+      src.contains("col0_v_arrayData.reset(this.startIndex, this.length)"),
+      s"expected valueArray to reset with slice; got:\n$src")
+    assert(
+      src.contains("public org.apache.spark.sql.catalyst.util.MapData getMap(int ordinal)"),
+      s"expected kernel-level getMap switch; got:\n$src")
+    assert(
+      src.contains("col0_mapData.reset("),
+      s"expected getMap to reset the pre-allocated map instance; got:\n$src")
+  }
+
+  test("nested: Map<Array<Int>, Array<String>> emits complex key and complex value views") {
+    val keyElem = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val keyArraySpec =
+      ArrayColumnSpec(nullable = true, elementSparkType = IntegerType, element = keyElem)
+    val valueElem = ScalarColumnSpec(varCharVectorClass, nullable = true)
+    val valueArraySpec =
+      ArrayColumnSpec(nullable = true, elementSparkType = StringType, element = valueElem)
+    val mapSpec = MapColumnSpec(
+      nullable = true,
+      keySparkType = ArrayType(IntegerType),
+      valueSparkType = ArrayType(StringType),
+      key = keyArraySpec,
+      value = valueArraySpec)
+    val expr = Size(
+      BoundReference(0, MapType(ArrayType(IntegerType), ArrayType(StringType)), nullable = true))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(mapSpec)).body
+    // Full chain of nested classes should appear: top-level map view, the key/value array
+    // views, and the inner array classes for each complex key/value element.
+    Seq(
+      "class InputMap_col0 ",
+      "class InputArray_col0_k ",
+      "class InputArray_col0_v ",
+      "class InputArray_col0_k_e ",
+      "class InputArray_col0_v_e ").foreach { marker =>
+      assert(src.contains(marker), s"expected $marker in emission; got:\n$src")
+    }
   }
 }
 
