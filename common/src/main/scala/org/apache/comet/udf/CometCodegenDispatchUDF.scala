@@ -229,9 +229,9 @@ object CometCodegenDispatchUDF {
    *
    * TODO(perf): Every batch invocation walks `bytesKey` once for `hashCode` (and again for
    * `equals` on hash collision / final confirm in `ensureKernel`), so HashMap lookup is
-   * O(bytes.length) per batch. For small expressions (a few KB) this is single-digit μs and
+   * O(bytes.length) per batch. For small expressions (a few KB) this is single-digit us and
    * invisible; for large ScalaUDF closures with heavy encoders (tens to hundreds of KB) it can
-   * climb to tens of μs per batch, measurable at ~1-10% of hot-path time. If a workload shows
+   * climb to tens of us per batch, measurable at ~1-10% of hot-path time. If a workload shows
    * this on a profile, three succinct alternatives worth exploring:
    *
    *   1. Driver-side precomputed hash piggybacked through the Arrow transport as a small tag

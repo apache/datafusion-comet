@@ -20,7 +20,7 @@
 package org.apache.comet
 
 import org.apache.arrow.vector.{BigIntVector, BitVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TinyIntVector, ValueVector, VarCharVector}
-import org.apache.spark.SparkConf
+import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType}
@@ -784,7 +784,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     spark.udf.register(
       "pid",
       (_: Long) => {
-        val tc = org.apache.spark.TaskContext.get()
+        val tc = TaskContext.get()
         if (tc != null) tc.partitionId() else -1
       })
     val df = spark
@@ -804,7 +804,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     spark.udf.register(
       "pidP",
       (_: Int) => {
-        val tc = org.apache.spark.TaskContext.get()
+        val tc = TaskContext.get()
         if (tc != null) tc.partitionId() else -1
       })
     withTable("t") {

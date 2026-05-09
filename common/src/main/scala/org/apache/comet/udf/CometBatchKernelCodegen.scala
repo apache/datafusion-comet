@@ -23,7 +23,7 @@ import org.apache.arrow.memory.ArrowBuf
 import org.apache.arrow.vector.{BaseVariableWidthViewVector, BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, ViewVarBinaryVector, ViewVarCharVector}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, RegExpReplace, Unevaluable}
-import org.apache.spark.sql.catalyst.expressions.codegen.{CodeAndComment, CodeFormatter, CodegenContext, CodeGenerator, CodegenFallback, GeneratedClass}
+import org.apache.spark.sql.catalyst.expressions.codegen.{CodeAndComment, CodeFormatter, CodegenContext, CodeGenerator, CodegenFallback, ExprCode, GeneratedClass}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType, TimestampType}
 
@@ -717,12 +717,10 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
           b.ordinal -> b.dataType.asInstanceOf[DecimalType]
       }
       .groupBy(_._1)
-      .view
-      .mapValues { pairs =>
+      .map { case (ord, pairs) =>
         val distinct = pairs.map(_._2).toSet
-        if (distinct.size == 1) Some(distinct.head) else None
+        ord -> (if (distinct.size == 1) Some(distinct.head) else None)
       }
-      .toMap
   }
 
   /**
@@ -913,7 +911,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    */
   private def defaultBody(
       boundExpr: Expression,
-      ev: org.apache.spark.sql.catalyst.expressions.codegen.ExprCode,
+      ev: ExprCode,
       writeSnippet: String,
       subExprsCode: String): String = {
     boundExpr match {
