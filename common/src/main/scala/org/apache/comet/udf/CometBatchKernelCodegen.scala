@@ -937,15 +937,30 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
            |}
          """.stripMargin
       case _ =>
-        s"""
-           |$subExprsCode
-           |${ev.code}
-           |if (${ev.isNull}) {
-           |  output.setNull(i);
-           |} else {
-           |  $writeSnippet
-           |}
-         """.stripMargin
+        // Optimization: NonNullableOutputShortCircuit.
+        // When the bound expression declares `nullable = false`, the `if (ev.isNull)` branch is
+        // dead and HotSpot may or may not fold it (it depends on whether the expression's
+        // `doGenCode` made `ev.isNull` a `FalseLiteral` or a variable whose value is
+        // false-at-runtime but not a compile-time constant from Spark's side). Drop the guard
+        // at source level so we don't depend on JIT folding and keep the generated body
+        // minimal.
+        if (!boundExpr.nullable) {
+          s"""
+             |$subExprsCode
+             |${ev.code}
+             |$writeSnippet
+           """.stripMargin
+        } else {
+          s"""
+             |$subExprsCode
+             |${ev.code}
+             |if (${ev.isNull}) {
+             |  output.setNull(i);
+             |} else {
+             |  $writeSnippet
+             |}
+           """.stripMargin
+        }
     }
   }
 
@@ -987,17 +1002,49 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         (classOf[Float4Vector].getName, s"output.set(i, $valueTerm);")
       case DoubleType =>
         (classOf[Float8Vector].getName, s"output.set(i, $valueTerm);")
-      case _: DecimalType =>
-        // Spark `Decimal.toJavaBigDecimal()` allocates a `java.math.BigDecimal`. DecimalVector's
-        // `setSafe(int, BigDecimal)` copies the unscaled bytes into the fixed-width buffer.
-        // Cheaper paths exist (unscaled-long fast-path for short decimals, direct buffer writes
-        // for longer ones) but require branching on `Decimal.toUnscaledLong` success. Defer.
-        (classOf[DecimalVector].getName, s"output.setSafe(i, $valueTerm.toJavaBigDecimal());")
+      case dt: DecimalType =>
+        // Optimization: DecimalOutputShortFastPath.
+        // For precision <= 18, the unscaled value fits in a signed 64-bit long, and
+        // `DecimalVector.setSafe(int, long)` stores it directly into the 16-byte decimal128
+        // slot. `Decimal.toUnscaledLong` returns the backing long directly when the Decimal is
+        // short-stored (the common case for DecimalType(p<=18, s) outputs), so the fast path
+        // avoids the `java.math.BigDecimal` allocation that `DecimalVector.setSafe(int,
+        // BigDecimal)` requires. Mirrors the input-side specialization at codegen time:
+        // precision is baked into the emitted source, no runtime branch.
+        //
+        // For precision > 18, the unscaled value can exceed 64 bits, so keep the BigDecimal
+        // path.
+        if (dt.precision <= 18) {
+          (classOf[DecimalVector].getName, s"output.setSafe(i, $valueTerm.toUnscaledLong());")
+        } else {
+          (classOf[DecimalVector].getName, s"output.setSafe(i, $valueTerm.toJavaBigDecimal());")
+        }
       case _: StringType =>
-        // UTF8String.getBytes returns a fresh byte[]; setSafe copies into the Arrow data buffer.
-        (
-          classOf[VarCharVector].getName,
-          s"byte[] b = $valueTerm.getBytes(); output.setSafe(i, b, 0, b.length);")
+        // Optimization: Utf8OutputOnHeapShortcut.
+        // `UTF8String` is internally a `(base, offset, numBytes)` view. When `base` is a
+        // `byte[]` (the common case: every Spark string function allocates its result on-heap
+        // before wrapping), we already have the byte array backing the value. `getBytes()`
+        // would allocate *another* byte[] and copy; instead, pass the existing byte[] directly
+        // to `VarCharVector.setSafe(int, byte[], int, int)` using the encoded offset.
+        //
+        // `UTF8String.getBaseOffset()` includes `Platform.BYTE_ARRAY_OFFSET` as its on-heap
+        // prefix, so the array-space start is `baseOffset - BYTE_ARRAY_OFFSET`.
+        //
+        // Off-heap fallback (base == null) is rare on the output side because string functions
+        // allocate on-heap; keep the getBytes() path for passthrough of zero-copy input reads.
+        val utf8Snippet =
+          s"""Object __b = $valueTerm.getBaseObject();
+             |int __n = $valueTerm.numBytes();
+             |if (__b instanceof byte[]) {
+             |  output.setSafe(i, (byte[]) __b,
+             |      (int) ($valueTerm.getBaseOffset()
+             |          - org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET),
+             |      __n);
+             |} else {
+             |  byte[] __bb = $valueTerm.getBytes();
+             |  output.setSafe(i, __bb, 0, __bb.length);
+             |}""".stripMargin
+        (classOf[VarCharVector].getName, utf8Snippet)
       case BinaryType =>
         // BoundReference produces a `byte[]` directly for BinaryType.
         (

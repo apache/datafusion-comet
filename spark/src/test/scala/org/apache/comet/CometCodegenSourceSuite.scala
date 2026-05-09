@@ -22,7 +22,7 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Concat, Expression, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, Expression, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types.{DataType, DecimalType, IntegerType, LongType, StringType}
 
@@ -313,6 +313,109 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       !result.body.contains("if (precision <= 18)"),
       "expected no runtime precision branch for known long-precision column; got:\n" +
+        CodeFormatter.format(result.code))
+  }
+
+  test("DecimalVector setSafe uses unscaled-long fast path for short-precision output") {
+    // The output writer specializes on the root expression's DecimalType precision. For
+    // precision <= 18 the Decimal's unscaled long is passed directly to
+    // `DecimalVector.setSafe(int, long)`, avoiding the BigDecimal allocation that
+    // `toJavaBigDecimal()` performs. Use a simple expression that produces a DecimalType output:
+    // `BoundReference(0, DecimalType(18, 2))` has output type DecimalType(18, 2), which is what
+    // the generator specializes on.
+    val decimalVectorClass = CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector")
+    val spec = ArrowColumnSpec(decimalVectorClass, nullable = true)
+    val expr = BoundReference(0, DecimalType(18, 2), nullable = true)
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(spec))
+    assert(
+      result.body.contains(".toUnscaledLong()"),
+      s"expected toUnscaledLong call on fast path; got:\n${CodeFormatter.format(result.code)}")
+    assert(
+      !result.body.contains(".toJavaBigDecimal("),
+      "expected no BigDecimal allocation for short-precision output; got:\n" +
+        CodeFormatter.format(result.code))
+  }
+
+  test("DecimalVector setSafe uses BigDecimal slow path for long-precision output") {
+    // Companion to the fast-path output test. Precision > 18 can have unscaled values exceeding
+    // 64 bits, so the writer must fall back to the BigDecimal path.
+    val decimalVectorClass = CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector")
+    val spec = ArrowColumnSpec(decimalVectorClass, nullable = true)
+    val expr = BoundReference(0, DecimalType(38, 10), nullable = true)
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(spec))
+    assert(
+      result.body.contains(".toJavaBigDecimal("),
+      s"expected BigDecimal slow path; got:\n${CodeFormatter.format(result.code)}")
+    assert(
+      !result.body.contains(".toUnscaledLong()"),
+      "expected no unscaled-long write for long-precision output; got:\n" +
+        CodeFormatter.format(result.code))
+  }
+
+  test("VarCharVector setSafe uses on-heap UTF8String shortcut") {
+    // The UTF8String output writer avoids the `byte[] b = $value.getBytes()` allocation when
+    // the UTF8String is on-heap by passing its backing byte[] directly to
+    // `VarCharVector.setSafe(int, byte[], int, int)`. Spark's string functions allocate their
+    // result on-heap, so this path hits for typical string expressions. Off-heap fallback
+    // (for passthrough of zero-copy input reads) stays as the else branch.
+    //
+    // Markers: `getBaseObject()` (inspecting the backing), `instanceof byte[]` (the branch),
+    // and `Platform.BYTE_ARRAY_OFFSET` (the on-heap offset math).
+    val expr = Upper(BoundReference(0, StringType, nullable = true))
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(nullableString))
+    assert(
+      result.body.contains(".getBaseObject()"),
+      s"expected UTF8String.getBaseObject call; got:\n${CodeFormatter.format(result.code)}")
+    assert(
+      result.body.contains("instanceof byte[]"),
+      s"expected on-heap instanceof branch; got:\n${CodeFormatter.format(result.code)}")
+    assert(
+      result.body.contains("Platform.BYTE_ARRAY_OFFSET"),
+      "expected on-heap offset math via Platform.BYTE_ARRAY_OFFSET; got:\n" +
+        CodeFormatter.format(result.code))
+    assert(
+      result.body.contains(".getBytes()"),
+      s"expected off-heap getBytes fallback; got:\n${CodeFormatter.format(result.code)}")
+  }
+
+  test("non-nullable root expression omits the `if (isNull)` branch in default body") {
+    // When the bound expression claims `nullable = false`, the default body drops the
+    // `if (ev.isNull) output.setNull(i);` guard entirely. `Length` on a non-nullable column is
+    // itself non-nullable (Length.nullable = child.nullable = false), so the writer goes
+    // straight to the setSafe/set call. This test uses a non-NullIntolerant-short-circuit
+    // shape by wrapping Length in Coalesce, so we exercise the default branch of defaultBody
+    // rather than the NullIntolerant one. Actually, Length is NullIntolerant, so the NI branch
+    // fires; use an expression that's non-nullable but whose tree is not fully NullIntolerant
+    // to hit the default branch. `Coalesce(Seq(Length(col_non_null), Literal(0)))` has
+    // nullable=false (Coalesce is non-null when any child is) and Coalesce itself is not
+    // NullIntolerant, so the default branch runs. Assert `setNull` is absent.
+    val expr = Coalesce(
+      Seq(Length(BoundReference(0, StringType, nullable = false)), Literal(0, IntegerType)))
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(nonNullableString))
+    assert(
+      !result.body.contains("output.setNull(i);"),
+      "expected no setNull for a non-nullable root expression; got:\n" +
+        CodeFormatter.format(result.code))
+  }
+
+  test("nullable root expression keeps the `if (isNull)` branch in default body") {
+    // Baseline: when the root expression is nullable, the setNull branch must still be emitted.
+    // Uses Coalesce with a nullable child so the Coalesce itself remains nullable. Guards the
+    // NonNullableOutputShortCircuit optimization against over-firing.
+    val expr = Coalesce(
+      Seq(
+        Length(BoundReference(0, StringType, nullable = true)),
+        BoundReference(1, IntegerType, nullable = true)))
+    val result = CometBatchKernelCodegen.generateSource(
+      expr,
+      IndexedSeq(
+        nullableString,
+        ArrowColumnSpec(
+          CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+          nullable = true)))
+    assert(
+      result.body.contains("output.setNull(i);"),
+      "expected setNull branch for a nullable root expression; got:\n" +
         CodeFormatter.format(result.code))
   }
 }
