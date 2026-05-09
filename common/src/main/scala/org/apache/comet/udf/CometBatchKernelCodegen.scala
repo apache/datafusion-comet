@@ -72,20 +72,53 @@ import org.apache.comet.shims.CometExprTraitShim
  * requires a `CharSequence`). See [[specializedRegExpReplaceBody]] for the reasoning and the
  * criteria for adding a new specialization.
  *
- * ==Universal boundary optimizations==
+ * ==Optimization menu==
  *
- * Applied to every compiled kernel regardless of expression class. Current set:
+ * Every optimization the generator applies is compile-time specialized on the bound expression
+ * and input schema, so the emitted Java carries only the chosen path at each emission site.
+ * Source-level tests in `CometCodegenSourceSuite` assert activation per entry below. Details live
+ * in the code comment next to each implementation.
  *
- *   - '''Zero-copy UTF8String reads''' ([[typedInputAccessors]]). `getUTF8String` wraps Arrow's
- *     native data buffer address directly via `UTF8String.fromAddress`. Skips the `byte[]`
- *     allocation that `VarCharVector.get(i)` would pay.
- *   - '''Pre-sized string output buffers''' ([[allocateOutput]]). For variable-length output
- *     types, the caller passes an input-size-derived byte estimate to avoid mid-loop reallocation
- *     in `setSafe`.
- *   - '''`NullIntolerant` short-circuit''' ([[defaultBody]]). For expressions that implement
- *     Spark's `NullIntolerant` marker trait (null in any input -> null output), the emitter
- *     prepends an input-nullity pre-check that skips expression evaluation entirely for null
- *     rows, not just the output write.
+ * Input readers (Arrow to Java values, in [[typedInputAccessors]]):
+ *
+ *   - `ZeroCopyUtf8Read` for `VarCharVector` / `ViewVarCharVector`: `UTF8String.fromAddress`
+ *     wraps Arrow's data-buffer address with no `byte[]` allocation.
+ *   - `NonNullableIsNullAtElision` for non-nullable columns: `isNullAt(ord)` returns a literal
+ *     `false`, and `CometCodegenDispatchUDF.rewriteBoundReferences` tightens the
+ *     `BoundReference.nullable` so Spark's `doGenCode` stops probing too.
+ *   - `DecimalInputShortFastPath` for `DecimalType(p, _)` with `p <= 18`: reads the low 8 bytes
+ *     of the decimal128 slot as a signed long and wraps with `Decimal.createUnsafe`. Slow path
+ *     (`getObject` + `Decimal.apply`) emitted only for `p > 18`.
+ *
+ * Output writers (Java values to Arrow, in [[outputWriter]] and [[allocateOutput]]):
+ *
+ *   - `DecimalOutputShortFastPath` for `DecimalType(p, _)` with `p <= 18`: passes
+ *     `Decimal.toUnscaledLong` to `DecimalVector.setSafe(int, long)`. Slow path via
+ *     `toJavaBigDecimal()` emitted only for `p > 18`.
+ *   - `Utf8OutputOnHeapShortcut` for `StringType`: when the `UTF8String` base is a `byte[]`,
+ *     passes it directly to `VarCharVector.setSafe(int, byte[], int, int)` and skips the
+ *     redundant `getBytes()` allocation. Off-heap fallback retains `getBytes()`.
+ *   - `PreSizedOutputBuffer` for variable-length output types: the caller passes an
+ *     input-size-derived byte estimate to avoid mid-loop reallocation.
+ *
+ * Kernel shape (in [[defaultBody]] and [[generateSource]]):
+ *
+ *   - `NullIntolerantShortCircuit`: trees where every node is `NullIntolerant` or a leaf get a
+ *     pre-body null check over the union of input ordinals; null rows skip both CSE and
+ *     expression evaluation.
+ *   - `NonNullableOutputShortCircuit`: bound expressions with `nullable == false` drop the `if
+ *     (ev.isNull) setNull` guard and write unconditionally.
+ *   - `SubexpressionElimination` (when `spark.sql.subexpressionEliminationEnabled`): common
+ *     subtrees become helper methods writing into `addMutableState` fields. See the CSE section
+ *     below for why the class-field variant is used.
+ *
+ * Expression specializers (per-expression custom per-row body, in the `specialized*` family):
+ *
+ *   - `RegExpReplaceSpecialized`: `RegExpReplace` with a direct `BoundReference` subject,
+ *     foldable pattern and replacement, and `pos == 1`. Emits `byte[] -> String -> Matcher`
+ *     directly, bypassing the `UTF8String` round-trip that default `doGenCode` forces. See
+ *     [[specializedRegExpReplaceBody]] for the full rationale and the criteria for adding new
+ *     specializers.
  *
  * ==Subexpression elimination (CSE)==
  *
