@@ -95,13 +95,12 @@ jobs:
           echo "COMET_CARGO_BUILD_ARGS=--no-default-features" >> "$GITHUB_ENV"
 
       # Work around ring 0.17.14 compile failure with Rust 1.86+ on aarch64-apple-darwin.
-      # RUSTUP_TOOLCHAIN is needed to override rust-toolchain.toml in the tarball.
-      - name: Pin Rust toolchain (macOS arm64)
+      # Rust 1.86+ enables pauth/fpac target features by default, which fail ring's
+      # compile-time assertions. Disable them until ring ships a fix.
+      - name: Work around ring compile failure (macOS arm64)
         if: matrix.os == 'macos' && matrix.arch == 'arm64'
         shell: bash
-        run: |
-          rustup toolchain install 1.85.0 --profile minimal
-          echo "RUSTUP_TOOLCHAIN=1.85.0" >> "$GITHUB_ENV"
+        run: echo "RUSTFLAGS=-C target-feature=-pauth,-fpac" >> "$GITHUB_ENV"
 
       - name: Run release candidate verification
         shell: bash
