@@ -85,20 +85,23 @@ jobs:
           distribution: zulu
           java-version: 11
 
-      - name: Set RUSTFLAGS for Windows GNU linker
+      - name: Set Windows build flags
         if: matrix.os == 'windows'
         shell: bash
-        run: echo "RUSTFLAGS=-C link-arg=-Wl,--exclude-libs=ALL" >> "$GITHUB_ENV"
+        run: |
+          echo "RUSTFLAGS=-C link-arg=-Wl,--exclude-libs=ALL" >> "$GITHUB_ENV"
+          # Use --no-default-features on Windows to avoid building hdrs which
+          # does not support Windows.
+          echo "COMET_CARGO_BUILD_ARGS=--no-default-features" >> "$GITHUB_ENV"
 
-      # Pin Rust to 1.85.0 on macOS arm64 to work around ring 0.17.14
-      # compile failure with Rust 1.86+. Only aarch64-apple-darwin is
-      # affected. Remove once ring ships a fix.
+      # Work around ring 0.17.14 compile failure with Rust 1.86+ on aarch64-apple-darwin.
+      # RUSTUP_TOOLCHAIN is needed to override rust-toolchain.toml in the tarball.
       - name: Pin Rust toolchain (macOS arm64)
         if: matrix.os == 'macos' && matrix.arch == 'arm64'
         shell: bash
         run: |
           rustup toolchain install 1.85.0 --profile minimal
-          rustup default 1.85.0
+          echo "RUSTUP_TOOLCHAIN=1.85.0" >> "$GITHUB_ENV"
 
       - name: Run release candidate verification
         shell: bash

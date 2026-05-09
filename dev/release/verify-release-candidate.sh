@@ -108,15 +108,7 @@ setup_tempdir() {
 test_source_distribution() {
   set -e
   pushd native
-    # Use --no-default-features on Windows to avoid building hdrs which
-    # does not support Windows.
-    local cargo_features=""
-    case "$(uname -s)" in
-      MINGW*|MSYS*|CYGWIN*|Windows_NT)
-        cargo_features="--no-default-features"
-        ;;
-    esac
-    RUSTFLAGS="-Ctarget-cpu=native" cargo build --release ${cargo_features}
+    cargo build --release ${COMET_CARGO_BUILD_ARGS:-}
   popd
   # test with the latest supported version of Spark
   ./mvnw verify -Prelease -DskipTests -P"spark-3.4" -Dmaven.gitcommitid.skip=true
