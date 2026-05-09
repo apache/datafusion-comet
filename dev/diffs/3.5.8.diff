@@ -338,7 +338,7 @@ index 7ee18df3756..d09f70e5d99 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index a1d5d579338..c201d39cc78 100644
+index a1d5d579338..7e0acccd124 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 @@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
@@ -352,6 +352,15 @@ index a1d5d579338..c201d39cc78 100644
  import org.apache.spark.sql.execution.window.WindowExec
  import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
  import org.apache.spark.sql.functions._
+@@ -982,7 +983,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-21258: complex object in combination with spilling") {
++  test("SPARK-21258: complex object in combination with spilling", IgnoreComet("Comet does not support spilling")) {
+     // Make sure we trigger the spilling path.
+     withSQLConf(SQLConf.WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "1",
+       SQLConf.WINDOW_EXEC_BUFFER_SPILL_THRESHOLD.key -> "17") {
 @@ -1187,10 +1188,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
  
