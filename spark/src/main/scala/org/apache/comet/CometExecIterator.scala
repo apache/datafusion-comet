@@ -127,7 +127,12 @@ class CometExecIterator(
       memoryConfig.memoryLimitPerTask,
       taskAttemptId,
       taskCPUs,
-      keyUnwrapper)
+      keyUnwrapper,
+      // Capture the Spark task thread's TaskContext at `createPlan` time. Stashed native-side
+      // in the ExecutionContext and passed through the JVM UDF bridge so that Tokio workers
+      // running JVM UDFs see the real `TaskContext` via their thread-local. See
+      // `CometUdfBridge.evaluate` and `CometTaskContextShim` for the receive side.
+      TaskContext.get())
   }
 
   private var nextBatch: Option[ColumnarBatch] = None

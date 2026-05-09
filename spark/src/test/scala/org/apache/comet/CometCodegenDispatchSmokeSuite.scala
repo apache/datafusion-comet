@@ -772,6 +772,71 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
+  test("codegen: ScalaUDF sees TaskContext.partitionId() per partition") {
+    // Direct probe: register a ScalaUDF that reads TaskContext.partitionId() and returns it.
+    // Spark's own task thread has TaskContext set, so each partition's rows carry that
+    // partition's index. For the dispatcher to match Spark, the invocation thread must see a
+    // live TaskContext. With the `createPlan`-time TaskContext capture + bridge-side
+    // `TaskContext.setTaskContext` install (see `CometUdfBridge.evaluate` and
+    // `CometTaskContextShim`), Tokio workers see the propagated TaskContext and the UDF
+    // returns the real partitionId. Without that propagation, `TaskContext.get()` returns null
+    // on the Tokio thread and the sentinel (-1) leaks through, diverging from Spark.
+    spark.udf.register(
+      "pid",
+      (_: Long) => {
+        val tc = org.apache.spark.TaskContext.get()
+        if (tc != null) tc.partitionId() else -1
+      })
+    val df = spark
+      .range(0, 1024, 1, numPartitions = 4)
+      .selectExpr("id", "pid(id) as p")
+    checkSparkAnswerAndOperator(df)
+  }
+
+  test("codegen: ScalaUDF sees TaskContext from fully-native parquet plan") {
+    // The `spark.range`-based test above runs through `CometSparkRowToColumnar`, which executes
+    // on a Spark task thread where TaskContext is live even without explicit propagation. The
+    // fully-native path through `CometNativeScan` runs the JVM UDF bridge on a Tokio worker
+    // thread where TaskContext.get() would otherwise be null. This test forces that path by
+    // sourcing from a Parquet table written as multiple files (so the native read produces
+    // multiple partitions) and asserting the UDF still sees the per-partition TaskContext via
+    // the `createPlan`-time capture + bridge-side install.
+    spark.udf.register(
+      "pidP",
+      (_: Int) => {
+        val tc = org.apache.spark.TaskContext.get()
+        if (tc != null) tc.partitionId() else -1
+      })
+    withTable("t") {
+      sql("CREATE TABLE t (x INT) USING parquet")
+      // Multiple INSERT statements -> multiple parquet files -> multiple read splits ->
+      // multiple partitions.
+      sql("INSERT INTO t VALUES (1), (2), (3), (4)")
+      sql("INSERT INTO t VALUES (5), (6), (7), (8)")
+      sql("INSERT INTO t VALUES (9), (10), (11), (12)")
+      sql("INSERT INTO t VALUES (13), (14), (15), (16)")
+      checkSparkAnswerAndOperator(sql("SELECT x, pidP(x) AS p FROM t"))
+    }
+  }
+
+  test("codegen: Rand seeded per partition across a multi-partition table") {
+    // Rand.doGenCode registers an XORShiftRandom via ctx.addMutableState and seeds it via
+    // ctx.addPartitionInitializationStatement. That init statement runs inside our kernel's
+    // `init(int partitionIndex)`, called once per kernel allocation. Spark seeds
+    // `XORShiftRandom(seed + partitionIndex)` per partition, so different partitions produce
+    // different sequences for the same seed. Matching Spark across partitions requires the
+    // kernel to see the real partition index, which the dispatcher derives from
+    // `TaskContext.get().partitionId()` — live on this path thanks to the bridge-level
+    // TaskContext propagation. Composing with a ScalaUDF (identity on Double here) forces the
+    // tree through codegen dispatch so the Rand evaluation runs inside our kernel's init
+    // rather than via Spark's normal codegen.
+    spark.udf.register("dblId", (d: Double) => d)
+    val df = spark
+      .range(0, 1024, 1, numPartitions = 4)
+      .selectExpr("id", "dblId(rand(42)) as r")
+    checkSparkAnswerAndOperator(df)
+  }
+
   test("codegen: ScalaUDF composed with reused scalar subquery across projection and filter") {
     // The same scalar subquery appears in two sites: the projection (which the dispatcher
     // compiles into a fused kernel) and the filter (a separate operator). Each site holds its

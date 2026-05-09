@@ -183,6 +183,12 @@ pub struct PhysicalPlanner {
     partition: i32,
     session_ctx: Arc<SessionContext>,
     query_context_registry: Arc<datafusion_comet_spark_expr::QueryContextMap>,
+    /// Spark `TaskContext` captured on the driving Spark task thread and stashed on the
+    /// [`ExecutionContext`] at `createPlan` time. Threaded into every [`JvmScalarUdfExpr`] the
+    /// planner builds so the JNI bridge can install it as the thread-local `TaskContext` on
+    /// the Tokio worker that drives the UDF. `None` when no driving Spark task is available
+    /// (unit tests, direct native driver runs).
+    task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl Default for PhysicalPlanner {
@@ -198,6 +204,7 @@ impl PhysicalPlanner {
             session_ctx,
             partition,
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
+            task_context: None,
         }
     }
 
@@ -207,6 +214,20 @@ impl PhysicalPlanner {
             partition: self.partition,
             session_ctx: Arc::clone(&self.session_ctx),
             query_context_registry: Arc::clone(&self.query_context_registry),
+            task_context: self.task_context,
+        }
+    }
+
+    /// Attach a propagated Spark `TaskContext` global reference. Called by the JNI `executePlan`
+    /// entry with whatever was captured at `createPlan` time. The planner clones this `Option`
+    /// into every `JvmScalarUdfExpr` it builds.
+    pub fn with_task_context(self, task_context: Option<Arc<Global<JObject<'static>>>>) -> Self {
+        Self {
+            exec_context_id: self.exec_context_id,
+            partition: self.partition,
+            session_ctx: self.session_ctx,
+            query_context_registry: self.query_context_registry,
+            task_context,
         }
     }
 
@@ -735,6 +756,7 @@ impl PhysicalPlanner {
                     args,
                     return_type,
                     udf.return_nullable,
+                    self.task_context.clone(),
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),

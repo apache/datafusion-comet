@@ -31,7 +31,7 @@ use datafusion::physical_expr::PhysicalExpr;
 
 use datafusion_comet_jni_bridge::errors::{CometError, ExecutionError};
 use datafusion_comet_jni_bridge::JVMClasses;
-use jni::objects::{JObject, JValue};
+use jni::objects::{Global, JObject, JValue};
 
 /// A scalar expression that delegates evaluation to a JVM-side `CometUDF` via JNI.
 /// The JVM class named by `class_name` must implement `org.apache.comet.udf.CometUDF`.
@@ -41,6 +41,17 @@ pub struct JvmScalarUdfExpr {
     args: Vec<Arc<dyn PhysicalExpr>>,
     return_type: DataType,
     return_nullable: bool,
+    /// Spark `TaskContext` captured on the driving Spark task thread, stashed in the
+    /// [`ExecutionContext`] at `createPlan` time, and threaded here by the planner. Passed
+    /// through the JNI bridge so [`CometUdfBridge.evaluate`] can install it as the
+    /// thread-local `TaskContext` on the Tokio worker that drives the UDF call. Without this,
+    /// partition-sensitive built-ins inside a user UDF tree (`Rand`, `Uuid`,
+    /// `MonotonicallyIncreasingID`, custom UDF code that reads
+    /// `TaskContext.get().partitionId()`) see a null `TaskContext` and seed / branch
+    /// incorrectly. `None` means the surrounding driver had no `TaskContext` to propagate
+    /// (unit tests, direct native driver runs); the bridge then leaves whatever
+    /// `TaskContext.get()` already returns in place.
+    task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl JvmScalarUdfExpr {
@@ -49,12 +60,14 @@ impl JvmScalarUdfExpr {
         args: Vec<Arc<dyn PhysicalExpr>>,
         return_type: DataType,
         return_nullable: bool,
+        task_context: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         Self {
             class_name,
             args,
             return_type,
             return_nullable,
+            task_context,
         }
     }
 }
@@ -182,6 +195,15 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 .set_region(env, 0, &in_sch_ptrs)
                 .map_err(|e| CometError::JNI { source: e })?;
 
+            // Resolve the TaskContext reference once before building the arg array so the
+            // borrow lives until `call_static_method_unchecked` returns. When no TaskContext
+            // was propagated, pass a null object so the bridge's null-guard leaves the thread-
+            // local alone.
+            let null_task_context = JObject::null();
+            let task_context_ref: &JObject = match &self.task_context {
+                Some(gref) => gref.as_obj(),
+                None => &null_task_context,
+            };
             let ret = unsafe {
                 env.call_static_method_unchecked(
                     &bridge.class,
@@ -194,6 +216,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                         JValue::Long(out_arr_ptr).as_jni(),
                         JValue::Long(out_sch_ptr).as_jni(),
                         JValue::Int(batch.num_rows() as i32).as_jni(),
+                        JValue::Object(task_context_ref).as_jni(),
                     ],
                 )
             };
@@ -241,6 +264,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             children,
             self.return_type.clone(),
             self.return_nullable,
+            self.task_context.clone(),
         )))
     }
 }

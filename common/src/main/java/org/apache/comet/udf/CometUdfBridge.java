@@ -28,6 +28,8 @@ import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.spark.TaskContext;
+import org.apache.spark.comet.CometTaskContextShim;
 
 /**
  * JNI entry point for native execution to invoke a {@link CometUDF}. Matches the static-method
@@ -66,8 +68,40 @@ public class CometUdfBridge {
    *     ScalarFunctionArgs.number_rows} and gives UDFs an explicit batch-size signal for cases
    *     where no input arg is a batch-length array (e.g. a zero-arg non-deterministic ScalaUDF).
    *     UDFs that already read size from their input vectors can ignore it.
+   * @param taskContext Spark {@link TaskContext} captured on the driving Spark task thread and
+   *     passed through from native. May be {@code null} when the bridge is invoked outside a Spark
+   *     task (unit tests, direct native driver runs). When non-null and the current thread has no
+   *     {@code TaskContext} of its own, the bridge installs it as the thread-local for the duration
+   *     of the UDF call so the UDF body (including partition-sensitive built-ins like {@code Rand}
+   *     / {@code Uuid} / {@code MonotonicallyIncreasingID} that read the partition index via {@code
+   *     TaskContext.get().partitionId()}) sees the real context rather than null. The thread-local
+   *     is cleared in a {@code finally} so Tokio workers don't leak a stale TaskContext across
+   *     invocations.
    */
   public static void evaluate(
+      String udfClassName,
+      long[] inputArrayPtrs,
+      long[] inputSchemaPtrs,
+      long outArrayPtr,
+      long outSchemaPtr,
+      int numRows,
+      TaskContext taskContext) {
+    boolean installedTaskContext = false;
+    if (taskContext != null && TaskContext.get() == null) {
+      CometTaskContextShim.set(taskContext);
+      installedTaskContext = true;
+    }
+    try {
+      evaluateInternal(
+          udfClassName, inputArrayPtrs, inputSchemaPtrs, outArrayPtr, outSchemaPtr, numRows);
+    } finally {
+      if (installedTaskContext) {
+        CometTaskContextShim.unset();
+      }
+    }
+  }
+
+  private static void evaluateInternal(
       String udfClassName,
       long[] inputArrayPtrs,
       long[] inputSchemaPtrs,
