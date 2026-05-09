@@ -379,10 +379,10 @@
 - [x] expm1
 - [ ] factorial
 - [x] floor
-- [ ] greatest
+- [x] greatest
 - [x] hex
 - [ ] hypot
-- [ ] least
+- [x] least
 - [x] ln
 - [ ] log
 - [x] log10
