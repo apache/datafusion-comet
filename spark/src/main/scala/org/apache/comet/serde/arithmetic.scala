@@ -24,6 +24,7 @@ import scala.math.min
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Pmod, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType, serializeDataType}
@@ -285,6 +286,23 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 }
 
 object CometPmod extends CometExpressionSerde[Pmod] with MathBase {
+
+  private val negativeZeroReason =
+    "pmod may return 0.0 instead of -0.0 for floating-point types " +
+      "and will fall back to Spark when " +
+      s"${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+      CometConf.COMPAT_GUIDE
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(negativeZeroReason)
+
+  override def getSupportLevel(expr: Pmod): SupportLevel = {
+    if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+      SupportLevel.containsFloatingPoint(expr.left.dataType)) {
+      Incompatible(Some(negativeZeroReason))
+    } else {
+      Compatible()
+    }
+  }
 
   override def convert(
       expr: Pmod,
