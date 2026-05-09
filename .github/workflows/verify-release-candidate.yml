@@ -78,6 +78,11 @@ jobs:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set RUSTFLAGS for Windows GNU linker
+        if: matrix.os == 'windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-C link-arg=-Wl,--exclude-libs=ALL" >> "$GITHUB_ENV"
+
       - name: Run release candidate verification
         shell: bash
         run: ./dev/release/verify-release-candidate.sh "${INPUTS_VERSION}" "${INPUTS_RC_NUMBER}"
