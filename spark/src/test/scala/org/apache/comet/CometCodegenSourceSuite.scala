@@ -22,7 +22,7 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateNamedStruct, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Size, StringSplit, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Size, StringSplit, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, StringType, StructField, StructType}
 
@@ -471,7 +471,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("class InputArray_col0"),
       s"expected nested ArrayData class for array col0; got:\n$src")
     assert(
-      src.contains("col0_child") && src.contains("col0_arrayData"),
+      src.contains("col0_e") && src.contains("col0_arrayData"),
       s"expected typed child-vector field and pre-allocated ArrayData instance; got:\n$src")
     assert(
       src.contains("getElementStartIndex(") && src.contains("getElementEndIndex("),
@@ -555,18 +555,16 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   // ============================================================================================
-  // Nested-type exploratory tests. These cases exercise shapes the emitter doesn't yet fully
-  // support; they run `generateSource` and capture the outcome so the suite stays green while
-  // we trace the failure modes empirically.
+  // Nested-type tests. Each case verifies that a complex-within-complex shape emits a full
+  // nested-class tree (outer + inner), wired together through the path-suffix naming
+  // convention: `_e` for array element, `_f${fi}` for struct field fi. Scalar-element / scalar-
+  // field leaves reuse the typed-getter templates already covered by the single-depth tests.
   // ============================================================================================
 
-  private def captureEmission(
-      expr: Expression,
-      specs: IndexedSeq[ArrowColumnSpec]): Either[Throwable, String] =
-    try Right(CometBatchKernelCodegen.generateSource(expr, specs).body)
-    catch { case t: Throwable => Left(t) }
+  private def generate(expr: Expression, specs: IndexedSeq[ArrowColumnSpec]): String =
+    CometBatchKernelCodegen.generateSource(expr, specs).body
 
-  test("explore: Array<Array<Int>> input via Size") {
+  test("nested: Array<Array<Int>> emits outer + inner array classes with _e_arrayData router") {
     val innerArray = ArrayColumnSpec(
       nullable = true,
       elementSparkType = IntegerType,
@@ -578,15 +576,19 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       elementSparkType = ArrayType(IntegerType),
       element = innerArray)
     val expr = Size(BoundReference(0, ArrayType(ArrayType(IntegerType)), nullable = true))
-    captureEmission(expr, IndexedSeq(outerArray)) match {
-      case Left(t) =>
-        info(s"Array<Array<Int>>: ${t.getClass.getSimpleName}: ${t.getMessage}")
-      case Right(src) =>
-        info(s"Array<Array<Int>>: compiled ok, length=${src.length}")
-    }
+    val src = generate(expr, IndexedSeq(outerArray))
+    assert(
+      src.contains("class InputArray_col0 ") && src.contains("class InputArray_col0_e "),
+      s"expected both outer and inner array classes; got:\n$src")
+    assert(
+      src.contains("col0_e_arrayData.reset(startIndex + i)"),
+      s"expected outer class to route getArray via inner instance reset; got:\n$src")
+    assert(
+      src.contains("public int getInt(int i)"),
+      s"expected innermost scalar getter for IntegerType element; got:\n$src")
   }
 
-  test("explore: Array<Struct<a: Int>> input via Size") {
+  test("nested: Array<Struct<a: Int>> emits array class routing getStruct via _e_structData") {
     val innerStruct = StructColumnSpec(
       nullable = true,
       fields = Seq(
@@ -603,15 +605,16 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       element = innerStruct)
     val elemType = StructType(Seq(StructField("a", IntegerType, nullable = true)).toArray)
     val expr = Size(BoundReference(0, ArrayType(elemType), nullable = true))
-    captureEmission(expr, IndexedSeq(outerArray)) match {
-      case Left(t) =>
-        info(s"Array<Struct<Int>>: ${t.getClass.getSimpleName}: ${t.getMessage}")
-      case Right(src) =>
-        info(s"Array<Struct<Int>>: compiled ok, length=${src.length}")
-    }
+    val src = generate(expr, IndexedSeq(outerArray))
+    assert(
+      src.contains("class InputArray_col0 ") && src.contains("class InputStruct_col0_e "),
+      s"expected array-of-struct nested classes; got:\n$src")
+    assert(
+      src.contains("col0_e_structData.reset(startIndex + i)"),
+      s"expected array getStruct to route to inner struct instance; got:\n$src")
   }
 
-  test("explore: Struct<Struct<a: Int>> input via GetStructField chain") {
+  test("nested: Struct<s: Struct<a: Int>> emits outer + inner struct classes") {
     val innerStruct = StructColumnSpec(
       nullable = true,
       fields = Seq(
@@ -636,15 +639,19 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       GetStructField(BoundReference(0, outerType, nullable = true), 0, Some("s")),
       0,
       Some("a"))
-    captureEmission(expr, IndexedSeq(outerStruct)) match {
-      case Left(t) =>
-        info(s"Struct<Struct<Int>>: ${t.getClass.getSimpleName}: ${t.getMessage}")
-      case Right(src) =>
-        info(s"Struct<Struct<Int>>: compiled ok, length=${src.length}")
-    }
+    val src = generate(expr, IndexedSeq(outerStruct))
+    assert(
+      src.contains("class InputStruct_col0 ") && src.contains("class InputStruct_col0_f0 "),
+      s"expected outer + inner struct classes; got:\n$src")
+    assert(
+      src.contains("col0_f0_structData.reset(this.rowIdx)"),
+      s"expected outer struct getStruct to route to inner instance; got:\n$src")
+    assert(
+      src.contains("public int getInt(int ordinal)"),
+      s"expected innermost getInt on InputStruct_col0_f0; got:\n$src")
   }
 
-  test("explore: Struct<a: Array<Int>> input via Size(col0.a)") {
+  test("nested: Struct<a: Array<Int>> emits struct class routing getArray via _f0_arrayData") {
     val innerArray = ArrayColumnSpec(
       nullable = true,
       elementSparkType = IntegerType,
@@ -657,12 +664,13 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     val structType =
       StructType(Seq(StructField("a", ArrayType(IntegerType), nullable = true)).toArray)
     val expr = Size(GetStructField(BoundReference(0, structType, nullable = true), 0, Some("a")))
-    captureEmission(expr, IndexedSeq(outerStruct)) match {
-      case Left(t) =>
-        info(s"Struct<Array<Int>>: ${t.getClass.getSimpleName}: ${t.getMessage}")
-      case Right(src) =>
-        info(s"Struct<Array<Int>>: compiled ok, length=${src.length}")
-    }
+    val src = generate(expr, IndexedSeq(outerStruct))
+    assert(
+      src.contains("class InputStruct_col0 ") && src.contains("class InputArray_col0_f0 "),
+      s"expected struct-of-array nested classes; got:\n$src")
+    assert(
+      src.contains("col0_f0_arrayData.reset(this.rowIdx)"),
+      s"expected struct getArray to route to inner array instance; got:\n$src")
   }
 }
 

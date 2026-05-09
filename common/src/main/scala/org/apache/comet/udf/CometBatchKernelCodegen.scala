@@ -461,8 +461,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     val decimalTypeByOrdinal = CometBatchKernelCodegenInput.decimalPrecisionByOrdinal(boundExpr)
     val getters =
       CometBatchKernelCodegenInput.typedInputAccessors(inputSchema, decimalTypeByOrdinal)
-    val nestedArrays = CometBatchKernelCodegenInput.nestedArrayClasses(inputSchema)
-    val nestedStructs = CometBatchKernelCodegenInput.nestedStructClasses(inputSchema)
+    val nested = CometBatchKernelCodegenInput.nestedClasses(inputSchema)
     val getArrayMethod = CometBatchKernelCodegenInput.emitGetArrayMethod(inputSchema)
     val getStructMethod = CometBatchKernelCodegenInput.emitGetStructMethod(inputSchema)
 
@@ -513,8 +512,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
          |
          |  ${ctx.declareAddedFunctions()}
          |
-         |$nestedArrays
-         |$nestedStructs
+         |$nested
          |}
        """.stripMargin
 
