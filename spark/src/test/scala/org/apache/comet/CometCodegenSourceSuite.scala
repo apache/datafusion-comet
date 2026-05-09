@@ -231,20 +231,27 @@ class CometCodegenSourceSuite extends AnyFunSuite {
 
   test("CSE collapses a repeated subtree to one evaluation in the generated body") {
     // `Add(Length(Upper(c0)), Length(Upper(c0)))` has `Length(Upper(c0))` as a common subtree.
-    // Upper.doGenCode emits `CollationSupport.Upper.exec(...)` via `defineCodeGen`. Spark's CSE
-    // pass (when invoked via `subexpressionEliminationForWholeStageCodegen`) hoists the repeated
-    // subtree into one evaluation, so `CollationSupport.Upper.exec` appears exactly once in the
-    // body. Before CSE is wired in, Spark's bare `genCode` evaluates each Add child independently
-    // and the string appears twice. Used as a behavioral regression guard for the CSE wiring.
+    // Length.doGenCode emits `$value.numChars()` on every Spark version the project targets,
+    // which makes it a stable activation marker. Upper's own doGenCode text drifts across
+    // versions (Spark 3.5 emits `UTF8String.toUpperCase()`, Spark 4 emits
+    // `CollationSupport.Upper.exec*` via collation-aware codegen), so we avoid it as a marker.
+    // When CSE fires, `Length(Upper(c0))` compiles into one `subExpr_*` helper whose body calls
+    // `numChars()` once; both uses in the `Add` read the cached result from mutable state.
+    // Without CSE, each Add child would emit its own `numChars()` call.
     val upperOrd0 = Upper(BoundReference(0, StringType, nullable = true))
     val lenUpper = Length(upperOrd0)
     val expr = Add(lenUpper, lenUpper)
     val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(nullableString))
-    val occurrences = "CollationSupport\\.Upper\\.exec".r.findAllIn(result.body).size
+    val occurrences = "\\.numChars\\(\\)".r.findAllIn(result.body).size
     assert(
       occurrences == 1,
-      s"expected CSE to collapse repeated Upper evaluation to 1, got $occurrences; " +
-        s"src=\n${CodeFormatter.format(result.code)}")
+      "expected CSE to collapse repeated Length evaluation to 1 numChars() call, " +
+        s"got $occurrences; src=\n${CodeFormatter.format(result.code)}")
+    // Additional proof: CSE emitted a `subExpr_` helper method. Without CSE the generator would
+    // have inlined the repeated subtree into the main body with no helper at all.
+    assert(
+      result.body.contains("subExpr_0(row)"),
+      s"expected CSE helper invocation; got:\n${CodeFormatter.format(result.code)}")
   }
 
   test("CSE does not fire on non-deterministic expressions (regression guard)") {

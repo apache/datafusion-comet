@@ -196,13 +196,12 @@ class CometCodegenDispatchUDF extends CometUDF {
   private def nullable(v: ValueVector): Boolean = v.getNullCount != 0
 
   /**
-   * Estimate output byte capacity for variable-length output types. Sums the data-buffer sizes
-   * of variable-length input vectors as an upper bound for typical transform expressions
-   * (replace, upper, lower, substring, concat on the same inputs). Covers both character and
-   * binary variable-width vectors and their view-format counterparts so the estimate is
-   * meaningful regardless of which string / binary input type the caller passed in.
-   * Underestimates are still corrected by `setSafe`; this just reduces the odds of mid-loop
-   * reallocation.
+   * Estimate output byte capacity for variable-length output types. Sums the data-buffer sizes of
+   * variable-length input vectors as an upper bound for typical transform expressions (replace,
+   * upper, lower, substring, concat on the same inputs). Covers both character and binary
+   * variable-width vectors and their view-format counterparts so the estimate is meaningful
+   * regardless of which string / binary input type the caller passed in. Underestimates are still
+   * corrected by `setSafe`; this just reduces the odds of mid-loop reallocation.
    */
   private def estimatedOutputBytes(outputType: DataType, dataCols: Array[ValueVector]): Int = {
     outputType match {
