@@ -437,9 +437,9 @@ private[udf] object CometBatchKernelCodegenInput {
   }
 
   /**
-   * Emit the element getter body for a nested `InputArray_${path}`. Scalar element → direct typed
-   * read. Complex element → `getArray(i)` / `getStruct(i, n)` / `getMap(i)` that resets the inner
-   * instance.
+   * Emit the element getter body for a nested `InputArray_${path}`. Scalar element -> direct
+   * typed read. Complex element -> `getArray(i)` / `getStruct(i, n)` / `getMap(i)` that resets
+   * the inner instance.
    */
   private def emitArrayElementGetter(path: String, spec: ArrayColumnSpec): String = {
     val elemPath = s"${path}_e"

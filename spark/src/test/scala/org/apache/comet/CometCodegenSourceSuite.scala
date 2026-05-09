@@ -22,7 +22,7 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Size, StringSplit, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateMap, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Size, StringSplit, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructField, StructType}
 
@@ -453,6 +453,35 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       src.contains("instanceof byte[]"),
       s"expected inner UTF8 on-heap shortcut for string elements; got:\n$formatted")
+  }
+
+  test("MapType output emits MapVector startNewValue/endValue + per-pair writes") {
+    // CreateMap produces MapType(k, v). emitWrite's MapType case should emit:
+    //   - MapVector cast of output
+    //   - entries StructVector extraction
+    //   - typed key / value child casts via getChildByOrdinal(0) / (1)
+    //   - startNewValue / endValue bracketing
+    //   - setIndexDefined on each struct entry
+    //   - keyArray() / valueArray() retrieval from the MapData source
+    //   - null-guard on the value write (key is always non-null per Arrow invariant)
+    val expr = CreateMap(
+      Seq(
+        Literal.create("a", StringType),
+        Literal(1, IntegerType),
+        Literal.create("b", StringType),
+        Literal(2, IntegerType)))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq.empty).body
+    Seq(
+      "MapVector",
+      "StructVector",
+      ".startNewValue(",
+      ".endValue(",
+      ".setIndexDefined(",
+      ".keyArray()",
+      ".valueArray()",
+      ".isNullAt(").foreach { marker =>
+      assert(src.contains(marker), s"expected $marker in MapType output emission; got:\n$src")
+    }
   }
 
   test("ArrayType(StringType) input emits InputArray_col0 nested class with UTF8 child getter") {

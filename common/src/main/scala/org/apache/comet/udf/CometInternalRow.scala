@@ -21,7 +21,7 @@ package org.apache.comet.udf
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
-import org.apache.spark.sql.types.{DataType, Decimal}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
 import org.apache.comet.shims.CometInternalRowShim
@@ -57,7 +57,34 @@ abstract class CometInternalRow extends InternalRow with CometInternalRowShim {
   override def getStruct(ordinal: Int, numFields: Int): InternalRow = unsupported("getStruct")
   override def getArray(ordinal: Int): ArrayData = unsupported("getArray")
   override def getMap(ordinal: Int): MapData = unsupported("getMap")
-  override def get(ordinal: Int, dataType: DataType): AnyRef = unsupported("get")
+
+  /**
+   * Generic `get(ordinal, dataType)` dispatcher. Required because `SpecializedGetters` declares
+   * it abstract and some Spark codegen paths (notably `SafeProjection` for deserializing
+   * `ScalaUDF` struct arguments) call it instead of the typed getter. Dispatches to the typed
+   * getter matching `dataType`; a null entry returns `null` outright. Unsupported types fall
+   * through to the shared throw.
+   */
+  override def get(ordinal: Int, dataType: DataType): AnyRef = {
+    if (isNullAt(ordinal)) return null
+    dataType match {
+      case BooleanType => java.lang.Boolean.valueOf(getBoolean(ordinal))
+      case ByteType => java.lang.Byte.valueOf(getByte(ordinal))
+      case ShortType => java.lang.Short.valueOf(getShort(ordinal))
+      case IntegerType | DateType => java.lang.Integer.valueOf(getInt(ordinal))
+      case LongType | TimestampType | TimestampNTZType =>
+        java.lang.Long.valueOf(getLong(ordinal))
+      case FloatType => java.lang.Float.valueOf(getFloat(ordinal))
+      case DoubleType => java.lang.Double.valueOf(getDouble(ordinal))
+      case _: StringType => getUTF8String(ordinal)
+      case BinaryType => getBinary(ordinal)
+      case dt: DecimalType => getDecimal(ordinal, dt.precision, dt.scale)
+      case st: StructType => getStruct(ordinal, st.size)
+      case _: ArrayType => getArray(ordinal)
+      case _: MapType => getMap(ordinal)
+      case other => unsupported(s"get for dataType $other")
+    }
+  }
 
   override def setNullAt(i: Int): Unit = unsupported("setNullAt")
   override def update(i: Int, value: Any): Unit = unsupported("update")

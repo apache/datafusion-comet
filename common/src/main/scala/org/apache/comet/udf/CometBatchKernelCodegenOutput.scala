@@ -20,7 +20,7 @@
 package org.apache.comet.udf
 
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, VarBinaryVector, VarCharVector}
-import org.apache.arrow.vector.complex.{ListVector, StructVector}
+import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
@@ -38,10 +38,8 @@ import org.apache.comet.CometArrowAllocator
 private[udf] object CometBatchKernelCodegenOutput {
 
   /**
-   * Output types [[allocateOutput]] and [[outputWriter]] can materialize. Recursive: an
-   * `ArrayType(inner)` is supported when `inner` is supported, so once we add Map their gate here
-   * controls the cascade. `canHandle` uses this predicate so the serde fallback lines up with
-   * what the emitter can actually produce.
+   * Output types [[allocateOutput]] and [[outputWriter]] can materialize. Recursive: complex
+   * types are supported when their children are.
    */
   def isSupportedOutputType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
@@ -51,8 +49,8 @@ private[udf] object CometBatchKernelCodegenOutput {
     case DateType | TimestampType | TimestampNTZType => true
     case ArrayType(inner, _) => isSupportedOutputType(inner)
     case st: StructType => st.fields.forall(f => isSupportedOutputType(f.dataType))
-    // MapType: deliberately gated off until map output support lands. Flip to a recursive check
-    // once `emitWrite` has a case for it.
+    case mt: MapType =>
+      isSupportedOutputType(mt.keyType) && isSupportedOutputType(mt.valueType)
     case _ => false
   }
 
@@ -184,6 +182,45 @@ private[udf] object CometBatchKernelCodegenOutput {
         struct.setInitialCapacity(numRows)
         struct.allocateNew()
         struct
+      case mt: MapType =>
+        // Complex-type output: allocate a MapVector with its inner entries StructVector
+        // carrying typed key and value children. MapVector requires the entries struct to be
+        // non-nullable and the key field inside it to be non-nullable; we enforce both when
+        // constructing the entries field below.
+        val mv = new MapVector(
+          name,
+          CometArrowAllocator,
+          FieldType.nullable(new ArrowType.Map( /* keysSorted */ false)),
+          null)
+        val keyVec =
+          allocateOutput(mt.keyType, s"$name.entries.key", numRows, estimatedBytes)
+        val valVec =
+          allocateOutput(mt.valueType, s"$name.entries.value", numRows, estimatedBytes)
+        // Rebuild key / value fields with the canonical map-child names and the notNullable
+        // constraint on the key (Arrow invariant). Children of the key/value types propagate as-is.
+        val keyFieldOrig = keyVec.getField
+        val keyField = new Field(
+          MapVector.KEY_NAME,
+          new FieldType(false, keyFieldOrig.getType, keyFieldOrig.getFieldType.getDictionary),
+          keyFieldOrig.getChildren)
+        val valFieldOrig = valVec.getField
+        val valField =
+          new Field(MapVector.VALUE_NAME, valFieldOrig.getFieldType, valFieldOrig.getChildren)
+        val entriesField = new Field(
+          MapVector.DATA_VECTOR_NAME,
+          new FieldType(false, ArrowType.Struct.INSTANCE, null),
+          java.util.Arrays.asList(keyField, valField))
+        mv.initializeChildrenFromFields(java.util.Collections.singletonList(entriesField))
+        val entries = mv.getDataVector.asInstanceOf[StructVector]
+        val entriesKey = entries.getChildByOrdinal(0).asInstanceOf[FieldVector]
+        val entriesVal = entries.getChildByOrdinal(1).asInstanceOf[FieldVector]
+        keyVec.makeTransferPair(entriesKey).transfer()
+        valVec.makeTransferPair(entriesVal).transfer()
+        keyVec.close()
+        valVec.close()
+        mv.setInitialCapacity(numRows)
+        mv.allocateNew()
+        mv
       case other =>
         throw new UnsupportedOperationException(
           s"CometBatchKernelCodegen: unsupported output type $other")
@@ -228,6 +265,7 @@ private[udf] object CometBatchKernelCodegenOutput {
     case TimestampNTZType => classOf[TimeStampMicroVector].getName
     case _: ArrayType => classOf[ListVector].getName
     case _: StructType => classOf[StructVector].getName
+    case _: MapType => classOf[MapVector].getName
     case other =>
       throw new UnsupportedOperationException(
         s"CometBatchKernelCodegen.outputVectorClass: unsupported output type $other")
@@ -368,9 +406,57 @@ private[udf] object CometBatchKernelCodegenOutput {
          |$structVar.setIndexDefined($idx);
          |$childDecls
          |$perFieldWrites""".stripMargin
-    case _: MapType =>
-      throw new UnsupportedOperationException(
-        "CometBatchKernelCodegen.emitWrite: MapType output not yet implemented")
+    case mt: MapType =>
+      // Complex-type output: recursive per-row write to a MapVector.
+      // Spark's `doGenCode` for MapType-returning expressions produces a `MapData` value
+      // (`ArrayBasedMapData` / `UnsafeMapData` / ScalaUDF encoder output). The per-row shape:
+      //   1. Cast the target to MapVector and extract the inner entries StructVector and its
+      //      typed key/value children (once per row - the field lookups aren't per-element).
+      //   2. Open a new map entry via `list.startNewValue(idx)`; that returns the base index
+      //      into the entries StructVector for this row's key/value pairs.
+      //   3. For each key/value pair in the source `MapData`: set the entries struct slot
+      //      defined (map values can be null, but the struct slot itself is defined), write
+      //      the key (always non-null - Spark/Arrow map invariant), then write the value with
+      //      a null-guard if `vals.isNullAt(j)`. Key and value writes recurse through
+      //      `emitWrite` on the key/value child vector.
+      //   4. Close the map entry with `list.endValue(idx, n)`.
+      val mapVar = ctx.freshName("map")
+      val entriesVar = ctx.freshName("entries")
+      val keyVar = ctx.freshName("keyVec")
+      val valVar = ctx.freshName("valVec")
+      val mapSrc = ctx.freshName("mapSrc")
+      val keyArr = ctx.freshName("keyArr")
+      val valArr = ctx.freshName("valArr")
+      val nVar = ctx.freshName("n")
+      val childIdx = ctx.freshName("cidx")
+      val jVar = ctx.freshName("j")
+      val mapClass = classOf[MapVector].getName
+      val structClass = classOf[StructVector].getName
+      val keyClass = outputVectorClass(mt.keyType)
+      val valClass = outputVectorClass(mt.valueType)
+      val keySrcExpr = specializedGetterExpr(keyArr, jVar, mt.keyType)
+      val valSrcExpr = specializedGetterExpr(valArr, jVar, mt.valueType)
+      val keyWrite = emitWrite(keyVar, s"$childIdx + $jVar", keySrcExpr, mt.keyType, ctx)
+      val valWrite = emitWrite(valVar, s"$childIdx + $jVar", valSrcExpr, mt.valueType, ctx)
+      s"""$mapClass $mapVar = ($mapClass) $targetVec;
+         |$structClass $entriesVar = ($structClass) $mapVar.getDataVector();
+         |$keyClass $keyVar = ($keyClass) $entriesVar.getChildByOrdinal(0);
+         |$valClass $valVar = ($valClass) $entriesVar.getChildByOrdinal(1);
+         |org.apache.spark.sql.catalyst.util.MapData $mapSrc = $source;
+         |org.apache.spark.sql.catalyst.util.ArrayData $keyArr = $mapSrc.keyArray();
+         |org.apache.spark.sql.catalyst.util.ArrayData $valArr = $mapSrc.valueArray();
+         |int $nVar = $mapSrc.numElements();
+         |int $childIdx = $mapVar.startNewValue($idx);
+         |for (int $jVar = 0; $jVar < $nVar; $jVar++) {
+         |  $entriesVar.setIndexDefined($childIdx + $jVar);
+         |  $keyWrite
+         |  if ($valArr.isNullAt($jVar)) {
+         |    $valVar.setNull($childIdx + $jVar);
+         |  } else {
+         |    $valWrite
+         |  }
+         |}
+         |$mapVar.endValue($idx, $nVar);""".stripMargin
     case other =>
       throw new UnsupportedOperationException(
         s"CometBatchKernelCodegen.emitWrite: unsupported output type $other")

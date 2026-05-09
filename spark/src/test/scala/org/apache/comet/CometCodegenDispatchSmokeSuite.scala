@@ -968,4 +968,98 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       }
     }
   }
+
+  // =============================================================================================
+  // StructType + MapType + nested-composition smoke tests. Source tests prove the emitted Java
+  // is well-shaped; these tests prove Janino compiles it and the runtime roundtrip matches
+  // Spark.
+  // =============================================================================================
+
+  test("codegen: ScalaUDF composes with struct-field access reading Struct<String, Int>.age") {
+    // Keeps the UDF arg scalar (Int) but puts a `GetStructField` under it so the codegen
+    // dispatcher compiles the struct-input read path (`row.getStruct(0, 2).getInt(1)`).
+    spark.udf.register("doubleInt", (i: Int) => i * 2)
+    withTable("t") {
+      sql("CREATE TABLE t (s STRUCT<name: STRING, age: INT>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(named_struct('name', 'alice', 'age', 30)), " +
+          "(named_struct('name', 'bob', 'age', 42)), " +
+          "(null)")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT doubleInt(s.age) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF taking full Struct<String, Int> value (case class arg)") {
+    spark.udf.register("fmtPair", (r: NameAgePair) => s"${r.name}:${r.age}")
+    withTable("t") {
+      sql("CREATE TABLE t (s STRUCT<name: STRING, age: INT>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(named_struct('name', 'alice', 'age', 30)), " +
+          "(named_struct('name', 'bob', 'age', 42))")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT fmtPair(s) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF returning Struct<String, Int> (case class output)") {
+    spark.udf.register("makePair", (i: Int) => NameAgePair(s"n$i", i))
+    withTypedCol("INT", "1", "2", "3") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT makePair(c) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF taking Map<String, Int>") {
+    spark.udf.register("sumMap", (m: Map[String, Int]) => if (m == null) -1 else m.values.sum)
+    withTable("t") {
+      sql("CREATE TABLE t (m MAP<STRING, INT>) USING parquet")
+      sql("INSERT INTO t VALUES (map('a', 1, 'b', 2)), (map()), (null)")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT sumMap(m) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF returning Map<String, Int>") {
+    spark.udf.register(
+      "singletonMap",
+      (s: String, i: Int) => if (s == null) null else Map(s -> i))
+    withTable("t") {
+      sql("CREATE TABLE t (s STRING, i INT) USING parquet")
+      sql("INSERT INTO t VALUES ('a', 1), ('b', 2), (null, 3)")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT singletonMap(s, i) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF taking Map<String, Seq<Int>> exercises nested composition") {
+    spark.udf.register(
+      "totalLens",
+      (m: Map[String, Seq[Int]]) => if (m == null) -1 else m.values.flatten.sum)
+    withTable("t") {
+      sql("CREATE TABLE t (m MAP<STRING, ARRAY<INT>>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(map('a', array(1, 2, 3), 'b', array(10))), " +
+          "(map()), " +
+          "(null)")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT totalLens(m) FROM t"))
+      }
+    }
+  }
 }
+
+/**
+ * Case class used by the struct-input / struct-output smoke tests. Must be declared at file scope
+ * (not inside the test class) so Spark's TypeTag-based UDF encoder can resolve the Spark
+ * `StructType` schema from the Scala class.
+ */
+private case class NameAgePair(name: String, age: Int)
