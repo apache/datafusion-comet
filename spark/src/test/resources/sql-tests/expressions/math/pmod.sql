@@ -80,3 +80,29 @@ INSERT INTO test_pmod_byte VALUES (10, 3), (-10, 3), (10, -3), (-10, -3)
 
 query
 SELECT pmod(a, b) FROM test_pmod_byte
+
+-- boundary values
+query
+SELECT pmod(2L, 9223372036854775807L), pmod(2147483647, -2147483648), pmod(-2147483648, -1)
+
+-- NaN and Infinity for double
+query
+SELECT pmod(cast('NaN' as double), 3.0), pmod(3.0, cast('NaN' as double)), pmod(cast('Infinity' as double), 3.0), pmod(3.0, cast('Infinity' as double)), pmod(cast('-Infinity' as double), 3.0)
+
+-- NaN and Infinity for float
+query
+SELECT pmod(cast('NaN' as float), cast(3.0 as float)), pmod(cast(3.0 as float), cast('NaN' as float)), pmod(cast('Infinity' as float), cast(3.0 as float)), pmod(cast(3.0 as float), cast('Infinity' as float))
+
+-- negative zero: Comet returns 0.0 where Spark returns -0.0 (IEEE 754 signed zero difference)
+query ignore(negative zero handling differs from Spark)
+SELECT pmod(cast('-0.0' as double), 3.0), pmod(cast('-0.0' as float), cast(3.0 as float))
+
+-- high-precision decimal (exercises Decimal256 promotion path)
+statement
+CREATE TABLE test_pmod_dec256(a decimal(38,18), b decimal(38,18)) USING parquet
+
+statement
+INSERT INTO test_pmod_dec256 VALUES (12345678901234567890.123456789012345678, 3.000000000000000000), (-12345678901234567890.123456789012345678, 3.000000000000000000)
+
+query
+SELECT pmod(a, b) FROM test_pmod_dec256

@@ -22,7 +22,7 @@ statement
 CREATE TABLE test_pmod_ansi(a int, b int) USING parquet
 
 statement
-INSERT INTO test_pmod_ansi VALUES (10, 0), (10, 3)
+INSERT INTO test_pmod_ansi VALUES (10, 0), (10, 3), (-7, 3)
 
 -- pmod by zero should throw in ANSI mode
 query expect_error(BY_ZERO)

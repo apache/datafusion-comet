@@ -294,10 +294,6 @@ object CometPmod extends CometExpressionSerde[Pmod] with MathBase {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
-      return None
-    }
 
     createMathExpression(
       expr,
