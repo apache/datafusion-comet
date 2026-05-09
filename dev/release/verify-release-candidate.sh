@@ -111,7 +111,9 @@ test_source_distribution() {
     cargo build --release ${COMET_CARGO_BUILD_ARGS:-}
   popd
   # test with the latest supported version of Spark
-  ./mvnw verify -Prelease -DskipTests -P"spark-3.4" -Dmaven.gitcommitid.skip=true
+  # Skip spotless since the source was already checked before release.
+  # Spotless can fail on Windows due to CRLF line ending differences.
+  ./mvnw verify -Prelease -DskipTests -P"spark-3.4" -Dmaven.gitcommitid.skip=true -Dspotless.check.skip=true
 }
 
 TEST_SUCCESS=no
