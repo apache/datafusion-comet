@@ -70,9 +70,12 @@ abstract class CometArrayData extends ArrayData with CometInternalRowShim {
 
   override def copy(): ArrayData = unsupported("copy")
   override def array: Array[Any] = unsupported("array")
-  override def toString(): String =
-    s"${getClass.getSimpleName}(numElements=${try { numElements() }
-      catch { case _: Throwable => "?" }})"
+  override def toString(): String = {
+    val n =
+      try numElements().toString
+      catch { case _: Throwable => "?" }
+    s"${getClass.getSimpleName}(numElements=$n)"
+  }
 
   protected def unsupported(method: String): Nothing =
     throw new UnsupportedOperationException(

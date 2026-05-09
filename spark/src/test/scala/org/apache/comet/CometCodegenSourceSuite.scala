@@ -22,12 +22,12 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, ElementAt, Expression, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Size, StringSplit, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateNamedStruct, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Size, StringSplit, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
-import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, StringType, StructField, StructType}
 
 import org.apache.comet.udf.CometBatchKernelCodegen
-import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, ScalarColumnSpec}
+import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 
 // Resolve Arrow vector classes through the codegen object so tests see the same `Class` objects
 // the shaded `common` module sees. A direct `classOf[org.apache.arrow.vector.VarCharVector]` here
@@ -552,6 +552,117 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       src.contains(".getObject(") && src.contains("Decimal$.MODULE$"),
       s"expected BigDecimal slow path for p>18 element; got:\n$src")
+  }
+
+  // ============================================================================================
+  // Nested-type exploratory tests. These cases exercise shapes the emitter doesn't yet fully
+  // support; they run `generateSource` and capture the outcome so the suite stays green while
+  // we trace the failure modes empirically.
+  // ============================================================================================
+
+  private def captureEmission(
+      expr: Expression,
+      specs: IndexedSeq[ArrowColumnSpec]): Either[Throwable, String] =
+    try Right(CometBatchKernelCodegen.generateSource(expr, specs).body)
+    catch { case t: Throwable => Left(t) }
+
+  test("explore: Array<Array<Int>> input via Size") {
+    val innerArray = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = IntegerType,
+      element = ScalarColumnSpec(
+        CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+        nullable = true))
+    val outerArray = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = ArrayType(IntegerType),
+      element = innerArray)
+    val expr = Size(BoundReference(0, ArrayType(ArrayType(IntegerType)), nullable = true))
+    captureEmission(expr, IndexedSeq(outerArray)) match {
+      case Left(t) =>
+        info(s"Array<Array<Int>>: ${t.getClass.getSimpleName}: ${t.getMessage}")
+      case Right(src) =>
+        info(s"Array<Array<Int>>: compiled ok, length=${src.length}")
+    }
+  }
+
+  test("explore: Array<Struct<a: Int>> input via Size") {
+    val innerStruct = StructColumnSpec(
+      nullable = true,
+      fields = Seq(
+        StructFieldSpec(
+          "a",
+          IntegerType,
+          nullable = true,
+          ScalarColumnSpec(
+            CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+            nullable = true))))
+    val outerArray = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = StructType(Seq(StructField("a", IntegerType, nullable = true)).toArray),
+      element = innerStruct)
+    val elemType = StructType(Seq(StructField("a", IntegerType, nullable = true)).toArray)
+    val expr = Size(BoundReference(0, ArrayType(elemType), nullable = true))
+    captureEmission(expr, IndexedSeq(outerArray)) match {
+      case Left(t) =>
+        info(s"Array<Struct<Int>>: ${t.getClass.getSimpleName}: ${t.getMessage}")
+      case Right(src) =>
+        info(s"Array<Struct<Int>>: compiled ok, length=${src.length}")
+    }
+  }
+
+  test("explore: Struct<Struct<a: Int>> input via GetStructField chain") {
+    val innerStruct = StructColumnSpec(
+      nullable = true,
+      fields = Seq(
+        StructFieldSpec(
+          "a",
+          IntegerType,
+          nullable = true,
+          ScalarColumnSpec(
+            CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+            nullable = true))))
+    val outerStruct = StructColumnSpec(
+      nullable = true,
+      fields = Seq(
+        StructFieldSpec(
+          "s",
+          StructType(Seq(StructField("a", IntegerType, nullable = true)).toArray),
+          nullable = true,
+          innerStruct)))
+    val innerType = StructType(Seq(StructField("a", IntegerType, nullable = true)).toArray)
+    val outerType = StructType(Seq(StructField("s", innerType, nullable = true)).toArray)
+    val expr = GetStructField(
+      GetStructField(BoundReference(0, outerType, nullable = true), 0, Some("s")),
+      0,
+      Some("a"))
+    captureEmission(expr, IndexedSeq(outerStruct)) match {
+      case Left(t) =>
+        info(s"Struct<Struct<Int>>: ${t.getClass.getSimpleName}: ${t.getMessage}")
+      case Right(src) =>
+        info(s"Struct<Struct<Int>>: compiled ok, length=${src.length}")
+    }
+  }
+
+  test("explore: Struct<a: Array<Int>> input via Size(col0.a)") {
+    val innerArray = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = IntegerType,
+      element = ScalarColumnSpec(
+        CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+        nullable = true))
+    val outerStruct = StructColumnSpec(
+      nullable = true,
+      fields = Seq(StructFieldSpec("a", ArrayType(IntegerType), nullable = true, innerArray)))
+    val structType =
+      StructType(Seq(StructField("a", ArrayType(IntegerType), nullable = true)).toArray)
+    val expr = Size(GetStructField(BoundReference(0, structType, nullable = true), 0, Some("a")))
+    captureEmission(expr, IndexedSeq(outerStruct)) match {
+      case Left(t) =>
+        info(s"Struct<Array<Int>>: ${t.getClass.getSimpleName}: ${t.getMessage}")
+      case Right(src) =>
+        info(s"Struct<Array<Int>>: compiled ok, length=${src.length}")
+    }
   }
 }
 
