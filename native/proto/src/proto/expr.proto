@@ -91,6 +91,7 @@ message Expr {
     HoursTransform hours_transform = 68;
     ArraysZip arrays_zip = 69;
     JvmScalarUdf jvm_scalar_udf = 70;
+    MathExpr pmod = 71;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)

@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.math.min
 
-import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
+import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Pmod, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -281,6 +281,33 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
       expr.dataType,
       expr.evalMode,
       (builder, mathExpr) => builder.setRemainder(mathExpr))
+  }
+}
+
+object CometPmod extends CometExpressionSerde[Pmod] with MathBase {
+
+  override def convert(
+      expr: Pmod,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (!supportedDataType(expr.left.dataType)) {
+      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
+      return None
+    }
+    if (expr.evalMode == EvalMode.TRY) {
+      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
+      return None
+    }
+
+    createMathExpression(
+      expr,
+      expr.left,
+      expr.right,
+      inputs,
+      binding,
+      expr.dataType,
+      expr.evalMode,
+      (builder, mathExpr) => builder.setPmod(mathExpr))
   }
 }
 
