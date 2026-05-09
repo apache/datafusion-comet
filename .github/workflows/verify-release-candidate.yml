@@ -78,10 +78,27 @@ jobs:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Spark 3.4 uses Scala 2.12 which requires JDK 11
+      - name: Set up JDK 11
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: zulu
+          java-version: 11
+
       - name: Set RUSTFLAGS for Windows GNU linker
         if: matrix.os == 'windows'
         shell: bash
         run: echo "RUSTFLAGS=-C link-arg=-Wl,--exclude-libs=ALL" >> "$GITHUB_ENV"
+
+      # Pin Rust to 1.85.0 on macOS arm64 to work around ring 0.17.14
+      # compile failure with Rust 1.86+. Only aarch64-apple-darwin is
+      # affected. Remove once ring ships a fix.
+      - name: Pin Rust toolchain (macOS arm64)
+        if: matrix.os == 'macos' && matrix.arch == 'arm64'
+        shell: bash
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          rustup default 1.85.0
 
       - name: Run release candidate verification
         shell: bash
