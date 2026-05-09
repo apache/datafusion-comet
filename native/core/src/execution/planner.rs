@@ -1326,6 +1326,8 @@ impl PhysicalPlanner {
                     common.return_null_struct_if_all_fields_missing,
                     self.session_ctx(),
                     common.encryption_enabled,
+                    common.use_field_id,
+                    common.ignore_missing_field_id,
                 )?;
                 Ok((
                     vec![],
@@ -3018,11 +3020,16 @@ fn convert_spark_types_to_arrow_schema(
     let arrow_fields = spark_types
         .iter()
         .map(|spark_type| {
-            Field::new(
+            let field = Field::new(
                 String::clone(&spark_type.name),
                 to_arrow_datatype(spark_type.data_type.as_ref().unwrap()),
                 spark_type.nullable,
-            )
+            );
+            if spark_type.metadata.is_empty() {
+                field
+            } else {
+                field.with_metadata(spark_type.metadata.clone())
+            }
         })
         .collect_vec();
     let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));

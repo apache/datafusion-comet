@@ -1544,22 +1544,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("unhex") {
     val table = "unhex_table"
-    withTable(table) {
-      sql(s"create table $table(col string) using parquet")
+    Seq(false, true).foreach { dictionaryEnabled =>
+      withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
+        withTable(table) {
+          sql(s"create table $table(col string) using parquet")
 
-      sql(s"""INSERT INTO $table VALUES
-        |('537061726B2053514C'),
-        |('737472696E67'),
-        |('\\0'),
-        |(''),
-        |('###'),
-        |('G123'),
-        |('hello'),
-        |('A1B'),
-        |('0A1B')""".stripMargin)
+          sql(s"""INSERT INTO $table VALUES
+            |('537061726B2053514C'),
+            |('537061726B2053514C'),
+            |('737472696E67'),
+            |('737472696E67'),
+            |('\\0'),
+            |(''),
+            |('###'),
+            |('G123'),
+            |('hello'),
+            |('A1B'),
+            |('0A1B')""".stripMargin)
 
-      checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
+          checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
+        }
+      }
     }
+
+    Seq(false, true).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        withParquetTable(path.toString, table) {
+          checkSparkAnswerAndOperator(s"SELECT unhex(_8) FROM $table")
+        }
+      }
+    }
+
   }
 
   test("EqualNullSafe should preserve comet filter") {
@@ -1965,7 +1982,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("remainder function") {
-    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
@@ -1975,6 +1991,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     def verifyResult(query: String): Unit = {
       // Spark 4.1 introduced REMAINDER_BY_ZERO; older versions raise DIVIDE_BY_ZERO for `%`.
+      // Comet always raises REMAINDER_BY_ZERO natively but the JVM shim maps it to
+      // DIVIDE_BY_ZERO on Spark < 4.1 (where that error class does not exist).
       val expectedError =
         if (isSpark41Plus)
           "[REMAINDER_BY_ZERO] Remainder by zero. Use `try_mod` to tolerate divisor being 0 and return NULL instead."
