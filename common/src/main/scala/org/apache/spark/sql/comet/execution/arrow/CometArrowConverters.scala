@@ -30,7 +30,7 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.vector.NativeUtil
+import org.apache.comet.vector.{CDataUtil, NativeUtil}
 
 object CometArrowConverters extends Logging {
   // This is similar how Spark converts internal row to Arrow format except that it is transforming
@@ -145,7 +145,8 @@ object CometArrowConverters extends Logging {
       schema: StructType,
       maxRecordsPerBatch: Int,
       timeZoneId: String,
-      context: TaskContext)
+      context: TaskContext,
+      zeroCopyExportFn: Option[(Int, Long, Long) => Unit] = None)
       extends ArrowBatchIterBase(schema, timeZoneId, context)
       with AutoCloseable {
 
@@ -159,6 +160,21 @@ object CometArrowConverters extends Logging {
     override protected def nextBatch(): ColumnarBatch = {
       val rowsInBatch = colBatch.numRows()
       if (rowsProduced < rowsInBatch) {
+        // On the first call, try zero-copy if an export function was provided
+        if (rowsProduced == 0 && zeroCopyExportFn.isDefined) {
+          try {
+            val zeroCopy = CDataUtil.importBatch(
+              colBatch.numCols(),
+              rowsInBatch,
+              allocator,
+              zeroCopyExportFn.get)
+            rowsProduced = rowsInBatch
+            return zeroCopy
+          } catch {
+            case e: Exception =>
+              logWarning("Zero-copy C Data import failed, falling back to copy", e)
+          }
+        }
         // the arrow writer shall be reset before writing the next batch
         arrowWriter.reset()
         val rowsToProduce =
@@ -190,7 +206,14 @@ object CometArrowConverters extends Logging {
       schema: StructType,
       maxRecordsPerBatch: Int,
       timeZoneId: String,
-      context: TaskContext): Iterator[ColumnarBatch] = {
-    new ColumnBatchToArrowBatchIter(colBatch, schema, maxRecordsPerBatch, timeZoneId, context)
+      context: TaskContext,
+      zeroCopyExportFn: Option[(Int, Long, Long) => Unit] = None): Iterator[ColumnarBatch] = {
+    new ColumnBatchToArrowBatchIter(
+      colBatch,
+      schema,
+      maxRecordsPerBatch,
+      timeZoneId,
+      context,
+      zeroCopyExportFn)
   }
 }
