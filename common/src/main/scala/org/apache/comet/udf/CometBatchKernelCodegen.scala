@@ -410,6 +410,21 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
     // Pick the per-row body. Specialized emitters get priority; the default reuses
     // Spark's doGenCode.
+    //
+    // TODO(method-size): the per-row body lives inline inside `process`'s for-loop and is not
+    // split. Individual `doGenCode` implementations (e.g. `Concat`, `Cast`, `CaseWhen`) call
+    // `ctx.splitExpressionsWithCurrentInputs` internally, which does the right thing here
+    // because `currentVars == null` and `INPUT_ROW = "row"`: helper methods get `InternalRow
+    // row` as a parameter and our kernel aliases `row = this` in `process`, so they resolve
+    // reads through our typed getters. The outer `perRowBody` itself, however, is never split.
+    // A sufficiently deep composed expression (e.g. multi-level ScalaUDF with heavy encoder
+    // converters per level) can push `process` past Janino's 64KB method size limit, at which
+    // point compile fails. Mitigation when we hit that ceiling: wrap `perRowBody` in
+    // `ctx.splitExpressionsWithCurrentInputs(Seq(perRowBody), funcName = "evalRow",
+    // arguments = Seq(...))`. That path is already covered by the `row`-as-`this` alias we
+    // install above. Skip it speculatively because today's workloads sit comfortably below the
+    // threshold and splitting unconditionally adds a function-call frame per row for the
+    // common case.
     val (concreteOutClass, perRowBody) = boundExpr match {
       case rr: RegExpReplace if canSpecializeRegExpReplace(rr) =>
         (classOf[VarCharVector].getName, specializedRegExpReplaceBody(ctx, rr, inputSchema))
@@ -434,7 +449,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
     val typedFieldDecls = inputFieldDecls(inputSchema)
     val typedInputCasts = inputCasts(inputSchema)
-    val getters = typedInputAccessors(inputSchema)
+    val decimalTypeByOrdinal = decimalPrecisionByOrdinal(boundExpr)
+    val getters = typedInputAccessors(inputSchema, decimalTypeByOrdinal)
 
     val codeBody =
       s"""
@@ -548,8 +564,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    * `DateDayVector`), long (including `TimeStampMicroVector` and its TZ variant), float, double,
    * decimal, binary, and UTF8 (for both `VarCharVector` and `ViewVarCharVector`). Widen by adding
    * further vector-class cases to the existing switches.
+   *
+   * `decimalTypeByOrdinal` lets the decimal getter specialize per ordinal: when a
+   * `BoundReference` of `DecimalType(precision <= 18)` is the only decimal read at that ordinal,
+   * the emitted case skips the `BigDecimal` allocation entirely and reads the unscaled long
+   * directly. See [[decimalPrecisionByOrdinal]] for how that map is derived.
    */
-  private def typedInputAccessors(inputSchema: Seq[ArrowColumnSpec]): String = {
+  private def typedInputAccessors(
+      inputSchema: Seq[ArrowColumnSpec],
+      decimalTypeByOrdinal: Map[Int, Option[DecimalType]]): String = {
     val withOrd = inputSchema.zipWithIndex
 
     val isNullCases = withOrd.map { case (spec, ord) =>
@@ -591,13 +614,42 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     }
     val decimalCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[DecimalVector] =>
-        // DecimalVector.getObject returns java.math.BigDecimal. Spark's companion apply is the
-        // cleanest Java-accessible factory. `MODULE$.apply(bd, precision, scale)` builds a
-        // Spark Decimal at the caller-supplied precision/scale.
+        // Compile-time specialization on the DecimalType precision known at this ordinal.
+        //
+        // Arrow's decimal128 stores each value as a 16-byte little-endian two's complement
+        // integer. When the unscaled value fits in a signed 64-bit long (precision <= 18, i.e.
+        // `Decimal.MAX_LONG_DIGITS`), the low 8 bytes of the slot are the signed long value
+        // directly; the upper 8 bytes are sign-extension. Reading those 8 bytes via
+        // `ArrowBuf.getLong` (little-endian) and wrapping with `Decimal.createUnsafe` bypasses
+        // the `BigDecimal` allocation that `DecimalVector.getObject` performs.
+        //
+        // `decimalTypeByOrdinal(ord)` tells us which branch to emit: `Some(dt)` with
+        // `dt.precision <= 18` emits the fast path only, `Some(dt)` with precision > 18 emits
+        // the slow path only, `None` means either the ordinal has no `BoundReference` in the
+        // tree or has multiple conflicting DecimalTypes. The `None` case emits the runtime
+        // branch as a defensive fallback; it should not normally hit in a well-analyzed plan.
+        val known = decimalTypeByOrdinal.getOrElse(ord, None)
+        val fastPath =
+          s"""        long unscaled = this.col$ord.getDataBuffer()
+             |            .getLong((long) this.rowIdx * 16L);
+             |        return org.apache.spark.sql.types.Decimal$$.MODULE$$
+             |            .createUnsafe(unscaled, precision, scale);""".stripMargin
+        val slowPath =
+          s"""        java.math.BigDecimal bd = this.col$ord.getObject(this.rowIdx);
+             |        return org.apache.spark.sql.types.Decimal$$.MODULE$$
+             |            .apply(bd, precision, scale);""".stripMargin
+        val body = known match {
+          case Some(dt) if dt.precision <= 18 => fastPath
+          case Some(_) => slowPath
+          case None =>
+            s"""        if (precision <= 18) {
+               |$fastPath
+               |        } else {
+               |$slowPath
+               |        }""".stripMargin
+        }
         s"""      case $ord: {
-           |        java.math.BigDecimal bd = this.col$ord.getObject(this.rowIdx);
-           |        return org.apache.spark.sql.types.Decimal$$.MODULE$$
-           |            .apply(bd, precision, scale);
+           |$body
            |      }""".stripMargin
     }
     val binaryCases = withOrd.collect {
@@ -641,6 +693,36 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         "public org.apache.spark.unsafe.types.UTF8String getUTF8String(int ordinal)",
         "getUTF8String",
         utf8Cases)).mkString
+  }
+
+  /**
+   * Build a per-ordinal map of the `DecimalType` observed on `BoundReference`s in the bound
+   * expression. For each ordinal the value is:
+   *
+   *   - `Some(dt)` when every `BoundReference` at that ordinal shares the same `DecimalType`.
+   *   - `None` when there are multiple distinct `DecimalType`s at that ordinal (unexpected in a
+   *     well-analyzed plan but handled as a defensive fallback).
+   *
+   * Ordinals that have no `BoundReference` of `DecimalType` simply aren't in the map. Callers
+   * should treat absence the same as `None`: use the runtime branch rather than specializing.
+   *
+   * Used by [[typedInputAccessors]] to emit a compile-time-specialized `getDecimal` case per
+   * ordinal (fast path for precision <= 18, slow path otherwise, with a runtime branch only when
+   * the precision cannot be determined).
+   */
+  private def decimalPrecisionByOrdinal(boundExpr: Expression): Map[Int, Option[DecimalType]] = {
+    boundExpr
+      .collect {
+        case b: BoundReference if b.dataType.isInstanceOf[DecimalType] =>
+          b.ordinal -> b.dataType.asInstanceOf[DecimalType]
+      }
+      .groupBy(_._1)
+      .view
+      .mapValues { pairs =>
+        val distinct = pairs.map(_._2).toSet
+        if (distinct.size == 1) Some(distinct.head) else None
+      }
+      .toMap
   }
 
   /**

@@ -24,7 +24,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Concat, Expression, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
-import org.apache.spark.sql.types.{DataType, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{DataType, DecimalType, IntegerType, LongType, StringType}
 
 import org.apache.comet.udf.CometBatchKernelCodegen
 import org.apache.comet.udf.CometBatchKernelCodegen.ArrowColumnSpec
@@ -263,6 +263,57 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       occurrences == 2,
       "expected two independent Rand evaluations (no CSE on nondeterministic), " +
         s"got $occurrences; src=\n${CodeFormatter.format(result.code)}")
+  }
+
+  test("DecimalVector getDecimal specializes to unscaled-long fast path for short precision") {
+    // Mirrors Spark's `UnsafeRow.getDecimal` split at `Decimal.MAX_LONG_DIGITS` (18), done at
+    // codegen time rather than at runtime. The dispatcher reads the `BoundReference`'s
+    // `DecimalType` at source-generation time and emits only the fast-path branch when
+    // `precision <= 18`. The fast path reads the low 8 bytes of the 16-byte Arrow decimal128
+    // slot directly as a signed long via `ArrowBuf.getLong` and wraps with
+    // `Decimal.createUnsafe`, avoiding the `BigDecimal` allocation `DecimalVector.getObject`
+    // would perform. For precision > 18 the generator emits only the slow-path branch
+    // (`getObject + Decimal.apply`); see the companion test below.
+    val decimalVectorClass = CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector")
+    val spec = ArrowColumnSpec(decimalVectorClass, nullable = true)
+    val expr = BoundReference(0, DecimalType(18, 2), nullable = true)
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(spec))
+    assert(
+      result.body.contains(".createUnsafe("),
+      "expected Decimal.createUnsafe call on fast path; got:\n" +
+        CodeFormatter.format(result.code))
+    assert(
+      result.body.contains(".getDataBuffer()") && result.body.contains(".getLong("),
+      s"expected direct data buffer getLong read; got:\n${CodeFormatter.format(result.code)}")
+    assert(
+      !result.body.contains(".getObject("),
+      "expected specialized fast path (no BigDecimal fallback branch in source); got:\n" +
+        CodeFormatter.format(result.code))
+    assert(
+      !result.body.contains("if (precision <= 18)"),
+      "expected no runtime precision branch for known short-precision column; got:\n" +
+        CodeFormatter.format(result.code))
+  }
+
+  test("DecimalVector getDecimal specializes to BigDecimal slow path for long precision") {
+    // Companion to the fast-path test. For `DecimalType(p, s)` with `p > 18`, the unscaled value
+    // can exceed 64 bits, so the generator emits only the `getObject + Decimal.apply` branch.
+    // The fast path markers must be absent so the generated source is minimal for this column.
+    val decimalVectorClass = CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector")
+    val spec = ArrowColumnSpec(decimalVectorClass, nullable = true)
+    val expr = BoundReference(0, DecimalType(38, 10), nullable = true)
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(spec))
+    assert(
+      result.body.contains(".getObject(") && result.body.contains(".apply("),
+      s"expected BigDecimal slow path; got:\n${CodeFormatter.format(result.code)}")
+    assert(
+      !result.body.contains(".createUnsafe("),
+      "expected no fast-path emission for long-precision column; got:\n" +
+        CodeFormatter.format(result.code))
+    assert(
+      !result.body.contains("if (precision <= 18)"),
+      "expected no runtime precision branch for known long-precision column; got:\n" +
+        CodeFormatter.format(result.code))
   }
 }
 

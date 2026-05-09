@@ -207,4 +207,72 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
       }
     }
   }
+
+  /**
+   * Randomized decimal identity UDF. Spans both sides of the `Decimal.MAX_LONG_DIGITS` (18)
+   * boundary so each test hits one of the two specialized branches in the generated `getDecimal`
+   * getter. Precisions are chosen to exercise: small short-precision, boundary short-precision
+   * with varying scale, just-past-boundary long precision, and the max decimal128 precision.
+   */
+  private def generateDecimals(
+      seed: Long,
+      precision: Int,
+      scale: Int,
+      nullDensity: Double): Seq[java.math.BigDecimal] = {
+    val rng = new Random(seed)
+    val intDigits = precision - scale
+    // `BigInt.apply(bits, rng)` samples uniformly on `[0, 2^bits - 1]`; bound to the decimal's
+    // integer-part range (10^intDigits - 1) so the result fits the schema. `BigInteger.bitLength`
+    // would overshoot slightly; min with the exact max is cheap insurance.
+    val intMax = BigInt(10).pow(intDigits) - 1
+    val bits = math.max(intMax.bitLength, 1)
+    (0 until RowCount).map { _ =>
+      if (rng.nextDouble() < nullDensity) null
+      else {
+        val mag = BigInt(bits, rng).min(intMax)
+        val signed = if (rng.nextBoolean()) -mag else mag
+        new java.math.BigDecimal(signed.bigInteger, scale)
+      }
+    }
+  }
+
+  private def withDecimalTable(decimalType: String, values: Seq[java.math.BigDecimal])(
+      f: => Unit): Unit = {
+    withTable("t") {
+      sql(s"CREATE TABLE t (d $decimalType) USING parquet")
+      if (values.nonEmpty) {
+        val rows = values.map { v =>
+          if (v == null) "(NULL)" else s"(${v.toPlainString})"
+        }
+        rows.grouped(64).foreach { batch =>
+          sql(s"INSERT INTO t VALUES ${batch.mkString(", ")}")
+        }
+      }
+      f
+    }
+  }
+
+  // (precision, scale) pairs spanning both sides of the MAX_LONG_DIGITS=18 boundary.
+  private val decimalShapes: Seq[(Int, Int)] = Seq((9, 2), (18, 0), (18, 9), (19, 0), (38, 10))
+
+  for {
+    density <- nullDensities
+    (precision, scale) <- decimalShapes
+  } {
+    test(s"fuzz decimal identity precision=$precision scale=$scale nullDensity=$density") {
+      // Reuse one registered UDF name across iterations; Spark replaces by name. The Scala-side
+      // signature uses `BigDecimal`, which Spark encodes as DecimalType(38, 18); an implicit Cast
+      // from the column's DecimalType to the UDF's parameter type runs inside Spark's generated
+      // code, but the column read still goes through our kernel's `getDecimal` which is the path
+      // we're fuzzing.
+      spark.udf.register("dec_id_fuzz", (d: java.math.BigDecimal) => d)
+      val seed = ((precision * 31L) + scale) * 31L + density.hashCode
+      val values = generateDecimals(seed, precision, scale, density)
+      withDecimalTable(s"DECIMAL($precision, $scale)", values) {
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(sql("SELECT dec_id_fuzz(d) FROM t"))
+        }
+      }
+    }
+  }
 }

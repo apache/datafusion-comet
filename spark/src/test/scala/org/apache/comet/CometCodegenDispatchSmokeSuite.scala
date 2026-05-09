@@ -684,6 +684,94 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
+  /**
+   * Decimal tests. The dispatcher's `getDecimal` getter specializes on the `BoundReference`'s
+   * `DecimalType.precision` at source-generation time: precision <= 18 emits an unscaled-long
+   * fast path via `Decimal.createUnsafe`, precision > 18 emits a `BigDecimal + Decimal.apply`
+   * slow path. These smoke tests exercise both sides of the split end to end and verify Spark and
+   * Comet agree on correctness across typical decimal workloads.
+   */
+  private def withDecimalTable(decimalType: String, values: Seq[String])(f: => Unit): Unit = {
+    withTable("t") {
+      sql(s"CREATE TABLE t (d $decimalType) USING parquet")
+      val rows = values.map(v => if (v == null) "(NULL)" else s"($v)").mkString(", ")
+      if (values.nonEmpty) sql(s"INSERT INTO t VALUES $rows")
+      f
+    }
+  }
+
+  test("codegen: ScalaUDF over Decimal(9, 2) (short precision, fast path)") {
+    // Short-precision identity UDF. The column's DecimalType has precision 9, so the generated
+    // getter for ordinal 0 emits only the unscaled-long fast path. The UDF's Scala-side signature
+    // uses `java.math.BigDecimal`, which Spark's encoder pins at DecimalType(38, 18); the implicit
+    // Cast from DECIMAL(9, 2) -> DECIMAL(38, 18) runs inside Spark's generated code, not via our
+    // kernel's getter, so the fast path still fires on the column read.
+    spark.udf.register("decId9_2", (d: java.math.BigDecimal) => d)
+    withDecimalTable("DECIMAL(9, 2)", Seq("0.00", "1.50", "-1.50", "9999.99", "-9999.99", null)) {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT decId9_2(d) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF over Decimal(18, 0) (max short precision, fast path)") {
+    // Boundary precision: 18 is the last value for which the unscaled representation fits in a
+    // signed 64-bit long. The fast path must still be selected.
+    spark.udf.register("decId18_0", (d: java.math.BigDecimal) => d)
+    withDecimalTable(
+      "DECIMAL(18, 0)",
+      Seq("0", "1", "-1", "999999999999999999", "-999999999999999999", null)) {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT decId18_0(d) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF over Decimal(18, 9) (max short precision with scale, fast path)") {
+    // Same precision as above but with scale 9 to exercise the fractional side of the long
+    // decimal. Spark `Decimal` stores both as the same unscaled long; only the `scale` parameter
+    // differs.
+    spark.udf.register("decId18_9", (d: java.math.BigDecimal) => d)
+    withDecimalTable(
+      "DECIMAL(18, 9)",
+      Seq("0.000000000", "1.123456789", "-1.123456789", "999999999.999999999", null)) {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT decId18_9(d) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF over Decimal(19, 0) (just past short precision, slow path)") {
+    // First precision where the unscaled value can exceed `Long.MAX_VALUE`. The generated getter
+    // must emit only the slow path; the fast-path marker must be absent in the compiled kernel.
+    spark.udf.register("decId19_0", (d: java.math.BigDecimal) => d)
+    withDecimalTable(
+      "DECIMAL(19, 0)",
+      Seq("0", "1", "-1", "9999999999999999999", "-9999999999999999999", null)) {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT decId19_0(d) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF over Decimal(38, 10) (max precision, slow path)") {
+    // Max decimal128 precision. Exercises the `getObject + Decimal.apply` branch and the
+    // end-to-end BigDecimal conversion path with a non-trivial scale.
+    spark.udf.register("decId38_10", (d: java.math.BigDecimal) => d)
+    withDecimalTable(
+      "DECIMAL(38, 10)",
+      Seq(
+        "0.0000000000",
+        "1.1234567890",
+        "-1.1234567890",
+        "9999999999999999999999999999.0000000000",
+        null)) {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT decId38_10(d) FROM t"))
+      }
+    }
+  }
+
   test("codegen: ScalaUDF composed with reused scalar subquery across projection and filter") {
     // The same scalar subquery appears in two sites: the projection (which the dispatcher
     // compiles into a fused kernel) and the filter (a separate operator). Each site holds its
