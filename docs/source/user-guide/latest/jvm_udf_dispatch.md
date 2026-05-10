@@ -40,10 +40,10 @@ Complex (as both input and output, including arbitrary nesting): `ArrayType`, `S
 
 ## Configuration
 
-| Key                                     | Default | Description                                                                                                                                                                            |
-| --------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Key                                     | Default | Description                                                                                                                                                                                          |
+| --------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `spark.comet.exec.codegenDispatch.mode` | `auto`  | `auto` routes through JVM codegen when it is the serde's primary path (regex with java engine, ScalaUDF). `force` routes through codegen whenever accepted. `disabled` never routes through codegen. |
-| `spark.comet.exec.regexp.engine`        | `java`  | `java` uses the JVM codegen path for the regex family. `rust` prefers the native DataFusion engine where one exists and falls back to Spark otherwise.                                 |
+| `spark.comet.exec.regexp.engine`        | `java`  | `java` uses the JVM codegen path for the regex family. `rust` prefers the native DataFusion engine where one exists and falls back to Spark otherwise.                                               |
 
 ## Regex routing
 
