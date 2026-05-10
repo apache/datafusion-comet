@@ -31,17 +31,35 @@ use crate::error::CometUdfError;
 use crate::types::{CometUdfSignature, Volatility};
 use crate::CometScalarUdf;
 
-/// Wrap an `Arc<dyn ScalarUDFImpl>` as a [`CometScalarUdf`]. Useful when
-/// the user already has a DataFusion UDF and wants to expose it through
-/// Comet without re-implementing the trait.
-pub fn from_scalar_udf_impl(udf: Arc<dyn ScalarUDFImpl>) -> impl CometScalarUdf {
-    let sig = derive_signature(udf.as_ref());
-    DataFusionAdapter { udf, sig }
+/// Wrap an `Arc<dyn ScalarUDFImpl>` as a [`CometScalarUdf`].
+///
+/// Useful when the user already has a DataFusion UDF and wants to expose it
+/// through Comet without re-implementing the trait.
+///
+/// # Errors
+///
+/// Returns [`CometUdfError`] if:
+/// - The UDF's `TypeSignature` is not `TypeSignature::Exact`. The adapter
+///   requires a concrete, fixed argument list to derive the Comet signature.
+///   Use a Comet-native UDF for variadic / pattern signatures.
+/// - The UDF's `return_type` method fails when called with the derived
+///   argument types.
+pub fn from_scalar_udf_impl(
+    udf: Arc<dyn ScalarUDFImpl>,
+) -> Result<impl CometScalarUdf, CometUdfError> {
+    let sig = derive_signature(udf.as_ref())?;
+    let config_options = Arc::new(ConfigOptions::default());
+    Ok(DataFusionAdapter {
+        udf,
+        sig,
+        config_options,
+    })
 }
 
 struct DataFusionAdapter {
     udf: Arc<dyn ScalarUDFImpl>,
     sig: CometUdfSignature,
+    config_options: Arc<ConfigOptions>,
 }
 
 impl CometScalarUdf for DataFusionAdapter {
@@ -77,7 +95,7 @@ impl CometScalarUdf for DataFusionAdapter {
                 arg_fields,
                 number_rows: n,
                 return_field,
-                config_options: Arc::new(ConfigOptions::default()),
+                config_options: self.config_options.clone(),
             })
             .map_err(|e| CometUdfError::new(e.to_string()))?;
         let array = match result {
@@ -90,7 +108,7 @@ impl CometScalarUdf for DataFusionAdapter {
     }
 }
 
-fn derive_signature(udf: &dyn ScalarUDFImpl) -> CometUdfSignature {
+fn derive_signature(udf: &dyn ScalarUDFImpl) -> Result<CometUdfSignature, CometUdfError> {
     use datafusion::logical_expr::TypeSignature;
 
     let volatility = match udf.signature().volatility {
@@ -100,19 +118,25 @@ fn derive_signature(udf: &dyn ScalarUDFImpl) -> CometUdfSignature {
     };
     let args = match &udf.signature().type_signature {
         TypeSignature::Exact(args) => args.clone(),
-        // For non-Exact signatures we fall back to an empty arg list. The
-        // adapter is intended for UDFs with concrete signatures; users
-        // wanting variadic UDFs should implement `CometScalarUdf` directly.
-        _ => Vec::new(),
+        other => {
+            return Err(CometUdfError::new(format!(
+                "DataFusion adapter requires a TypeSignature::Exact signature; \
+                 got {other:?}. Use a Comet-native UDF for variadic / pattern signatures."
+            )));
+        }
     };
-    let return_type = udf
-        .return_type(&args)
-        .unwrap_or(arrow::datatypes::DataType::Null);
-    CometUdfSignature {
+    let return_type = udf.return_type(&args).map_err(|e| {
+        CometUdfError::new(format!(
+            "DataFusion UDF '{}' return_type({:?}) failed: {e}",
+            udf.name(),
+            args
+        ))
+    })?;
+    Ok(CometUdfSignature {
         args,
         return_type,
         volatility,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -175,7 +199,7 @@ mod tests {
     #[test]
     fn adapter_invokes_underlying_udf() {
         let udf: Arc<dyn ScalarUDFImpl> = Arc::new(AddTen::new());
-        let adapter = from_scalar_udf_impl(udf);
+        let adapter = from_scalar_udf_impl(udf).unwrap();
         assert_eq!(adapter.name(), "add_ten");
         assert_eq!(adapter.signature().args, vec![DataType::Int64]);
         assert_eq!(adapter.signature().return_type, DataType::Int64);
@@ -184,5 +208,88 @@ mod tests {
         let out = adapter.invoke(&[input]).unwrap();
         let out = out.as_any().downcast_ref::<Int64Array>().unwrap();
         assert_eq!(out.values(), &[11, 12, 13]);
+    }
+
+    #[test]
+    fn adapter_materializes_scalar_return() {
+        use datafusion::common::ScalarValue;
+
+        #[derive(Debug, PartialEq, Eq, Hash)]
+        struct ConstNinetyNine {
+            sig: Signature,
+        }
+        impl ConstNinetyNine {
+            fn new() -> Self {
+                Self {
+                    sig: Signature::exact(vec![DataType::Int64], DfVolatility::Immutable),
+                }
+            }
+        }
+        impl ScalarUDFImpl for ConstNinetyNine {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn name(&self) -> &str {
+                "const99"
+            }
+            fn signature(&self) -> &Signature {
+                &self.sig
+            }
+            fn return_type(&self, _: &[DataType]) -> DfResult<DataType> {
+                Ok(DataType::Int64)
+            }
+            fn invoke_with_args(&self, _: ScalarFunctionArgs) -> DfResult<ColumnarValue> {
+                Ok(ColumnarValue::Scalar(ScalarValue::Int64(Some(99))))
+            }
+        }
+
+        let udf: Arc<dyn ScalarUDFImpl> = Arc::new(ConstNinetyNine::new());
+        let adapter = from_scalar_udf_impl(udf).unwrap();
+        let input: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
+        let out = adapter.invoke(&[input]).unwrap();
+        let out = out.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(out.values(), &[99, 99, 99]);
+    }
+
+    #[test]
+    fn adapter_rejects_non_exact_signature() {
+        #[derive(Debug, PartialEq, Eq, Hash)]
+        struct VariadicUdf {
+            sig: Signature,
+        }
+        impl VariadicUdf {
+            fn new() -> Self {
+                Self {
+                    sig: Signature::variadic(vec![DataType::Int64], DfVolatility::Immutable),
+                }
+            }
+        }
+        impl ScalarUDFImpl for VariadicUdf {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn name(&self) -> &str {
+                "variadic"
+            }
+            fn signature(&self) -> &Signature {
+                &self.sig
+            }
+            fn return_type(&self, _: &[DataType]) -> DfResult<DataType> {
+                Ok(DataType::Int64)
+            }
+            fn invoke_with_args(&self, _: ScalarFunctionArgs) -> DfResult<ColumnarValue> {
+                unreachable!("should not be called");
+            }
+        }
+
+        let udf: Arc<dyn ScalarUDFImpl> = Arc::new(VariadicUdf::new());
+        let result = from_scalar_udf_impl(udf);
+        assert!(result.is_err(), "expected Err for variadic signature");
+        let err = result.err().unwrap();
+        assert!(
+            err.message.contains("Exact"),
+            "error message should mention Exact: {}",
+            err.message
+        );
     }
 }
