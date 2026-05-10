@@ -18,6 +18,8 @@
 //! Type tags, signatures, and the wire-format descriptor used across the
 //! `comet-udf-sdk` C ABI.
 
+use std::ffi::c_char;
+
 use arrow::datatypes::{DataType, Field};
 
 /// Function volatility, mirroring DataFusion's `Volatility`.
@@ -184,8 +186,6 @@ pub fn field_from_ipc_bytes(bytes: &[u8]) -> Result<Field, String> {
     Ok(schema.field(0).as_ref().clone())
 }
 
-use std::ffi::c_char;
-
 /// Wire-format description of a UDF, populated by `comet_udf_describe`.
 ///
 /// Field/return-type encoding:
@@ -241,6 +241,23 @@ impl UdfDescriptor {
         }
     }
 }
+
+// Pin the layout so a future field reorder gets a compile error.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(std::mem::size_of::<UdfDescriptor>() == 104);
+    assert!(std::mem::offset_of!(UdfDescriptor, name_ptr) == 0);
+    assert!(std::mem::offset_of!(UdfDescriptor, name_len) == 8);
+    assert!(std::mem::offset_of!(UdfDescriptor, volatility) == 12);
+    assert!(std::mem::offset_of!(UdfDescriptor, n_args) == 16);
+    assert!(std::mem::offset_of!(UdfDescriptor, arg_tags) == 24);
+    assert!(std::mem::offset_of!(UdfDescriptor, arg_field_ipc_ptrs) == 32);
+    assert!(std::mem::offset_of!(UdfDescriptor, arg_field_ipc_lens) == 40);
+    assert!(std::mem::offset_of!(UdfDescriptor, return_tag) == 48);
+    assert!(std::mem::offset_of!(UdfDescriptor, return_field_ipc_ptr) == 56);
+    assert!(std::mem::offset_of!(UdfDescriptor, return_field_ipc_len) == 64);
+    assert!(std::mem::offset_of!(UdfDescriptor, _reserved) == 72);
+};
 
 #[cfg(test)]
 mod tests {
