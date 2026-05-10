@@ -16,8 +16,8 @@
 # under the License.
 
 [workspace]
-default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "comet-udf-sdk"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs", "comet-udf-sdk"]
+default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "comet-udf-sdk", "test-udfs"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs", "comet-udf-sdk", "test-udfs"]
 resolver = "2"
 
 [workspace.package]

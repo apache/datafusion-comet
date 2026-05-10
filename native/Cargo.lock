@@ -1485,6 +1485,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "comet-test-udfs"
+version = "0.16.0"
+dependencies = [
+ "arrow",
+ "comet-udf-sdk",
+]
+
+[[package]]
 name = "comet-udf-sdk"
 version = "0.16.0"
 dependencies = [
