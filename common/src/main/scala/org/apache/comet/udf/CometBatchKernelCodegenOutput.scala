@@ -96,21 +96,25 @@ private[udf] object CometBatchKernelCodegenOutput {
   }
 
   /**
-   * Returns `(concreteVectorClassName, writeJavaSnippet)` for the expression's output type at the
-   * root of the generated kernel. The snippet assumes `output` is already cast to the concrete
-   * vector class, `i` is the current row index, and `$valueTerm` is the Java expression holding
-   * the bound expression's evaluated value. Delegates to [[emitWrite]] for the actual snippet,
-   * passing `"output"` and `"i"` as the root target and index. Kept as a separate entry point
-   * because the orchestrator needs both the vector class (for the cast at the top of `process`)
-   * and the snippet.
+   * Split output for a complex-type write: `setup` holds once-per-batch declarations (typed
+   * child-vector casts) and lives outside the per-row for-loop; `perRow` holds the statements
+   * executed for each row. Scalar writes have empty setup.
+   */
+  private case class OutputEmit(setup: String, perRow: String)
+
+  /**
+   * Returns `(concreteVectorClassName, batchSetup, perRowSnippet)` for the expression's output
+   * type at the root of the generated kernel. `output` is already cast to
+   * `concreteVectorClassName` in `process`'s prelude, so `emitWrite`'s complex-type branches can
+   * hoist child casts straight off `output` without re-casting it per row.
    */
   def emitOutputWriter(
       dataType: DataType,
       valueTerm: String,
-      ctx: CodegenContext): (String, String) = {
+      ctx: CodegenContext): (String, String, String) = {
     val cls = outputVectorClass(dataType)
-    val snippet = emitWrite("output", "i", valueTerm, dataType, ctx)
-    (cls, snippet)
+    val emit = emitWrite("output", "i", valueTerm, dataType, ctx)
+    (cls, emit.setup, emit.perRow)
   }
 
   /**
@@ -141,42 +145,41 @@ private[udf] object CometBatchKernelCodegenOutput {
   }
 
   /**
-   * Composable write emitter. Returns a Java snippet that writes the value produced by `source`
-   * into vector `targetVec` at index `idx`, specialized on the Spark `dataType`.
+   * Composable write emitter. Returns an [[OutputEmit]] whose `setup` declares once-per-batch
+   * typed child-vector casts (hoisted above the `process` for-loop) and whose `perRow` writes the
+   * value produced by `source` into `targetVec` at index `idx`. `targetVec` is assumed to be
+   * already typed to the concrete Arrow vector class for `dataType` at the call site (via the
+   * prelude cast in `process` for the root, or via a setup cast declared by the caller for nested
+   * children).
    *
-   * Compositional: the `ArrayType` and `StructType` cases emit recursive per-row writes whose
-   * per-element / per-field writes recurse back into `emitWrite` with the child vector as the new
-   * target. `MapType` case is not yet implemented and throws; adding it later is a case addition,
-   * not a structural change, because the recursion already flows through this function.
-   *
-   * For scalar types the snippet emits the direct write, including the decimal short-value fast
-   * path ([[DecimalOutputShortFastPath]]) and the UTF8 on-heap shortcut
-   * ([[Utf8OutputOnHeapShortcut]]).
+   * Scalars emit `perRow` only; complex types (`ArrayType` / `StructType` / `MapType`) emit both
+   * setup (child-vector casts) and perRow (loops, null guards, recursive writes). Inner
+   * `emitWrite` calls return their own setup, which the outer caller concatenates so child-of-
+   * child casts bubble up to the batch prelude.
    */
   private def emitWrite(
       targetVec: String,
       idx: String,
       source: String,
       dataType: DataType,
-      ctx: CodegenContext): String = dataType match {
+      ctx: CodegenContext): OutputEmit = dataType match {
     case BooleanType =>
-      s"$targetVec.set($idx, $source ? 1 : 0);"
+      OutputEmit("", s"$targetVec.set($idx, $source ? 1 : 0);")
     case ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType | DateType |
         TimestampType | TimestampNTZType =>
       // All scalar primitives and date/time types share the direct `set(idx, value)` shape.
       // Spark's codegen already emits the correct primitive Java type for each; Arrow's
       // typed vectors accept the matching primitive in their `set` overloads.
-      s"$targetVec.set($idx, $source);"
+      OutputEmit("", s"$targetVec.set($idx, $source);")
     case dt: DecimalType =>
       // Optimization: DecimalOutputShortFastPath.
       // For precision <= 18 the unscaled value fits in a signed long; pass it straight to
       // `DecimalVector.setSafe(int, long)` and skip the `java.math.BigDecimal` allocation
       // `setSafe(int, BigDecimal)` requires. For p > 18 the BigDecimal path is unavoidable.
-      if (dt.precision <= 18) {
-        s"$targetVec.setSafe($idx, $source.toUnscaledLong());"
-      } else {
-        s"$targetVec.setSafe($idx, $source.toJavaBigDecimal());"
-      }
+      val write =
+        if (dt.precision <= 18) s"$targetVec.setSafe($idx, $source.toUnscaledLong());"
+        else s"$targetVec.setSafe($idx, $source.toJavaBigDecimal());"
+      OutputEmit("", write)
     case _: StringType =>
       // Optimization: Utf8OutputOnHeapShortcut.
       // `UTF8String` is internally a `(base, offset, numBytes)` view. When the base is a
@@ -187,20 +190,22 @@ private[udf] object CometBatchKernelCodegenOutput {
       val bBase = ctx.freshName("utfBase")
       val bLen = ctx.freshName("utfLen")
       val bArr = ctx.freshName("utfArr")
-      s"""Object $bBase = $source.getBaseObject();
-         |int $bLen = $source.numBytes();
-         |if ($bBase instanceof byte[]) {
-         |  $targetVec.setSafe($idx, (byte[]) $bBase,
-         |      (int) ($source.getBaseOffset()
-         |          - org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET),
-         |      $bLen);
-         |} else {
-         |  byte[] $bArr = $source.getBytes();
-         |  $targetVec.setSafe($idx, $bArr, 0, $bArr.length);
-         |}""".stripMargin
+      OutputEmit(
+        "",
+        s"""Object $bBase = $source.getBaseObject();
+           |int $bLen = $source.numBytes();
+           |if ($bBase instanceof byte[]) {
+           |  $targetVec.setSafe($idx, (byte[]) $bBase,
+           |      (int) ($source.getBaseOffset()
+           |          - org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET),
+           |      $bLen);
+           |} else {
+           |  byte[] $bArr = $source.getBytes();
+           |  $targetVec.setSafe($idx, $bArr, 0, $bArr.length);
+           |}""".stripMargin)
     case BinaryType =>
       // Spark's BinaryType value is already a `byte[]`.
-      s"$targetVec.setSafe($idx, $source, 0, $source.length);"
+      OutputEmit("", s"$targetVec.setSafe($idx, $source, 0, $source.length);")
     case ArrayType(elementType, _) =>
       // Complex-type output: recursive per-row write.
       // Spark's `doGenCode` for ArrayType-returning expressions produces an `ArrayData` value
@@ -208,124 +213,128 @@ private[udf] object CometBatchKernelCodegenOutput {
       // one into the Arrow `ListVector`'s child, and bracket with `startNewValue` /
       // `endValue`. The element write recurses through `emitWrite` on the list's child vector,
       // so any scalar we support becomes a valid array element. Nested complex types (Array of
-      // Array, Array of Struct) work by the same recursion.
-      val listVar = ctx.freshName("list")
-      val childVar = ctx.freshName("child")
+      // Array, Array of Struct) work by the same recursion. `targetVec` is a `ListVector` at
+      // the call site (either `output` at root or a hoisted child cast); we only need to cast
+      // its data vector, and that cast goes into setup.
+      val childVar = ctx.freshName("outListChild")
+      val childClass = outputVectorClass(elementType)
       val arrVar = ctx.freshName("arr")
       val nVar = ctx.freshName("n")
       val childIdx = ctx.freshName("cidx")
       val jVar = ctx.freshName("j")
-      val listClass = classOf[ListVector].getName
-      val childClass = outputVectorClass(elementType)
       val elemSource = emitSpecializedGetterExpr(arrVar, jVar, elementType)
-      val innerWrite = emitWrite(childVar, s"$childIdx + $jVar", elemSource, elementType, ctx)
-      s"""$listClass $listVar = ($listClass) $targetVec;
-         |$childClass $childVar = ($childClass) $listVar.getDataVector();
-         |org.apache.spark.sql.catalyst.util.ArrayData $arrVar = $source;
-         |int $nVar = $arrVar.numElements();
-         |int $childIdx = $listVar.startNewValue($idx);
-         |for (int $jVar = 0; $jVar < $nVar; $jVar++) {
-         |  if ($arrVar.isNullAt($jVar)) {
-         |    $childVar.setNull($childIdx + $jVar);
-         |  } else {
-         |    $innerWrite
-         |  }
-         |}
-         |$listVar.endValue($idx, $nVar);""".stripMargin
+      val inner = emitWrite(childVar, s"$childIdx + $jVar", elemSource, elementType, ctx)
+      val setup =
+        (s"$childClass $childVar = ($childClass) $targetVec.getDataVector();" +:
+          Seq(inner.setup).filter(_.nonEmpty)).mkString("\n")
+      val perRow =
+        s"""org.apache.spark.sql.catalyst.util.ArrayData $arrVar = $source;
+           |int $nVar = $arrVar.numElements();
+           |int $childIdx = $targetVec.startNewValue($idx);
+           |for (int $jVar = 0; $jVar < $nVar; $jVar++) {
+           |  if ($arrVar.isNullAt($jVar)) {
+           |    $childVar.setNull($childIdx + $jVar);
+           |  } else {
+           |    ${inner.perRow}
+           |  }
+           |}
+           |$targetVec.endValue($idx, $nVar);""".stripMargin
+      OutputEmit(setup, perRow)
     case st: StructType =>
       // Complex-type output: recursive per-row write to a StructVector.
       // Spark's `doGenCode` for StructType-returning expressions produces an `InternalRow`
-      // value (`GenericInternalRow` / `UnsafeRow` / ScalaUDF encoder output). We cast each
-      // typed child vector once per row at the top of the snippet (no runtime dispatch per
-      // field write) and emit one write per field, recursing through `emitWrite` on the
-      // child vector. `StructVector` writes are flat-indexed (same `$idx` as the struct's
-      // outer slot), so the field write uses `$idx` directly.
+      // value (`GenericInternalRow` / `UnsafeRow` / ScalaUDF encoder output). Typed child-vector
+      // casts are hoisted to setup (once per batch); the per-row body references the hoisted
+      // names. `StructVector` writes are flat-indexed (same `$idx` as the struct's outer slot).
       //
       // Branchless optimization: for each field whose `nullable == false` on the
       // [[StructType]], we skip the `row.isNullAt($fi)` guard at source level. Non-nullable
       // fields in Spark are a contract that the producer does not emit nulls for that field,
       // and matching that contract here lets HotSpot emit a straight write path per field
       // rather than a branch.
-      val structVar = ctx.freshName("struct")
       val rowVar = ctx.freshName("row")
-      val structClass = classOf[StructVector].getName
       val perField = st.fields.zipWithIndex.map { case (field, fi) =>
-        val childVar = ctx.freshName("child")
+        val childVar = ctx.freshName("outStructChild")
         val childClass = outputVectorClass(field.dataType)
-        val decl =
-          s"$childClass $childVar = ($childClass) $structVar.getChildByOrdinal($fi);"
+        val childDecl =
+          s"$childClass $childVar = ($childClass) $targetVec.getChildByOrdinal($fi);"
         val fieldSource = emitSpecializedGetterExpr(rowVar, fi.toString, field.dataType)
-        val innerWrite = emitWrite(childVar, idx, fieldSource, field.dataType, ctx)
+        val inner = emitWrite(childVar, idx, fieldSource, field.dataType, ctx)
         val write =
           if (!field.nullable) {
-            innerWrite
+            inner.perRow
           } else {
             s"""if ($rowVar.isNullAt($fi)) {
                |  $childVar.setNull($idx);
                |} else {
-               |  $innerWrite
+               |  ${inner.perRow}
                |}""".stripMargin
           }
-        (decl, write)
+        val perFieldSetup = (Seq(childDecl) ++ Seq(inner.setup).filter(_.nonEmpty)).mkString("\n")
+        (perFieldSetup, write)
       }
-      val childDecls = perField.map(_._1).mkString("\n")
+      val setup = perField.map(_._1).mkString("\n")
       val perFieldWrites = perField.map(_._2).mkString("\n")
-      s"""$structClass $structVar = ($structClass) $targetVec;
-         |org.apache.spark.sql.catalyst.InternalRow $rowVar = $source;
-         |$structVar.setIndexDefined($idx);
-         |$childDecls
-         |$perFieldWrites""".stripMargin
+      val perRow =
+        s"""org.apache.spark.sql.catalyst.InternalRow $rowVar = $source;
+           |$targetVec.setIndexDefined($idx);
+           |$perFieldWrites""".stripMargin
+      OutputEmit(setup, perRow)
     case mt: MapType =>
       // Complex-type output: recursive per-row write to a MapVector.
       // Spark's `doGenCode` for MapType-returning expressions produces a `MapData` value
-      // (`ArrayBasedMapData` / `UnsafeMapData` / ScalaUDF encoder output). The per-row shape:
-      //   1. Cast the target to MapVector and extract the inner entries StructVector and its
-      //      typed key/value children (once per row - the field lookups aren't per-element).
-      //   2. Open a new map entry via `list.startNewValue(idx)`; that returns the base index
-      //      into the entries StructVector for this row's key/value pairs.
-      //   3. For each key/value pair in the source `MapData`: set the entries struct slot
-      //      defined (map values can be null, but the struct slot itself is defined), write
-      //      the key (always non-null - Spark/Arrow map invariant), then write the value with
-      //      a null-guard if `vals.isNullAt(j)`. Key and value writes recurse through
-      //      `emitWrite` on the key/value child vector.
-      //   4. Close the map entry with `list.endValue(idx, n)`.
-      val mapVar = ctx.freshName("map")
-      val entriesVar = ctx.freshName("entries")
-      val keyVar = ctx.freshName("keyVec")
-      val valVar = ctx.freshName("valVec")
+      // (`ArrayBasedMapData` / `UnsafeMapData` / ScalaUDF encoder output). Typed child-vector
+      // casts for the entries struct and the key/value children are hoisted to setup (once per
+      // batch); the per-row body references them.
+      //
+      // Per-row shape:
+      //   1. Read keyArray / valueArray from the MapData source.
+      //   2. Open a new map entry via `startNewValue(idx)`; returns the base index into the
+      //      entries StructVector for this row's key/value pairs.
+      //   3. For each key/value pair: set the entries struct slot defined (map values can be
+      //      null, but the struct slot itself is defined), write the key (always non-null by
+      //      Spark/Arrow invariant), then write the value with a null-guard on
+      //      `vals.isNullAt(j)`. Both writes recurse through `emitWrite`.
+      //   4. Close the map entry with `endValue(idx, n)`.
+      val entriesVar = ctx.freshName("outMapEntries")
+      val keyVar = ctx.freshName("outMapKey")
+      val valVar = ctx.freshName("outMapVal")
       val mapSrc = ctx.freshName("mapSrc")
       val keyArr = ctx.freshName("keyArr")
       val valArr = ctx.freshName("valArr")
       val nVar = ctx.freshName("n")
       val childIdx = ctx.freshName("cidx")
       val jVar = ctx.freshName("j")
-      val mapClass = classOf[MapVector].getName
       val structClass = classOf[StructVector].getName
       val keyClass = outputVectorClass(mt.keyType)
       val valClass = outputVectorClass(mt.valueType)
       val keySrcExpr = emitSpecializedGetterExpr(keyArr, jVar, mt.keyType)
       val valSrcExpr = emitSpecializedGetterExpr(valArr, jVar, mt.valueType)
-      val keyWrite = emitWrite(keyVar, s"$childIdx + $jVar", keySrcExpr, mt.keyType, ctx)
-      val valWrite = emitWrite(valVar, s"$childIdx + $jVar", valSrcExpr, mt.valueType, ctx)
-      s"""$mapClass $mapVar = ($mapClass) $targetVec;
-         |$structClass $entriesVar = ($structClass) $mapVar.getDataVector();
-         |$keyClass $keyVar = ($keyClass) $entriesVar.getChildByOrdinal(0);
-         |$valClass $valVar = ($valClass) $entriesVar.getChildByOrdinal(1);
-         |org.apache.spark.sql.catalyst.util.MapData $mapSrc = $source;
-         |org.apache.spark.sql.catalyst.util.ArrayData $keyArr = $mapSrc.keyArray();
-         |org.apache.spark.sql.catalyst.util.ArrayData $valArr = $mapSrc.valueArray();
-         |int $nVar = $mapSrc.numElements();
-         |int $childIdx = $mapVar.startNewValue($idx);
-         |for (int $jVar = 0; $jVar < $nVar; $jVar++) {
-         |  $entriesVar.setIndexDefined($childIdx + $jVar);
-         |  $keyWrite
-         |  if ($valArr.isNullAt($jVar)) {
-         |    $valVar.setNull($childIdx + $jVar);
-         |  } else {
-         |    $valWrite
-         |  }
-         |}
-         |$mapVar.endValue($idx, $nVar);""".stripMargin
+      val keyEmit = emitWrite(keyVar, s"$childIdx + $jVar", keySrcExpr, mt.keyType, ctx)
+      val valEmit = emitWrite(valVar, s"$childIdx + $jVar", valSrcExpr, mt.valueType, ctx)
+      val setup =
+        (Seq(
+          s"$structClass $entriesVar = ($structClass) $targetVec.getDataVector();",
+          s"$keyClass $keyVar = ($keyClass) $entriesVar.getChildByOrdinal(0);",
+          s"$valClass $valVar = ($valClass) $entriesVar.getChildByOrdinal(1);") ++
+          Seq(keyEmit.setup, valEmit.setup).filter(_.nonEmpty)).mkString("\n")
+      val perRow =
+        s"""org.apache.spark.sql.catalyst.util.MapData $mapSrc = $source;
+           |org.apache.spark.sql.catalyst.util.ArrayData $keyArr = $mapSrc.keyArray();
+           |org.apache.spark.sql.catalyst.util.ArrayData $valArr = $mapSrc.valueArray();
+           |int $nVar = $mapSrc.numElements();
+           |int $childIdx = $targetVec.startNewValue($idx);
+           |for (int $jVar = 0; $jVar < $nVar; $jVar++) {
+           |  $entriesVar.setIndexDefined($childIdx + $jVar);
+           |  ${keyEmit.perRow}
+           |  if ($valArr.isNullAt($jVar)) {
+           |    $valVar.setNull($childIdx + $jVar);
+           |  } else {
+           |    ${valEmit.perRow}
+           |  }
+           |}
+           |$targetVec.endValue($idx, $nVar);""".stripMargin
+      OutputEmit(setup, perRow)
     case other =>
       throw new UnsupportedOperationException(
         s"CometBatchKernelCodegen.emitWrite: unsupported output type $other")

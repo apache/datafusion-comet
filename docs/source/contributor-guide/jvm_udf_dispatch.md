@@ -305,10 +305,6 @@ None of these are worth doing until a profile shows lookup in the hot path.
 
 `CometBatchKernelCodegen.generateSource`. The per-row body lives inline inside `process`'s for-loop and is not split. Individual `doGenCode` implementations (`Concat`, `Cast`, `CaseWhen`) call `ctx.splitExpressionsWithCurrentInputs` internally, but the outer per-row body itself is never split. A sufficiently deep composed expression (multi-level ScalaUDF with heavy encoder converters per level) can push `process` past Janino's 64 KB method size limit, at which point compile fails. Mitigation when that ceiling is hit: wrap `perRowBody` in `ctx.splitExpressionsWithCurrentInputs(Seq(perRowBody), funcName = "evalRow", arguments = Seq(...))`. The `row`-as-`this` alias we install in `process` already covers that path. Skipped speculatively because today's workloads sit comfortably below the threshold and splitting unconditionally adds a function-call frame per row for the common case.
 
-### Hoist per-row child casts for complex output
-
-`CometBatchKernelCodegenOutput.emitWrite` for `StructType` and `MapType`. Each per-row body currently re-casts `output` to its concrete vector class and calls `getChildByOrdinal(fi)` + cast for every child on every row. For a struct with N fields and a batch of M rows, that is N*M `ArrayList.get` + `checkcast` pairs; the individual calls are cheap, but for wide structs it is visible. Hoist the outer cast plus the per-field child casts to locals declared above the `for` loop (the output vector is stable for the batch), then reference the hoisted locals inside the per-row body. Same change applies to `MapType` (`mapVar`, `entriesVar`, `keyVar`, `valVar`).
-
 ## Known behavioral limitations
 
 - **`regexp_replace` on a collated subject** rejects at plan time: Spark wraps the pattern in `Collate(Literal, ...)` and the current `RegExpReplace` serde requires a bare `Literal`. Serde-side unwrap would unblock this.

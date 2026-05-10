@@ -318,13 +318,18 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     // Pick the per-row body. Specialized emitters get priority; the default reuses
     // Spark's doGenCode.
     //
+    // `outputSetup` holds once-per-batch declarations (typed child-vector casts for complex
+    // output) that `emitOutputWriter` factors out of the per-row body so they do not repeat on
+    // every row. Scalar outputs return an empty string here. Specialized emitters (like
+    // RegExpReplace) do not need setup because they write directly to the root `output`.
+    //
     // TODO(method-size): perRowBody is inlined inside process's for-loop and not split.
     // Sufficiently deep trees can exceed Janino's 64KB method size; wrap in
     // ctx.splitExpressionsWithCurrentInputs when hit. See
     // docs/source/contributor-guide/jvm_udf_dispatch.md#open-items.
-    val (concreteOutClass, perRowBody) = boundExpr match {
+    val (concreteOutClass, outputSetup, perRowBody) = boundExpr match {
       case rr: RegExpReplace if canSpecializeRegExpReplace(rr) =>
-        (classOf[VarCharVector].getName, specializedRegExpReplaceBody(ctx, rr, inputSchema))
+        (classOf[VarCharVector].getName, "", specializedRegExpReplaceBody(ctx, rr, inputSchema))
       case _ =>
         // Class-field CSE. `generateExpressions` runs `subexpressionElimination` under the
         // hood, which populates `ctx.subexprFunctions` with per-row helper calls that write
@@ -340,9 +345,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
           boundExpr.genCode(ctx)
         }
         val subExprsCode = ctx.subexprFunctionsCode
-        val (cls, snippet) =
+        val (cls, setup, snippet) =
           CometBatchKernelCodegenOutput.emitOutputWriter(boundExpr.dataType, ev.value, ctx)
-        (cls, defaultBody(boundExpr, ev, snippet, subExprsCode))
+        (cls, setup, defaultBody(boundExpr, ev, snippet, subExprsCode))
     }
 
     val typedFieldDecls = CometBatchKernelCodegenInput.emitInputFieldDecls(inputSchema)
@@ -390,6 +395,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
          |      int numRows) {
          |    $concreteOutClass output = ($concreteOutClass) outRaw;
          |    $typedInputCasts
+         |    $outputSetup
          |    // Alias the kernel as `row` so Spark-generated `${ctx.INPUT_ROW}.method()` reads
          |    // resolve to the kernel's own typed getters. Helper methods that Spark splits off
          |    // via `splitExpressions` also take `InternalRow row` as a parameter; we pass `this`
