@@ -40,6 +40,8 @@ pub use error::{CometUdfError, UdfError, UdfErrorCode};
 
 use arrow::array::ArrayRef;
 
+pub mod macros;
+
 /// A scalar UDF invokable by Comet's native execution.
 ///
 /// Implementations must be `Send + Sync` and stateless — Comet caches a
@@ -56,6 +58,115 @@ pub trait CometScalarUdf: Send + Sync {
     /// Evaluate `args` (one `ArrayRef` per declared argument) and return
     /// a single `ArrayRef` of length equal to the longest input.
     fn invoke(&self, args: &[ArrayRef]) -> Result<ArrayRef, CometUdfError>;
+}
+
+/// Export one or more UDF types as a Comet-loadable cdylib.
+///
+/// Each type passed to the macro must implement [`Default`] and
+/// [`CometScalarUdf`]. The macro emits the full set of `extern "C"`
+/// entry points required by Comet's loader.
+///
+/// # Dependencies
+///
+/// The crate invoking this macro must have `arrow` as a direct dependency
+/// because the generated `extern "C"` functions reference
+/// `arrow::ffi::FFI_ArrowArray` and `arrow::ffi::FFI_ArrowSchema` by
+/// absolute path.
+///
+/// # Example
+/// ```ignore
+/// use comet_udf_sdk::*;
+///
+/// struct AddOne { /* ... */ }
+/// impl Default for AddOne { /* ... */ }
+/// impl CometScalarUdf for AddOne { /* ... */ }
+///
+/// comet_udf_sdk::export!(AddOne);
+/// ```
+#[macro_export]
+macro_rules! export {
+    ( $( $ty:ty ),+ $(,)? ) => {
+        const _: () = {
+            use std::sync::OnceLock;
+            use $crate::macros::{
+                free_error_impl, invoke_impl, EncodedSignature,
+            };
+
+            static UDFS: OnceLock<Vec<Box<dyn $crate::CometScalarUdf>>> = OnceLock::new();
+            static ENCODED: OnceLock<Vec<EncodedSignature>> = OnceLock::new();
+
+            fn udfs() -> &'static [Box<dyn $crate::CometScalarUdf>] {
+                UDFS.get_or_init(|| {
+                    vec![
+                        $( Box::new(<$ty as Default>::default()) as Box<dyn $crate::CometScalarUdf> ),+
+                    ]
+                })
+            }
+
+            fn encoded() -> &'static [EncodedSignature] {
+                ENCODED.get_or_init(|| {
+                    udfs()
+                        .iter()
+                        .map(|u| EncodedSignature::from_signature(u.name(), u.signature()))
+                        .collect()
+                })
+            }
+
+            #[no_mangle]
+            pub extern "C" fn comet_udf_abi_version() -> u32 {
+                $crate::COMET_UDF_ABI_VERSION
+            }
+
+            #[no_mangle]
+            pub extern "C" fn comet_udf_count() -> u32 {
+                udfs().len() as u32
+            }
+
+            #[no_mangle]
+            pub unsafe extern "C" fn comet_udf_describe(
+                idx: u32,
+                out: *mut $crate::types::UdfDescriptor,
+            ) -> i32 {
+                let ud = udfs();
+                let en = encoded();
+                if out.is_null() { return -1; }
+                let i = idx as usize;
+                if i >= ud.len() { return -2; }
+                *out = $crate::types::UdfDescriptor::zeroed();
+                en[i].fill_descriptor(ud[i].signature(), &mut *out);
+                0
+            }
+
+            #[no_mangle]
+            pub unsafe extern "C" fn comet_udf_invoke(
+                idx: u32,
+                in_arrays: *const arrow::ffi::FFI_ArrowArray,
+                in_schemas: *const arrow::ffi::FFI_ArrowSchema,
+                n_in: u32,
+                out_array: *mut arrow::ffi::FFI_ArrowArray,
+                out_schema: *mut arrow::ffi::FFI_ArrowSchema,
+                err_out: *mut $crate::error::UdfError,
+            ) -> i32 {
+                let ud = udfs();
+                let i = idx as usize;
+                if i >= ud.len() { return -2; }
+                invoke_impl(
+                    ud[i].as_ref(),
+                    in_arrays,
+                    in_schemas,
+                    n_in,
+                    out_array,
+                    out_schema,
+                    err_out,
+                )
+            }
+
+            #[no_mangle]
+            pub unsafe extern "C" fn comet_udf_free_error(err: *mut $crate::error::UdfError) {
+                free_error_impl(err)
+            }
+        };
+    };
 }
 
 #[cfg(test)]
