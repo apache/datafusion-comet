@@ -29,8 +29,6 @@ use datafusion::common::DataFusionError;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
-use libloading::Symbol;
-
 use crate::execution::rust_udf::loader::{LoadedLibrary, LoadedUdf};
 
 type InvokeFn = unsafe extern "C" fn(
@@ -50,7 +48,8 @@ type FreeErrFn = unsafe extern "C" fn(*mut comet_udf_sdk::error::UdfError);
 /// Holds:
 /// - an `Arc<LoadedLibrary>` so the cdylib outlives the adapter,
 /// - a clone of the per-UDF descriptor (`LoadedUdf`),
-/// - a precomputed DataFusion `Signature`.
+/// - a precomputed DataFusion `Signature`,
+/// - cached raw function pointers to avoid per-call `dlsym` lookups.
 ///
 /// On every batch, `invoke_with_args` exports each input via the Arrow
 /// C Data Interface, calls the cdylib's `comet_udf_invoke`, and imports
@@ -59,6 +58,8 @@ pub struct RustUdfHandle {
     library: Arc<LoadedLibrary>,
     udf: LoadedUdf,
     signature: Signature,
+    invoke_fn: InvokeFn,
+    free_err_fn: FreeErrFn,
 }
 
 impl RustUdfHandle {
@@ -70,7 +71,26 @@ impl RustUdfHandle {
             _ => Volatility::Volatile,
         };
         let signature = Signature::new(TypeSignature::Exact(udf.args.clone()), volatility);
-        Self { library, udf, signature }
+
+        // SAFETY: comet_udf_invoke and comet_udf_free_error were verified
+        // present at load time (see loader::load); resolving them here is
+        // a fresh dlsym + cast to fn pointer. The library lives as long
+        // as `library` (Arc) which we hold, so the function pointers are
+        // valid for the lifetime of self.
+        let invoke_fn: InvokeFn = unsafe {
+            *library
+                .library
+                .get::<InvokeFn>(b"comet_udf_invoke")
+                .expect("comet_udf_invoke verified at load time")
+        };
+        let free_err_fn: FreeErrFn = unsafe {
+            *library
+                .library
+                .get::<FreeErrFn>(b"comet_udf_free_error")
+                .expect("comet_udf_free_error verified at load time")
+        };
+
+        Self { library, udf, signature, invoke_fn, free_err_fn }
     }
 }
 
@@ -149,16 +169,8 @@ impl ScalarUDFImpl for RustUdfHandle {
         let mut out_sch = FFI_ArrowSchema::empty();
         let mut err = comet_udf_sdk::error::UdfError::zeroed();
 
-        // SAFETY: comet_udf_invoke and comet_udf_free_error symbols were
-        // verified present at load time (see loader::load).
-        let invoke: Symbol<InvokeFn> = unsafe { self.library.library.get(b"comet_udf_invoke") }
-            .map_err(|e| {
-                DataFusionError::Execution(format!("rust UDF invoke symbol: {e}"))
-            })?;
-        let free_err: Symbol<FreeErrFn> =
-            unsafe { self.library.library.get(b"comet_udf_free_error") }.map_err(|e| {
-                DataFusionError::Execution(format!("rust UDF free_error symbol: {e}"))
-            })?;
+        let invoke = self.invoke_fn;
+        let free_err = self.free_err_fn;
 
         // SAFETY: We're upholding the comet_udf_invoke C ABI:
         // - in_arrays/in_schemas are valid for `arrays.len()` elements.
@@ -179,14 +191,11 @@ impl ScalarUDFImpl for RustUdfHandle {
             )
         };
 
-        // After invoke, the cdylib has moved ownership of the input FFI
-        // structs into the user UDF (which dropped them when its `inputs`
-        // Vec dropped). The local Vec storage now contains
-        // FFI_ArrowArray::empty() values whose Drop is a no-op. Forgetting
-        // the Vecs avoids running Drop on those empty structs (cheap, but
-        // explicit is clearer about ownership).
-        std::mem::forget(in_arrays);
-        std::mem::forget(in_schemas);
+        // `in_arrays` / `in_schemas` go out of scope at end of function. On
+        // success the cdylib has replaced each slot with `FFI_ArrowArray::empty()`
+        // (no-op Drop). On a partial-failure rc != 0 path, any un-replaced slots
+        // retain their original release callbacks and are freed correctly by
+        // Vec::drop — preventing leaks if the cdylib bails mid-loop.
 
         if rc != 0 {
             // SAFETY: err points at our local UdfError. If invoke wrote a
@@ -210,6 +219,14 @@ impl ScalarUDFImpl for RustUdfHandle {
                 "rust UDF '{}' returned {} rows, expected {n}",
                 self.udf.name,
                 array.len()
+            )));
+        }
+        if array.data_type() != &self.udf.return_type {
+            return Err(DataFusionError::Execution(format!(
+                "rust UDF '{}' returned type {:?}, expected {:?}",
+                self.udf.name,
+                array.data_type(),
+                self.udf.return_type
             )));
         }
         Ok(ColumnarValue::Array(array))
