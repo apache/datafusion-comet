@@ -27,6 +27,10 @@
 /// or the descriptor wire format changes in a backwards-incompatible way.
 pub const COMET_UDF_ABI_VERSION: u32 = 1;
 
+pub mod types;
+
+pub use types::{ArrowTypeTag, CometUdfSignature, Volatility};
+
 #[cfg(test)]
 mod tests {
     use super::*;
