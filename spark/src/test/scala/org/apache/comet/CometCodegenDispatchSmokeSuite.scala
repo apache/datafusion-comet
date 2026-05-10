@@ -19,11 +19,11 @@
 
 package org.apache.comet
 
-import org.apache.arrow.vector.{BigIntVector, BitVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TinyIntVector, ValueVector, VarCharVector}
+import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarCharVector}
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.udf.CometCodegenDispatchUDF
@@ -444,8 +444,8 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
    * Scalar ScalaUDF smoke tests. These prove that user-registered UDFs route through the codegen
    * dispatcher rather than forcing a whole-plan Spark fallback. Spark's `ScalaUDF.doGenCode`
    * already emits compilable Java that calls the user function via `ctx.addReferenceObj`, so the
-   * dispatcher's compile path picks it up for free. Validates the "biggest single unlock" claim
-   * for the dispatcher approach.
+   * dispatcher's compile path picks it up for free. Tests that user-registered UDFs route through
+   * the dispatcher rather than forcing whole-plan Spark fallback.
    */
 
   test("codegen: registered string ScalaUDF routes through dispatcher") {
@@ -643,6 +643,83 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
         checkSparkAnswerAndOperator(sql("SELECT incB(c) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[TinyIntVector]), ByteType)
+    }
+  }
+
+  test("codegen: ScalaUDF on DateType (DateDayVector, getInt)") {
+    // Date input flows through the Int getter because DateType is physically int. The UDF takes
+    // java.sql.Date and Spark's encoder handles the int -> Date materialization.
+    spark.udf.register(
+      "nextDay",
+      (d: java.sql.Date) => if (d == null) null else new java.sql.Date(d.getTime + 86400000L))
+    withTypedCol("DATE", "DATE'2024-01-01'", "DATE'2024-06-15'", "DATE'1970-01-01'") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT nextDay(c) FROM t"))
+      }
+      assertKernelSignaturePresent(Seq(classOf[DateDayVector]), DateType)
+    }
+  }
+
+  test("codegen: ScalaUDF on TimestampType (TimeStampMicroTZVector, getLong)") {
+    spark.udf.register(
+      "plusSecond",
+      (t: java.sql.Timestamp) =>
+        if (t == null) null else new java.sql.Timestamp(t.getTime + 1000L))
+    withTypedCol(
+      "TIMESTAMP",
+      "TIMESTAMP'2024-01-01 12:00:00'",
+      "TIMESTAMP'2024-06-15 23:59:59'") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT plusSecond(c) FROM t"))
+      }
+      assertKernelSignaturePresent(Seq(classOf[TimeStampMicroTZVector]), TimestampType)
+    }
+  }
+
+  test("codegen: ScalaUDF on TimestampNTZType (TimeStampMicroVector, getLong)") {
+    spark.udf.register(
+      "plusDayNtz",
+      (ldt: java.time.LocalDateTime) => if (ldt == null) null else ldt.plusDays(1))
+    withTypedCol(
+      "TIMESTAMP_NTZ",
+      "TIMESTAMP_NTZ'2024-01-01 12:00:00'",
+      "TIMESTAMP_NTZ'2024-06-15 23:59:59'") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT plusDayNtz(c) FROM t"))
+      }
+      assertKernelSignaturePresent(Seq(classOf[TimeStampMicroVector]), TimestampNTZType)
+    }
+  }
+
+  test("codegen: ScalaUDF returning DateType") {
+    spark.udf.register("epochDay", (_: Int) => java.sql.Date.valueOf("1970-01-01"))
+    withTypedCol("INT", "1", "2", "3") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT epochDay(c) FROM t"))
+      }
+      assertKernelSignaturePresent(Seq(classOf[IntVector]), DateType)
+    }
+  }
+
+  test("codegen: ScalaUDF returning TimestampType") {
+    spark.udf.register("mkTs", (s: Long) => new java.sql.Timestamp(s * 1000L))
+    withTypedCol("BIGINT", "0", "1700000000", "1750000000") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT mkTs(c) FROM t"))
+      }
+      assertKernelSignaturePresent(Seq(classOf[BigIntVector]), TimestampType)
+    }
+  }
+
+  test("codegen: ScalaUDF returning TimestampNTZType") {
+    spark.udf.register(
+      "mkTsNtz",
+      (s: Long) => java.time.LocalDateTime.ofEpochSecond(s, 0, java.time.ZoneOffset.UTC))
+    withTypedCol("BIGINT", "0", "1700000000", "1750000000") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT mkTsNtz(c) FROM t"))
+      }
+      assertKernelSignaturePresent(Seq(classOf[BigIntVector]), TimestampNTZType)
     }
   }
 
@@ -993,6 +1070,13 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   test("codegen: ScalaUDF taking full Struct<String, Int> value (case class arg)") {
+    // Case-class UDF arguments: test data must not include null top-level rows.
+    // `ScalaUDF.scalaConverter` applies Spark's `ExpressionEncoder.Deserializer` on every row
+    // to materialize the case-class instance. The generated deserializer has a
+    // `newInstance(NameAgePair)` step that throws `EXPRESSION_DECODING_FAILED` on a null input,
+    // independent of the dispatcher. Case-class UDF tests omit null top-level rows; other
+    // tests with plain `Seq` / `Map` args can include nulls because the deserializer hands null
+    // to the UDF body which handles it.
     spark.udf.register("fmtPair", (r: NameAgePair) => s"${r.name}:${r.age}")
     withTable("t") {
       sql("CREATE TABLE t (s STRUCT<name: STRING, age: INT>) USING parquet")
@@ -1055,6 +1139,86 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       }
     }
   }
+
+  test("codegen: ScalaUDF round-trips Array<Array<Int>> (nested array input + output)") {
+    // Exercises nested-array input reads and nested-list output writes in one call: the inner
+    // `InputArray_col0_e` class on the input side and the recursive emitWrite on the output.
+    spark.udf.register(
+      "reverseRows",
+      (arr: Seq[Seq[Int]]) => if (arr == null) null else arr.map(_.reverse))
+    withTable("t") {
+      sql("CREATE TABLE t (a ARRAY<ARRAY<INT>>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(array(array(1, 2, 3), array(4, 5))), " +
+          "(array(array())), " +
+          "(null)")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT reverseRows(a) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF round-trips Struct<name, items: Array<Int>>") {
+    // Struct with a complex field on both sides: input reads go through InputStruct_col0 +
+    // InputArray_col0_f1, output writes through StructVector + ListVector.
+    // Null top-level rows omitted - case-class arg; see the note on `fmtPair` above.
+    spark.udf.register(
+      "growItems",
+      (r: NameItems) =>
+        if (r == null) null else NameItems(r.name, if (r.items == null) null else r.items :+ 0))
+    withTable("t") {
+      sql("CREATE TABLE t (s STRUCT<name: STRING, items: ARRAY<INT>>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(named_struct('name', 'a', 'items', array(1, 2))), " +
+          "(named_struct('name', 'b', 'items', array()))")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT growItems(s) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF round-trips Map<String, Array<Int>> (nested value both sides)") {
+    // Map input read goes through InputMap_col0 + InputArray_col0_v (the complex-value side);
+    // output write emits MapVector + entries Struct + per-value ListVector inside the map's
+    // entries struct.
+    spark.udf.register(
+      "sortValues",
+      (m: Map[String, Seq[Int]]) =>
+        if (m == null) null else m.view.mapValues(v => if (v == null) null else v.sorted).toMap)
+    withTable("t") {
+      sql("CREATE TABLE t (m MAP<STRING, ARRAY<INT>>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(map('a', array(3, 1, 2), 'b', array(10))), " +
+          "(map()), " +
+          "(null)")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT sortValues(m) FROM t"))
+      }
+    }
+  }
+
+  test("codegen: ScalaUDF round-trips Map<String, Struct<x: Int, y: String>>") {
+    // Struct value inside a map, both sides. Null top-level rows omitted - the map value is a
+    // case class; see the note on `fmtPair` above.
+    spark.udf.register(
+      "tagValues",
+      (m: Map[String, XyPair]) =>
+        if (m == null) null
+        else m.view.mapValues(v => if (v == null) null else XyPair(v.x + 1, s"<${v.y}>")).toMap)
+    withTable("t") {
+      sql("CREATE TABLE t (m MAP<STRING, STRUCT<x: INT, y: STRING>>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(map('a', named_struct('x', 1, 'y', 'one'))), " +
+          "(map())")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT tagValues(m) FROM t"))
+      }
+    }
+  }
 }
 
 /**
@@ -1063,3 +1227,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
  * `StructType` schema from the Scala class.
  */
 private case class NameAgePair(name: String, age: Int)
+
+private case class NameItems(name: String, items: Seq[Int])
+
+private case class XyPair(x: Int, y: String)

@@ -47,6 +47,7 @@ Benchmarking Guide <benchmarking>
 Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
 Supported Spark Expressions <spark_expressions_support>
+JVM UDF Dispatch <jvm_udf_dispatch>
 Tracing <tracing>
 Profiling <profiling>
 Comet SQL Tests <sql-file-tests.md>

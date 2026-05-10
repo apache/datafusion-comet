@@ -43,6 +43,7 @@ to read more.
    Supported Data Types <datatypes>
    Supported Operators <operators>
    Supported Expressions <expressions>
+   JVM UDF Dispatch <jvm_udf_dispatch>
    Configuration Settings <configs>
    Compatibility Guide <compatibility/index>
    Understanding Comet Plans <understanding-comet-plans>

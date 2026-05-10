@@ -34,140 +34,21 @@ import org.apache.comet.shims.CometExprTraitShim
  * that fuses Arrow input reads, expression evaluation, and Arrow output writes into one
  * Janino-compiled method per (expression, schema) pair.
  *
- * Input- and output-side emission live in their own files ([[CometBatchKernelCodegenInput]] and
- * [[CometBatchKernelCodegenOutput]]). This file is the orchestrator: it defines the per-column
- * [[ArrowColumnSpec]] vocabulary, the top-level [[canHandle]] / [[allocateOutput]] / [[compile]]
- * / [[generateSource]] entry points, and the cross-cutting kernel-shape decisions
- * (null-intolerant short-circuit, CSE variant, specialized per-expression emitters). Reading the
- * file split end-to-end shows symmetric input and output type-surface coverage at a glance.
- *
- * ==Compile-time specialization on batch invariants==
- *
- * The dispatcher knows, per input column, the concrete Arrow vector class (e.g.
- * [[VarCharVector]]) and whether the column is nullable. Both are compile-time invariants of the
- * kernel and baked into the generated code as typed fields and fixed branches rather than runtime
- * dispatch. The same expression against a different input schema resolves to a different compiled
- * kernel.
+ * Input- and output-side emission live in [[CometBatchKernelCodegenInput]] and
+ * [[CometBatchKernelCodegenOutput]]. This file is the orchestrator: the [[ArrowColumnSpec]]
+ * vocabulary, [[canHandle]] / [[allocateOutput]] / [[compile]] / [[generateSource]] entry points,
+ * and the cross-cutting kernel-shape decisions (null-intolerant short-circuit, CSE variant,
+ * per-expression specialized emitters).
  *
  * The generated kernel '''is''' the `InternalRow` that Spark's `BoundReference.genCode` reads
- * from. `ctx.INPUT_ROW = "row"` and the `process` body aliases `InternalRow row = this;` so
- * Spark's generated `row.getUTF8String(ord)` resolves to the kernel's own typed getter (a final
- * method on a final class with the ordinal known at the call site; JIT devirtualizes and folds
- * the switch). `row` rather than `this` because Spark's `splitExpressions` uses INPUT_ROW as the
- * parameter name of any helper method it emits, and `this` is a reserved Java keyword.
+ * from. `ctx.INPUT_ROW = "row"` plus `InternalRow row = this;` inside `process` routes every
+ * `row.getUTF8String(ord)` to the kernel's own typed getter (final method, constant ordinal; JIT
+ * devirtualizes and folds the switch). `row` rather than `this` because Spark's
+ * `splitExpressions` uses INPUT_ROW as a helper-method parameter name and `this` is a reserved
+ * Java keyword.
  *
- * Input scope: all scalar Spark types that map to a single Arrow vector, plus `ArrayType(inner)`
- * and `StructType` (recursive, via nested-class emission). See
- * [[CometBatchKernelCodegenInput.isSupportedInputType]] for the authoritative gate and
- * [[CometBatchKernelCodegenInput.typedInputAccessors]] / the nested-class emitters for how each
- * shape is read. Output scope: scalar types plus `ArrayType` and `StructType` (recursive). See
- * [[CometBatchKernelCodegenOutput.isSupportedOutputType]] and
- * [[CometBatchKernelCodegenOutput.allocateOutput]] / `emitWrite`.
- *
- * ==Default path==
- *
- * Reuses Spark's `doGenCode` for expression evaluation. BoundReference reads resolve to typed,
- * constant-ordinal calls into the kernel's own getters.
- *
- * ==Specialized path==
- *
- * A per-expression match case in [[compile]] emits custom Java, bypassing `doGenCode`. Used for
- * expressions whose default-path codegen pays a measurable penalty because Spark's generated code
- * materializes a Java `String` (for example, `java.util.regex.Matcher` requires a
- * `CharSequence`). See [[specializedRegExpReplaceBody]] for the reasoning and the criteria for
- * adding a new specialization.
- *
- * ==Optimization menu==
- *
- * Every optimization the generator applies is compile-time specialized on the bound expression
- * and input schema, so the emitted Java carries only the chosen path at each emission site.
- * Source-level tests in `CometCodegenSourceSuite` assert activation per entry below.
- *
- * Input readers (Arrow to Java values, in [[CometBatchKernelCodegenInput.typedInputAccessors]]):
- *
- *   - `ZeroCopyUtf8Read` for `VarCharVector` / `ViewVarCharVector`: `UTF8String.fromAddress`
- *     wraps Arrow's data-buffer address with no `byte[]` allocation.
- *   - `NonNullableIsNullAtElision` for non-nullable columns: `isNullAt(ord)` returns a literal
- *     `false`, and `CometCodegenDispatchUDF.rewriteBoundReferences` tightens the
- *     `BoundReference.nullable` so Spark's `doGenCode` stops probing too.
- *   - `DecimalInputShortFastPath` for `DecimalType(p, _)` with `p <= 18`: reads the low 8 bytes
- *     of the decimal128 slot as a signed long and wraps with `Decimal.createUnsafe`. Slow path
- *     (`getObject` + `Decimal.apply`) emitted only for `p > 18`.
- *
- * Output writers (Java values to Arrow, in [[CometBatchKernelCodegenOutput]]):
- *
- *   - `DecimalOutputShortFastPath` for `DecimalType(p, _)` with `p <= 18`: passes
- *     `Decimal.toUnscaledLong` to `DecimalVector.setSafe(int, long)`. Slow path via
- *     `toJavaBigDecimal()` emitted only for `p > 18`.
- *   - `Utf8OutputOnHeapShortcut` for `StringType`: when the `UTF8String` base is a `byte[]`,
- *     passes it directly to `VarCharVector.setSafe(int, byte[], int, int)` and skips the
- *     redundant `getBytes()` allocation. Off-heap fallback retains `getBytes()`.
- *   - `PreSizedOutputBuffer` for variable-length output types: the caller passes an
- *     input-size-derived byte estimate to avoid mid-loop reallocation.
- *
- * Kernel shape (in [[defaultBody]] and [[generateSource]]):
- *
- *   - `NullIntolerantShortCircuit`: trees where every node is `NullIntolerant` or a leaf get a
- *     pre-body null check over the union of input ordinals; null rows skip both CSE and
- *     expression evaluation.
- *   - `NonNullableOutputShortCircuit`: bound expressions with `nullable == false` drop the `if
- *     (ev.isNull) setNull` guard and write unconditionally.
- *   - `SubexpressionElimination` (when `spark.sql.subexpressionEliminationEnabled`): common
- *     subtrees become helper methods writing into `addMutableState` fields. See the CSE section
- *     below for why the class-field variant is used.
- *
- * Expression specializers (per-expression custom per-row body, in the `specialized*` family):
- *
- *   - `RegExpReplaceSpecialized`: `RegExpReplace` with a direct `BoundReference` subject,
- *     foldable pattern and replacement, and `pos == 1`. Emits `byte[] -> String -> Matcher`
- *     directly, bypassing the `UTF8String` round-trip that default `doGenCode` forces. See
- *     [[specializedRegExpReplaceBody]] for the full rationale and the criteria for adding new
- *     specializers.
- *
- * ==Subexpression elimination (CSE)==
- *
- * CSE hoists repeated subtrees into a single evaluation per row. Spark exposes two entry points:
- *
- *   - `subexpressionElimination` (via `ctx.generateExpressions(..., doSubexpressionElimination =
- *     true)` + `ctx.subexprFunctionsCode`). Each common subexpression becomes a helper method
- *     that writes its result into class-level mutable state allocated via `addMutableState`. The
- *     main expression's `genCode` references those class fields. This is what
- *     `GeneratePredicate`, `GenerateMutableProjection`, and `GenerateUnsafeProjection` use.
- *   - `subexpressionEliminationForWholeStageCodegen`. CSE results live in local variables
- *     declared in the caller's scope, and the main expression's `genCode` references those
- *     locals. Only safe when no helper method gets extracted between the locals' declaration site
- *     and their use.
- *
- * We use the '''class-field''' variant. The WSCG variant does not work in our shape without
- * additional setup: Spark's arithmetic, string, and decimal expressions internally call
- * `splitExpressionsWithCurrentInputs`, which splits into helper methods unless `currentVars` is
- * non-null. In our kernel `currentVars` is null (we read from a row, not from materialized
- * locals), so those splits fire and the helper bodies cannot see CSE-declared locals in the outer
- * scope. The class-field variant sidesteps this entirely because helper methods can read class
- * fields freely.
- *
- * ==Future WSCG-variant exploration==
- *
- * Making the WSCG variant usable would require:
- *
- *   - Setting `ctx.currentVars = Seq.fill(numInputs)(null)` before CSE. `BoundReference.genCode`
- *     checks `currentVars != null && currentVars(ord) != null`, so an all-null `currentVars` lets
- *     reads fall through to the `INPUT_ROW` path (what we want) while
- *     `splitExpressionsWithCurrentInputs` sees `currentVars != null` and declines to split (also
- *     what we want in that variant).
- *   - Verifying that direct `ctx.splitExpressions` calls (not the `-WithCurrentInputs` wrapper)
- *     in a handful of expressions (`hash`, `Cast`, `collectionOperations`, `ToStringBase`) remain
- *     self-contained. They pass explicit args to their split helpers, so they should be fine, but
- *     that is a per-expression audit.
- *   - Benchmarking. The potential win is that CSE state lives in local variables rather than
- *     class fields, so HotSpot has more freedom to keep values in registers. Whether that wins
- *     over the class-field variant is unclear; CSE state is written once and read 2+ times per
- *     row, and the expression work usually dominates. Not worth doing until a profile shows
- *     class-field access on the hot path.
- *   - If the kernel ever gets integrated into Spark's `WholeStageCodegenExec` pipeline (rather
- *     than standing alone), the WSCG variant becomes the natural fit and this revisit is forced.
- *     Until then, the standalone-kernel shape matches Predicate/Projection/UnsafeRow generators,
- *     which use class-field CSE.
+ * For the full feature list (type surface, optimizations, cache layers, specialized emitters,
+ * open work items), see `docs/source/contributor-guide/jvm_udf_dispatch.md`.
  */
 object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
@@ -437,20 +318,10 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     // Pick the per-row body. Specialized emitters get priority; the default reuses
     // Spark's doGenCode.
     //
-    // TODO(method-size): the per-row body lives inline inside `process`'s for-loop and is not
-    // split. Individual `doGenCode` implementations (e.g. `Concat`, `Cast`, `CaseWhen`) call
-    // `ctx.splitExpressionsWithCurrentInputs` internally, which does the right thing here
-    // because `currentVars == null` and `INPUT_ROW = "row"`: helper methods get `InternalRow
-    // row` as a parameter and our kernel aliases `row = this` in `process`, so they resolve
-    // reads through our typed getters. The outer `perRowBody` itself, however, is never split.
-    // A sufficiently deep composed expression (e.g. multi-level ScalaUDF with heavy encoder
-    // converters per level) can push `process` past Janino's 64KB method size limit, at which
-    // point compile fails. Mitigation when we hit that ceiling: wrap `perRowBody` in
-    // `ctx.splitExpressionsWithCurrentInputs(Seq(perRowBody), funcName = "evalRow",
-    // arguments = Seq(...))`. That path is already covered by the `row`-as-`this` alias we
-    // install above. Skip it speculatively because today's workloads sit comfortably below the
-    // threshold and splitting unconditionally adds a function-call frame per row for the
-    // common case.
+    // TODO(method-size): perRowBody is inlined inside process's for-loop and not split.
+    // Sufficiently deep trees can exceed Janino's 64KB method size; wrap in
+    // ctx.splitExpressionsWithCurrentInputs when hit. See
+    // docs/source/contributor-guide/jvm_udf_dispatch.md#open-items.
     val (concreteOutClass, perRowBody) = boundExpr match {
       case rr: RegExpReplace if canSpecializeRegExpReplace(rr) =>
         (classOf[VarCharVector].getName, specializedRegExpReplaceBody(ctx, rr, inputSchema))

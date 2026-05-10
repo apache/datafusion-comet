@@ -23,7 +23,7 @@ import java.util.Locale
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, DataTypes, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
@@ -67,6 +67,59 @@ private[serde] object CodegenDispatchSerdeHelpers {
     val bytes = new Array[Byte](buffer.remaining())
     buffer.get(bytes)
     exprToProtoInternal(Literal(bytes, BinaryType), inputs, binding)
+  }
+
+  /**
+   * Build the [[ExprOuterClass.Expr]] proto routing `expr` through [[CometCodegenDispatchUDF]].
+   * Shared scaffold: collect the bound tree's `AttributeReference`s, bind, serialize the bound
+   * tree as arg 0, emit each attribute as a data arg, set the declared return type, wrap. All
+   * regex-family serdes and [[CometScalaUDF]] land here.
+   */
+  def buildJvmUdfExpr(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      returnType: DataType): Option[Expr] = {
+    val attrs = expr.collect { case a: AttributeReference => a }.distinct
+    val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
+
+    val exprArg = serializedExpressionArg(expr, boundExpr, inputs, binding)
+      .getOrElse(return None)
+    val dataArgs =
+      attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
+
+    val returnTypeProto = serializeDataType(returnType).getOrElse(return None)
+    val udfBuilder = ExprOuterClass.JvmScalarUdf
+      .newBuilder()
+      .setClassName(classOf[CometCodegenDispatchUDF].getName)
+      .addArgs(exprArg)
+    dataArgs.foreach(udfBuilder.addArgs)
+    udfBuilder
+      .setReturnType(returnTypeProto)
+      .setReturnNullable(expr.nullable)
+    Some(
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setJvmScalarUdf(udfBuilder.build())
+        .build())
+  }
+
+  /**
+   * Validate a regex-literal value: non-null and syntactically compilable by
+   * `java.util.regex.Pattern`. Returns `Some(reason)` for the caller to pass to `withInfo` when
+   * the literal forces a Spark fallback, `None` when it is usable.
+   */
+  def validateRegexLiteral(value: Any): Option[String] = {
+    if (value == null) {
+      return Some("Null literal pattern is handled by Spark fallback")
+    }
+    try {
+      java.util.regex.Pattern.compile(value.toString)
+      None
+    } catch {
+      case e: java.util.regex.PatternSyntaxException =>
+        Some(s"Invalid regex pattern: ${e.getDescription}")
+    }
   }
 
   /**
@@ -391,42 +444,15 @@ object CometRLike extends CometExpressionSerde[RLike] {
       binding: Boolean): Option[Expr] = {
     expr.right match {
       case Literal(value, DataTypes.StringType) =>
-        if (value == null) {
-          withInfo(expr, "Null literal pattern is handled by Spark fallback")
-          return None
+        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
+          case Some(reason) => withInfo(expr, reason); None
+          case None =>
+            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
+              expr,
+              inputs,
+              binding,
+              DataTypes.BooleanType)
         }
-        val patternStr = value.toString
-        try {
-          java.util.regex.Pattern.compile(patternStr)
-        } catch {
-          case e: java.util.regex.PatternSyntaxException =>
-            withInfo(expr, s"Invalid regex pattern: ${e.getDescription}")
-            return None
-        }
-
-        val attrs = expr.collect { case a: AttributeReference => a }.distinct
-        val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
-
-        val exprArg = CodegenDispatchSerdeHelpers
-          .serializedExpressionArg(expr, boundExpr, inputs, binding)
-          .getOrElse(return None)
-        val dataArgs =
-          attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
-
-        val returnType = serializeDataType(DataTypes.BooleanType).getOrElse(return None)
-        val udfBuilder = ExprOuterClass.JvmScalarUdf
-          .newBuilder()
-          .setClassName(classOf[CometCodegenDispatchUDF].getName)
-          .addArgs(exprArg)
-        dataArgs.foreach(udfBuilder.addArgs)
-        udfBuilder
-          .setReturnType(returnType)
-          .setReturnNullable(expr.nullable)
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setJvmScalarUdf(udfBuilder.build())
-            .build())
       case _ =>
         withInfo(expr, "Only scalar regexp patterns are supported")
         None
@@ -476,42 +502,16 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     (expr.regexp, expr.idx) match {
-      case (Literal(pattern, DataTypes.StringType), Literal(_, _: IntegerType)) =>
-        if (pattern == null) {
-          withInfo(expr, "Null literal pattern is handled by Spark fallback")
-          return None
+      case (Literal(value, DataTypes.StringType), Literal(_, _: IntegerType)) =>
+        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
+          case Some(reason) => withInfo(expr, reason); None
+          case None =>
+            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
+              expr,
+              inputs,
+              binding,
+              DataTypes.StringType)
         }
-        try {
-          java.util.regex.Pattern.compile(pattern.toString)
-        } catch {
-          case e: java.util.regex.PatternSyntaxException =>
-            withInfo(expr, s"Invalid regex pattern: ${e.getDescription}")
-            return None
-        }
-
-        val attrs = expr.collect { case a: AttributeReference => a }.distinct
-        val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
-
-        val exprArg = CodegenDispatchSerdeHelpers
-          .serializedExpressionArg(expr, boundExpr, inputs, binding)
-          .getOrElse(return None)
-        val dataArgs =
-          attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
-
-        val returnType = serializeDataType(DataTypes.StringType).getOrElse(return None)
-        val udfBuilder = ExprOuterClass.JvmScalarUdf
-          .newBuilder()
-          .setClassName(classOf[CometCodegenDispatchUDF].getName)
-          .addArgs(exprArg)
-        dataArgs.foreach(udfBuilder.addArgs)
-        udfBuilder
-          .setReturnType(returnType)
-          .setReturnNullable(expr.nullable)
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setJvmScalarUdf(udfBuilder.build())
-            .build())
       case _ =>
         withInfo(expr, "Only scalar regexp patterns and group index are supported")
         None
@@ -561,43 +561,16 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     (expr.regexp, expr.idx) match {
-      case (Literal(pattern, DataTypes.StringType), Literal(_, _: IntegerType)) =>
-        if (pattern == null) {
-          withInfo(expr, "Null literal pattern is handled by Spark fallback")
-          return None
+      case (Literal(value, DataTypes.StringType), Literal(_, _: IntegerType)) =>
+        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
+          case Some(reason) => withInfo(expr, reason); None
+          case None =>
+            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
+              expr,
+              inputs,
+              binding,
+              ArrayType(StringType, containsNull = true))
         }
-        try {
-          java.util.regex.Pattern.compile(pattern.toString)
-        } catch {
-          case e: java.util.regex.PatternSyntaxException =>
-            withInfo(expr, s"Invalid regex pattern: ${e.getDescription}")
-            return None
-        }
-
-        val attrs = expr.collect { case a: AttributeReference => a }.distinct
-        val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
-
-        val exprArg = CodegenDispatchSerdeHelpers
-          .serializedExpressionArg(expr, boundExpr, inputs, binding)
-          .getOrElse(return None)
-        val dataArgs =
-          attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
-
-        val returnType =
-          serializeDataType(ArrayType(StringType, containsNull = true)).getOrElse(return None)
-        val udfBuilder = ExprOuterClass.JvmScalarUdf
-          .newBuilder()
-          .setClassName(classOf[CometCodegenDispatchUDF].getName)
-          .addArgs(exprArg)
-        dataArgs.foreach(udfBuilder.addArgs)
-        udfBuilder
-          .setReturnType(returnType)
-          .setReturnNullable(expr.nullable)
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setJvmScalarUdf(udfBuilder.build())
-            .build())
       case _ =>
         withInfo(expr, "Only scalar regexp patterns and group index are supported")
         None
@@ -647,42 +620,16 @@ object CometRegExpInStr extends CometExpressionSerde[RegExpInStr] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     (expr.regexp, expr.idx) match {
-      case (Literal(pattern, DataTypes.StringType), Literal(_, _: IntegerType)) =>
-        if (pattern == null) {
-          withInfo(expr, "Null literal pattern is handled by Spark fallback")
-          return None
+      case (Literal(value, DataTypes.StringType), Literal(_, _: IntegerType)) =>
+        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
+          case Some(reason) => withInfo(expr, reason); None
+          case None =>
+            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
+              expr,
+              inputs,
+              binding,
+              DataTypes.IntegerType)
         }
-        try {
-          java.util.regex.Pattern.compile(pattern.toString)
-        } catch {
-          case e: java.util.regex.PatternSyntaxException =>
-            withInfo(expr, s"Invalid regex pattern: ${e.getDescription}")
-            return None
-        }
-
-        val attrs = expr.collect { case a: AttributeReference => a }.distinct
-        val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
-
-        val exprArg = CodegenDispatchSerdeHelpers
-          .serializedExpressionArg(expr, boundExpr, inputs, binding)
-          .getOrElse(return None)
-        val dataArgs =
-          attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
-
-        val returnType = serializeDataType(DataTypes.IntegerType).getOrElse(return None)
-        val udfBuilder = ExprOuterClass.JvmScalarUdf
-          .newBuilder()
-          .setClassName(classOf[CometCodegenDispatchUDF].getName)
-          .addArgs(exprArg)
-        dataArgs.foreach(udfBuilder.addArgs)
-        udfBuilder
-          .setReturnType(returnType)
-          .setReturnNullable(expr.nullable)
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setJvmScalarUdf(udfBuilder.build())
-            .build())
       case _ =>
         withInfo(expr, "Only scalar regexp patterns and group index are supported")
         None
@@ -824,42 +771,16 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr.regexp match {
-      case Literal(pattern, DataTypes.StringType) =>
-        if (pattern == null) {
-          withInfo(expr, "Null literal pattern is handled by Spark fallback")
-          return None
+      case Literal(value, DataTypes.StringType) =>
+        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
+          case Some(reason) => withInfo(expr, reason); None
+          case None =>
+            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
+              expr,
+              inputs,
+              binding,
+              DataTypes.StringType)
         }
-        try {
-          java.util.regex.Pattern.compile(pattern.toString)
-        } catch {
-          case e: java.util.regex.PatternSyntaxException =>
-            withInfo(expr, s"Invalid regex pattern: ${e.getDescription}")
-            return None
-        }
-
-        val attrs = expr.collect { case a: AttributeReference => a }.distinct
-        val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
-
-        val exprArg = CodegenDispatchSerdeHelpers
-          .serializedExpressionArg(expr, boundExpr, inputs, binding)
-          .getOrElse(return None)
-        val dataArgs =
-          attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
-
-        val returnType = serializeDataType(DataTypes.StringType).getOrElse(return None)
-        val udfBuilder = ExprOuterClass.JvmScalarUdf
-          .newBuilder()
-          .setClassName(classOf[CometCodegenDispatchUDF].getName)
-          .addArgs(exprArg)
-        dataArgs.foreach(udfBuilder.addArgs)
-        udfBuilder
-          .setReturnType(returnType)
-          .setReturnNullable(expr.nullable)
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setJvmScalarUdf(udfBuilder.build())
-            .build())
       case _ =>
         withInfo(expr, "Only scalar regexp patterns are supported")
         None
@@ -926,43 +847,16 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr.regex match {
-      case Literal(pattern, DataTypes.StringType) =>
-        if (pattern == null) {
-          withInfo(expr, "Null literal pattern is handled by Spark fallback")
-          return None
+      case Literal(value, DataTypes.StringType) =>
+        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
+          case Some(reason) => withInfo(expr, reason); None
+          case None =>
+            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
+              expr,
+              inputs,
+              binding,
+              ArrayType(StringType, containsNull = false))
         }
-        try {
-          java.util.regex.Pattern.compile(pattern.toString)
-        } catch {
-          case e: java.util.regex.PatternSyntaxException =>
-            withInfo(expr, s"Invalid regex pattern: ${e.getDescription}")
-            return None
-        }
-
-        val attrs = expr.collect { case a: AttributeReference => a }.distinct
-        val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
-
-        val exprArg = CodegenDispatchSerdeHelpers
-          .serializedExpressionArg(expr, boundExpr, inputs, binding)
-          .getOrElse(return None)
-        val dataArgs =
-          attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
-
-        val returnType =
-          serializeDataType(ArrayType(StringType, containsNull = false)).getOrElse(return None)
-        val udfBuilder = ExprOuterClass.JvmScalarUdf
-          .newBuilder()
-          .setClassName(classOf[CometCodegenDispatchUDF].getName)
-          .addArgs(exprArg)
-        dataArgs.foreach(udfBuilder.addArgs)
-        udfBuilder
-          .setReturnType(returnType)
-          .setReturnNullable(expr.nullable)
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setJvmScalarUdf(udfBuilder.build())
-            .build())
       case _ =>
         withInfo(expr, "Only scalar regex patterns are supported")
         None

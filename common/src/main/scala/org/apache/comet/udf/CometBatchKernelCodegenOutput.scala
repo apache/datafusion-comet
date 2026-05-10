@@ -21,8 +21,8 @@ package org.apache.comet.udf
 
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
-import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometArrowAllocator
@@ -55,176 +55,45 @@ private[udf] object CometBatchKernelCodegenOutput {
   }
 
   /**
-   * Allocate an Arrow output vector matching the expression's `dataType`. Types map to the same
-   * Arrow vector classes Comet uses elsewhere (see
-   * `org.apache.spark.sql.comet.execution.arrow.ArrowWriters.createFieldWriter`) so writers on
-   * the producer and consumer sides stay aligned. Timestamps pick `UTC` as the vector's timezone
-   * string; Spark's internal representation is UTC microseconds regardless of session TZ, and the
-   * value is the same long either way.
+   * Allocate an Arrow output vector matching `dataType`. Delegates field and vector construction
+   * to [[Utils.toArrowField]] + `Field.createVector`, which is the pattern the rest of Comet uses
+   * to go Spark -> Arrow and handles complex-type wiring (including Arrow's non-null-key and
+   * non-null-entries invariants on `MapVector`).
    *
-   * For variable-length output types (`StringType`, `BinaryType`), callers can pass
-   * `estimatedBytes` to pre-size the data buffer. This avoids `setSafe` reallocations mid-loop
-   * when the default per-row estimate is too small (common on regex-replace-style workloads where
-   * output size tracks input size). If the estimate is low, `setSafe` still handles growth
-   * correctly; if it's high, the extra capacity is freed when the vector is closed.
+   * For variable-length scalar outputs (`StringType`, `BinaryType`), callers can pass
+   * `estimatedBytes` to pre-size the data buffer and avoid `setSafe` reallocation mid-loop. The
+   * hint is only applied when the root vector is `VarCharVector` or `VarBinaryVector`; inside a
+   * `ListVector` / `StructVector` / `MapVector`, the parent's `allocateNew` reallocates child
+   * buffers at default size, so a leaf hint would be lost.
+   *
+   * Closes the vector on any failure between construction and return so a partially-initialized
+   * tree does not leak buffers back to the allocator.
    */
   def allocateOutput(
       dataType: DataType,
       name: String,
       numRows: Int,
-      estimatedBytes: Int = -1): FieldVector =
-    dataType match {
-      case BooleanType =>
-        val v = new BitVector(name, CometArrowAllocator)
-        v.allocateNew(numRows)
-        v
-      case ByteType =>
-        val v = new TinyIntVector(name, CometArrowAllocator)
-        v.allocateNew(numRows)
-        v
-      case ShortType =>
-        val v = new SmallIntVector(name, CometArrowAllocator)
-        v.allocateNew(numRows)
-        v
-      case IntegerType =>
-        val v = new IntVector(name, CometArrowAllocator)
-        v.allocateNew(numRows)
-        v
-      case LongType =>
-        val v = new BigIntVector(name, CometArrowAllocator)
-        v.allocateNew(numRows)
-        v
-      case FloatType =>
-        val v = new Float4Vector(name, CometArrowAllocator)
-        v.allocateNew(numRows)
-        v
-      case DoubleType =>
-        val v = new Float8Vector(name, CometArrowAllocator)
-        v.allocateNew(numRows)
-        v
-      case dt: DecimalType =>
-        val v = new DecimalVector(name, CometArrowAllocator, dt.precision, dt.scale)
-        v.allocateNew(numRows)
-        v
-      case _: StringType =>
-        val v = new VarCharVector(name, CometArrowAllocator)
-        if (estimatedBytes > 0) {
+      estimatedBytes: Int = -1): FieldVector = {
+    val field = Utils.toArrowField(name, dataType, nullable = true, "UTC")
+    val vec = field.createVector(CometArrowAllocator).asInstanceOf[FieldVector]
+    try {
+      vec.setInitialCapacity(numRows)
+      vec match {
+        case v: VarCharVector if estimatedBytes > 0 =>
           v.allocateNew(estimatedBytes.toLong, numRows)
-        } else {
-          v.allocateNew(numRows)
-        }
-        v
-      case BinaryType =>
-        val v = new VarBinaryVector(name, CometArrowAllocator)
-        if (estimatedBytes > 0) {
+        case v: VarBinaryVector if estimatedBytes > 0 =>
           v.allocateNew(estimatedBytes.toLong, numRows)
-        } else {
-          v.allocateNew(numRows)
-        }
-        v
-      case DateType =>
-        val v = new DateDayVector(name, CometArrowAllocator)
-        v.allocateNew(numRows)
-        v
-      case TimestampType =>
-        val v = new TimeStampMicroTZVector(name, CometArrowAllocator, "UTC")
-        v.allocateNew(numRows)
-        v
-      case TimestampNTZType =>
-        val v = new TimeStampMicroVector(name, CometArrowAllocator)
-        v.allocateNew(numRows)
-        v
-      case ArrayType(inner, _) =>
-        // Complex-type output: allocate a ListVector with a freshly allocated inner vector of
-        // the element type. The inner vector's own `allocateOutput` run sets up its buffers
-        // (including the pre-sized byte estimate for variable-length element types). After
-        // allocating the inner, we install it as the ListVector's data vector via
-        // `addOrGetVector` and reserve `numRows` entries on the outer list (the offsets +
-        // validity buffers).
-        val list = new ListVector(
-          name,
-          CometArrowAllocator,
-          FieldType.nullable(ArrowType.List.INSTANCE),
-          null)
-        val innerVec = allocateOutput(inner, s"$name.element", numRows, estimatedBytes)
-        list.initializeChildrenFromFields(java.util.Collections.singletonList(innerVec.getField))
-        // Transfer the freshly-allocated inner vector's buffers into the list's data-vector
-        // slot. `addOrGetVector` is the standard Arrow pattern for attaching a pre-allocated
-        // child; transferTo copies the buffer ownership without data copy.
-        val dataVec = list.getDataVector.asInstanceOf[FieldVector]
-        innerVec.makeTransferPair(dataVec).transfer()
-        innerVec.close()
-        list.setInitialCapacity(numRows)
-        list.allocateNew()
-        list
-      case st: StructType =>
-        // Complex-type output: allocate a StructVector with N typed children, one per field.
-        // Mirrors the ArrayType pattern: pre-allocate each child recursively, install them via
-        // `initializeChildrenFromFields`, then transfer each child's buffers into the struct's
-        // slot. Each child's outer `name` includes the field name so Arrow field metadata and
-        // downstream tooling (Arrow JSON, dictionary encoders) see the Spark field naming.
-        val struct = new StructVector(
-          name,
-          CometArrowAllocator,
-          FieldType.nullable(ArrowType.Struct.INSTANCE),
-          null)
-        val childVectors =
-          st.fields.map(f =>
-            allocateOutput(f.dataType, s"$name.${f.name}", numRows, estimatedBytes))
-        val childFieldList = new java.util.ArrayList[Field]()
-        childVectors.foreach(v => childFieldList.add(v.getField))
-        struct.initializeChildrenFromFields(childFieldList)
-        childVectors.zipWithIndex.foreach { case (childVec, ord) =>
-          val dst = struct.getChildByOrdinal(ord).asInstanceOf[FieldVector]
-          childVec.makeTransferPair(dst).transfer()
-          childVec.close()
-        }
-        struct.setInitialCapacity(numRows)
-        struct.allocateNew()
-        struct
-      case mt: MapType =>
-        // Complex-type output: allocate a MapVector with its inner entries StructVector
-        // carrying typed key and value children. MapVector requires the entries struct to be
-        // non-nullable and the key field inside it to be non-nullable; we enforce both when
-        // constructing the entries field below.
-        val mv = new MapVector(
-          name,
-          CometArrowAllocator,
-          FieldType.nullable(new ArrowType.Map( /* keysSorted */ false)),
-          null)
-        val keyVec =
-          allocateOutput(mt.keyType, s"$name.entries.key", numRows, estimatedBytes)
-        val valVec =
-          allocateOutput(mt.valueType, s"$name.entries.value", numRows, estimatedBytes)
-        // Rebuild key / value fields with the canonical map-child names and the notNullable
-        // constraint on the key (Arrow invariant). Children of the key/value types propagate as-is.
-        val keyFieldOrig = keyVec.getField
-        val keyField = new Field(
-          MapVector.KEY_NAME,
-          new FieldType(false, keyFieldOrig.getType, keyFieldOrig.getFieldType.getDictionary),
-          keyFieldOrig.getChildren)
-        val valFieldOrig = valVec.getField
-        val valField =
-          new Field(MapVector.VALUE_NAME, valFieldOrig.getFieldType, valFieldOrig.getChildren)
-        val entriesField = new Field(
-          MapVector.DATA_VECTOR_NAME,
-          new FieldType(false, ArrowType.Struct.INSTANCE, null),
-          java.util.Arrays.asList(keyField, valField))
-        mv.initializeChildrenFromFields(java.util.Collections.singletonList(entriesField))
-        val entries = mv.getDataVector.asInstanceOf[StructVector]
-        val entriesKey = entries.getChildByOrdinal(0).asInstanceOf[FieldVector]
-        val entriesVal = entries.getChildByOrdinal(1).asInstanceOf[FieldVector]
-        keyVec.makeTransferPair(entriesKey).transfer()
-        valVec.makeTransferPair(entriesVal).transfer()
-        keyVec.close()
-        valVec.close()
-        mv.setInitialCapacity(numRows)
-        mv.allocateNew()
-        mv
-      case other =>
-        throw new UnsupportedOperationException(
-          s"CometBatchKernelCodegen: unsupported output type $other")
+        case _ =>
+          vec.allocateNew()
+      }
+      vec
+    } catch {
+      case t: Throwable =>
+        try vec.close()
+        catch { case _: Throwable => () }
+        throw t
     }
+  }
 
   /**
    * Returns `(concreteVectorClassName, writeJavaSnippet)` for the expression's output type at the

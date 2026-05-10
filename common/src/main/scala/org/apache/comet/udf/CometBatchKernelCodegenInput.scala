@@ -191,10 +191,8 @@ private[udf] object CometBatchKernelCodegenInput {
    * `BoundReference` of `DecimalType(precision <= 18)` is the only decimal read at that ordinal,
    * the emitted case skips the `BigDecimal` allocation and reads the unscaled long directly.
    *
-   * TODO(unsafe-readers): primitive getters go through Arrow's typed `v.get(i)` which performs
-   * bounds checks. Inside the kernel's `process` loop `i` is always in `[0, numRows)`, so the
-   * check is redundant. Mirror `CometPlainVector`'s pattern (cache validity/value/offset buffer
-   * addresses, use direct `Platform.getInt` reads) behind a benchmark.
+   * TODO(unsafe-readers): primitive `v.get(i)` performs a bounds check that is redundant given `i
+   * in [0, numRows)`. See `docs/source/contributor-guide/jvm_udf_dispatch.md#open-items`.
    */
   def typedInputAccessors(
       inputSchema: Seq[ArrowColumnSpec],

@@ -27,66 +27,26 @@ import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalV
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.comet.util.Utils
+import org.apache.spark.sql.types.{BinaryType, DataType, StringType}
 
 import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 
 /**
  * Arrow-direct codegen dispatcher. For each (bound Spark `Expression`, input Arrow schema) pair,
  * compiles a specialized [[CometBatchKernel]] on first encounter and caches the compile.
- * Subsequent batches with the same expression and the same schema reuse the cached compile.
- *
- * ==Transport==
+ * Subsequent batches with the same expression and schema reuse the cached compile.
  *
  * Arg 0 is a `VarBinaryVector` scalar carrying the serialized Expression bytes (produced on the
- * driver by [[org.apache.spark.SparkEnv SparkEnv]]'s closure serializer). Args 1..N are the data
- * columns the bound expression's `BoundReference`s refer to, in ordinal order. The bytes
- * self-describe the expression so the path works in cluster mode without executor-side state.
+ * driver by Spark's closure serializer). Args 1..N are the data columns the `BoundReference`s
+ * refer to, in ordinal order. The bytes self-describe the expression so the path works in cluster
+ * mode without executor-side state.
  *
- * ==Cache key: serialized expression plus input schema fingerprint==
- *
- * Compile-time specialization bakes the concrete Arrow vector class and the nullability of each
- * input column into the generated kernel. A batch with the same expression but a different input
- * vector class (e.g. `VarCharVector` vs `ViewVarCharVector`) is a different kernel. The cache key
- * therefore combines the expression bytes with the per-column [[ArrowColumnSpec]] list.
- *
- * ==Three cache layers==
- *
- * The dispatcher composes three caches at three different scopes. They are not redundant: each
- * holds something the others do not, and collapsing any pair would either lose correctness or pay
- * an avoidable cost. Walking from broadest to narrowest:
- *
- *   1. '''JVM-wide compile cache.''' Holds `CompiledKernel(GeneratedClass, references)` keyed by
- *      [[CometCodegenDispatchUDF.CacheKey]]. Lives on this object's companion (`kernelCache`).
- *      Bounded LRU using the `synchronizedMap(LinkedHashMap(accessOrder=true)) +
- *      removeEldestEntry` pattern from `IcebergPlanDataInjector.commonCache`. Amortizes the
- *      Janino compile cost across every thread and every query in the JVM.
- *
- * 2. '''Per-thread UDF instance cache.''' `CometUdfBridge.INSTANCES` is a `ThreadLocal<Map>` that
- * hands each task thread its own `CometCodegenDispatchUDF` object (one per UDF class). Lets
- * instance fields on this UDF (cache 3 below) stay safe without synchronisation.
- *
- * 3. '''Per-partition kernel instance cache.''' Plain mutable fields `activeKernel`, `activeKey`,
- * `activePartition` on each UDF instance, managed by [[ensureKernel]]. The compiled
- * `GeneratedClass` from cache 1 produces a kernel instance, and the kernel carries per-row
- * mutable state (`Rand`'s `XORShiftRandom`, `MonotonicallyIncreasingID`'s counter,
- * `addMutableState` fields) that must advance across batches in one partition and reset across
- * partitions. `ensureKernel` allocates a fresh kernel and calls `init(partitionIndex)` only when
- * the partition or cache key changes; otherwise the same kernel handles every batch in the
- * partition.
- *
- * Why none of the three can be collapsed:
- *
- *   - Collapse 1 + 3 (per-thread compile cache): every thread would re-run Janino for the same
- *     expression. Wasteful.
- *   - Collapse 1 + 2 (no per-thread UDF separation): every thread would share one UDF instance.
- *     Cache 3's instance fields would race; we'd need a `ConcurrentHashMap` keyed on `(thread,
- *     partition, key)` or explicit locking.
- *   - Collapse 2 + 3 (no per-partition resets): partition state would never reset, so a sequence
- *     started in partition 0 would continue into partition 1 and our results would diverge from
- *     Spark's.
- *
- * Each cache is the smallest scope that still does its job.
+ * Three caches compose at different scopes: the JVM-wide compile cache on the companion
+ * (`kernelCache`); a per-thread UDF instance map in `CometUdfBridge.INSTANCES`; and per-partition
+ * kernel instance state on this object (`activeKernel`, `activeKey`, `activePartition`) managed
+ * by [[ensureKernel]]. See `docs/source/contributor-guide/jvm_udf_dispatch.md` for the rationale
+ * and why none of the layers can be collapsed.
  */
 class CometCodegenDispatchUDF extends CometUDF {
 
@@ -101,14 +61,8 @@ class CometCodegenDispatchUDF extends CometUDF {
       "CometCodegenDispatchUDF requires non-null serialized expression bytes at arg 0")
     val bytes = exprVec.get(0)
 
-    // TODO: dictionary-encoded inputs. Comet's native scan/shuffle paths currently materialize
-    // dictionaries before the UDF bridge, so we do not expect dict-encoded `FieldVector`s here.
-    // If that invariant is ever relaxed upstream, `v.getField.getDictionary != null` will be
-    // true on some arrivals and the cast in the pattern match below will throw ClassCast-style
-    // errors. The fix at that point: materialize at the dispatcher via `CDataDictionaryProvider`
-    // (see `NativeUtil.importVector`) or widen `typedInputAccessors` with a dict-index read
-    // plus a lookup into the dictionary vector. Materialization is simpler; per-kernel
-    // specialization is faster but adds a cache-key dimension.
+    // TODO(dict-encoded): kernels assume materialized inputs; dict-encoded vectors would fail the
+    // cast in `specFor` below. See docs/source/contributor-guide/jvm_udf_dispatch.md#open-items.
 
     val numDataCols = inputs.length - 1
     val dataCols = new Array[ValueVector](numDataCols)
@@ -134,9 +88,16 @@ class CometCodegenDispatchUDF extends CometUDF {
       "codegen_result",
       n,
       estimatedOutputBytes(entry.outputType, dataCols))
-    kernel.process(dataCols, out, n)
-    out.setValueCount(n)
-    out
+    try {
+      kernel.process(dataCols, out, n)
+      out.setValueCount(n)
+      out
+    } catch {
+      case t: Throwable =>
+        try out.close()
+        catch { case _: Throwable => () }
+        throw t
+    }
   }
 
   /**
@@ -184,36 +145,34 @@ class CometCodegenDispatchUDF extends CometUDF {
   private def nullable(v: ValueVector): Boolean = v.getNullCount != 0
 
   /**
-   * Build the compile-time spec for one input Arrow vector. Recurses on `ListVector`'s data
-   * vector to produce an [[ArrayColumnSpec]] carrying the element's concrete vector class and
-   * Spark element type; scalars produce a [[ScalarColumnSpec]] directly. Unknown vector classes
-   * fall through with an explicit error so the dispatcher surface is a single edit point when
-   * extending to new Arrow types.
+   * Build the compile-time spec for one input Arrow vector. Recurses on complex types; scalars
+   * produce a [[ScalarColumnSpec]] carrying the concrete Arrow vector class and nullability.
+   * Spark `DataType`s on complex children come from [[Utils.fromArrowField]] so the Arrow ->
+   * Spark mapping stays in one place.
    */
   private def specFor(v: ValueVector): ArrowColumnSpec = v match {
     case map: MapVector =>
-      // MapVector extends ListVector; its data vector is a StructVector with child 0 = key
-      // and child 1 = value. `specFor` must match MapVector BEFORE ListVector since ListVector
-      // is the parent class.
+      // MapVector extends ListVector; match it first. Its data vector is a StructVector with
+      // child 0 = key and child 1 = value.
       val struct = map.getDataVector.asInstanceOf[StructVector]
       val keyVec = struct.getChildByOrdinal(0).asInstanceOf[ValueVector]
       val valueVec = struct.getChildByOrdinal(1).asInstanceOf[ValueVector]
       MapColumnSpec(
         nullable = nullable(map),
-        keySparkType = sparkTypeFor(keyVec),
-        valueSparkType = sparkTypeFor(valueVec),
+        keySparkType = Utils.fromArrowField(keyVec.getField),
+        valueSparkType = Utils.fromArrowField(valueVec.getField),
         key = specFor(keyVec),
         value = specFor(valueVec))
     case list: ListVector =>
       val child = list.getDataVector
-      ArrayColumnSpec(nullable(list), sparkTypeFor(child), specFor(child))
+      ArrayColumnSpec(nullable(list), Utils.fromArrowField(child.getField), specFor(child))
     case struct: StructVector =>
       val fieldSpecs = (0 until struct.size()).map { fi =>
         val childVec = struct.getChildByOrdinal(fi).asInstanceOf[ValueVector]
         val field = struct.getField.getChildren.get(fi)
         StructFieldSpec(
           name = field.getName,
-          sparkType = sparkTypeFor(childVec),
+          sparkType = Utils.fromArrowField(field),
           nullable = field.isNullable,
           child = specFor(childVec))
       }
@@ -226,45 +185,6 @@ class CometCodegenDispatchUDF extends CometUDF {
     case other =>
       throw new UnsupportedOperationException(
         s"CometCodegenDispatchUDF: unsupported Arrow vector ${other.getClass.getSimpleName}")
-  }
-
-  /**
-   * Map an Arrow vector to its Spark `DataType`. Used to populate
-   * [[ArrayColumnSpec.elementSparkType]] and [[MapColumnSpec]]'s key/value Spark types so the
-   * codegen nested-class emitters can pick the right template from the element's static type.
-   */
-  private def sparkTypeFor(v: ValueVector): DataType = v match {
-    case _: BitVector => BooleanType
-    case _: TinyIntVector => ByteType
-    case _: SmallIntVector => ShortType
-    case _: IntVector => IntegerType
-    case _: BigIntVector => LongType
-    case _: Float4Vector => FloatType
-    case _: Float8Vector => DoubleType
-    case d: DecimalVector => DecimalType(d.getPrecision, d.getScale)
-    case _: VarCharVector | _: ViewVarCharVector => StringType
-    case _: VarBinaryVector | _: ViewVarBinaryVector => BinaryType
-    case _: DateDayVector => DateType
-    case _: TimeStampMicroVector => TimestampNTZType
-    case _: TimeStampMicroTZVector => TimestampType
-    case map: MapVector =>
-      // Must come before ListVector since MapVector extends ListVector.
-      val struct = map.getDataVector.asInstanceOf[StructVector]
-      val keyVec = struct.getChildByOrdinal(0).asInstanceOf[ValueVector]
-      val valueVec = struct.getChildByOrdinal(1).asInstanceOf[ValueVector]
-      MapType(sparkTypeFor(keyVec), sparkTypeFor(valueVec))
-    case list: ListVector =>
-      ArrayType(sparkTypeFor(list.getDataVector))
-    case struct: StructVector =>
-      val sparkFields = (0 until struct.size()).map { fi =>
-        val childVec = struct.getChildByOrdinal(fi).asInstanceOf[ValueVector]
-        val field = struct.getField.getChildren.get(fi)
-        StructField(field.getName, sparkTypeFor(childVec), field.isNullable)
-      }
-      StructType(sparkFields.toArray)
-    case other =>
-      throw new UnsupportedOperationException(
-        s"CometCodegenDispatchUDF: no Spark type mapping for ${other.getClass.getSimpleName}")
   }
 
   /**
@@ -313,32 +233,12 @@ object CometCodegenDispatchUDF {
   private val CacheCapacity: Int = 128
 
   /**
-   * Cache key: serialized expression bytes + per-column compile-time invariants.
+   * Cache key: serialized expression bytes plus per-column compile-time invariants.
    *
-   * TODO(perf): Every batch invocation walks `bytesKey` once for `hashCode` (and again for
-   * `equals` on hash collision / final confirm in `ensureKernel`), so HashMap lookup is
-   * O(bytes.length) per batch. For small expressions (a few KB) this is single-digit us and
-   * invisible; for large ScalaUDF closures with heavy encoders (tens to hundreds of KB) it can
-   * climb to tens of us per batch, measurable at ~1-10% of hot-path time. If a workload shows
-   * this on a profile, three succinct alternatives worth exploring:
-   *
-   *   1. Driver-side precomputed hash piggybacked through the Arrow transport as a small tag
-   *      (e.g. 8 bytes). Executor uses the tag directly as the key. O(1) per batch, and the tag
-   *      is tiny versus the full byte array. 2. Per-UDF-instance byte-identity fast path.
-   *      `CometCodegenDispatchUDF` is per-thread; the expression is invariant for the life of one
-   *      task. Memoize the last-seen `(Arrow data buffer address, offset, length)` tuple and skip
-   *      the HashMap entirely when it matches. `VarBinaryVector.get(0)` allocates a fresh
-   *      `byte[]` each call, so identity-on-the-array won't hit, but the underlying Arrow buffer
-   *      address should be stable within a task. 3. Two-level cache with source-string outer
-   *      tier. Keep bytes-based L1 as today; add an L2 keyed on `generateSource(expr).code.body`
-   *      that stores only the Janino-compiled class (no references). On L1 miss + L2 hit, skip
-   *      Janino compile and reuse the class with fresh per-call references. Captures the "same
-   *      lambda, different closure identity" cross-query reuse case (e.g. the same `udf((i: Int)
-   *      \=> i + 1)` registered across sessions produces identical source but different
-   *      serialized bytes).
-   *
-   * None of these are worth doing until a profile shows lookup in the hot path. Today's bytes-
-   * based key is correct and simple.
+   * `hashCode` walks `bytesKey` per lookup, so for large ScalaUDF closures it scales with closure
+   * size. TODO(perf-cache-key): see
+   * `docs/source/contributor-guide/jvm_udf_dispatch.md#open-items` for possible optimizations if
+   * a workload makes this hot.
    */
   final case class CacheKey(bytesKey: ByteBuffer, specs: IndexedSeq[ArrowColumnSpec])
 
