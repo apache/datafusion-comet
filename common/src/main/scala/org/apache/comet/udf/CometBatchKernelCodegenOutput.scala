@@ -29,16 +29,16 @@ import org.apache.comet.CometArrowAllocator
 
 /**
  * Output-side emitters for the Arrow-direct codegen kernel. Everything that writes a computed
- * value into an Arrow output vector lives here: [[allocateOutput]], [[outputWriter]] (the entry
- * point for the kernel's top-level write), [[emitWrite]] (recursive per-type write), the output
- * vector-class lookup, and the output-side type-support gate.
+ * value into an Arrow output vector lives here: [[allocateOutput]], [[emitOutputWriter]] (the
+ * entry point for the kernel's top-level write), [[emitWrite]] (recursive per-type write), the
+ * output vector-class lookup, and the output-side type-support gate.
  *
  * Paired with [[CometBatchKernelCodegenInput]], which handles the symmetric input side.
  */
 private[udf] object CometBatchKernelCodegenOutput {
 
   /**
-   * Output types [[allocateOutput]] and [[outputWriter]] can materialize. Recursive: complex
+   * Output types [[allocateOutput]] and [[emitOutputWriter]] can materialize. Recursive: complex
    * types are supported when their children are.
    */
   def isSupportedOutputType(dt: DataType): Boolean = dt match {
@@ -104,7 +104,7 @@ private[udf] object CometBatchKernelCodegenOutput {
    * because the orchestrator needs both the vector class (for the cast at the top of `process`)
    * and the snippet.
    */
-  def outputWriter(
+  def emitOutputWriter(
       dataType: DataType,
       valueTerm: String,
       ctx: CodegenContext): (String, String) = {
@@ -217,7 +217,7 @@ private[udf] object CometBatchKernelCodegenOutput {
       val jVar = ctx.freshName("j")
       val listClass = classOf[ListVector].getName
       val childClass = outputVectorClass(elementType)
-      val elemSource = specializedGetterExpr(arrVar, jVar, elementType)
+      val elemSource = emitSpecializedGetterExpr(arrVar, jVar, elementType)
       val innerWrite = emitWrite(childVar, s"$childIdx + $jVar", elemSource, elementType, ctx)
       s"""$listClass $listVar = ($listClass) $targetVec;
          |$childClass $childVar = ($childClass) $listVar.getDataVector();
@@ -254,7 +254,7 @@ private[udf] object CometBatchKernelCodegenOutput {
         val childClass = outputVectorClass(field.dataType)
         val decl =
           s"$childClass $childVar = ($childClass) $structVar.getChildByOrdinal($fi);"
-        val fieldSource = specializedGetterExpr(rowVar, fi.toString, field.dataType)
+        val fieldSource = emitSpecializedGetterExpr(rowVar, fi.toString, field.dataType)
         val innerWrite = emitWrite(childVar, idx, fieldSource, field.dataType, ctx)
         val write =
           if (!field.nullable) {
@@ -303,8 +303,8 @@ private[udf] object CometBatchKernelCodegenOutput {
       val structClass = classOf[StructVector].getName
       val keyClass = outputVectorClass(mt.keyType)
       val valClass = outputVectorClass(mt.valueType)
-      val keySrcExpr = specializedGetterExpr(keyArr, jVar, mt.keyType)
-      val valSrcExpr = specializedGetterExpr(valArr, jVar, mt.valueType)
+      val keySrcExpr = emitSpecializedGetterExpr(keyArr, jVar, mt.keyType)
+      val valSrcExpr = emitSpecializedGetterExpr(valArr, jVar, mt.valueType)
       val keyWrite = emitWrite(keyVar, s"$childIdx + $jVar", keySrcExpr, mt.keyType, ctx)
       val valWrite = emitWrite(valVar, s"$childIdx + $jVar", valSrcExpr, mt.valueType, ctx)
       s"""$mapClass $mapVar = ($mapClass) $targetVec;
@@ -337,7 +337,7 @@ private[udf] object CometBatchKernelCodegenOutput {
    * `ArrayType` and `StructType` branches of [[emitWrite]] to source each element / field for its
    * recursive inner write.
    */
-  private def specializedGetterExpr(target: String, idx: String, elemType: DataType): String =
+  private def emitSpecializedGetterExpr(target: String, idx: String, elemType: DataType): String =
     elemType match {
       case BooleanType => s"$target.getBoolean($idx)"
       case ByteType => s"$target.getByte($idx)"
@@ -356,6 +356,6 @@ private[udf] object CometBatchKernelCodegenOutput {
         s"$target.getStruct($idx, $numFields)"
       case other =>
         throw new UnsupportedOperationException(
-          s"CometBatchKernelCodegen.specializedGetterExpr: unsupported type $other")
+          s"CometBatchKernelCodegen.emitSpecializedGetterExpr: unsupported type $other")
     }
 }

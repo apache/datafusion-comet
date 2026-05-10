@@ -91,7 +91,7 @@ private[udf] object CometBatchKernelCodegenInput {
    * pre-allocated nested class. Instance fields for nested-class children one level down live
    * inside the parent nested class.
    */
-  def inputFieldDecls(inputSchema: Seq[ArrowColumnSpec]): String = {
+  def emitInputFieldDecls(inputSchema: Seq[ArrowColumnSpec]): String = {
     val lines = new mutable.ArrayBuffer[String]()
     inputSchema.zipWithIndex.foreach { case (spec, ord) =>
       val path = s"col$ord"
@@ -144,7 +144,7 @@ private[udf] object CometBatchKernelCodegenInput {
    * `getDataVector()`. For structs, casts the outer `StructVector` and recurses via
    * `getChildByOrdinal(fi)`.
    */
-  def inputCasts(inputSchema: Seq[ArrowColumnSpec]): String = {
+  def emitInputCasts(inputSchema: Seq[ArrowColumnSpec]): String = {
     val lines = new mutable.ArrayBuffer[String]()
     inputSchema.zipWithIndex.foreach { case (spec, ord) =>
       val path = s"col$ord"
@@ -194,7 +194,7 @@ private[udf] object CometBatchKernelCodegenInput {
    * TODO(unsafe-readers): primitive `v.get(i)` performs a bounds check that is redundant given `i
    * in [0, numRows)`. See `docs/source/contributor-guide/jvm_udf_dispatch.md#open-items`.
    */
-  def typedInputAccessors(
+  def emitTypedGetters(
       inputSchema: Seq[ArrowColumnSpec],
       decimalTypeByOrdinal: Map[Int, Option[DecimalType]]): String = {
     val withOrd = inputSchema.zipWithIndex
@@ -239,15 +239,9 @@ private[udf] object CometBatchKernelCodegenInput {
     val decimalCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[DecimalVector] =>
         val known = decimalTypeByOrdinal.getOrElse(ord, None)
-        val fastPath =
-          s"""        long unscaled = this.col$ord.getDataBuffer()
-             |            .getLong((long) this.rowIdx * 16L);
-             |        return org.apache.spark.sql.types.Decimal$$.MODULE$$
-             |            .createUnsafe(unscaled, precision, scale);""".stripMargin
-        val slowPath =
-          s"""        java.math.BigDecimal bd = this.col$ord.getObject(this.rowIdx);
-             |        return org.apache.spark.sql.types.Decimal$$.MODULE$$
-             |            .apply(bd, precision, scale);""".stripMargin
+        val field = s"this.col$ord"
+        val fastPath = emitDecimalFastBody(field, "this.rowIdx", "        ")
+        val slowPath = emitDecimalSlowBody(field, "this.rowIdx", "        ")
         val body = known match {
           case Some(dt) if dt.precision <= 18 => fastPath
           case Some(_) => slowPath
@@ -271,14 +265,10 @@ private[udf] object CometBatchKernelCodegenInput {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[VarCharVector] =>
         Some(s"""      case $ord: {
                 |        ${classOf[VarCharVector].getName} v = this.col$ord;
-                |        int s = v.getStartOffset(this.rowIdx);
-                |        int e = v.getEndOffset(this.rowIdx);
-                |        long addr = v.getDataBuffer().memoryAddress() + s;
-                |        return org.apache.spark.unsafe.types.UTF8String
-                |            .fromAddress(null, addr, e - s);
+                |${emitUtf8Body("v", "this.rowIdx", "        ")}
                 |      }""".stripMargin)
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[ViewVarCharVector] =>
-        Some(viewUtf8StringCase(ord))
+        Some(emitViewUtf8StringCase(ord))
       case _ => None
     }
 
@@ -305,8 +295,8 @@ private[udf] object CometBatchKernelCodegenInput {
 
   /**
    * Build a per-ordinal map of the `DecimalType` observed on `BoundReference`s in the bound
-   * expression. Used by [[typedInputAccessors]] to emit a compile-time-specialized `getDecimal`
-   * case per ordinal.
+   * expression. Used by [[emitTypedGetters]] to emit a compile-time-specialized `getDecimal` case
+   * per ordinal.
    */
   def decimalPrecisionByOrdinal(boundExpr: Expression): Map[Int, Option[DecimalType]] = {
     boundExpr
@@ -328,7 +318,7 @@ private[udf] object CometBatchKernelCodegenInput {
    * for the key and value slices (because Spark's `MapData.keyArray()` / `valueArray()` return
    * `ArrayData` - same view shape as any other array).
    */
-  def nestedClasses(inputSchema: Seq[ArrowColumnSpec]): String = {
+  def emitNestedClasses(inputSchema: Seq[ArrowColumnSpec]): String = {
     val out = new mutable.ArrayBuffer[String]()
     inputSchema.zipWithIndex.foreach { case (spec, ord) =>
       collectNestedClasses(s"col$ord", spec, out)
@@ -443,7 +433,7 @@ private[udf] object CometBatchKernelCodegenInput {
     val elemPath = s"${path}_e"
     spec.element match {
       case _: ScalarColumnSpec =>
-        scalarElementGetter(spec.elementSparkType, elemPath)
+        emitArrayElementScalarGetter(spec.elementSparkType, elemPath)
       case _: ArrayColumnSpec =>
         val reset = emitListBackedChildReset(elemPath, "startIndex + i", s"${elemPath}_arrayData")
         s"""      @Override
@@ -472,7 +462,7 @@ private[udf] object CometBatchKernelCodegenInput {
    * matching the element type is overridden; any other getter inherits the base class's
    * `UnsupportedOperationException`.
    */
-  private def scalarElementGetter(elemType: DataType, childField: String): String =
+  private def emitArrayElementScalarGetter(elemType: DataType, childField: String): String =
     elemType match {
       case BooleanType =>
         s"""      @Override
@@ -510,32 +500,18 @@ private[udf] object CometBatchKernelCodegenInput {
          |        return $childField.get(startIndex + i);
          |      }""".stripMargin
       case dt: DecimalType =>
-        if (dt.precision <= 18) {
-          s"""      @Override
-           |      public org.apache.spark.sql.types.Decimal getDecimal(
-           |          int i, int precision, int scale) {
-           |        long unscaled = $childField.getDataBuffer()
-           |            .getLong((long) (startIndex + i) * 16L);
-           |        return org.apache.spark.sql.types.Decimal$$.MODULE$$
-           |            .createUnsafe(unscaled, precision, scale);
-           |      }""".stripMargin
-        } else {
-          s"""      @Override
-           |      public org.apache.spark.sql.types.Decimal getDecimal(
-           |          int i, int precision, int scale) {
-           |        java.math.BigDecimal bd = $childField.getObject(startIndex + i);
-           |        return org.apache.spark.sql.types.Decimal$$.MODULE$$
-           |            .apply(bd, precision, scale);
-           |      }""".stripMargin
-        }
+        val body =
+          if (dt.precision <= 18) emitDecimalFastBody(childField, "startIndex + i", "        ")
+          else emitDecimalSlowBody(childField, "startIndex + i", "        ")
+        s"""      @Override
+         |      public org.apache.spark.sql.types.Decimal getDecimal(
+         |          int i, int precision, int scale) {
+         |$body
+         |      }""".stripMargin
       case _: StringType =>
         s"""      @Override
          |      public org.apache.spark.unsafe.types.UTF8String getUTF8String(int i) {
-         |        int s = $childField.getStartOffset(startIndex + i);
-         |        int e = $childField.getEndOffset(startIndex + i);
-         |        long addr = $childField.getDataBuffer().memoryAddress() + s;
-         |        return org.apache.spark.unsafe.types.UTF8String
-         |            .fromAddress(null, addr, e - s);
+         |${emitUtf8Body(childField, "startIndex + i", "        ")}
          |      }""".stripMargin
       case BinaryType =>
         s"""      @Override
@@ -641,11 +617,7 @@ private[udf] object CometBatchKernelCodegenInput {
         s"        case $fi: return ${path}_f$fi.get(this.rowIdx);"
       case _: StringType =>
         s"""        case $fi: {
-           |          int s = ${path}_f$fi.getStartOffset(this.rowIdx);
-           |          int e = ${path}_f$fi.getEndOffset(this.rowIdx);
-           |          long addr = ${path}_f$fi.getDataBuffer().memoryAddress() + s;
-           |          return org.apache.spark.unsafe.types.UTF8String
-           |              .fromAddress(null, addr, e - s);
+           |${emitUtf8Body(s"${path}_f$fi", "this.rowIdx", "          ")}
            |        }""".stripMargin
       case _: DecimalType =>
         throw new IllegalStateException("decimal handled separately")
@@ -701,16 +673,10 @@ private[udf] object CometBatchKernelCodegenInput {
     val decimalCases = scalarOrd.collect {
       case (f, fi) if f.sparkType.isInstanceOf[DecimalType] =>
         val dt = f.sparkType.asInstanceOf[DecimalType]
-        val body = if (dt.precision <= 18) {
-          s"""          long unscaled = ${path}_f$fi.getDataBuffer()
-             |              .getLong((long) this.rowIdx * 16L);
-             |          return org.apache.spark.sql.types.Decimal$$.MODULE$$
-             |              .createUnsafe(unscaled, precision, scale);""".stripMargin
-        } else {
-          s"""          java.math.BigDecimal bd = ${path}_f$fi.getObject(this.rowIdx);
-             |          return org.apache.spark.sql.types.Decimal$$.MODULE$$
-             |              .apply(bd, precision, scale);""".stripMargin
-        }
+        val field = s"${path}_f$fi"
+        val body =
+          if (dt.precision <= 18) emitDecimalFastBody(field, "this.rowIdx", "          ")
+          else emitDecimalSlowBody(field, "this.rowIdx", "          ")
         s"""        case $fi: {
            |$body
            |        }""".stripMargin
@@ -924,13 +890,49 @@ private[udf] object CometBatchKernelCodegenInput {
     }
   }
 
+  // -------------------------------------------------------------------------------------------
+  // Scalar-read body templates shared by `emitTypedGetters`, `emitArrayElementScalarGetter`, and
+  // `emitStructScalarGetters`. Each helper emits the per-type read statements parameterized on
+  // `field` (Java expression for the Arrow vector), `idx` (Java expression for the row/slot),
+  // and `ind` (per-line indent prefix). Continuation lines are indented by `ind + "    "`. The
+  // caller wraps the result in the appropriate control-flow (switch case or method override).
+  // -------------------------------------------------------------------------------------------
+
+  /** Parenthesize `idx` when it contains whitespace, to keep `(long) idx * 16L` well-formed. */
+  private def castableIdx(idx: String): String = if (idx.contains(' ')) s"($idx)" else idx
+
+  private def emitDecimalFastBody(field: String, idx: String, ind: String): String = {
+    val cont = ind + "    "
+    val i = castableIdx(idx)
+    s"""${ind}long unscaled = $field.getDataBuffer()
+       |$cont.getLong((long) $i * 16L);
+       |${ind}return org.apache.spark.sql.types.Decimal$$.MODULE$$
+       |$cont.createUnsafe(unscaled, precision, scale);""".stripMargin
+  }
+
+  private def emitDecimalSlowBody(field: String, idx: String, ind: String): String = {
+    val cont = ind + "    "
+    s"""${ind}java.math.BigDecimal bd = $field.getObject($idx);
+       |${ind}return org.apache.spark.sql.types.Decimal$$.MODULE$$
+       |$cont.apply(bd, precision, scale);""".stripMargin
+  }
+
+  private def emitUtf8Body(field: String, idx: String, ind: String): String = {
+    val cont = ind + "    "
+    s"""${ind}int s = $field.getStartOffset($idx);
+       |${ind}int e = $field.getEndOffset($idx);
+       |${ind}long addr = $field.getDataBuffer().memoryAddress() + s;
+       |${ind}return org.apache.spark.unsafe.types.UTF8String
+       |$cont.fromAddress(null, addr, e - s);""".stripMargin
+  }
+
   /**
    * Emit a zero-copy `getUTF8String` case for a `ViewVarCharVector` column at the given ordinal.
    * Reads the 16-byte view entry directly from the view buffer and either points at the inline
    * bytes (length &lt;= INLINE_SIZE=12) or at the referenced data buffer via `(bufferIndex,
    * offset)` (length &gt; 12).
    */
-  private def viewUtf8StringCase(ord: Int): String = {
+  private def emitViewUtf8StringCase(ord: Int): String = {
     val elementSize = BaseVariableWidthViewVector.ELEMENT_SIZE
     val inlineSize = BaseVariableWidthViewVector.INLINE_SIZE
     val lengthWidth = BaseVariableWidthViewVector.LENGTH_WIDTH

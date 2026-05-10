@@ -27,7 +27,7 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 import org.apache.comet.shims.CometInternalRowShim
 
 /**
- * Shim base for Comet-owned [[InternalRow]] accessors used by the Arrow-direct codegen kernel.
+ * Shim base for Comet-owned [[InternalRow]] getters used by the Arrow-direct codegen kernel.
  *
  * Provides `throw new UnsupportedOperationException` defaults for every abstract method declared
  * by `InternalRow` and `SpecializedGetters`. Concrete subclasses (`CometBatchKernel` and its

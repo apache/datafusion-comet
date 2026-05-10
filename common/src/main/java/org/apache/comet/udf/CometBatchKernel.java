@@ -33,8 +33,8 @@ import org.apache.arrow.vector.ValueVector;
  * Arrow type the compile-time schema specified. Output is a generic {@code FieldVector}; the
  * generated subclass casts to the concrete type matching the bound expression's {@code dataType}.
  * Widen input support by adding vector classes to the getter switch in {@code
- * CometBatchKernelCodegen.typedInputAccessors}; widen output support by adding cases in {@code
- * CometBatchKernelCodegen.allocateOutput} and {@code outputWriter}.
+ * CometBatchKernelCodegen.emitTypedGetters}; widen output support by adding cases in {@code
+ * CometBatchKernelCodegen.allocateOutput} and {@code emitOutputWriter}.
  */
 public abstract class CometBatchKernel extends CometInternalRow {
 

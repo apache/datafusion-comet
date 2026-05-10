@@ -78,9 +78,9 @@ Re-running `genCode(ctx)` per kernel allocation costs microseconds; Janino compi
 
 `CometBatchKernelCodegen.canHandle(boundExpr)` runs at serde time. It returns `None` when the dispatcher can compile the expression, `Some(reason)` when it cannot. Checks:
 
-- Output `dataType` is in the scalar set `allocateOutput` and `outputWriter` cover.
+- Output `dataType` is in the scalar set `allocateOutput` and `emitOutputWriter` cover.
 - No `AggregateFunction` or `Generator` anywhere in the tree (scalar-only bridge).
-- Every `BoundReference`'s data type is in the input set `typedInputAccessors` has a getter for.
+- Every `BoundReference`'s data type is in the input set `emitTypedGetters` has a getter for.
 
 The serde calls `withInfo(original, reason) + None` on a `Some` result, so Spark falls back rather than the kernel compiler crashing at execute time. Intermediate node types are not checked - `doGenCode` materializes them in local variables; only leaves (row reads) and the root (output write) touch Arrow.
 
@@ -151,11 +151,11 @@ All scalar Spark types that map to a single Arrow vector:
 | StringType                                | VarCharVector, ViewVarCharVector                           | `getUTF8String` (zero-copy via `UTF8String.fromAddress`) |
 | BinaryType                                | VarBinaryVector, ViewVarBinaryVector                       | `getBinary` (allocates `byte[]`)                         |
 
-Widening: add cases to `CometBatchKernelCodegen.typedInputAccessors` and accept the new vector classes in `CometCodegenDispatchUDF.evaluate`'s input pattern match.
+Widening: add cases to `CometBatchKernelCodegen.emitTypedGetters` and accept the new vector classes in `CometCodegenDispatchUDF.evaluate`'s input pattern match.
 
 ### Output (writers + allocators)
 
-All scalar Spark types that map to a single Arrow vector: `Boolean`, `Byte`, `Short`, `Int`, `Long`, `Float`, `Double`, `Decimal`, `String`, `Binary`, `Date`, `Timestamp`, `TimestampNTZ`. Mirrors `ArrowWriters.createFieldWriter` so producer and consumer sides stay aligned. Widen by adding cases to `CometBatchKernelCodegen.allocateOutput` and `outputWriter`.
+All scalar Spark types that map to a single Arrow vector: `Boolean`, `Byte`, `Short`, `Int`, `Long`, `Float`, `Double`, `Decimal`, `String`, `Binary`, `Date`, `Timestamp`, `TimestampNTZ`. Mirrors `ArrowWriters.createFieldWriter` so producer and consumer sides stay aligned. Widen by adding cases to `CometBatchKernelCodegen.allocateOutput` and `emitOutputWriter`.
 
 ### Complex types
 
@@ -208,7 +208,7 @@ Adding a new Spark expression to the codegen dispatch path is a serde-only chang
 
 Steps:
 
-1. **Verify type coverage.** `CometBatchKernelCodegen.canHandle(boundExpr)` returns `None` iff every `BoundReference`'s data type is in `isSupportedInputType` and the root data type is in `isSupportedOutputType`. No extra work needed if the expression uses supported types; if not, widen the relevant case in `typedInputAccessors` / `emitWrite` / `allocateOutput` first.
+1. **Verify type coverage.** `CometBatchKernelCodegen.canHandle(boundExpr)` returns `None` iff every `BoundReference`'s data type is in `isSupportedInputType` and the root data type is in `isSupportedOutputType`. No extra work needed if the expression uses supported types; if not, widen the relevant case in `emitTypedGetters` / `emitWrite` / `allocateOutput` first.
 
 2. **Wrap `convert` in `pickWithMode`.** The serde's `override def convert(...)` routes through `CodegenDispatchSerdeHelpers.pickWithMode(viaCodegen, viaNonCodegen, preferCodegenInAuto)`. `viaCodegen` is the new helper (step 3). `viaNonCodegen` is either an existing native-DataFusion converter or `() => None` when the only Comet-side path is codegen. `preferCodegenInAuto` decides whether `auto` mode tries codegen first; set `true` when codegen is the intended primary path, `false` when the native path takes priority and codegen is a fallback.
 
@@ -226,7 +226,7 @@ Steps:
    - No native path, but there's a meaningful non-codegen alternative: write that converter (rare; only `RLike` was this case historically, now removed).
    - No alternative: `viaNonCodegen = () => None`, and `mode=disabled` falls through to Spark.
 
-5. **Tests.** Add a smoke test in `CometCodegenDispatchSmokeSuite` using `assertCodegenDidWork` around a `checkSparkAnswerAndOperator`, plus `assertKernelSignaturePresent(Seq(classOf[...Vector]), OutputType)` to prove specialization reached the cache. If the expression has a new code path in `emitWrite` or `typedInputAccessors`, also add a source-level marker assertion in `CometCodegenSourceSuite` so future regressions don't silently lose the optimization.
+5. **Tests.** Add a smoke test in `CometCodegenDispatchSmokeSuite` using `assertCodegenDidWork` around a `checkSparkAnswerAndOperator`, plus `assertKernelSignaturePresent(Seq(classOf[...Vector]), OutputType)` to prove specialization reached the cache. If the expression has a new code path in `emitWrite` or `emitTypedGetters`, also add a source-level marker assertion in `CometCodegenSourceSuite` so future regressions don't silently lose the optimization.
 
 Once wired, the `auto | force | disabled` mode knob applies automatically and users can disable codegen per-session via `spark.comet.exec.codegenDispatch.mode`.
 
@@ -234,7 +234,7 @@ Once wired, the `auto | force | disabled` mode knob applies automatically and us
 
 Every optimization is compile-time specialized on `(bound expression, input schema)`; the emitted Java carries only the selected path at each site. Source-level tests in `CometCodegenSourceSuite` assert that each of these activates where expected.
 
-### Input readers (`CometBatchKernelCodegenInput.typedInputAccessors` and the nested-class emitters)
+### Input readers (`CometBatchKernelCodegenInput.emitTypedGetters` and the nested-class emitters)
 
 - **ZeroCopyUtf8Read** for `VarCharVector` / `ViewVarCharVector`. `UTF8String.fromAddress` wraps Arrow's data-buffer address with no `byte[]` allocation. The view case reads the 16-byte view entry, picks inline vs referenced inline, and builds the `UTF8String` without a `byte[]` allocation either.
 - **NonNullableIsNullAtElision** for non-nullable columns. `isNullAt(ord)` returns literal `false`, and `CometCodegenDispatchUDF.rewriteBoundReferences` tightens the `BoundReference.nullable` flag so Spark's `doGenCode` stops probing at source level too (not just at JIT time).
@@ -285,7 +285,7 @@ Each item below has a `TODO` in the code at the referenced location. The code-si
 `CometCodegenDispatchUDF.evaluate` (near the top). Comet's native scan and shuffle paths currently materialize dictionaries before the UDF bridge, so `v.getField.getDictionary != null` is not observed here today. If that invariant is ever relaxed upstream, the cast in `specFor` throws. Two ways to fix it at that point:
 
 - Materialize at the dispatcher via `CDataDictionaryProvider` (see `NativeUtil.importVector`). Simpler.
-- Widen `typedInputAccessors` with a dict-index read plus a lookup into the dictionary vector. Faster on high-cardinality dictionaries but adds a cache-key dimension.
+- Widen `emitTypedGetters` with a dict-index read plus a lookup into the dictionary vector. Faster on high-cardinality dictionaries but adds a cache-key dimension.
 
 ### Cache-key hash cost
 
@@ -299,7 +299,7 @@ None of these are worth doing until a profile shows lookup in the hot path.
 
 ### Unsafe readers skipping Arrow bounds checks
 
-`CometBatchKernelCodegenInput.typedInputAccessors`. Primitive getters go through Arrow's typed `v.get(i)` which performs bounds checks. Inside the kernel's `process` loop `i` is always in `[0, numRows)`, so the check is redundant. Mirror `CometPlainVector`'s pattern (cache validity/value/offset buffer addresses, use direct `Platform.getInt` reads) behind a benchmark.
+`CometBatchKernelCodegenInput.emitTypedGetters`. Primitive getters go through Arrow's typed `v.get(i)` which performs bounds checks. Inside the kernel's `process` loop `i` is always in `[0, numRows)`, so the check is redundant. Mirror `CometPlainVector`'s pattern (cache validity/value/offset buffer addresses, use direct `Platform.getInt` reads) behind a benchmark.
 
 ### Per-row-body method-size splitting
 
@@ -321,12 +321,12 @@ None of these are worth doing until a profile shows lookup in the hot path.
   - `ColumnarValue::Scalar` return - DataFusion lets a scalar function return one value broadcast to batch length. Arrow Java has no `ScalarValue` equivalent; adding it would need a new JVM wrapper type plus an FFI protocol extension. Small practical payoff (most UDFs produce row-varying output; true constants are folded at plan time), large surface change.
 - **Benchmark observation** (`CometScalaUDFCompositionBenchmark`). On plans of shape `Scan -> Project[UDF] -> noop` or `Scan -> Project[UDF] -> SUM`, the dispatcher runs a few percent slower than "dispatcher disabled" (Spark row-based fallback) at 1M rows. Both paths do the same per-row work in the JVM and our path pays an extra JNI hop. The benefit is keeping the surrounding plan columnar when downstream operators would otherwise fall back, a shape the current benchmark does not exercise. A follow-up benchmark with expensive columnar operators around the UDF (filter + hash join + aggregate) would measure the plan-preservation effect.
 - **Candidates for specialized emitters beyond `RegExpReplace`**. Other regex-family expressions (`regexp_extract`, `regexp_extract_all`, `regexp_instr`) pay the same `UTF8String <-> String` conversion chain Spark's `doGenCode` forces. `str_to_map` is another candidate. Audit pending.
-- **Longer-term: full `WholeStageCodegenExec` integration**. Build a Spark plan tree (`ArrowOutputExec(ProjectExec(ColumnarToRowExec(BatchInputExec)))`) and let Spark's WSCG fuse everything through its own codegen machinery, reusing `CometVector` on the input side. Larger engineering footprint (custom `CodegenSupport` sink, plan construction inside JNI callbacks) but unlocks nested types and every Arrow input type without Comet-side accessor maintenance.
+- **Longer-term: full `WholeStageCodegenExec` integration**. Build a Spark plan tree (`ArrowOutputExec(ProjectExec(ColumnarToRowExec(BatchInputExec)))`) and let Spark's WSCG fuse everything through its own codegen machinery, reusing `CometVector` on the input side. Larger engineering footprint (custom `CodegenSupport` sink, plan construction inside JNI callbacks) but unlocks nested types and every Arrow input type without Comet-side getter maintenance.
 
 ## File map
 
 - `common/src/main/scala/org/apache/comet/udf/CometCodegenDispatchUDF.scala` - dispatcher `CometUDF`, shared LRU, counters, `snapshotCompiledSignatures()`.
-- `common/src/main/scala/org/apache/comet/udf/CometBatchKernelCodegen.scala` - Janino-based kernel compiler, `canHandle`, `allocateOutput`, `outputWriter`, `typedInputAccessors`, `CompiledKernel` with `freshReferences` closure.
+- `common/src/main/scala/org/apache/comet/udf/CometBatchKernelCodegen.scala` - Janino-based kernel compiler, `canHandle`, `allocateOutput`, `emitOutputWriter`, `emitTypedGetters`, `CompiledKernel` with `freshReferences` closure.
 - `common/src/main/scala/org/apache/comet/udf/CometInternalRow.scala` - abstract `InternalRow` base with throwing defaults for unimplemented getters.
 - `common/src/main/scala/org/apache/comet/udf/CometUDF.scala` - `CometUDF.evaluate(inputs, numRows)` contract.
 - `common/src/main/java/org/apache/comet/udf/CometBatchKernel.java` - Java abstract base the generated subclass extends.

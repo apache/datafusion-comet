@@ -341,16 +341,16 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         }
         val subExprsCode = ctx.subexprFunctionsCode
         val (cls, snippet) =
-          CometBatchKernelCodegenOutput.outputWriter(boundExpr.dataType, ev.value, ctx)
+          CometBatchKernelCodegenOutput.emitOutputWriter(boundExpr.dataType, ev.value, ctx)
         (cls, defaultBody(boundExpr, ev, snippet, subExprsCode))
     }
 
-    val typedFieldDecls = CometBatchKernelCodegenInput.inputFieldDecls(inputSchema)
-    val typedInputCasts = CometBatchKernelCodegenInput.inputCasts(inputSchema)
+    val typedFieldDecls = CometBatchKernelCodegenInput.emitInputFieldDecls(inputSchema)
+    val typedInputCasts = CometBatchKernelCodegenInput.emitInputCasts(inputSchema)
     val decimalTypeByOrdinal = CometBatchKernelCodegenInput.decimalPrecisionByOrdinal(boundExpr)
     val getters =
-      CometBatchKernelCodegenInput.typedInputAccessors(inputSchema, decimalTypeByOrdinal)
-    val nested = CometBatchKernelCodegenInput.nestedClasses(inputSchema)
+      CometBatchKernelCodegenInput.emitTypedGetters(inputSchema, decimalTypeByOrdinal)
+    val nested = CometBatchKernelCodegenInput.emitNestedClasses(inputSchema)
     val getArrayMethod = CometBatchKernelCodegenInput.emitGetArrayMethod(inputSchema)
     val getStructMethod = CometBatchKernelCodegenInput.emitGetStructMethod(inputSchema)
     val getMapMethod = CometBatchKernelCodegenInput.emitGetMapMethod(inputSchema)
