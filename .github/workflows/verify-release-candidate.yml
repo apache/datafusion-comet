@@ -85,22 +85,22 @@ jobs:
           distribution: zulu
           java-version: 11
 
-      - name: Set Windows build flags
-        if: matrix.os == 'windows'
+      - name: Set platform-specific build flags
         shell: bash
         run: |
-          echo "RUSTFLAGS=-C link-arg=-Wl,--exclude-libs=ALL" >> "$GITHUB_ENV"
-          # Use --no-default-features on Windows to avoid building hdrs which
-          # does not support Windows.
-          echo "COMET_CARGO_BUILD_ARGS=--no-default-features" >> "$GITHUB_ENV"
-
-      # Work around ring 0.17.14 compile failure with Rust 1.86+ on aarch64-apple-darwin.
-      # Rust 1.86+ enables pauth/fpac target features by default, which fail ring's
-      # compile-time assertions. Disable them until ring ships a fix.
-      - name: Work around ring compile failure (macOS arm64)
-        if: matrix.os == 'macos' && matrix.arch == 'arm64'
-        shell: bash
-        run: echo "RUSTFLAGS=-C target-feature=-pauth,-fpac" >> "$GITHUB_ENV"
+          case "${{ matrix.os }}-${{ matrix.arch }}" in
+            windows-*)
+              # Without this, the MinGW GNU linker fails with too many exported symbols.
+              echo "RUSTFLAGS=-C link-arg=-Wl,--exclude-libs=ALL" >> "$GITHUB_ENV"
+              # Use --no-default-features to avoid building hdrs which does not support Windows.
+              echo "COMET_CARGO_BUILD_ARGS=--no-default-features" >> "$GITHUB_ENV"
+              ;;
+            macos-arm64)
+              # Work around ring 0.17.14 compile failure with Rust 1.86+.
+              # Disable pauth/fpac target features that fail ring's compile-time assertions.
+              echo "RUSTFLAGS=-C target-feature=-pauth,-fpac" >> "$GITHUB_ENV"
+              ;;
+          esac
 
       - name: Run release candidate verification
         shell: bash
