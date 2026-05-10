@@ -578,7 +578,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   private def generate(expr: Expression, specs: IndexedSeq[ArrowColumnSpec]): String =
     CometBatchKernelCodegen.generateSource(expr, specs).body
 
-  test("nested: Array<Array<Int>> emits outer + inner array classes with _e_arrayData router") {
+  test("Array<Array<Int>> emits outer + inner array classes with _e_arrayData router") {
     val innerArray = ArrayColumnSpec(
       nullable = true,
       elementSparkType = IntegerType,
@@ -602,7 +602,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       s"expected innermost scalar getter for IntegerType element; got:\n$src")
   }
 
-  test("nested: Array<Struct<a: Int>> emits array class routing getStruct via _e_structData") {
+  test("Array<Struct<a: Int>> emits array class routing getStruct via _e_structData") {
     val innerStruct = StructColumnSpec(
       nullable = true,
       fields = Seq(
@@ -628,7 +628,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       s"expected array getStruct to route to inner struct instance; got:\n$src")
   }
 
-  test("nested: Struct<s: Struct<a: Int>> emits outer + inner struct classes") {
+  test("Struct<s: Struct<a: Int>> emits outer + inner struct classes") {
     val innerStruct = StructColumnSpec(
       nullable = true,
       fields = Seq(
@@ -665,7 +665,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       s"expected innermost getInt on InputStruct_col0_f0; got:\n$src")
   }
 
-  test("nested: Struct<a: Array<Int>> emits struct class routing getArray via _f0_arrayData") {
+  test("Struct<a: Array<Int>> emits struct class routing getArray via _f0_arrayData") {
     val innerArray = ArrayColumnSpec(
       nullable = true,
       elementSparkType = IntegerType,
@@ -687,7 +687,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       s"expected struct getArray to route to inner array instance; got:\n$src")
   }
 
-  test("nested: Map<String, Int> emits InputMap_col0 + keyArray / valueArray views") {
+  test("Map<String, Int> emits InputMap_col0 + keyArray / valueArray views") {
     val keySpec = ScalarColumnSpec(varCharVectorClass, nullable = true)
     val valueSpec = ScalarColumnSpec(
       CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
@@ -720,7 +720,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       s"expected getMap to reset the pre-allocated map instance; got:\n$src")
   }
 
-  test("nested: Map<Array<Int>, Array<String>> emits complex key and complex value views") {
+  test("Map<Array<Int>, Array<String>> emits complex key and complex value views") {
     val keyElem = ScalarColumnSpec(
       CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
       nullable = true)

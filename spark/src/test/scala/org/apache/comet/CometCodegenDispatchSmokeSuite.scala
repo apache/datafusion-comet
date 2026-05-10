@@ -53,49 +53,49 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: rlike projection with null handling") {
+  test("rlike projection with null handling") {
     withSubjects("abc123", "no digits", null, "mixed_42_data") {
       checkSparkAnswerAndOperator(sql("SELECT s, s rlike '\\\\d+' AS m FROM t"))
     }
   }
 
-  test("codegen: rlike predicate") {
+  test("rlike predicate") {
     withSubjects("abc123", "no digits", null, "mixed_42_data") {
       checkSparkAnswerAndOperator(sql("SELECT s FROM t WHERE s rlike '\\\\d+'"))
     }
   }
 
-  test("codegen: rlike with backreference (Java-only)") {
+  test("rlike with backreference (Java-only)") {
     withSubjects("aa", "ab", "xyzzy", null) {
       checkSparkAnswerAndOperator(sql("SELECT s, s rlike '^(\\\\w)\\\\1$' FROM t"))
     }
   }
 
-  test("codegen: rlike on all-null column") {
+  test("rlike on all-null column") {
     withSubjects(null, null, null) {
       checkSparkAnswerAndOperator(sql("SELECT s rlike '\\\\d+' FROM t"))
     }
   }
 
-  test("codegen: rlike empty pattern matches every non-null row") {
+  test("rlike empty pattern matches every non-null row") {
     withSubjects("a", "", null, "bc") {
       checkSparkAnswerAndOperator(sql("SELECT s, s rlike '' FROM t"))
     }
   }
 
-  test("codegen: regexp_replace digits with a token") {
+  test("regexp_replace digits with a token") {
     withSubjects("abc123", "no digits", null, "mixed_42_data") {
       checkSparkAnswerAndOperator(sql("SELECT s, regexp_replace(s, '\\\\d+', 'N') FROM t"))
     }
   }
 
-  test("codegen: regexp_replace with empty replacement") {
+  test("regexp_replace with empty replacement") {
     withSubjects("abc123def", "no digits", null, "") {
       checkSparkAnswerAndOperator(sql("SELECT s, regexp_replace(s, '\\\\d+', '') FROM t"))
     }
   }
 
-  test("codegen: regexp_replace no-match preserves input") {
+  test("regexp_replace no-match preserves input") {
     withSubjects("abc", "xyz", null) {
       checkSparkAnswerAndOperator(sql("SELECT s, regexp_replace(s, '\\\\d+', 'N') FROM t"))
     }
@@ -175,7 +175,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
         s"cache had ${sigs.map { case (c, d) => (c.map(_.getSimpleName), d) }}")
   }
 
-  test("codegen: compose upper(s) rlike pattern") {
+  test("compose upper(s) rlike pattern") {
     // The serde binds the whole tree, including the Upper, and ships it to the codegen
     // dispatcher. Inside the kernel, Upper.doGenCode emits `this.getUTF8String(0).toUpperCase()`
     // which feeds directly into the Matcher check. No second JNI hop for Upper.
@@ -186,7 +186,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: compose regexp_replace(upper(s), pattern, replacement)") {
+  test("compose regexp_replace(upper(s), pattern, replacement)") {
     // Upper as the subject of RegExpReplace defeats the specialized emitter (its fast path
     // requires a direct BoundReference subject). Falls to the default path, which still compiles
     // cleanly as one fused method because Spark's doGenCode for Upper -> RegExpReplace is
@@ -199,7 +199,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: compose upper(regexp_replace(s, pattern, replacement))") {
+  test("compose upper(regexp_replace(s, pattern, replacement))") {
     // Flip the nesting: RegExpReplace is inside, Upper is outside. Still one compile per
     // (tree, schema) pair; the outer Upper's doGenCode consumes the RegExpReplace result as a
     // UTF8String in the same generated method. Case conversion is enabled because the inputs
@@ -215,7 +215,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: compose substring(upper(s), 1, 3)") {
+  test("compose substring(upper(s), 1, 3)") {
     // Three levels: BoundReference, Upper, Substring. Substring takes two literal ints; its
     // subject is the Upper result. Exercises multiple intermediate UTF8String operations in the
     // generated fused method.
@@ -229,7 +229,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: regexp_extract (StringType output) routes through dispatcher") {
+  test("regexp_extract (StringType output) routes through dispatcher") {
     // regexp_extract has no native path in Comet, so the mode knob decides codegen vs
     // hand-coded. Under the suite's `force` default, codegen runs.
     withSubjects("abc123", "no digits", null, "mix42data") {
@@ -240,7 +240,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: regexp_instr (IntegerType output) routes through dispatcher") {
+  test("regexp_instr (IntegerType output) routes through dispatcher") {
     // regexp_instr exercises the IntegerType output writer end to end for the first time since
     // Phase 2b added the allocator/writer; no prior end-to-end serde produced int output.
     withSubjects("abc123", "no digits", null, "mix42data") {
@@ -270,7 +270,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: concat(c1, c2) rlike 'pat' compiles over two columns") {
+  test("concat(c1, c2) rlike 'pat' compiles over two columns") {
     // Concat is not NullIntolerant. The dispatcher's short-circuit guard should skip the
     // whole-tree short-circuit and let Spark's Concat codegen handle nulls correctly.
     withTwoStringCols(("abc", "123"), ("abc", null), (null, "123"), (null, null), ("zz", "zz")) {
@@ -280,7 +280,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: concat(upper(c1), c2) rlike 'pat' nests Upper inside Concat") {
+  test("concat(upper(c1), c2) rlike 'pat' nests Upper inside Concat") {
     // Upper is NullIntolerant; Concat is not. The tree still has a non-NullIntolerant node so
     // the short-circuit must not apply. Exercises mixed-trait composition.
     withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
@@ -292,7 +292,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: regexp_replace(c1, literal, c2-ignored-literal) two columns in tree") {
+  test("regexp_replace(c1, literal, c2-ignored-literal) two columns in tree") {
     // Verifies that a second column reference outside the subject (here as a literal
     // replacement) still routes through. Note: regexp_replace requires literal regex and
     // replacement, so this is the only realistic two-column shape for that serde.
@@ -304,7 +304,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: disabled mode bypasses the dispatcher") {
+  test("disabled mode bypasses the dispatcher") {
     // In `disabled`, the rlike serde returns None and the expression falls back to Spark. The
     // dispatcher's counters should not move. We check the result against Spark's answer but do
     // not assert the operator is Comet for this query, because rlike itself runs on the JVM
@@ -323,7 +323,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       s"expected no dispatcher activity under disabled mode, got $after")
   }
 
-  test("codegen: auto mode prefers dispatcher when regex engine is java") {
+  test("auto mode prefers dispatcher when regex engine is java") {
     // `auto` with engine=java should resolve to codegen (the serde's documented preference). Use
     // a pattern unique to this test to guarantee a fresh compile.
     val pattern = "auto_mode_marker_[0-9]+"
@@ -341,8 +341,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       s"expected dispatcher activity under auto mode with java engine, got $after")
   }
 
-  test(
-    "codegen: per-batch nullability produces distinct compiles for null-present vs null-absent") {
+  test("per-batch nullability produces distinct compiles for null-present vs null-absent") {
     // Same expression + same Arrow vector class + different observed nullability should hit
     // different cache keys, because `ArrowColumnSpec.nullable` flips when the batch has no
     // nulls. We don't assert on per-run deltas because Spark's partitioning can split the
@@ -366,7 +365,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
         s"nullable=true/false variant); got $after")
   }
 
-  test("codegen: dispatcher stats increment on compile and hit") {
+  test("dispatcher stats increment on compile and hit") {
     // Use a pattern no other test in this suite compiles, so the first run is guaranteed to be a
     // cache miss regardless of test order.
     val pattern = "stats_only_marker_[0-9]+"
@@ -413,7 +412,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
    *     ("requires STRING, got STRING COLLATE UNICODE_CI"). RLike contracts on UTF8_BINARY
    *     semantics; binary collations like UTF8_LCASE work, ICU ones don't.
    */
-  test("codegen: rlike on UTF8_LCASE-cast column matches case-insensitively") {
+  test("rlike on UTF8_LCASE-cast column matches case-insensitively") {
     assume(isSpark40Plus, "non-default collations require Spark 4.0+")
     withSubjects("Abc", "abc", "ABC", "xyz", null) {
       assertCodegenDidWork {
@@ -422,7 +421,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: per-partition kernel preserves Nondeterministic state across batches") {
+  test("per-partition kernel preserves Nondeterministic state across batches") {
     // Compose `monotonically_increasing_id()` with rlike so the dispatcher routes the
     // composed tree (the inner expression by itself wouldn't have a serde). The expression
     // also references `s` so the proto carries at least one data column, giving the bridge a
@@ -448,7 +447,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
    * the dispatcher rather than forcing whole-plan Spark fallback.
    */
 
-  test("codegen: registered string ScalaUDF routes through dispatcher") {
+  test("registered string ScalaUDF routes through dispatcher") {
     spark.udf.register("shout", (s: String) => if (s == null) null else s.toUpperCase + "!")
     withSubjects("Abc", "xyz", null, "mixed") {
       assertCodegenDidWork {
@@ -457,7 +456,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: multi-arg ScalaUDF over string + literal routes through dispatcher") {
+  test("multi-arg ScalaUDF over string + literal routes through dispatcher") {
     spark.udf.register(
       "prepend",
       (prefix: String, s: String) => if (s == null) null else prefix + s)
@@ -468,7 +467,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF composed with an rlike subject") {
+  test("ScalaUDF composed with an rlike subject") {
     // Outer rlike binds the whole tree, including the ScalaUDF inside its subject. One
     // compiled kernel handles rlike + user-code + Arrow reads in a single fused method.
     spark.udf.register("wrap", (s: String) => if (s == null) null else s"|$s|")
@@ -479,7 +478,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: composed ScalaUDFs outer(inner(s)) fuse into one kernel") {
+  test("composed ScalaUDFs outer(inner(s)) fuse into one kernel") {
     // Two user UDFs stacked, both operating on String. The dispatcher binds the whole tree and
     // Spark's codegen emits two `ctx.addReferenceObj` calls inside one generated method. Races
     // on the `ExpressionEncoder` serializers in `references` would show up here since each UDF
@@ -495,7 +494,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDFs of different types compose: isShort(len(s))") {
+  test("ScalaUDFs of different types compose: isShort(len(s))") {
     // Exercises an input type transition: String -> Int -> Boolean. Two user UDFs with
     // different I/O type shapes in one tree, one Janino compile.
     spark.udf.register("len", (s: String) => if (s == null) -1 else s.length)
@@ -508,7 +507,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: three-deep ScalaUDF composition lvl3(lvl2(lvl1(s)))") {
+  test("three-deep ScalaUDF composition lvl3(lvl2(lvl1(s)))") {
     // Three user UDFs stacked in one tree: String -> String -> String -> Int. The fused kernel
     // carries three `ctx.addReferenceObj` calls. `assertOneKernelForSubtree` asserts that the
     // whole chain collapses into a single compile rather than one per nesting level.
@@ -527,7 +526,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: multi-column ScalaUDF composition join(upperU(c1), lowerU(c2))") {
+  test("multi-column ScalaUDF composition join(upperU(c1), lowerU(c2))") {
     // One multi-arg user UDF consuming two other user UDFs, each on a different input column.
     // The bound tree has two BoundReferences, and the kernel is specialized on two VarCharVector
     // columns. `assertOneKernelForSubtree` asserts that the two-branch composition fuses into a
@@ -572,7 +571,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on IntegerType (IntVector, getInt)") {
+  test("ScalaUDF on IntegerType (IntVector, getInt)") {
     spark.udf.register("doubleIt", (i: Int) => i * 2)
     withTypedCol("INT", "1", "2", "100") {
       assertCodegenDidWork {
@@ -582,7 +581,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on LongType (BigIntVector, getLong)") {
+  test("ScalaUDF on LongType (BigIntVector, getLong)") {
     spark.udf.register("inc", (l: Long) => l + 1L)
     withTypedCol("BIGINT", "1", "2", "100") {
       assertCodegenDidWork {
@@ -592,7 +591,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on DoubleType (Float8Vector, getDouble)") {
+  test("ScalaUDF on DoubleType (Float8Vector, getDouble)") {
     spark.udf.register("halve", (d: Double) => d / 2.0)
     withTypedCol("DOUBLE", "1.5", "2.5", "100.0") {
       assertCodegenDidWork {
@@ -602,7 +601,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on FloatType (Float4Vector, getFloat)") {
+  test("ScalaUDF on FloatType (Float4Vector, getFloat)") {
     spark.udf.register("scaleF", (f: Float) => f * 1.5f)
     withTypedCol("FLOAT", "CAST(1.5 AS FLOAT)", "CAST(2.5 AS FLOAT)") {
       assertCodegenDidWork {
@@ -612,7 +611,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on BooleanType (BitVector, getBoolean)") {
+  test("ScalaUDF on BooleanType (BitVector, getBoolean)") {
     spark.udf.register("neg", (b: Boolean) => !b)
     withTypedCol("BOOLEAN", "TRUE", "FALSE", "TRUE") {
       assertCodegenDidWork {
@@ -622,7 +621,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on ShortType (SmallIntVector, getShort)") {
+  test("ScalaUDF on ShortType (SmallIntVector, getShort)") {
     spark.udf.register("incS", (s: Short) => (s + 1).toShort)
     withTypedCol(
       "SMALLINT",
@@ -636,7 +635,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on ByteType (TinyIntVector, getByte)") {
+  test("ScalaUDF on ByteType (TinyIntVector, getByte)") {
     spark.udf.register("incB", (b: Byte) => (b + 1).toByte)
     withTypedCol("TINYINT", "CAST(1 AS TINYINT)", "CAST(2 AS TINYINT)", "CAST(100 AS TINYINT)") {
       assertCodegenDidWork {
@@ -646,7 +645,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on DateType (DateDayVector, getInt)") {
+  test("ScalaUDF on DateType (DateDayVector, getInt)") {
     // Date input flows through the Int getter because DateType is physically int. The UDF takes
     // java.sql.Date and Spark's encoder handles the int -> Date materialization.
     spark.udf.register(
@@ -660,7 +659,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on TimestampType (TimeStampMicroTZVector, getLong)") {
+  test("ScalaUDF on TimestampType (TimeStampMicroTZVector, getLong)") {
     spark.udf.register(
       "plusSecond",
       (t: java.sql.Timestamp) =>
@@ -676,7 +675,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF on TimestampNTZType (TimeStampMicroVector, getLong)") {
+  test("ScalaUDF on TimestampNTZType (TimeStampMicroVector, getLong)") {
     spark.udf.register(
       "plusDayNtz",
       (ldt: java.time.LocalDateTime) => if (ldt == null) null else ldt.plusDays(1))
@@ -691,7 +690,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF returning DateType") {
+  test("ScalaUDF returning DateType") {
     spark.udf.register("epochDay", (_: Int) => java.sql.Date.valueOf("1970-01-01"))
     withTypedCol("INT", "1", "2", "3") {
       assertCodegenDidWork {
@@ -701,7 +700,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF returning TimestampType") {
+  test("ScalaUDF returning TimestampType") {
     spark.udf.register("mkTs", (s: Long) => new java.sql.Timestamp(s * 1000L))
     withTypedCol("BIGINT", "0", "1700000000", "1750000000") {
       assertCodegenDidWork {
@@ -711,7 +710,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF returning TimestampNTZType") {
+  test("ScalaUDF returning TimestampNTZType") {
     spark.udf.register(
       "mkTsNtz",
       (s: Long) => java.time.LocalDateTime.ofEpochSecond(s, 0, java.time.ZoneOffset.UTC))
@@ -723,7 +722,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF returning a different type than its input") {
+  test("ScalaUDF returning a different type than its input") {
     // String -> Int transition forces the output writer to switch from VarChar to Int. Exercises
     // the `IntegerType` output path end to end from a user UDF (previously only regexp_instr
     // covered it).
@@ -736,7 +735,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF returning BinaryType (VarBinaryVector output writer)") {
+  test("ScalaUDF returning BinaryType (VarBinaryVector output writer)") {
     // Binary output writer path, exercised here by a user UDF for the first time. Before this
     // the writer only had direct-compile unit tests.
     spark.udf.register("bytes", (s: String) => if (s == null) null else s.getBytes("UTF-8"))
@@ -748,7 +747,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF returning ArrayType(StringType) (ListVector output writer)") {
+  test("ScalaUDF returning ArrayType(StringType) (ListVector output writer)") {
     // First use of the ArrayType output path end-to-end. The UDF returns a `Seq[String]`,
     // which Spark encodes as `ArrayType(StringType, containsNull = true)`. The dispatcher's
     // canHandle accepts it (ArrayType is supported when its element type is supported),
@@ -765,7 +764,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF returning ArrayType(IntegerType)") {
+  test("ScalaUDF returning ArrayType(IntegerType)") {
     // Exercises ArrayType output with a primitive element. emitWrite's ArrayType case
     // recurses into the IntegerType case for the inner write; no byte[] allocation involved.
     spark.udf.register(
@@ -778,7 +777,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: zero-column ScalaUDF produces one row per input row") {
+  test("zero-column ScalaUDF produces one row per input row") {
     // Non-deterministic (so Spark doesn't constant-fold) with a deterministic body (so
     // Spark-vs-Comet comparison stays honest). The expression has no `AttributeReference`,
     // so the serde produces an empty data-arg list and the dispatcher has no data column to
@@ -809,7 +808,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF over Decimal(9, 2) (short precision, fast path)") {
+  test("ScalaUDF over Decimal(9, 2) (short precision, fast path)") {
     // Short-precision identity UDF. The column's DecimalType has precision 9, so the generated
     // getter for ordinal 0 emits only the unscaled-long fast path. The UDF's Scala-side signature
     // uses `java.math.BigDecimal`, which Spark's encoder pins at DecimalType(38, 18); the implicit
@@ -823,7 +822,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF over Decimal(18, 0) (max short precision, fast path)") {
+  test("ScalaUDF over Decimal(18, 0) (max short precision, fast path)") {
     // Boundary precision: 18 is the last value for which the unscaled representation fits in a
     // signed 64-bit long. The fast path must still be selected.
     spark.udf.register("decId18_0", (d: java.math.BigDecimal) => d)
@@ -836,7 +835,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF over Decimal(18, 9) (max short precision with scale, fast path)") {
+  test("ScalaUDF over Decimal(18, 9) (max short precision with scale, fast path)") {
     // Same precision as above but with scale 9 to exercise the fractional side of the long
     // decimal. Spark `Decimal` stores both as the same unscaled long; only the `scale` parameter
     // differs.
@@ -850,7 +849,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF over Decimal(19, 0) (just past short precision, slow path)") {
+  test("ScalaUDF over Decimal(19, 0) (just past short precision, slow path)") {
     // First precision where the unscaled value can exceed `Long.MAX_VALUE`. The generated getter
     // must emit only the slow path; the fast-path marker must be absent in the compiled kernel.
     spark.udf.register("decId19_0", (d: java.math.BigDecimal) => d)
@@ -863,7 +862,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF over Decimal(38, 10) (max precision, slow path)") {
+  test("ScalaUDF over Decimal(38, 10) (max precision, slow path)") {
     // Max decimal128 precision. Exercises the `getObject + Decimal.apply` branch and the
     // end-to-end BigDecimal conversion path with a non-trivial scale.
     spark.udf.register("decId38_10", (d: java.math.BigDecimal) => d)
@@ -881,7 +880,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF sees TaskContext.partitionId() per partition") {
+  test("ScalaUDF sees TaskContext.partitionId() per partition") {
     // Direct probe: register a ScalaUDF that reads TaskContext.partitionId() and returns it.
     // Spark's own task thread has TaskContext set, so each partition's rows carry that
     // partition's index. For the dispatcher to match Spark, the invocation thread must see a
@@ -902,7 +901,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     checkSparkAnswerAndOperator(df)
   }
 
-  test("codegen: ScalaUDF sees TaskContext from fully-native parquet plan") {
+  test("ScalaUDF sees TaskContext from fully-native parquet plan") {
     // The `spark.range`-based test above runs through `CometSparkRowToColumnar`, which executes
     // on a Spark task thread where TaskContext is live even without explicit propagation. The
     // fully-native path through `CometNativeScan` runs the JVM UDF bridge on a Tokio worker
@@ -928,7 +927,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: Rand seeded per partition across a multi-partition table") {
+  test("Rand seeded per partition across a multi-partition table") {
     // Rand.doGenCode registers an XORShiftRandom via ctx.addMutableState and seeds it via
     // ctx.addPartitionInitializationStatement. That init statement runs inside our kernel's
     // `init(int partitionIndex)`, called once per kernel allocation. Spark seeds
@@ -946,7 +945,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     checkSparkAnswerAndOperator(df)
   }
 
-  test("codegen: ScalaUDF composed with reused scalar subquery across projection and filter") {
+  test("ScalaUDF composed with reused scalar subquery across projection and filter") {
     // The same scalar subquery appears in two sites: the projection (which the dispatcher
     // compiles into a fused kernel) and the filter (a separate operator). Each site holds its
     // own `ScalarSubquery` expression instance with its own `@volatile result` field. Each
@@ -986,7 +985,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF taking Seq[String] reads through nested ArrayData class") {
+  test("ScalaUDF taking Seq[String] reads through nested ArrayData class") {
     spark.udf.register(
       "headOrNull",
       (arr: Seq[String]) => if (arr == null || arr.isEmpty) null else arr.head)
@@ -999,7 +998,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF taking Seq[String] iterating all elements") {
+  test("ScalaUDF taking Seq[String] iterating all elements") {
     spark.udf.register(
       "concatArr",
       (arr: Seq[String]) => if (arr == null) null else arr.mkString("|"))
@@ -1012,7 +1011,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF taking Seq[Int] hits primitive element getter") {
+  test("ScalaUDF taking Seq[Int] hits primitive element getter") {
     spark.udf.register("sumArr", (arr: Seq[Int]) => if (arr == null) -1 else arr.sum)
     withArrayTable(
       "ARRAY<INT>",
@@ -1023,7 +1022,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF taking Seq[BigDecimal] hits short-precision decimal fast path") {
+  test("ScalaUDF taking Seq[BigDecimal] hits short-precision decimal fast path") {
     // DecimalType(10, 2) is well inside p <= 18, so the nested-array `getDecimal` emits the
     // unscaled-long fast path (see `emitNestedArrayElementGetter`). A `BigDecimal` UDF argument
     // forces Spark's encoder to call `getDecimal(i, 10, 2)` on our nested ArrayData for each
@@ -1052,7 +1051,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   // Spark.
   // =============================================================================================
 
-  test("codegen: ScalaUDF composes with struct-field access reading Struct<String, Int>.age") {
+  test("ScalaUDF composes with struct-field access reading Struct<String, Int>.age") {
     // Keeps the UDF arg scalar (Int) but puts a `GetStructField` under it so the codegen
     // dispatcher compiles the struct-input read path (`row.getStruct(0, 2).getInt(1)`).
     spark.udf.register("doubleInt", (i: Int) => i * 2)
@@ -1069,7 +1068,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF taking full Struct<String, Int> value (case class arg)") {
+  test("ScalaUDF taking full Struct<String, Int> value (case class arg)") {
     // Case-class UDF arguments: test data must not include null top-level rows.
     // `ScalaUDF.scalaConverter` applies Spark's `ExpressionEncoder.Deserializer` on every row
     // to materialize the case-class instance. The generated deserializer has a
@@ -1090,7 +1089,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF returning Struct<String, Int> (case class output)") {
+  test("ScalaUDF returning Struct<String, Int> (case class output)") {
     spark.udf.register("makePair", (i: Int) => NameAgePair(s"n$i", i))
     withTypedCol("INT", "1", "2", "3") {
       assertCodegenDidWork {
@@ -1099,7 +1098,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF taking Map<String, Int>") {
+  test("ScalaUDF taking Map<String, Int>") {
     spark.udf.register("sumMap", (m: Map[String, Int]) => if (m == null) -1 else m.values.sum)
     withTable("t") {
       sql("CREATE TABLE t (m MAP<STRING, INT>) USING parquet")
@@ -1110,7 +1109,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF returning Map<String, Int>") {
+  test("ScalaUDF returning Map<String, Int>") {
     spark.udf.register(
       "singletonMap",
       (s: String, i: Int) => if (s == null) null else Map(s -> i))
@@ -1123,7 +1122,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF taking Map<String, Seq<Int>> exercises nested composition") {
+  test("ScalaUDF taking Map<String, Seq<Int>> exercises nested composition") {
     spark.udf.register(
       "totalLens",
       (m: Map[String, Seq[Int]]) => if (m == null) -1 else m.values.flatten.sum)
@@ -1140,7 +1139,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF round-trips Array<Array<Int>> (nested array input + output)") {
+  test("ScalaUDF round-trips Array<Array<Int>> (nested array input + output)") {
     // Exercises nested-array input reads and nested-list output writes in one call: the inner
     // `InputArray_col0_e` class on the input side and the recursive emitWrite on the output.
     spark.udf.register(
@@ -1159,7 +1158,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF round-trips Struct<name, items: Array<Int>>") {
+  test("ScalaUDF round-trips Struct<name, items: Array<Int>>") {
     // Struct with a complex field on both sides: input reads go through InputStruct_col0 +
     // InputArray_col0_f1, output writes through StructVector + ListVector.
     // Null top-level rows omitted - case-class arg; see the note on `fmtPair` above.
@@ -1179,7 +1178,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF round-trips Map<String, Array<Int>> (nested value both sides)") {
+  test("ScalaUDF round-trips Map<String, Array<Int>> (nested value both sides)") {
     // Map input read goes through InputMap_col0 + InputArray_col0_v (the complex-value side);
     // output write emits MapVector + entries Struct + per-value ListVector inside the map's
     // entries struct.
@@ -1200,7 +1199,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("codegen: ScalaUDF round-trips Map<String, Struct<x: Int, y: String>>") {
+  test("ScalaUDF round-trips Map<String, Struct<x: Int, y: String>>") {
     // Struct value inside a map, both sides. Null top-level rows omitted - the map value is a
     // case class; see the note on `fmtPair` above.
     spark.udf.register(

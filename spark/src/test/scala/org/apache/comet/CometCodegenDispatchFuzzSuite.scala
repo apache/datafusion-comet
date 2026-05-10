@@ -132,7 +132,7 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
     density <- nullDensities
     pattern <- rlikePatterns
   } {
-    test(s"fuzz rlike pattern='$pattern' nullDensity=$density") {
+    test(s"rlike pattern='$pattern' nullDensity=$density") {
       val subjects = generateSubjects(seed = pattern.hashCode.toLong ^ density.hashCode, density)
       withSubjectTable(subjects) {
         assertCodegenRan {
@@ -146,8 +146,7 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
     density <- nullDensities
     (pattern, replacement) <- regexpReplacePatterns
   } {
-    test(
-      s"fuzz regexp_replace pattern='$pattern' replacement='$replacement' nullDensity=$density") {
+    test(s"regexp_replace pattern='$pattern' replacement='$replacement' nullDensity=$density") {
       val seed = (pattern + replacement).hashCode.toLong ^ density.hashCode
       val subjects = generateSubjects(seed = seed, density)
       withSubjectTable(subjects) {
@@ -196,7 +195,7 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
     d2 <- perColumnNullDensities
     pattern <- twoColumnPatterns
   } {
-    test(s"fuzz concat(c1,c2) rlike '$pattern' nullDensity=($d1,$d2)") {
+    test(s"concat(c1,c2) rlike '$pattern' nullDensity=($d1,$d2)") {
       val seed = (pattern.hashCode.toLong ^ d1.hashCode) * 31 + d2.hashCode
       val c1 = generateSubjects(seed, d1)
       val c2 = generateSubjects(seed ^ 0x5f3759df, d2)
@@ -259,7 +258,7 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
     density <- nullDensities
     (precision, scale) <- decimalShapes
   } {
-    test(s"fuzz decimal identity precision=$precision scale=$scale nullDensity=$density") {
+    test(s"decimal identity precision=$precision scale=$scale nullDensity=$density") {
       // Reuse one registered UDF name across iterations; Spark replaces by name. The Scala-side
       // signature uses `BigDecimal`, which Spark encodes as DecimalType(38, 18); an implicit Cast
       // from the column's DecimalType to the UDF's parameter type runs inside Spark's generated
