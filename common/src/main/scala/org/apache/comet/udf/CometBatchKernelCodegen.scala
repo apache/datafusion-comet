@@ -364,7 +364,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
          |  return new SpecificCometBatchKernel(references);
          |}
          |
-         |class SpecificCometBatchKernel extends $baseClass {
+         |final class SpecificCometBatchKernel extends $baseClass {
          |
          |  ${ctx.declareMutableStates()}
          |
