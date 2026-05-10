@@ -49,7 +49,7 @@ impl std::error::Error for CometUdfError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UdfErrorCode {
     /// Reserved — never written.
-    None = 0,
+    Reserved = 0,
     /// User invoke returned `Err(CometUdfError)`.
     UserError = 1,
     /// User invoke panicked. `catch_unwind` caught it.
@@ -68,13 +68,22 @@ pub enum UdfErrorCode {
 /// host.
 #[repr(C)]
 pub struct UdfError {
-    /// Null-terminated UTF-8 string, or null if `code == None`.
+    /// Null-terminated UTF-8 string, or null if `code == Reserved`.
     pub message: *mut c_char,
     /// One of [`UdfErrorCode`].
     pub code: u32,
     /// Reserved space; zero today.
     pub _reserved: [u64; 3],
 }
+
+// Pin the layout so a future field reorder gets a compile error.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(std::mem::size_of::<UdfError>() == 40);
+    assert!(std::mem::offset_of!(UdfError, message) == 0);
+    assert!(std::mem::offset_of!(UdfError, code) == 8);
+    assert!(std::mem::offset_of!(UdfError, _reserved) == 16);
+};
 
 impl UdfError {
     /// Build a zeroed error.
@@ -86,9 +95,13 @@ impl UdfError {
         }
     }
 
-    /// Populate this error with a code and message. Replaces any existing
-    /// message (which leaks — caller must have freed it).
+    /// Populate this error with a code and message. Any existing message is
+    /// freed first; safe to call repeatedly on the same `UdfError`.
     pub fn set(&mut self, code: UdfErrorCode, message: &str) {
+        // SAFETY: any existing message was allocated by a previous call to
+        // `set` in this same cdylib, so freeing it via `CString::from_raw`
+        // (called by `free_in_place`) uses the matching allocator.
+        unsafe { self.free_in_place() };
         let cstr = CString::new(message.replace('\0', "?"))
             .expect("replaced nul bytes; CString::new must succeed");
         self.message = cstr.into_raw();
@@ -96,7 +109,7 @@ impl UdfError {
     }
 
     /// Free the message buffer if present. Safe to call when message is
-    /// null. Resets `code` to `None`.
+    /// null. Resets `code` to `Reserved`.
     ///
     /// # Safety
     /// Must be called from the same `cdylib` whose [`UdfError::set`] wrote
@@ -106,7 +119,7 @@ impl UdfError {
             let _ = CString::from_raw(self.message);
             self.message = ptr::null_mut();
         }
-        self.code = UdfErrorCode::None as u32;
+        self.code = UdfErrorCode::Reserved as u32;
     }
 }
 
@@ -128,6 +141,19 @@ mod tests {
         assert_eq!(err.code, UdfErrorCode::UserError as u32);
         unsafe { err.free_in_place() };
         assert!(err.message.is_null());
-        assert_eq!(err.code, UdfErrorCode::None as u32);
+        assert_eq!(err.code, UdfErrorCode::Reserved as u32);
+    }
+
+    #[test]
+    fn udf_error_set_replaces_message() {
+        let mut err = UdfError::zeroed();
+        err.set(UdfErrorCode::UserError, "first");
+        err.set(UdfErrorCode::Panic, "second");
+        // Read message via CStr to verify it's "second", not "first".
+        let cstr = unsafe { std::ffi::CStr::from_ptr(err.message) };
+        assert_eq!(cstr.to_str().unwrap(), "second");
+        assert_eq!(err.code, UdfErrorCode::Panic as u32);
+        unsafe { err.free_in_place() };
+        assert!(err.message.is_null());
     }
 }
