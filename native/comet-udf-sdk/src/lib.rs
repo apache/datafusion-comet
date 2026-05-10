@@ -23,7 +23,7 @@
 
 #![warn(missing_docs)]
 
-/// ABI version emitted by [`export!`]. Bumped only when the C ABI surface
+/// ABI version emitted by `export!`. Bumped only when the C ABI surface
 /// or the descriptor wire format changes in a backwards-incompatible way.
 pub const COMET_UDF_ABI_VERSION: u32 = 1;
 

@@ -18,10 +18,16 @@
 [package]
 name = "comet-udf-sdk"
 version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
 description = "SDK for writing custom Rust UDFs that run inside Apache DataFusion Comet"
+
+# not publishing to crates.io as part of this PR; flip this when the SDK is ready for public release
+publish = false
 
 [dependencies]
 arrow = { workspace = true }
