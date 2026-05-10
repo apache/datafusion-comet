@@ -17,30 +17,21 @@
  * under the License.
  */
 
-package org.apache.comet.fuzz
+package org.apache.comet.udf
 
-import scala.util.Random
+import org.apache.arrow.vector.ValueVector
 
-object Utils {
-
-  def randomChoice[T](list: Seq[T], r: Random): T = {
-    list(r.nextInt(list.length))
-  }
-
-  def randomWeightedChoice[T](valuesWithWeights: Seq[(T, Double)], r: Random): T = {
-    val totalWeight = valuesWithWeights.map(_._2).sum
-    val randomValue = r.nextDouble() * totalWeight
-    var cumulativeWeight = 0.0
-
-    for ((value, weight) <- valuesWithWeights) {
-      cumulativeWeight += weight
-      if (cumulativeWeight >= randomValue) {
-        return value
-      }
-    }
-
-    // If for some reason the loop doesn't return, return the last value
-    valuesWithWeights.last._1
-  }
-
+/**
+ * Scalar UDF invoked from native execution via JNI. Receives Arrow vectors as input and returns
+ * an Arrow vector.
+ *
+ *   - Vector arguments arrive at the row count of the current batch.
+ *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
+ *   - The returned vector's length must match the longest input.
+ *
+ * Implementations must have a public no-arg constructor and must be stateless: a single instance
+ * per class is cached and shared across native worker threads for the lifetime of the JVM.
+ */
+trait CometUDF {
+  def evaluate(inputs: Array[ValueVector]): ValueVector
 }

@@ -356,15 +356,15 @@
 - [x] `/`
 - [x] abs
 - [x] acos
-- [ ] acosh
+- [x] acosh
 - [x] asin
-- [ ] asinh
+- [x] asinh
 - [x] atan
 - [x] atan2
-- [ ] atanh
+- [x] atanh
 - [x] bin
 - [ ] bround
-- [ ] cbrt
+- [x] cbrt
 - [x] ceil
 - [x] ceiling
 - [ ] conv
@@ -372,7 +372,7 @@
 - [x] cosh
 - [x] cot
 - [ ] csc
-- [ ] degrees
+- [x] degrees
 - [ ] div
 - [ ] e
 - [x] exp
@@ -390,12 +390,12 @@
 - [x] log2
 - [x] mod
 - [x] negative
-- [ ] pi
+- [x] pi
 - [ ] pmod
 - [x] positive
 - [x] pow
 - [x] power
-- [ ] radians
+- [x] radians
 - [x] rand
 - [x] randn
 - [ ] random
@@ -586,10 +586,16 @@
 ### url_funcs
 
 - [ ] parse_url
-- [ ] try_parse_url
-- [ ] try_url_decode
-- [ ] url_decode
-- [ ] url_encode
+- [x] try_url_decode
+  - 4.0.1, 2026-05-05
+- [x] url_decode
+  - 3.4.3, 2026-04-29
+  - 3.5.8, 2026-04-29
+  - 4.0.1, 2026-04-29
+- [x] url_encode
+  - 3.4.3, 2026-04-29
+  - 3.5.8, 2026-04-29
+  - 4.0.1, 2026-04-29
 
 ### window_funcs
 
