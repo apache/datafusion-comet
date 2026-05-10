@@ -116,7 +116,7 @@ impl ArrowTypeTag {
         })
     }
 
-    /// Inverse of [`primitive`] for the subset of tags representing a
+    /// Inverse of [`ArrowTypeTag::primitive`] for the subset of tags representing a
     /// complete `DataType` without auxiliary bytes. Returns `None` for
     /// `Field`.
     pub fn to_data_type(self) -> Option<DataType> {
@@ -144,9 +144,14 @@ impl ArrowTypeTag {
     }
 }
 
-/// Encode a `Field` as Arrow IPC schema bytes — a stable wire format
-/// independent of `arrow-rs` in-memory layout. The receiver decodes with
-/// [`field_from_ipc_bytes`].
+/// Encode a `Field` as raw FlatBuffer-encoded Arrow `Schema` message bytes.
+///
+/// This is **not** a framed Arrow IPC stream (no continuation marker, no
+/// length prefix). The receiver must decode with [`field_from_ipc_bytes`]
+/// or `arrow::ipc::convert::try_schema_from_flatbuffer_bytes` — *not*
+/// `try_schema_from_ipc_buffer` or `StreamReader`. The format is stable
+/// across `arrow-rs` versions because Arrow's FlatBuffer schema layout
+/// is part of the Arrow specification.
 pub fn field_to_ipc_bytes(field: &Field) -> Vec<u8> {
     use arrow::datatypes::Schema;
     use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
@@ -158,8 +163,14 @@ pub fn field_to_ipc_bytes(field: &Field) -> Vec<u8> {
     encoded.ipc_message
 }
 
-/// Inverse of [`field_to_ipc_bytes`]. Errors if the bytes do not contain
-/// exactly one field.
+/// Decode a `Field` from raw FlatBuffer-encoded Arrow `Schema` message bytes
+/// produced by [`field_to_ipc_bytes`].
+///
+/// These bytes are **not** a framed Arrow IPC stream; use this function (or
+/// `arrow::ipc::convert::try_schema_from_flatbuffer_bytes`) to decode them —
+/// *not* `try_schema_from_ipc_buffer` or `StreamReader`.
+///
+/// Errors if the bytes cannot be parsed or do not contain exactly one field.
 pub fn field_from_ipc_bytes(bytes: &[u8]) -> Result<Field, String> {
     use arrow::ipc::convert::try_schema_from_flatbuffer_bytes;
     let schema = try_schema_from_flatbuffer_bytes(bytes)
@@ -201,6 +212,6 @@ mod tests {
         let f = Field::new("root", DataType::Struct(fields), true);
         let bytes = field_to_ipc_bytes(&f);
         let f2 = field_from_ipc_bytes(&bytes).unwrap();
-        assert_eq!(f.data_type(), f2.data_type());
+        assert_eq!(f, f2);
     }
 }

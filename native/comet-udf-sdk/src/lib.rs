@@ -29,7 +29,9 @@ pub const COMET_UDF_ABI_VERSION: u32 = 1;
 
 pub mod types;
 
-pub use types::{ArrowTypeTag, CometUdfSignature, Volatility};
+pub use types::{
+    field_from_ipc_bytes, field_to_ipc_bytes, ArrowTypeTag, CometUdfSignature, Volatility,
+};
 
 #[cfg(test)]
 mod tests {
