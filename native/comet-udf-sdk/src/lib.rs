@@ -33,6 +33,10 @@ pub use types::{
     field_from_ipc_bytes, field_to_ipc_bytes, ArrowTypeTag, CometUdfSignature, Volatility,
 };
 
+pub mod error;
+
+pub use error::{CometUdfError, UdfError, UdfErrorCode};
+
 #[cfg(test)]
 mod tests {
     use super::*;
