@@ -67,6 +67,7 @@ use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 #[macro_use]
 pub mod common;
+pub mod comet_rust_udf_bridge;
 pub mod execution;
 pub mod parquet;
 
