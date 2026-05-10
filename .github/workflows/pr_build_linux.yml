@@ -452,6 +452,7 @@ jobs:
     container:
       image: amd64/rust
     env:
+      MAVEN_OPTS: -Xmx6g -XX:MaxMetaspaceSize=1g
       JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
     steps:
       - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
@@ -494,7 +495,7 @@ jobs:
       - name: Generate TPC-H data (SF=1)
         if: steps.cache-tpch.outputs.cache-hit != 'true'
         run: |
-          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd`/.. --scaleFactor 1 --numPartitions 1 --overwrite"
+          cd spark && ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd`/.. --scaleFactor 1 --numPartitions 1 --overwrite"
 
       - name: Run TPC-H queries
         run: |
@@ -508,6 +509,7 @@ jobs:
     container:
       image: amd64/rust
     env:
+      MAVEN_OPTS: -Xmx6g -XX:MaxMetaspaceSize=1g
       JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
     strategy:
       matrix:
@@ -568,7 +570,7 @@ jobs:
       - name: Generate TPC-DS data (SF=1)
         if: steps.cache-tpcds.outputs.cache-hit != 'true'
         run: |
-          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/../tpcds-sf-1 --scaleFactor 1 --numPartitions 1"
+          cd spark && ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/../tpcds-sf-1 --scaleFactor 1 --numPartitions 1"
 
       - name: Run TPC-DS queries (Sort merge join)
         if: matrix.join == 'sort_merge'
