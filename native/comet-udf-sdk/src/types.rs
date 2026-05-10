@@ -47,7 +47,7 @@ pub struct CometUdfSignature {
 /// Stable, version-pinned tag for Arrow data types used in the wire-format
 /// descriptor. Primitive types map 1:1; complex types (`Struct`, `List`,
 /// `Decimal`, timestamp-with-tz, etc.) use `Field` and carry their schema
-/// as IPC bytes — see `UdfDescriptor` (added in Task 4).
+/// as IPC bytes — see `UdfDescriptor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum ArrowTypeTag {

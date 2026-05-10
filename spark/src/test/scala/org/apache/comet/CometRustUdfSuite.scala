@@ -48,7 +48,7 @@ class CometRustUdfSuite extends CometTestBase {
   }
 
   // -----------------------------------------------------------------------
-  // Happy-path tests (Task 20)
+  // Happy-path tests
   // -----------------------------------------------------------------------
 
   test("add_one returns id + 1 for a range") {
@@ -92,7 +92,7 @@ class CometRustUdfSuite extends CometTestBase {
   }
 
   // -----------------------------------------------------------------------
-  // Failure-path tests (Task 21)
+  // Failure-path tests
   // -----------------------------------------------------------------------
 
   test("always_err surfaces a clear error message") {

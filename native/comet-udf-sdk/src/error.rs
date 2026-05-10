@@ -20,7 +20,7 @@
 use std::ffi::{c_char, CString};
 use std::ptr;
 
-/// Error returned by `CometScalarUdf::invoke` (trait added in Task 4).
+/// Error returned by `CometScalarUdf::invoke`.
 #[derive(Debug, Clone)]
 pub struct CometUdfError {
     /// Human-readable error message.

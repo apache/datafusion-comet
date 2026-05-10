@@ -20,27 +20,20 @@
 
 use crate::errors::{try_unwrap_or_throw, CometError};
 use crate::execution::rust_udf::cache::get_or_load;
+use crate::execution::rust_udf::loader::LoadedUdf;
 use jni::objects::{JClass, JString};
 use jni::sys::jobject;
 use jni::EnvUnowned;
 
-/// Format a single UDF descriptor as a JSON object.
-///
-/// Produces: `{"name":"add_one","args":["Int64"],"return_type":"Int64","volatility":0}`
-fn udf_to_json(udf: &crate::execution::rust_udf::loader::LoadedUdf) -> String {
-    let args_json = udf
-        .args
-        .iter()
-        .map(|t| format!("{:?}", t.to_string()))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(
-        "{{\"name\":{:?},\"args\":[{}],\"return_type\":{:?},\"volatility\":{}}}",
-        udf.name,
-        args_json,
-        udf.return_type.to_string(),
-        udf.volatility,
-    )
+/// Serialize a single UDF descriptor as a `serde_json::Value`.
+fn udf_to_json(udf: &LoadedUdf) -> serde_json::Value {
+    let args: Vec<String> = udf.args.iter().map(|t| t.to_string()).collect();
+    serde_json::json!({
+        "name": udf.name,
+        "args": args,
+        "return_type": udf.return_type.to_string(),
+        "volatility": udf.volatility,
+    })
 }
 
 /// Validate that `library_path` loads, exposes a UDF named `expected_name`,
@@ -71,7 +64,7 @@ pub extern "system" fn Java_org_apache_comet_udf_CometRustUdfBridge_validateLibr
             .ok_or_else(|| {
                 CometError::Internal(format!("UDF '{}' not found in {}", name, path))
             })?;
-        let json = udf_to_json(udf);
+        let json = udf_to_json(udf).to_string();
         let jstr = env
             .new_string(json)
             .map_err(|e| CometError::Internal(e.to_string()))?;
@@ -94,8 +87,8 @@ pub extern "system" fn Java_org_apache_comet_udf_CometRustUdfBridge_listUdfs(
             .map_err(|e| CometError::Internal(e.to_string()))?;
         let lib = get_or_load(&path)
             .map_err(|e| CometError::Internal(e.to_string()))?;
-        let entries: Vec<String> = lib.udfs.iter().map(udf_to_json).collect();
-        let json = format!("[{}]", entries.join(","));
+        let entries: Vec<serde_json::Value> = lib.udfs.iter().map(udf_to_json).collect();
+        let json = serde_json::Value::Array(entries).to_string();
         let jstr = env
             .new_string(json)
             .map_err(|e| CometError::Internal(e.to_string()))?;

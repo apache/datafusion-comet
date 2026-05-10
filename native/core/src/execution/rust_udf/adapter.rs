@@ -30,18 +30,8 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 use crate::execution::rust_udf::loader::{LoadedLibrary, LoadedUdf};
-
-type InvokeFn = unsafe extern "C" fn(
-    u32,
-    *const FFI_ArrowArray,
-    *const FFI_ArrowSchema,
-    u32,
-    *mut FFI_ArrowArray,
-    *mut FFI_ArrowSchema,
-    *mut comet_udf_sdk::error::UdfError,
-) -> i32;
-
-type FreeErrFn = unsafe extern "C" fn(*mut comet_udf_sdk::error::UdfError);
+use crate::execution::rust_udf::symbols;
+use crate::execution::rust_udf::{FreeErrFn, InvokeFn};
 
 /// DataFusion adapter for a Rust UDF loaded from a cdylib.
 ///
@@ -80,13 +70,13 @@ impl RustUdfHandle {
         let invoke_fn: InvokeFn = unsafe {
             *library
                 .library
-                .get::<InvokeFn>(b"comet_udf_invoke")
+                .get::<InvokeFn>(symbols::INVOKE)
                 .expect("comet_udf_invoke verified at load time")
         };
         let free_err_fn: FreeErrFn = unsafe {
             *library
                 .library
-                .get::<FreeErrFn>(b"comet_udf_free_error")
+                .get::<FreeErrFn>(symbols::FREE_ERROR)
                 .expect("comet_udf_free_error verified at load time")
         };
 

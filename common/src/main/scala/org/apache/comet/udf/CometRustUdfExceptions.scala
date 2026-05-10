@@ -19,27 +19,31 @@
 
 package org.apache.comet.udf
 
+import org.apache.comet.{CometNativeException, CometRuntimeException}
+
 /** Thrown when a Rust UDF dynamic library cannot be opened. */
 class CometRustUdfLoadException(msg: String, cause: Throwable = null)
-    extends RuntimeException(msg, cause)
+    extends CometNativeException(msg) {
+  if (cause != null) initCause(cause)
+}
 
 /**
  * Thrown when a Rust UDF library exposes the wrong ABI version or is missing required symbols.
  */
-class CometRustUdfAbiException(msg: String) extends RuntimeException(msg)
+class CometRustUdfAbiException(msg: String) extends CometNativeException(msg)
 
 /**
  * Thrown when the declared signature does not match what the library reports via
  * comet_udf_describe.
  */
-class CometRustUdfSignatureException(msg: String) extends RuntimeException(msg)
+class CometRustUdfSignatureException(msg: String) extends CometRuntimeException(msg)
 
 /**
  * Thrown by the catalog stub if a registered Rust UDF is invoked on the JVM (which means Comet's
  * plan rule did not replace it).
  */
 class CometRustUdfNotEvaluatedException(name: String)
-    extends RuntimeException(
+    extends CometRuntimeException(
       s"Rust UDF '$name' must run inside Comet native execution; the JVM " +
         s"stub was invoked, which means Comet did not replace this expression " +
         s"with a native call. Check that Comet is enabled for the operator " +

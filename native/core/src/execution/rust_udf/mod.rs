@@ -18,14 +18,36 @@
 //! Loader and adapters for user-supplied Rust UDFs distributed as
 //! cdylibs and registered through the Scala `CometRustUDF` API.
 //!
-//! The submodules are filled in by Tasks 10-12: `loader` opens cdylibs
-//! via `libloading`, `cache` keeps a process-wide handle table so the
-//! same path is loaded once, and `adapter` wraps each loaded UDF as a
-//! DataFusion `ScalarUDFImpl`.
+//! The submodules are: `loader` opens cdylibs via `libloading`, `cache`
+//! keeps a process-wide handle table so the same path is loaded once,
+//! and `adapter` wraps each loaded UDF as a DataFusion `ScalarUDFImpl`.
 
 pub mod adapter;
 pub mod cache;
 pub mod loader;
 
+/// Canonical type for the `comet_udf_invoke` symbol.
+pub(crate) type InvokeFn = unsafe extern "C" fn(
+    u32,
+    *const arrow::ffi::FFI_ArrowArray,
+    *const arrow::ffi::FFI_ArrowSchema,
+    u32,
+    *mut arrow::ffi::FFI_ArrowArray,
+    *mut arrow::ffi::FFI_ArrowSchema,
+    *mut comet_udf_sdk::error::UdfError,
+) -> i32;
+
+/// Canonical type for the `comet_udf_free_error` symbol.
+pub(crate) type FreeErrFn = unsafe extern "C" fn(*mut comet_udf_sdk::error::UdfError);
+
 #[cfg(test)]
 pub(crate) mod test_support;
+
+/// Symbol names exported by `comet-udf-sdk`'s `export!` macro.
+pub(crate) mod symbols {
+    pub(crate) const ABI_VERSION: &[u8] = b"comet_udf_abi_version";
+    pub(crate) const COUNT: &[u8] = b"comet_udf_count";
+    pub(crate) const DESCRIBE: &[u8] = b"comet_udf_describe";
+    pub(crate) const INVOKE: &[u8] = b"comet_udf_invoke";
+    pub(crate) const FREE_ERROR: &[u8] = b"comet_udf_free_error";
+}

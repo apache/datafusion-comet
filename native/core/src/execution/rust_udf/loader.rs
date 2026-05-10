@@ -22,8 +22,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow::datatypes::DataType;
-use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 use libloading::{Library, Symbol};
+
+use super::symbols;
 
 const HOST_ABI_VERSION: u32 = 1;
 
@@ -156,7 +157,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
     // `comet-udf-sdk` crate. Calling the resulting symbols is unsafe and
     // done explicitly below where applicable.
     let abi: Symbol<unsafe extern "C" fn() -> u32> =
-        unsafe { library.get(b"comet_udf_abi_version") }.map_err(|_| {
+        unsafe { library.get(symbols::ABI_VERSION) }.map_err(|_| {
             LoaderError::MissingSymbol {
                 path: path.clone(),
                 name: "comet_udf_abi_version",
@@ -174,7 +175,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
     }
 
     let count: Symbol<unsafe extern "C" fn() -> u32> =
-        unsafe { library.get(b"comet_udf_count") }.map_err(|_| LoaderError::MissingSymbol {
+        unsafe { library.get(symbols::COUNT) }.map_err(|_| LoaderError::MissingSymbol {
             path: path.clone(),
             name: "comet_udf_count",
         })?;
@@ -183,7 +184,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
 
     let describe: Symbol<
         unsafe extern "C" fn(u32, *mut comet_udf_sdk::types::UdfDescriptor) -> i32,
-    > = unsafe { library.get(b"comet_udf_describe") }.map_err(|_| {
+    > = unsafe { library.get(symbols::DESCRIBE) }.map_err(|_| {
         LoaderError::MissingSymbol {
             path: path.clone(),
             name: "comet_udf_describe",
@@ -191,22 +192,13 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
     })?;
 
     // Verify invoke and free_error are present (we don't call them here).
-    type InvokeFn = unsafe extern "C" fn(
-        u32,
-        *const FFI_ArrowArray,
-        *const FFI_ArrowSchema,
-        u32,
-        *mut FFI_ArrowArray,
-        *mut FFI_ArrowSchema,
-        *mut comet_udf_sdk::error::UdfError,
-    ) -> i32;
-    let _: Symbol<InvokeFn> =
-        unsafe { library.get(b"comet_udf_invoke") }.map_err(|_| LoaderError::MissingSymbol {
+    let _: Symbol<super::InvokeFn> =
+        unsafe { library.get(symbols::INVOKE) }.map_err(|_| LoaderError::MissingSymbol {
             path: path.clone(),
             name: "comet_udf_invoke",
         })?;
-    let _: Symbol<unsafe extern "C" fn(*mut comet_udf_sdk::error::UdfError)> =
-        unsafe { library.get(b"comet_udf_free_error") }.map_err(|_| {
+    let _: Symbol<super::FreeErrFn> =
+        unsafe { library.get(symbols::FREE_ERROR) }.map_err(|_| {
             LoaderError::MissingSymbol {
                 path: path.clone(),
                 name: "comet_udf_free_error",
@@ -306,8 +298,7 @@ fn decode_type(tag: u32, ipc_ptr: *const u8, ipc_len: u32) -> Result<DataType, S
         // Any other tag value is a protocol violation; transmute would
         // produce an invalid enum value -- check first.
         let primitive_max: u32 = ArrowTypeTag::Date64 as u32;
-        let field_tag: u32 = ArrowTypeTag::Field as u32;
-        if tag > primitive_max && tag != field_tag {
+        if tag > primitive_max {
             return Err(format!("unknown ArrowTypeTag value {tag}"));
         }
         let typed: ArrowTypeTag = unsafe { std::mem::transmute(tag) };

@@ -32,10 +32,12 @@ import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 /**
  * Public entry point for registering Rust scalar UDFs with Comet.
  *
- * See `docs/source/user-guide/latest/custom-rust-udfs.md` (added in Task 22) for an end-to-end
- * walkthrough.
+ * See `docs/source/user-guide/latest/custom-rust-udfs.md` for an end-to-end walkthrough.
  */
 object CometRustUDF {
+
+  /** Spark conf key under which registered Rust UDF entries are propagated to executors. */
+  val RUST_UDFS_CONF_KEY = "spark.comet.rustUdfs"
 
   private val mapper: ObjectMapper = new ObjectMapper()
 
@@ -59,7 +61,7 @@ object CometRustUDF {
     installCatalogStub(spark, name, inputTypes, returnType, deterministic)
     val meta = RustUdfMetadata(libraryPath, inputTypes, returnType, deterministic)
     CometRustUdfRegistry.instance.register(name, meta)
-    propagateConf(spark, name, meta)
+    propagateConf(spark)
   }
 
   /**
@@ -71,10 +73,11 @@ object CometRustUDF {
     descs.map { d =>
       val args = d.args.map(parseSparkType)
       val ret = parseSparkType(d.returnType)
-      installCatalogStub(spark, d.name, args, ret, deterministic = true)
-      val meta = RustUdfMetadata(libraryPath, args, ret, deterministic = true)
+      val deterministic = d.volatility != 2 // Volatile = non-deterministic
+      installCatalogStub(spark, d.name, args, ret, deterministic)
+      val meta = RustUdfMetadata(libraryPath, args, ret, deterministic)
       CometRustUdfRegistry.instance.register(d.name, meta)
-      propagateConf(spark, d.name, meta)
+      propagateConf(spark)
       d.name
     }
   }
@@ -197,12 +200,11 @@ object CometRustUDF {
     spark.udf.register(name, finalUdf)
   }
 
-  private def propagateConf(spark: SparkSession, name: String, meta: RustUdfMetadata): Unit = {
-    val key = "spark.comet.rustUdfs"
-    val existing = Option(spark.conf.getOption(key).orNull).getOrElse("")
-    val entry =
+  private def propagateConf(spark: SparkSession): Unit = {
+    val snapshot = CometRustUdfRegistry.instance.snapshot
+    val entries = snapshot.toSeq.map { case (name, meta) =>
       mapper.writeValueAsString(java.util.Map.of("name", name, "libraryPath", meta.libraryPath))
-    val updated = if (existing.isEmpty) entry else s"$existing;$entry"
-    spark.conf.set(key, updated)
+    }
+    spark.conf.set(RUST_UDFS_CONF_KEY, entries.mkString(";"))
   }
 }

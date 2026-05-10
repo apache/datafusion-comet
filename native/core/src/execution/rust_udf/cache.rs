@@ -39,28 +39,45 @@ fn cache() -> &'static RwLock<HashMap<PathBuf, Arc<LoadedLibrary>>> {
 /// point to unload without per-invocation refcounting we don't want on
 /// the hot path. JVM lifetime equals library lifetime.
 ///
-/// The path is canonicalized when possible so that `./lib.so` and
-/// `/abs/lib.so` collapse to the same cache entry. Falls back to the
-/// original path if canonicalization fails (e.g. file not found — the
-/// load will then surface the real error).
+/// On the hot path (repeated calls with the same raw path), `canonicalize()`
+/// is skipped entirely. The syscall is only paid on a cache miss, collapsing
+/// aliases like `./lib.so` and `/abs/lib.so` to the same entry. Subsequent
+/// calls via the raw path also hit the cache directly.
 pub fn get_or_load(path: impl AsRef<Path>) -> Result<Arc<LoadedLibrary>, LoaderError> {
-    let canonical = path
-        .as_ref()
-        .canonicalize()
-        .unwrap_or_else(|_| path.as_ref().to_path_buf());
+    let raw = path.as_ref().to_path_buf();
 
-    if let Some(lib) = cache().read().unwrap().get(&canonical).cloned() {
+    // Fast path: raw path already cached — no syscall needed.
+    if let Some(lib) = cache().read().unwrap().get(&raw).cloned() {
         return Ok(lib);
     }
 
+    // Cache miss on raw path — canonicalize to collapse aliases before
+    // attempting to load, so different spellings share the same entry.
+    let canonical = raw.canonicalize().unwrap_or_else(|_| raw.clone());
+
+    if canonical != raw {
+        // Check the canonical form under a read lock first.
+        if let Some(lib) = cache().read().unwrap().get(&canonical).cloned() {
+            // Also insert under the raw path so subsequent lookups via raw
+            // skip canonicalize entirely.
+            cache().write().unwrap().insert(raw, lib.clone());
+            return Ok(lib);
+        }
+    }
+
+    // Take the write lock and perform a final double-check before loading.
     let mut w = cache().write().unwrap();
-    // Re-check inside the write lock to avoid duplicate loads when two
-    // threads race for the same path.
     if let Some(lib) = w.get(&canonical).cloned() {
+        if canonical != raw {
+            w.insert(raw, lib.clone());
+        }
         return Ok(lib);
     }
     let loaded = Arc::new(load(&canonical)?);
-    w.insert(canonical, loaded.clone());
+    w.insert(canonical.clone(), loaded.clone());
+    if canonical != raw {
+        w.insert(raw, loaded.clone());
+    }
     Ok(loaded)
 }
 

@@ -22,6 +22,7 @@
 use std::sync::Arc;
 
 use arrow::array::ArrayRef;
+use arrow::datatypes::FieldRef;
 use datafusion::common::config::ConfigOptions;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Volatility as DfVolatility,
@@ -48,10 +49,22 @@ pub fn from_scalar_udf_impl(
     udf: Arc<dyn ScalarUDFImpl>,
 ) -> Result<impl CometScalarUdf, CometUdfError> {
     let sig = derive_signature(udf.as_ref())?;
+    let arg_fields: Vec<FieldRef> = sig
+        .args
+        .iter()
+        .map(|dt| Arc::new(arrow::datatypes::Field::new("arg", dt.clone(), true)))
+        .collect();
+    let return_field = Arc::new(arrow::datatypes::Field::new(
+        "ret",
+        sig.return_type.clone(),
+        true,
+    ));
     let config_options = Arc::new(ConfigOptions::default());
     Ok(DataFusionAdapter {
         udf,
         sig,
+        arg_fields,
+        return_field,
         config_options,
     })
 }
@@ -59,6 +72,8 @@ pub fn from_scalar_udf_impl(
 struct DataFusionAdapter {
     udf: Arc<dyn ScalarUDFImpl>,
     sig: CometUdfSignature,
+    arg_fields: Vec<FieldRef>,
+    return_field: FieldRef,
     config_options: Arc<ConfigOptions>,
 }
 
@@ -77,24 +92,13 @@ impl CometScalarUdf for DataFusionAdapter {
             .iter()
             .map(|a| ColumnarValue::Array(a.clone()))
             .collect();
-        let arg_fields: Vec<arrow::datatypes::FieldRef> = self
-            .sig
-            .args
-            .iter()
-            .map(|dt| Arc::new(arrow::datatypes::Field::new("arg", dt.clone(), true)))
-            .collect();
-        let return_field = Arc::new(arrow::datatypes::Field::new(
-            "ret",
-            self.sig.return_type.clone(),
-            true,
-        ));
         let result = self
             .udf
             .invoke_with_args(ScalarFunctionArgs {
                 args: columnar,
-                arg_fields,
+                arg_fields: self.arg_fields.clone(),
                 number_rows: n,
-                return_field,
+                return_field: self.return_field.clone(),
                 config_options: self.config_options.clone(),
             })
             .map_err(|e| CometUdfError::new(e.to_string()))?;
