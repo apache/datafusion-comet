@@ -42,6 +42,12 @@ use arrow::array::ArrayRef;
 
 pub mod macros;
 
+#[cfg(feature = "datafusion-adapter")]
+pub mod adapter;
+
+#[cfg(feature = "datafusion-adapter")]
+pub use adapter::from_scalar_udf_impl;
+
 /// A scalar UDF invokable by Comet's native execution.
 ///
 /// Implementations must be `Send + Sync` and stateless — Comet caches a
