@@ -78,6 +78,7 @@ iceberg-storage-opendal = { workspace = true }
 serde_json = "1.0"
 uuid = "1.23.0"
 libloading = "0.8"
+comet-udf-sdk = { path = "../comet-udf-sdk" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18.0"
@@ -94,7 +95,6 @@ assertables = "9"
 hex = "0.4.3"
 datafusion-functions-nested = { version = "53.1.0" }
 comet-test-udfs = { path = "../test-udfs" }
-comet-udf-sdk = { path = "../comet-udf-sdk" }
 
 [features]
 backtrace = ["datafusion/backtrace"]

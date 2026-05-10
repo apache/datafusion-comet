@@ -27,6 +27,8 @@ use libloading::{Library, Symbol};
 
 const HOST_ABI_VERSION: u32 = 1;
 
+const _: () = assert!(comet_udf_sdk::types::ArrowTypeTag::Date64 as u32 == 17);
+
 /// Result of loading a UDF cdylib: the live `Library` plus per-UDF
 /// descriptors converted to native types.
 #[derive(Debug)]
@@ -127,7 +129,14 @@ impl std::fmt::Display for LoaderError {
     }
 }
 
-impl std::error::Error for LoaderError {}
+impl std::error::Error for LoaderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LoaderError::Open { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 /// Open and validate a UDF cdylib. Returns a `LoadedLibrary` containing
 /// the live `Library` handle and one parsed `LoadedUdf` per UDF the
@@ -140,6 +149,12 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
     let library = unsafe { Library::new(&path) }
         .map_err(|source| LoaderError::Open { path: path.clone(), source })?;
 
+    // SAFETY: each `library.get` reads a symbol that the cdylib must export
+    // per the comet-udf-sdk C ABI. The function-pointer types we annotate
+    // (`unsafe extern "C" fn(...)`) match the signatures emitted by the
+    // SDK's `export!` macro by construction; both sides depend on the same
+    // `comet-udf-sdk` crate. Calling the resulting symbols is unsafe and
+    // done explicitly below where applicable.
     let abi: Symbol<unsafe extern "C" fn() -> u32> =
         unsafe { library.get(b"comet_udf_abi_version") }.map_err(|_| {
             LoaderError::MissingSymbol {
@@ -147,6 +162,8 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
                 name: "comet_udf_abi_version",
             }
         })?;
+    // SAFETY: comet_udf_abi_version() takes no arguments and returns u32 with
+    // no side effects beyond reading a const, per the SDK contract.
     let v = unsafe { abi() };
     if v != HOST_ABI_VERSION {
         return Err(LoaderError::AbiMismatch {
@@ -161,6 +178,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
             path: path.clone(),
             name: "comet_udf_count",
         })?;
+    // SAFETY: comet_udf_count() takes no arguments and returns u32; idempotent.
     let n = unsafe { count() };
 
     let describe: Symbol<
@@ -198,6 +216,9 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
     let mut udfs = Vec::with_capacity(n as usize);
     for idx in 0..n {
         let mut desc = comet_udf_sdk::types::UdfDescriptor::zeroed();
+        // SAFETY: comet_udf_describe writes into the caller-allocated zeroed
+        // descriptor; on rc=0 the descriptor's pointer fields reference
+        // process-static allocations owned by the cdylib.
         let rc = unsafe { describe(idx, &mut desc) };
         if rc != 0 {
             return Err(LoaderError::Describe { path: path.clone(), idx, code: rc });
@@ -217,6 +238,11 @@ fn parse_descriptor(desc: &comet_udf_sdk::types::UdfDescriptor) -> Result<Loaded
     if desc.name_ptr.is_null() {
         return Err("name_ptr is null".to_string());
     }
+    // SAFETY: name_ptr/name_len are produced by the cdylib via `comet_udf_describe`;
+    // the SDK's `EncodedSignature` keeps the underlying CString in a static
+    // OnceLock, so the bytes are valid for the lifetime of the loaded Library
+    // (and `Library` outlives this slice via Arc<Library>). Non-null is checked
+    // above.
     let name_bytes = unsafe {
         std::slice::from_raw_parts(desc.name_ptr as *const u8, desc.name_len as usize)
     };
@@ -225,6 +251,10 @@ fn parse_descriptor(desc: &comet_udf_sdk::types::UdfDescriptor) -> Result<Loaded
         .to_string();
 
     let n = desc.n_args as usize;
+    // SAFETY: arg_tags / arg_field_ipc_ptrs / arg_field_ipc_lens are three
+    // parallel arrays of length n_args produced by the cdylib's static
+    // EncodedSignature. The pointers are non-null when n>0 (checked by the
+    // `if n == 0` branch above) and reference process-static memory.
     let tags: &[u32] = if n == 0 {
         &[]
     } else {
@@ -266,6 +296,8 @@ fn decode_type(tag: u32, ipc_ptr: *const u8, ipc_len: u32) -> Result<DataType, S
         if ipc_ptr.is_null() {
             return Err("Field tag with null IPC pointer".into());
         }
+        // SAFETY: ipc_ptr non-null was checked above; the bytes are owned by the
+        // cdylib's static EncodedSignature for the lifetime of the Library.
         let bytes = unsafe { std::slice::from_raw_parts(ipc_ptr, ipc_len as usize) };
         let f = comet_udf_sdk::types::field_from_ipc_bytes(bytes)?;
         Ok(f.data_type().clone())
