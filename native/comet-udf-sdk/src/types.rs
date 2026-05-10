@@ -184,6 +184,64 @@ pub fn field_from_ipc_bytes(bytes: &[u8]) -> Result<Field, String> {
     Ok(schema.field(0).as_ref().clone())
 }
 
+use std::ffi::c_char;
+
+/// Wire-format description of a UDF, populated by `comet_udf_describe`.
+///
+/// Field/return-type encoding:
+/// - For primitive types, `*_tag` is the corresponding [`ArrowTypeTag`]
+///   and `*_field_ipc_*` are zero.
+/// - For complex types, `*_tag` is `ArrowTypeTag::Field as u32` and
+///   `*_field_ipc_ptr` / `_len` point to IPC-encoded `Field` bytes
+///   owned by the cdylib (lifetime: process-static).
+///
+/// `name_ptr` / `name_len` reference a static UTF-8 string in the cdylib.
+#[repr(C)]
+pub struct UdfDescriptor {
+    /// Pointer to the UDF name (UTF-8, not null-terminated).
+    pub name_ptr: *const c_char,
+    /// Length of the name in bytes.
+    pub name_len: u32,
+    /// Volatility tag: 0 = Immutable, 1 = Stable, 2 = Volatile.
+    pub volatility: u32,
+    /// Number of arguments.
+    pub n_args: u32,
+    /// Pointer to an array of `n_args` u32 type tags.
+    pub arg_tags: *const u32,
+    /// Pointer to an array of `n_args` IPC pointers (null for primitive args).
+    pub arg_field_ipc_ptrs: *const *const u8,
+    /// Pointer to an array of `n_args` IPC byte-lengths (zero for primitive args).
+    pub arg_field_ipc_lens: *const u32,
+    /// Return type tag.
+    pub return_tag: u32,
+    /// IPC-encoded Field bytes for non-primitive return types (null otherwise).
+    pub return_field_ipc_ptr: *const u8,
+    /// IPC byte-length for non-primitive return types (zero otherwise).
+    pub return_field_ipc_len: u32,
+    /// Reserved for future ABI minor versions; zero today.
+    pub _reserved: [u64; 4],
+}
+
+impl UdfDescriptor {
+    /// Construct a fully zeroed descriptor. Used by the host before
+    /// calling `comet_udf_describe`.
+    pub fn zeroed() -> Self {
+        Self {
+            name_ptr: std::ptr::null(),
+            name_len: 0,
+            volatility: 0,
+            n_args: 0,
+            arg_tags: std::ptr::null(),
+            arg_field_ipc_ptrs: std::ptr::null(),
+            arg_field_ipc_lens: std::ptr::null(),
+            return_tag: 0,
+            return_field_ipc_ptr: std::ptr::null(),
+            return_field_ipc_len: 0,
+            _reserved: [0; 4],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
