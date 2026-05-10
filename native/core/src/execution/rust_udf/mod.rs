@@ -15,30 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! PoC of vectorization execution through JNI to Rust.
-pub mod columnar_to_row;
-pub mod expressions;
-pub mod jni_api;
-pub(crate) mod merge_as_partial;
-pub(crate) mod metrics;
-pub mod operators;
-pub(crate) mod planner;
-pub mod rust_udf;
-pub mod serde;
-pub use datafusion_comet_shuffle as shuffle;
-pub(crate) mod sort;
-pub(crate) mod spark_plan;
-pub use datafusion_comet_spark_expr::timezone;
-mod memory_pools;
-pub(crate) mod spark_config;
-pub(crate) mod tracing;
-pub(crate) mod utils;
+//! Loader and adapters for user-supplied Rust UDFs distributed as
+//! cdylibs and registered through the Scala `CometRustUDF` API.
+//!
+//! The submodules are filled in by Tasks 10-12: `loader` opens cdylibs
+//! via `libloading`, `cache` keeps a process-wide handle table so the
+//! same path is loaded once, and `adapter` wraps each loaded UDF as a
+//! DataFusion `ScalarUDFImpl`.
+
+pub mod adapter;
+pub mod cache;
+pub mod loader;
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
+pub(crate) mod test_support;
