@@ -42,6 +42,7 @@ import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
+import org.apache.comet.udf.CometRustUdfRegistry
 
 /**
  * An utility object for query plan and expression serialization.
@@ -680,6 +681,32 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
           // `PromotePrecision` is just a wrapper, don't need to serialize it.
           exprToProtoInternal(child, inputs, binding)
+
+        case s: org.apache.spark.sql.catalyst.expressions.ScalaUDF
+            if s.udfName.exists(n => CometRustUdfRegistry.instance.get(n).isDefined) =>
+          val name = s.udfName.get
+          val meta = CometRustUdfRegistry.instance.get(name).get
+          val argProtos: Seq[Option[Expr]] =
+            s.children.map(c => exprToProtoInternal(c, inputs, binding))
+          if (argProtos.exists(_.isEmpty)) {
+            withInfo(s, "one or more Rust UDF arguments are not supported", s.children: _*)
+            None
+          } else {
+            val returnTypeProto = serializeDataType(meta.returnType)
+            if (returnTypeProto.isEmpty) {
+              withInfo(s, s"return type ${meta.returnType} not serializable", s)
+              None
+            } else {
+              val callBuilder = ExprOuterClass.RustUdfCall
+                .newBuilder()
+                .setName(name)
+                .setLibraryPath(meta.libraryPath)
+                .setReturnType(returnTypeProto.get)
+                .setDeterministic(s.deterministic)
+              argProtos.foreach(a => callBuilder.addArgs(a.get))
+              Some(ExprOuterClass.Expr.newBuilder().setRustUdfCall(callBuilder.build()).build())
+            }
+          }
 
         case expr =>
           QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
