@@ -31,8 +31,13 @@ use comet_udf_sdk::error::CometUdfError;
 use comet_udf_sdk::types::{CometUdfSignature, Volatility};
 use comet_udf_sdk::CometScalarUdf;
 
-/// Adds 1 to each element of an `Int64` input. Test fixture for the
-/// happy-path FFI flow.
+/// Adds 1 to each element of an `Int64` input.
+///
+/// Intentionally mirrors the SDK's internal `AddOne` test fixture in
+/// `comet-udf-sdk` — the SDK fixture validates the trait can be invoked
+/// directly (no FFI), while this one validates the full FFI path through
+/// a real cdylib loaded by Comet's host tests. The duplication is the
+/// point: it confirms the FFI layer doesn't change semantics.
 pub struct AddOne {
     sig: CometUdfSignature,
 }
