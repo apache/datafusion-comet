@@ -90,6 +90,7 @@ message Expr {
     ToCsv to_csv = 67;
     HoursTransform hours_transform = 68;
     ArraysZip arrays_zip = 69;
+    RustUdfCall rust_udf_call = 70;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -513,4 +514,12 @@ message Rand {
 message ArraysZip {
   repeated Expr values = 1;
   repeated string names = 2;
+}
+
+message RustUdfCall {
+  string name = 1;
+  string library_path = 2;
+  repeated Expr args = 3;
+  DataType return_type = 4;
+  bool deterministic = 5;
 }
