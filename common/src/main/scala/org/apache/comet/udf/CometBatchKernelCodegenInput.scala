@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec}
+import org.apache.comet.vector.CometPlainVector
 
 /**
  * Input-side emitters for the Arrow-direct codegen kernel. Everything that generates source for
@@ -94,33 +95,93 @@ private[udf] object CometBatchKernelCodegenInput {
     val lines = new mutable.ArrayBuffer[String]()
     inputSchema.zipWithIndex.foreach { case (spec, ord) =>
       val path = s"col$ord"
-      collectVectorFieldDecls(path, spec, lines)
+      collectVectorFieldDecls(path, spec, topLevel = true, lines)
       collectTopLevelInstanceDecl(path, spec, lines)
     }
     lines.mkString("\n  ")
   }
 
+  /**
+   * Primitive Arrow vector classes that we wrap in [[CometPlainVector]] at the kernel's input-
+   * cast time. `CometPlainVector.get*` reads use `Platform.get*` against a `final long` buffer
+   * address, so JIT inlines them to branchless reads with no per-call `ArrowBuf` dereference.
+   * `CometPlainVector.getBoolean` also includes a bit-packed data-byte cache that collapses 8
+   * sequential bit reads to 1 byte read.
+   *
+   * Not wrapped: `DecimalVector` (kernel emits inline unsafe reads keyed on compile-time
+   * precision, so the fast/slow split stays branchless in the emitted Java rather than branching
+   * at runtime inside `CometPlainVector.getDecimal`), `VarCharVector` / `VarBinaryVector` (kernel
+   * emits inline unsafe reads to avoid the redundant `isNullAt` check inside
+   * `CometPlainVector.getUTF8String` / `getBinary`).
+   */
+  private val primitiveArrowClasses: Set[Class[_]] = Set(
+    classOf[BitVector],
+    classOf[TinyIntVector],
+    classOf[SmallIntVector],
+    classOf[IntVector],
+    classOf[BigIntVector],
+    classOf[Float4Vector],
+    classOf[Float8Vector],
+    classOf[DateDayVector],
+    classOf[TimeStampMicroVector],
+    classOf[TimeStampMicroTZVector])
+
+  private def wrapsInCometPlainVector(cls: Class[_]): Boolean =
+    primitiveArrowClasses.contains(cls)
+
+  /**
+   * Non-wrapped scalar columns that want a cached data-buffer address for inline unsafe reads.
+   * `DecimalVector` uses it for the short-precision fast path (`Platform.getLong`);
+   * `VarCharVector` / `VarBinaryVector` use it as the base address for `UTF8String.fromAddress` /
+   * `Platform.copyMemory`. See the unsafe-emitter block at the bottom of this file for why we
+   * inline rather than reuse `CometPlainVector`.
+   */
+  private def needsValueAddrField(cls: Class[_]): Boolean =
+    cls == classOf[DecimalVector] ||
+      cls == classOf[VarCharVector] ||
+      cls == classOf[VarBinaryVector]
+
+  /** Variable-width columns also want the offset-buffer address cached for `Platform.getInt`. */
+  private def needsOffsetAddrField(cls: Class[_]): Boolean =
+    cls == classOf[VarCharVector] || cls == classOf[VarBinaryVector]
+
+  private val cometPlainVectorName: String = classOf[CometPlainVector].getName
+
   private def collectVectorFieldDecls(
       path: String,
       spec: ArrowColumnSpec,
+      topLevel: Boolean,
       out: mutable.ArrayBuffer[String]): Unit = spec match {
     case sc: ScalarColumnSpec =>
-      out += s"private ${sc.vectorClass.getName} $path;"
+      // CometPlainVector wrapping and cached-address fields apply only at the kernel's top
+      // level. Nested-class children stay on Arrow typed fields because their generated method
+      // bodies (inside `InputArray_*` / `InputStruct_*` / `InputMap_*`) call Arrow-style
+      // `.isNull(i)` / `.get(i)`; converting those too is Phase D.
+      val fieldClass =
+        if (topLevel && wrapsInCometPlainVector(sc.vectorClass)) cometPlainVectorName
+        else sc.vectorClass.getName
+      out += s"private $fieldClass $path;"
+      if (topLevel && needsValueAddrField(sc.vectorClass)) {
+        out += s"private long ${path}_valueAddr;"
+      }
+      if (topLevel && needsOffsetAddrField(sc.vectorClass)) {
+        out += s"private long ${path}_offsetAddr;"
+      }
     case ar: ArrayColumnSpec =>
       out += s"private ${classOf[ListVector].getName} $path;"
-      collectVectorFieldDecls(s"${path}_e", ar.element, out)
+      collectVectorFieldDecls(s"${path}_e", ar.element, topLevel = false, out)
     case st: StructColumnSpec =>
       out += s"private ${classOf[StructVector].getName} $path;"
       st.fields.zipWithIndex.foreach { case (f, fi) =>
-        collectVectorFieldDecls(s"${path}_f$fi", f.child, out)
+        collectVectorFieldDecls(s"${path}_f$fi", f.child, topLevel = false, out)
       }
     case mp: MapColumnSpec =>
       out += s"private ${classOf[MapVector].getName} $path;"
       // Key and value vectors live at `${P}_k_e` / `${P}_v_e` so the `InputArray_${P}_k` /
       // `InputArray_${P}_v` synthetic classes (which follow the array-element convention of
       // reading from `${path}_e`) resolve their element reads correctly.
-      collectVectorFieldDecls(s"${path}_k_e", mp.key, out)
-      collectVectorFieldDecls(s"${path}_v_e", mp.value, out)
+      collectVectorFieldDecls(s"${path}_k_e", mp.key, topLevel = false, out)
+      collectVectorFieldDecls(s"${path}_v_e", mp.value, topLevel = false, out)
   }
 
   private def collectTopLevelInstanceDecl(
@@ -147,7 +208,7 @@ private[udf] object CometBatchKernelCodegenInput {
     val lines = new mutable.ArrayBuffer[String]()
     inputSchema.zipWithIndex.foreach { case (spec, ord) =>
       val path = s"col$ord"
-      collectCasts(path, spec, s"inputs[$ord]", lines)
+      collectCasts(path, spec, s"inputs[$ord]", topLevel = true, lines)
     }
     lines.mkString("\n    ")
   }
@@ -156,16 +217,38 @@ private[udf] object CometBatchKernelCodegenInput {
       path: String,
       spec: ArrowColumnSpec,
       source: String,
+      topLevel: Boolean,
       out: mutable.ArrayBuffer[String]): Unit = spec match {
     case sc: ScalarColumnSpec =>
-      out += s"this.$path = (${sc.vectorClass.getName}) $source;"
+      if (topLevel && wrapsInCometPlainVector(sc.vectorClass)) {
+        // Wrap in CometPlainVector so per-row reads go through Platform.get* against a final
+        // long buffer address. JIT inlines the one-liner getters, treating the address as a
+        // register-cached constant across the process loop. useDecimal128 = true matches Spark's
+        // 128-bit decimal storage.
+        out += s"this.$path = new $cometPlainVectorName($source, true);"
+      } else {
+        out += s"this.$path = (${sc.vectorClass.getName}) $source;"
+      }
+      // Address caching applies only at the kernel top level; nested-class reads still go
+      // through Arrow typed getters (Phase D).
+      if (topLevel && needsValueAddrField(sc.vectorClass)) {
+        out += s"this.${path}_valueAddr = this.$path.getDataBuffer().memoryAddress();"
+      }
+      if (topLevel && needsOffsetAddrField(sc.vectorClass)) {
+        out += s"this.${path}_offsetAddr = this.$path.getOffsetBuffer().memoryAddress();"
+      }
     case ar: ArrayColumnSpec =>
       out += s"this.$path = (${classOf[ListVector].getName}) $source;"
-      collectCasts(s"${path}_e", ar.element, s"this.$path.getDataVector()", out)
+      collectCasts(s"${path}_e", ar.element, s"this.$path.getDataVector()", topLevel = false, out)
     case st: StructColumnSpec =>
       out += s"this.$path = (${classOf[StructVector].getName}) $source;"
       st.fields.zipWithIndex.foreach { case (f, fi) =>
-        collectCasts(s"${path}_f$fi", f.child, s"this.$path.getChildByOrdinal($fi)", out)
+        collectCasts(
+          s"${path}_f$fi",
+          f.child,
+          s"this.$path.getChildByOrdinal($fi)",
+          topLevel = false,
+          out)
       }
     case mp: MapColumnSpec =>
       // MapVector's data vector is a StructVector with key at child 0 and value at child 1.
@@ -176,8 +259,18 @@ private[udf] object CometBatchKernelCodegenInput {
       out += s"this.$path = (${classOf[MapVector].getName}) $source;"
       out += s"${classOf[StructVector].getName} $structLocal = " +
         s"(${classOf[StructVector].getName}) this.$path.getDataVector();"
-      collectCasts(s"${path}_k_e", mp.key, s"$structLocal.getChildByOrdinal(0)", out)
-      collectCasts(s"${path}_v_e", mp.value, s"$structLocal.getChildByOrdinal(1)", out)
+      collectCasts(
+        s"${path}_k_e",
+        mp.key,
+        s"$structLocal.getChildByOrdinal(0)",
+        topLevel = false,
+        out)
+      collectCasts(
+        s"${path}_v_e",
+        mp.value,
+        s"$structLocal.getChildByOrdinal(1)",
+        topLevel = false,
+        out)
   }
 
   /**
@@ -199,48 +292,58 @@ private[udf] object CometBatchKernelCodegenInput {
     val withOrd = inputSchema.zipWithIndex
 
     val isNullCases = withOrd.map { case (spec, ord) =>
-      if (!spec.nullable) s"      case $ord: return false;"
-      else s"      case $ord: return this.col$ord.isNull(this.rowIdx);"
+      if (!spec.nullable) {
+        s"      case $ord: return false;"
+      } else {
+        // CometPlainVector exposes `isNullAt`; Arrow-typed fields expose `isNull`. Both check
+        // the validity bitmap with the same semantics.
+        val method = spec.vectorClass match {
+          case cls if wrapsInCometPlainVector(cls) => "isNullAt"
+          case _ => "isNull"
+        }
+        s"      case $ord: return this.col$ord.$method(this.rowIdx);"
+      }
     }
 
     val booleanCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[BitVector] =>
-        s"      case $ord: return this.col$ord.get(this.rowIdx) == 1;"
+        s"      case $ord: return this.col$ord.getBoolean(this.rowIdx);"
     }
     val byteCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[TinyIntVector] =>
-        s"      case $ord: return this.col$ord.get(this.rowIdx);"
+        s"      case $ord: return this.col$ord.getByte(this.rowIdx);"
     }
     val shortCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[SmallIntVector] =>
-        s"      case $ord: return this.col$ord.get(this.rowIdx);"
+        s"      case $ord: return this.col$ord.getShort(this.rowIdx);"
     }
     val intCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord)
           if cls == classOf[IntVector] || cls == classOf[DateDayVector] =>
-        s"      case $ord: return this.col$ord.get(this.rowIdx);"
+        s"      case $ord: return this.col$ord.getInt(this.rowIdx);"
     }
     val longCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord)
           if cls == classOf[BigIntVector] ||
             cls == classOf[TimeStampMicroVector] ||
             cls == classOf[TimeStampMicroTZVector] =>
-        s"      case $ord: return this.col$ord.get(this.rowIdx);"
+        s"      case $ord: return this.col$ord.getLong(this.rowIdx);"
     }
     val floatCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[Float4Vector] =>
-        s"      case $ord: return this.col$ord.get(this.rowIdx);"
+        s"      case $ord: return this.col$ord.getFloat(this.rowIdx);"
     }
     val doubleCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[Float8Vector] =>
-        s"      case $ord: return this.col$ord.get(this.rowIdx);"
+        s"      case $ord: return this.col$ord.getDouble(this.rowIdx);"
     }
     val decimalCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[DecimalVector] =>
         val known = decimalTypeByOrdinal.getOrElse(ord, None)
-        val field = s"this.col$ord"
-        val fastPath = emitDecimalFastBody(field, "this.rowIdx", "        ")
-        val slowPath = emitDecimalSlowBody(field, "this.rowIdx", "        ")
+        val valueAddr = s"this.col${ord}_valueAddr"
+        val slowField = s"this.col$ord"
+        val fastPath = emitDecimalFastBodyUnsafe(valueAddr, "this.rowIdx", "        ")
+        val slowPath = emitDecimalSlowBody(slowField, "this.rowIdx", "        ")
         val body = known match {
           case Some(dt) if dt.precision <= 18 => fastPath
           case Some(_) => slowPath
@@ -257,13 +360,22 @@ private[udf] object CometBatchKernelCodegenInput {
     }
     val binaryCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[VarBinaryVector] =>
-        s"      case $ord: return this.col$ord.get(this.rowIdx);"
+        s"""      case $ord: {
+           |${emitBinaryBodyUnsafe(
+            s"this.col${ord}_valueAddr",
+            s"this.col${ord}_offsetAddr",
+            "this.rowIdx",
+            "        ")}
+           |      }""".stripMargin
     }
     val utf8Cases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[VarCharVector] =>
         s"""      case $ord: {
-           |        ${classOf[VarCharVector].getName} v = this.col$ord;
-           |${emitUtf8Body("v", "this.rowIdx", "        ")}
+           |${emitUtf8BodyUnsafe(
+            s"this.col${ord}_valueAddr",
+            s"this.col${ord}_offsetAddr",
+            "this.rowIdx",
+            "        ")}
            |      }""".stripMargin
     }
 
@@ -919,5 +1031,65 @@ private[udf] object CometBatchKernelCodegenInput {
        |${ind}long addr = $field.getDataBuffer().memoryAddress() + s;
        |${ind}return org.apache.spark.unsafe.types.UTF8String
        |$cont.fromAddress(null, addr, e - s);""".stripMargin
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Unsafe variants for top-level scalar columns. Each batch caches the data-buffer address (and
+  // offset-buffer address for variable-width) on the kernel, letting per-row reads go through
+  // Platform.get* directly without re-dereferencing the Arrow vector's ArrowBuf per call. Nested
+  // classes still use the Arrow-buffer variants above until the same address caching lands at
+  // nested-level emission.
+  //
+  // The VarChar / VarBinary unsafe emitters below duplicate what CometPlainVector.getUTF8String
+  // and getBinary do today, with two differences: they skip CometPlainVector's internal
+  // isNullAt (redundant here because the kernel's caller already handled it) and they read the
+  // offset-buffer address from a kernel-cached field rather than re-dereferencing the ArrowBuf.
+  // Once apache/datafusion-comet#4280 (offsetBufferAddress caching) and #4279 (validity-bitmap
+  // byte cache) land, both differences stop mattering and `emitUtf8BodyUnsafe` /
+  // `emitBinaryBodyUnsafe` can be deleted in favor of `CometPlainVector` reuse for variable-
+  // width. The decimal-fast variant has its own motivation (compile-time precision
+  // specialization) unrelated to those issues.
+  // -------------------------------------------------------------------------------------------
+
+  private def emitDecimalFastBodyUnsafe(valueAddr: String, idx: String, ind: String): String = {
+    val cont = ind + "    "
+    val i = castableIdx(idx)
+    s"""${ind}long unscaled = org.apache.spark.unsafe.Platform.getLong(null,
+       |$cont$valueAddr + (long) $i * 16L);
+       |${ind}return org.apache.spark.sql.types.Decimal$$.MODULE$$
+       |$cont.createUnsafe(unscaled, precision, scale);""".stripMargin
+  }
+
+  private def emitUtf8BodyUnsafe(
+      valueAddr: String,
+      offsetAddr: String,
+      idx: String,
+      ind: String): String = {
+    val cont = ind + "    "
+    val i = castableIdx(idx)
+    s"""${ind}int s = org.apache.spark.unsafe.Platform.getInt(null,
+       |$cont$offsetAddr + (long) $i * 4L);
+       |${ind}int e = org.apache.spark.unsafe.Platform.getInt(null,
+       |$cont$offsetAddr + ((long) $i + 1L) * 4L);
+       |${ind}return org.apache.spark.unsafe.types.UTF8String
+       |$cont.fromAddress(null, $valueAddr + s, e - s);""".stripMargin
+  }
+
+  private def emitBinaryBodyUnsafe(
+      valueAddr: String,
+      offsetAddr: String,
+      idx: String,
+      ind: String): String = {
+    val cont = ind + "    "
+    val i = castableIdx(idx)
+    s"""${ind}int s = org.apache.spark.unsafe.Platform.getInt(null,
+       |$cont$offsetAddr + (long) $i * 4L);
+       |${ind}int e = org.apache.spark.unsafe.Platform.getInt(null,
+       |$cont$offsetAddr + ((long) $i + 1L) * 4L);
+       |${ind}int len = e - s;
+       |${ind}byte[] out = new byte[len];
+       |${ind}org.apache.spark.unsafe.Platform.copyMemory(null, $valueAddr + s, out,
+       |${cont}org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET, len);
+       |${ind}return out;""".stripMargin
   }
 }

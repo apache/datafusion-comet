@@ -273,8 +273,10 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       "expected Decimal.createUnsafe call on fast path; got:\n" +
         CodeFormatter.format(result.code))
     assert(
-      result.body.contains(".getDataBuffer()") && result.body.contains(".getLong("),
-      s"expected direct data buffer getLong read; got:\n${CodeFormatter.format(result.code)}")
+      result.body.contains("Platform.getLong(") &&
+        result.body.contains("this.col0_valueAddr"),
+      "expected unsafe Platform.getLong against cached valueAddr; got:\n" +
+        CodeFormatter.format(result.code))
     assert(
       !result.body.contains(".getObject("),
       "expected specialized fast path (no BigDecimal fallback branch in source); got:\n" +
