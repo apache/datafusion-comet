@@ -128,7 +128,11 @@ impl EncodedSignature {
 
 /// Implementation of `comet_udf_invoke` for one UDF.
 ///
-/// Returns 0 on success, 1 on user error, 2 on panic.
+/// Returns:
+/// - `0` on success
+/// - `1` on user error (UDF returned `Err`)
+/// - `2` on panic
+/// - `3` on null pointer / internal SDK error
 ///
 /// # Safety
 ///
@@ -147,6 +151,19 @@ pub unsafe fn invoke_impl(
 ) -> i32 {
     if !err_out.is_null() {
         (*err_out).free_in_place();
+    }
+
+    if out_array.is_null() || out_schema.is_null() {
+        if !err_out.is_null() {
+            (*err_out).set(UdfErrorCode::Internal, "null output pointer");
+        }
+        return 3;
+    }
+    if n_in > 0 && (in_arrays.is_null() || in_schemas.is_null()) {
+        if !err_out.is_null() {
+            (*err_out).set(UdfErrorCode::Internal, "null input pointer");
+        }
+        return 3;
     }
 
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<ArrayRef, String> {

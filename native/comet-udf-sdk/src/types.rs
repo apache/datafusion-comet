@@ -200,7 +200,10 @@ pub fn field_from_ipc_bytes(bytes: &[u8]) -> Result<Field, String> {
 pub struct UdfDescriptor {
     /// Pointer to the UDF name (UTF-8, not null-terminated).
     pub name_ptr: *const c_char,
-    /// Length of the name in bytes.
+    /// Length of the name in UTF-8 bytes, **excluding** any trailing NUL.
+    /// `name_ptr` happens to be NUL-terminated (the SDK uses `CString`)
+    /// but the host should read exactly `name_len` bytes — do not rely on
+    /// the NUL terminator for length determination.
     pub name_len: u32,
     /// Volatility tag: 0 = Immutable, 1 = Stable, 2 = Volatile.
     pub volatility: u32,

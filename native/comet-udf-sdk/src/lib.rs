@@ -66,12 +66,19 @@ pub trait CometScalarUdf: Send + Sync {
 /// [`CometScalarUdf`]. The macro emits the full set of `extern "C"`
 /// entry points required by Comet's loader.
 ///
-/// # Dependencies
+/// # Crate configuration
 ///
-/// The crate invoking this macro must have `arrow` as a direct dependency
-/// because the generated `extern "C"` functions reference
-/// `arrow::ffi::FFI_ArrowArray` and `arrow::ffi::FFI_ArrowSchema` by
-/// absolute path.
+/// Your `Cargo.toml` must declare the user crate as a `cdylib` so the
+/// `#[no_mangle]` entry points are exported as dynamic symbols:
+///
+/// ```toml
+/// [lib]
+/// crate-type = ["cdylib"]
+/// ```
+///
+/// You also need a direct dependency on `arrow` (matching the version
+/// used by Comet's host) so the FFI types in the generated extern blocks
+/// resolve.
 ///
 /// # Example
 /// ```ignore
@@ -127,9 +134,9 @@ macro_rules! export {
                 idx: u32,
                 out: *mut $crate::types::UdfDescriptor,
             ) -> i32 {
+                if out.is_null() { return -1; }
                 let ud = udfs();
                 let en = encoded();
-                if out.is_null() { return -1; }
                 let i = idx as usize;
                 if i >= ud.len() { return -2; }
                 *out = $crate::types::UdfDescriptor::zeroed();
