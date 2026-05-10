@@ -46,7 +46,7 @@ The self-describing proto removes the driver-side state the original prototype r
 - Extends `CometBatchKernel`, which extends `CometInternalRow`, which extends Spark's `InternalRow`. The kernel **is** the `InternalRow` that Spark's `BoundReference.genCode` reads from.
 - Sets `ctx.INPUT_ROW = "row"` at compile time and aliases `InternalRow row = this;` inside `process`, so Spark's generated body calls `row.getUTF8String(ord)` which resolves to the kernel's own typed getter. The getter is final, the ordinal is constant at the call site, and JIT devirtualizes and folds the switch. `row` rather than `this` because Spark's `splitExpressions` uses INPUT_ROW as a helper-method parameter name and `this` is a reserved Java keyword.
 - Carries typed input fields `col0 .. colN`, one per bound column, cast at the top of `process` from the generic `ValueVector[]` to the concrete Arrow class baked in at compile time.
-- Emits `isNullAt(ordinal)` and `getUTF8String(ordinal)` overrides whose switch cases are specialized per column. A column marked non-nullable compiles to `return false;`; a `VarCharVector` compiles to a zero-copy `UTF8String.fromAddress` read against the Arrow data buffer; a `ViewVarCharVector` reads the 16-byte view entry, branches inline-vs-referenced, and builds the `UTF8String` without a `byte[]` allocation.
+- Emits `isNullAt(ordinal)` and `getUTF8String(ordinal)` overrides whose switch cases are specialized per column. A column marked non-nullable compiles to `return false;`; a `VarCharVector` compiles to a zero-copy `UTF8String.fromAddress` read against the Arrow data buffer.
 - Overrides `init(int partitionIndex)` with the statements collected by `ctx.addPartitionInitializationStatement`. Non-deterministic expressions (`Rand`, `Randn`, `Uuid`) register statements that reseed mutable state from `partitionIndex`; deterministic expressions leave `init` empty.
 - Processes the batch in a tight loop that sets `this.rowIdx = i`, runs the expression body (either `boundExpr.genCode` for the default path or a specialized emitter), and writes to the typed output vector.
 
@@ -148,8 +148,8 @@ All scalar Spark types that map to a single Arrow vector:
 | FloatType                                 | Float4Vector                                               | `getFloat`                                               |
 | DoubleType                                | Float8Vector                                               | `getDouble`                                              |
 | DecimalType                               | DecimalVector                                              | `getDecimal(ord, precision, scale)`                      |
-| StringType                                | VarCharVector, ViewVarCharVector                           | `getUTF8String` (zero-copy via `UTF8String.fromAddress`) |
-| BinaryType                                | VarBinaryVector, ViewVarBinaryVector                       | `getBinary` (allocates `byte[]`)                         |
+| StringType                                | VarCharVector                                              | `getUTF8String` (zero-copy via `UTF8String.fromAddress`) |
+| BinaryType                                | VarBinaryVector                                            | `getBinary` (allocates `byte[]`)                         |
 
 Widening: add cases to `CometBatchKernelCodegen.emitTypedGetters` and accept the new vector classes in `CometCodegenDispatchUDF.evaluate`'s input pattern match.
 
@@ -236,7 +236,7 @@ Every optimization is compile-time specialized on `(bound expression, input sche
 
 ### Input readers (`CometBatchKernelCodegenInput.emitTypedGetters` and the nested-class emitters)
 
-- **ZeroCopyUtf8Read** for `VarCharVector` / `ViewVarCharVector`. `UTF8String.fromAddress` wraps Arrow's data-buffer address with no `byte[]` allocation. The view case reads the 16-byte view entry, picks inline vs referenced inline, and builds the `UTF8String` without a `byte[]` allocation either.
+- **ZeroCopyUtf8Read** for `VarCharVector`. `UTF8String.fromAddress` wraps Arrow's data-buffer address with no `byte[]` allocation. `ViewVarCharVector` is not supported today; the dispatcher's `specFor` rejects it with a clear exception if a future upstream change produces one.
 - **NonNullableIsNullAtElision** for non-nullable columns. `isNullAt(ord)` returns literal `false`, and `CometCodegenDispatchUDF.rewriteBoundReferences` tightens the `BoundReference.nullable` flag so Spark's `doGenCode` stops probing at source level too (not just at JIT time).
 - **DecimalInputShortFastPath** for `DecimalType(p, _)` with `p <= 18`. Reads the low 8 bytes of the decimal128 slot as a signed long and wraps with `Decimal.createUnsafe`. The slow path (`getObject` + `Decimal.apply`) is emitted only for `p > 18`.
 

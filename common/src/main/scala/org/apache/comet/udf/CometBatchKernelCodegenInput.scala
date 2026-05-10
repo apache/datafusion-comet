@@ -21,8 +21,7 @@ package org.apache.comet.udf
 
 import scala.collection.mutable
 
-import org.apache.arrow.memory.ArrowBuf
-import org.apache.arrow.vector.{BaseVariableWidthViewVector, BigIntVector, BitVector, DateDayVector, DecimalVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, VarBinaryVector, VarCharVector, ViewVarBinaryVector, ViewVarCharVector}
+import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
@@ -257,19 +256,15 @@ private[udf] object CometBatchKernelCodegenInput {
            |      }""".stripMargin
     }
     val binaryCases = withOrd.collect {
-      case (ArrowColumnSpec(cls, _), ord)
-          if cls == classOf[VarBinaryVector] || cls == classOf[ViewVarBinaryVector] =>
+      case (ArrowColumnSpec(cls, _), ord) if cls == classOf[VarBinaryVector] =>
         s"      case $ord: return this.col$ord.get(this.rowIdx);"
     }
-    val utf8Cases = withOrd.flatMap {
+    val utf8Cases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[VarCharVector] =>
-        Some(s"""      case $ord: {
-                |        ${classOf[VarCharVector].getName} v = this.col$ord;
-                |${emitUtf8Body("v", "this.rowIdx", "        ")}
-                |      }""".stripMargin)
-      case (ArrowColumnSpec(cls, _), ord) if cls == classOf[ViewVarCharVector] =>
-        Some(emitViewUtf8StringCase(ord))
-      case _ => None
+        s"""      case $ord: {
+           |        ${classOf[VarCharVector].getName} v = this.col$ord;
+           |${emitUtf8Body("v", "this.rowIdx", "        ")}
+           |      }""".stripMargin
     }
 
     Seq(
@@ -924,40 +919,5 @@ private[udf] object CometBatchKernelCodegenInput {
        |${ind}long addr = $field.getDataBuffer().memoryAddress() + s;
        |${ind}return org.apache.spark.unsafe.types.UTF8String
        |$cont.fromAddress(null, addr, e - s);""".stripMargin
-  }
-
-  /**
-   * Emit a zero-copy `getUTF8String` case for a `ViewVarCharVector` column at the given ordinal.
-   * Reads the 16-byte view entry directly from the view buffer and either points at the inline
-   * bytes (length &lt;= INLINE_SIZE=12) or at the referenced data buffer via `(bufferIndex,
-   * offset)` (length &gt; 12).
-   */
-  private def emitViewUtf8StringCase(ord: Int): String = {
-    val elementSize = BaseVariableWidthViewVector.ELEMENT_SIZE
-    val inlineSize = BaseVariableWidthViewVector.INLINE_SIZE
-    val lengthWidth = BaseVariableWidthViewVector.LENGTH_WIDTH
-    val prefixPlusLength = lengthWidth + BaseVariableWidthViewVector.PREFIX_WIDTH
-    val prefixPlusLengthPlusBufIdx =
-      prefixPlusLength + BaseVariableWidthViewVector.BUF_INDEX_WIDTH
-    val viewClass = classOf[ViewVarCharVector].getName
-    val bufClass = classOf[ArrowBuf].getName
-    s"""      case $ord: {
-       |        $viewClass v = this.col$ord;
-       |        $bufClass viewBuf = v.getDataBuffer();
-       |        long entryStart = (long) this.rowIdx * ${elementSize}L;
-       |        int length = viewBuf.getInt(entryStart);
-       |        long addr;
-       |        if (length > $inlineSize) {
-       |          int bufIdx = viewBuf.getInt(entryStart + ${prefixPlusLength}L);
-       |          int offset = viewBuf.getInt(entryStart + ${prefixPlusLengthPlusBufIdx}L);
-       |          // Cast required: Janino does not resolve the `List<ArrowBuf>.get(int)` generic
-       |          // return type; without the cast it sees `.get(bufIdx)` as returning Object.
-       |          $bufClass dataBuf = ($bufClass) v.getDataBuffers().get(bufIdx);
-       |          addr = dataBuf.memoryAddress() + (long) offset;
-       |        } else {
-       |          addr = viewBuf.memoryAddress() + entryStart + ${lengthWidth}L;
-       |        }
-       |        return org.apache.spark.unsafe.types.UTF8String.fromAddress(null, addr, length);
-       |      }""".stripMargin
   }
 }

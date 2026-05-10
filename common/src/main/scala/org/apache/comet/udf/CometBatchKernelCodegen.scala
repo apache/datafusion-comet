@@ -19,7 +19,7 @@
 
 package org.apache.comet.udf
 
-import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, ViewVarBinaryVector, ViewVarCharVector}
+import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, RegExpReplace, Unevaluable}
@@ -162,9 +162,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case "TimeStampMicroVector" => classOf[TimeStampMicroVector]
     case "TimeStampMicroTZVector" => classOf[TimeStampMicroTZVector]
     case "VarCharVector" => classOf[VarCharVector]
-    case "ViewVarCharVector" => classOf[ViewVarCharVector]
     case "VarBinaryVector" => classOf[VarBinaryVector]
-    case "ViewVarBinaryVector" => classOf[ViewVarBinaryVector]
     case other => throw new IllegalArgumentException(s"unknown Arrow vector class: $other")
   }
 
@@ -521,8 +519,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     val subjectOrd = rr.subject.asInstanceOf[BoundReference].ordinal
     val subjectClass = inputSchema(subjectOrd).vectorClass
     require(
-      subjectClass == classOf[VarCharVector] || subjectClass == classOf[ViewVarCharVector],
-      "specializedRegExpReplaceBody expects VarCharVector or ViewVarCharVector at ordinal " +
+      subjectClass == classOf[VarCharVector],
+      "specializedRegExpReplaceBody expects VarCharVector at ordinal " +
         s"$subjectOrd, got ${subjectClass.getSimpleName}")
 
     val patternStr = rr.regexp.eval().toString

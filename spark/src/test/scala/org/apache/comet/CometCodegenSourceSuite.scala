@@ -54,8 +54,6 @@ class CometCodegenSourceSuite extends AnyFunSuite {
 
   private val varCharVectorClass =
     CometBatchKernelCodegen.vectorClassBySimpleName("VarCharVector")
-  private val viewVarCharVectorClass =
-    CometBatchKernelCodegen.vectorClassBySimpleName("ViewVarCharVector")
 
   private val nullableString = ArrowColumnSpec(varCharVectorClass, nullable = true)
   private val nonNullableString = ArrowColumnSpec(varCharVectorClass, nullable = false)
@@ -100,21 +98,6 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("org.apache.spark.unsafe.types.UTF8String"),
       s"expected UTF8String reference; got:\n$src")
     assert(src.contains(".fromAddress("), s"expected zero-copy fromAddress read; got:\n$src")
-  }
-
-  test("ViewVarCharVector getUTF8String branches inline vs referenced without allocating") {
-    val viewSpec = ArrowColumnSpec(viewVarCharVectorClass, nullable = true)
-    val expr = Length(BoundReference(0, StringType, nullable = true))
-    val src = gen(expr, viewSpec)
-    // The view case reads the 16-byte view entry and picks inline vs referenced data without a
-    // byte[] allocation. Key markers: `viewBuf.getInt(entryStart)` for the length read and the
-    // same `fromAddress` wrapper as the plain-VarChar case.
-    assert(
-      src.contains("viewBuf.getInt(entryStart)"),
-      s"expected view entry length read; got:\n$src")
-    assert(
-      src.contains(".fromAddress("),
-      s"expected view case to construct UTF8String via fromAddress; got:\n$src")
   }
 
   test("NullIntolerant expression emits input-null short-circuit before ev.code") {

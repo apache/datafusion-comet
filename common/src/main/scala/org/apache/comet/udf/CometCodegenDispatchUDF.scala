@@ -23,7 +23,7 @@ import java.nio.ByteBuffer
 import java.util.{Collections, LinkedHashMap}
 import java.util.concurrent.atomic.AtomicLong
 
-import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, ViewVarBinaryVector, ViewVarCharVector}
+import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
@@ -179,8 +179,8 @@ class CometCodegenDispatchUDF extends CometUDF {
       StructColumnSpec(nullable(struct), fieldSpecs)
     case _: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector | _: BigIntVector |
         _: Float4Vector | _: Float8Vector | _: DecimalVector | _: VarCharVector |
-        _: ViewVarCharVector | _: VarBinaryVector | _: ViewVarBinaryVector | _: DateDayVector |
-        _: TimeStampMicroVector | _: TimeStampMicroTZVector =>
+        _: VarBinaryVector | _: DateDayVector | _: TimeStampMicroVector |
+        _: TimeStampMicroTZVector =>
       ScalarColumnSpec(v.getClass.asInstanceOf[Class[_ <: ValueVector]], nullable(v))
     case other =>
       throw new UnsupportedOperationException(
@@ -190,10 +190,8 @@ class CometCodegenDispatchUDF extends CometUDF {
   /**
    * Estimate output byte capacity for variable-length output types. Sums the data-buffer sizes of
    * variable-length input vectors as an upper bound for typical transform expressions (replace,
-   * upper, lower, substring, concat on the same inputs). Covers both character and binary
-   * variable-width vectors and their view-format counterparts so the estimate is meaningful
-   * regardless of which string / binary input type the caller passed in. Underestimates are still
-   * corrected by `setSafe`; this just reduces the odds of mid-loop reallocation.
+   * upper, lower, substring, concat on the same inputs). Underestimates are still corrected by
+   * `setSafe`; this just reduces the odds of mid-loop reallocation.
    */
   private def estimatedOutputBytes(outputType: DataType, dataCols: Array[ValueVector]): Int = {
     outputType match {
@@ -204,20 +202,6 @@ class CometCodegenDispatchUDF extends CometUDF {
           dataCols(i) match {
             case v: VarCharVector => sum += v.getDataBuffer.writerIndex().toInt
             case v: VarBinaryVector => sum += v.getDataBuffer.writerIndex().toInt
-            case v: ViewVarCharVector =>
-              val bufs = v.getDataBuffers
-              var j = 0
-              while (j < bufs.size()) {
-                sum += bufs.get(j).writerIndex().toInt
-                j += 1
-              }
-            case v: ViewVarBinaryVector =>
-              val bufs = v.getDataBuffers
-              var j = 0
-              while (j < bufs.size()) {
-                sum += bufs.get(j).writerIndex().toInt
-                j += 1
-              }
             case _ => // no size hint for fixed-width vector types
           }
           i += 1
