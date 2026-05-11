@@ -83,3 +83,23 @@ def render_conf_tables(common, spark_only, comet_only) -> str:
     for heading, rows in [("Common", common), ("Spark", spark_only), ("Comet", comet_only)]:
         parts.append(f"### {heading}\n\n{_render_table(rows)}")
     return "\n".join(parts)
+
+
+def replace_marker_region(text: str, name: str, new_content: str) -> str:
+    start = f"<!-- AUTO-GENERATED:{name}:START -->"
+    end = f"<!-- AUTO-GENERATED:{name}:END -->"
+
+    start_idx = text.find(start)
+    if start_idx < 0:
+        raise ValueError(f"missing marker {start}")
+    end_idx = text.find(end, start_idx + len(start))
+    if end_idx < 0:
+        raise ValueError(f"missing marker {end} after {name}:START")
+
+    body_start = start_idx + len(start)
+    if not new_content.startswith("\n"):
+        new_content = "\n" + new_content
+    if not new_content.endswith("\n"):
+        new_content = new_content + "\n"
+
+    return text[:body_start] + new_content + text[end_idx:]

@@ -104,3 +104,49 @@ def test_render_conf_tables_empty_sections_use_none_placeholder():
 def test_render_conf_tables_escapes_pipe_in_value():
     result = render_conf_tables([("spark.x", "a|b")], [], [])
     assert "| spark.x | a\\|b |" in result
+
+
+import pytest
+
+from release_charts import replace_marker_region
+
+
+def test_replace_marker_region_replaces_between_markers():
+    text = (
+        "intro\n"
+        "<!-- AUTO-GENERATED:config:START -->\n"
+        "old content\n"
+        "<!-- AUTO-GENERATED:config:END -->\n"
+        "outro\n"
+    )
+    result = replace_marker_region(text, "config", "new content\n")
+    assert result == (
+        "intro\n"
+        "<!-- AUTO-GENERATED:config:START -->\n"
+        "new content\n"
+        "<!-- AUTO-GENERATED:config:END -->\n"
+        "outro\n"
+    )
+
+
+def test_replace_marker_region_preserves_other_markers():
+    text = (
+        "<!-- AUTO-GENERATED:config:START -->\nA\n<!-- AUTO-GENERATED:config:END -->\n"
+        "between\n"
+        "<!-- AUTO-GENERATED:charts:START -->\nB\n<!-- AUTO-GENERATED:charts:END -->\n"
+    )
+    result = replace_marker_region(text, "charts", "B2\n")
+    assert "A\n<!-- AUTO-GENERATED:config:END -->" in result
+    assert "B2\n<!-- AUTO-GENERATED:charts:END -->" in result
+
+
+def test_replace_marker_region_missing_start_raises():
+    text = "no markers here\n<!-- AUTO-GENERATED:config:END -->\n"
+    with pytest.raises(ValueError, match="config:START"):
+        replace_marker_region(text, "config", "x")
+
+
+def test_replace_marker_region_missing_end_raises():
+    text = "<!-- AUTO-GENERATED:config:START -->\nstuff\n"
+    with pytest.raises(ValueError, match="config:END"):
+        replace_marker_region(text, "config", "x")
