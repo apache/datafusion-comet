@@ -128,17 +128,9 @@ jobs:
       matrix:
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
-          # sql_core-1 and sql_core-3 are split into -a (execution subpackage)
-          # and -b (top-level + non-execution subpackages) so each chunk runs in
-          # a fresh test JVM and avoids the memory accumulation that was OOM-killing
-          # the combined runs on 7 GB standard runners. The -b entries chain two
-          # sbt testOnly invocations; sbt's `fork in Test := true` causes each to
-          # spawn its own forked test JVM.
-          - {name: "sql_core-1a", args1: "", args2: "sql/testOnly org.apache.spark.sql.execution.* -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"}
-          - {name: "sql_core-1b", args1: "", args2: "sql/testOnly org.apache.spark.sql.streaming.* org.apache.spark.sql.connector.* org.apache.spark.sql.sources.* org.apache.spark.sql.analysis.* org.apache.spark.sql.internal.* org.apache.spark.sql.collation.* org.apache.spark.sql.jdbc.* org.apache.spark.sql.errors.* org.apache.spark.sql.test.* org.apache.spark.sql.scripting.* org.apache.spark.sql.util.* org.apache.spark.sql.classic.* org.apache.spark.sql.types.* org.apache.spark.sql.expressions.* org.apache.spark.sql.artifact.* org.apache.spark.sql.api.* org.apache.spark.sql.vectorized.* org.apache.spark.sql.catalyst.* -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest; sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest -m org.apache.spark.sql"}
+          - {name: "sql_core-1", args1: "", args2: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"}
           - {name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
-          - {name: "sql_core-3a", args1: "", args2: "sql/testOnly org.apache.spark.sql.execution.* -- -n org.apache.spark.tags.SlowSQLTest"}
-          - {name: "sql_core-3b", args1: "", args2: "sql/testOnly org.apache.spark.sql.streaming.* org.apache.spark.sql.connector.* org.apache.spark.sql.sources.* org.apache.spark.sql.analysis.* org.apache.spark.sql.internal.* org.apache.spark.sql.collation.* org.apache.spark.sql.jdbc.* org.apache.spark.sql.errors.* org.apache.spark.sql.test.* org.apache.spark.sql.scripting.* org.apache.spark.sql.util.* org.apache.spark.sql.classic.* org.apache.spark.sql.types.* org.apache.spark.sql.expressions.* org.apache.spark.sql.artifact.* org.apache.spark.sql.api.* org.apache.spark.sql.vectorized.* org.apache.spark.sql.catalyst.* -- -n org.apache.spark.tags.SlowSQLTest; sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest -m org.apache.spark.sql"}
+          - {name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"}
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
