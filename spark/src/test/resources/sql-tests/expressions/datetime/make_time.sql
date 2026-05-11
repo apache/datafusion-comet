@@ -128,3 +128,14 @@ SELECT make_time(0, 0, -1.0)
 -- overflow seconds
 query expect_error(SecondOfMinute)
 SELECT make_time(1, 18, 4294967297.999999)
+
+-- time literal in comparison (make_time with all literals is constant-folded to a Time literal)
+query
+SELECT make_time(12, 30, 0) > make_time(11, 0, 0)
+
+query
+SELECT make_time(0, 0, 0) = make_time(0, 0, 0)
+
+-- current_time() is foldable and produces a Time literal
+query
+SELECT current_time() IS NOT NULL
