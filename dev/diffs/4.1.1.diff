@@ -3707,6 +3707,20 @@ index 11b761f1e4a..e54bf2a996a 100644
            s"Local limit was not LocalLimitExec:\n$execPlan")
        }
      }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamTest.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamTest.scala
+index e57c4e1e665..1dd8b80a006 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamTest.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamTest.scala
+@@ -73,7 +73,8 @@ import org.apache.spark.util.{Clock, SystemClock, Utils}
+  * avoid hanging forever in the case of failures. However, individual suites can change this
+  * by overriding `streamingTimeout`.
+  */
+-trait StreamTest extends QueryTest with SharedSparkSession with TimeLimits with BeforeAndAfterAll {
++trait StreamTest extends QueryTest with SharedSparkSession with TimeLimits with BeforeAndAfterAll
++  with org.apache.spark.sql.IgnoreCometSuite {
+ 
+   // Necessary to make ScalaTest 3.x interrupt a thread on the JVM like ScalaTest 2.2.x
+   implicit val defaultSignaler: Signaler = ThreadSignaler
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala
 index 465da3cd469..92ac998929d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala
