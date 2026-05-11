@@ -24,6 +24,42 @@ The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instan
 ## Configuration
 
 <!-- AUTO-GENERATED:config:START -->
+### Common
+
+| Property | Value |
+| --- | --- |
+| spark.cores.max | 16 |
+| spark.driver.memory | 8G |
+| spark.eventLog.dir | /tmp/spark-events |
+| spark.eventLog.enabled | true |
+| spark.executor.cores | 8 |
+| spark.executor.instances | 2 |
+| spark.executor.memory | 16g |
+| spark.hadoop.fs.s3a.aws.credentials.provider | com.amazonaws.auth.DefaultAWSCredentialsProviderChain |
+| spark.hadoop.fs.s3a.impl | org.apache.hadoop.fs.s3a.S3AFileSystem |
+| spark.memory.offHeap.enabled | true |
+| spark.memory.offHeap.size | 16g |
+| spark.rdd.compress | True |
+| spark.serializer.objectStreamReset | 100 |
+| spark.sql.warehouse.dir | file:/home/andy/git/apache/datafusion-comet/benchmarks/tpc/spark-warehouse |
+
+### Spark
+
+| Property | Value |
+| --- | --- |
+| spark.app.submitTime | 1776548361806 |
+
+### Comet
+
+| Property | Value |
+| --- | --- |
+| spark.app.initial.jar.urls | spark://10.0.0.118:37357/jars/comet-spark-spark3.5_2.12-0.15.0.jar |
+| spark.app.submitTime | 1776548868968 |
+| spark.comet.expression.Cast.allowIncompatible | true |
+| spark.comet.scan.impl | native_datafusion |
+| spark.plugins | org.apache.spark.CometPlugin |
+| spark.shuffle.manager | org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager |
+| spark.sql.extensions | org.apache.comet.CometSparkSessionExtensions |
 <!-- AUTO-GENERATED:config:END -->
 
 ### Comet (Tuned)
@@ -38,6 +74,13 @@ spark.comet.memoryPool.fraction=0.8
 ## Benchmark Results
 
 <!-- AUTO-GENERATED:charts:START -->
+![](../../_static/images/benchmark-results/0.16.0/tpch_allqueries.png)
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_compare.png)
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_rel.png)
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_abs.png)
 <!-- AUTO-GENERATED:charts:END -->
 
 ### With hand-tuned Comet configuration

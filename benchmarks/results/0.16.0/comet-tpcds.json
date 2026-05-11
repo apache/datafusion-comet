@@ -1,0 +1,736 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpcds",
+    "spark_conf": {
+        "spark.eventLog.enabled": "true",
+        "spark.driver.port": "37121",
+        "spark.cores.max": "16",
+        "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+        "spark.memory.offHeap.enabled": "true",
+        "spark.executor.memory": "16g",
+        "spark.executor.instances": "2",
+        "spark.app.id": "app-20260418164119-0000",
+        "spark.repl.local.jars": "file:///home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-0.15.0.jar",
+        "spark.driver.host": "10.0.0.118",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.submit.deployMode": "client",
+        "spark.executor.cores": "8",
+        "spark.app.startTime": "1776552079266",
+        "spark.app.submitTime": "1776552078980",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
+        "spark.executor.id": "driver",
+        "spark.master": "spark://woody:7077",
+        "spark.comet.expression.Cast.allowIncompatible": "true",
+        "spark.sql.extensions": "org.apache.comet.CometSparkSessionExtensions",
+        "spark.driver.memory": "8G",
+        "spark.eventLog.dir": "/tmp/spark-events",
+        "spark.plugins": "org.apache.spark.CometPlugin",
+        "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+        "spark.rdd.compress": "True",
+        "spark.sql.warehouse.dir": "file:/home/andy/git/apache/datafusion-comet/benchmarks/tpc/spark-warehouse",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.executor.extraClassPath": "/home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-0.15.0.jar",
+        "spark.comet.scan.impl": "native_datafusion",
+        "spark.jars": "file:///home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-0.15.0.jar",
+        "spark.submit.pyFiles": "",
+        "spark.app.initial.jar.urls": "spark://10.0.0.118:37121/jars/comet-spark-spark3.5_2.12-0.15.0.jar",
+        "spark.app.name": "comet benchmark derived from tpcds",
+        "spark.driver.extraClassPath": "/home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-0.15.0.jar",
+        "spark.memory.offHeap.size": "16g"
+    },
+    "data_path": "/mnt/bigdata/tpcds/sf100",
+    "1": {
+        "durations": [
+            3.362
+        ],
+        "row_count": 100,
+        "result_hash": "b8bd5f9ead2ed5d4d5bf906bdf2757b9"
+    },
+    "2": {
+        "durations": [
+            2.007
+        ],
+        "row_count": 2520,
+        "result_hash": "0ccaa86103a0a7e611ffd50b7aee30f2"
+    },
+    "3": {
+        "durations": [
+            0.827
+        ],
+        "row_count": 100,
+        "result_hash": "1f4d0dac5913247be608c4c99b0a800b"
+    },
+    "4": {
+        "durations": [
+            25.048
+        ],
+        "row_count": 100,
+        "result_hash": "a10b908369c0cc88ccf825fb7a1692d7"
+    },
+    "5": {
+        "durations": [
+            3.831
+        ],
+        "row_count": 100,
+        "result_hash": "d33ba27187feb21806f5856a0b20764c"
+    },
+    "6": {
+        "durations": [
+            0.976
+        ],
+        "row_count": 52,
+        "result_hash": "468e0b1443e05fbb863aa8cedb9af940"
+    },
+    "7": {
+        "durations": [
+            1.493
+        ],
+        "row_count": 100,
+        "result_hash": "b1aeae47b5699f4fe73648ccfe7e7492"
+    },
+    "8": {
+        "durations": [
+            0.9
+        ],
+        "row_count": 10,
+        "result_hash": "ea9a059f889475c667d7c907d7899b2b"
+    },
+    "9": {
+        "durations": [
+            2.473
+        ],
+        "row_count": 1,
+        "result_hash": "96c28ad292ea98ff72fe719d94e2d270"
+    },
+    "10": {
+        "durations": [
+            1.365
+        ],
+        "row_count": 100,
+        "result_hash": "564d5ec431e49ca911fcf3c6ce00f1b7"
+    },
+    "11": {
+        "durations": [
+            9.498
+        ],
+        "row_count": 100,
+        "result_hash": "85d2a55e9629154d60b46b4ae73f06bc"
+    },
+    "12": {
+        "durations": [
+            1.036
+        ],
+        "row_count": 100,
+        "result_hash": "29d25af015ac6ad35f84b40935d1b05b"
+    },
+    "13": {
+        "durations": [
+            1.619
+        ],
+        "row_count": 1,
+        "result_hash": "f1b55cafbf60d52271760d6a6062ad6c"
+    },
+    "14": {
+        "durations": [
+            16.367
+        ],
+        "row_count": 100,
+        "result_hash": "25ffacba3d5303a4cf734590d2aca34d"
+    },
+    "15": {
+        "durations": [
+            1.536
+        ],
+        "row_count": 100,
+        "result_hash": "18acce16504913f6ca7235f6f078fc00"
+    },
+    "16": {
+        "durations": [
+            9.43
+        ],
+        "row_count": 1,
+        "result_hash": "3a4d9966c5227cafe1db3beb040013b2"
+    },
+    "17": {
+        "durations": [
+            2.142
+        ],
+        "row_count": 54,
+        "result_hash": "db68791cdc0211bf42e6df291fa74dbf"
+    },
+    "18": {
+        "durations": [
+            1.816
+        ],
+        "row_count": 100,
+        "result_hash": "c5f2c81a65ca10a6d49b4f4e9c74dda7"
+    },
+    "19": {
+        "durations": [
+            1.26
+        ],
+        "row_count": 100,
+        "result_hash": "69718e3ae51a4783db9a3fcf42211c8f"
+    },
+    "20": {
+        "durations": [
+            1.429
+        ],
+        "row_count": 100,
+        "result_hash": "048504aecc2332f6321e3b0c3a8e69e2"
+    },
+    "21": {
+        "durations": [
+            0.809
+        ],
+        "row_count": 100,
+        "result_hash": "b56552b2bc7a4ef9af71ebcc479af647"
+    },
+    "22": {
+        "durations": [
+            6.37
+        ],
+        "row_count": 100,
+        "result_hash": "04b3943f628a411c328fa1b1aedd7737"
+    },
+    "23": {
+        "durations": [
+            28.536
+        ],
+        "row_count": 100,
+        "result_hash": "32ef71c6b8ae27c4e7af2c797662b3e5"
+    },
+    "24": {
+        "durations": [
+            12.067
+        ],
+        "row_count": 3,
+        "result_hash": "8c3e8b49380836918b7bd48fcd1e011f"
+    },
+    "25": {
+        "durations": [
+            2.107
+        ],
+        "row_count": 12,
+        "result_hash": "b5107a8e271c526ff6129082a23064b3"
+    },
+    "26": {
+        "durations": [
+            0.755
+        ],
+        "row_count": 100,
+        "result_hash": "40eff151e6e02b4d6e74a954b9aec868"
+    },
+    "27": {
+        "durations": [
+            1.436
+        ],
+        "row_count": 100,
+        "result_hash": "20eead023cd9ba452cf0fefb6ad49941"
+    },
+    "28": {
+        "durations": [
+            3.573
+        ],
+        "row_count": 1,
+        "result_hash": "ee57635021ff77186f8201ce5fe5f9ee"
+    },
+    "29": {
+        "durations": [
+            2.572
+        ],
+        "row_count": 27,
+        "result_hash": "583530e2ac23c5ee37fdb4c371a78e66"
+    },
+    "30": {
+        "durations": [
+            0.864
+        ],
+        "row_count": 100,
+        "result_hash": "62472e72050408d7a17f12a3ad887c62"
+    },
+    "31": {
+        "durations": [
+            3.005
+        ],
+        "row_count": 286,
+        "result_hash": "101dfa306dae6ae90af41b33342058cd"
+    },
+    "32": {
+        "durations": [
+            1.185
+        ],
+        "row_count": 1,
+        "result_hash": "55ccb1398255d527b7a4ca04999aa8d4"
+    },
+    "33": {
+        "durations": [
+            1.359
+        ],
+        "row_count": 100,
+        "result_hash": "6c7042bff561e7ba878a1fcc2c4a431a"
+    },
+    "34": {
+        "durations": [
+            0.867
+        ],
+        "row_count": 5707,
+        "result_hash": "b46f5f81b6fe212f424a2b03654a4846"
+    },
+    "35": {
+        "durations": [
+            2.067
+        ],
+        "row_count": 100,
+        "result_hash": "22111b229fa439bc233f2d21d56ca87c"
+    },
+    "36": {
+        "durations": [
+            1.85
+        ],
+        "row_count": 100,
+        "result_hash": "4e3e7700645c3150f676a71c6b1c5c14"
+    },
+    "37": {
+        "durations": [
+            1.935
+        ],
+        "row_count": 2,
+        "result_hash": "9033e3b38f57ae5b52daac9b24c34508"
+    },
+    "38": {
+        "durations": [
+            2.334
+        ],
+        "row_count": 1,
+        "result_hash": "d4f72a3e3e58817f9e5b1648ec63cd71"
+    },
+    "39": {
+        "durations": [
+            8.143
+        ],
+        "row_count": 297,
+        "result_hash": "68d033cc1eb3e6e35867aed46ba42f39"
+    },
+    "40": {
+        "durations": [
+            5.163
+        ],
+        "row_count": 100,
+        "result_hash": "dbd2f040caef5252a1c86e15bd49dbe1"
+    },
+    "41": {
+        "durations": [
+            0.13
+        ],
+        "row_count": 61,
+        "result_hash": "31886ded90909317a3ec74b920b0f625"
+    },
+    "42": {
+        "durations": [
+            0.543
+        ],
+        "row_count": 11,
+        "result_hash": "d8afff279a0fd14d5de2b689d89a9962"
+    },
+    "43": {
+        "durations": [
+            0.769
+        ],
+        "row_count": 100,
+        "result_hash": "96457420e9b90f331969ff616e87985c"
+    },
+    "44": {
+        "durations": [
+            0.835
+        ],
+        "row_count": 0,
+        "result_hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "45": {
+        "durations": [
+            1.141
+        ],
+        "row_count": 100,
+        "result_hash": "bf8602dbb84666808b84710701712903"
+    },
+    "46": {
+        "durations": [
+            1.588
+        ],
+        "row_count": 100,
+        "result_hash": "041a1cd4ef859aea8cf13d7b34a30fb7"
+    },
+    "47": {
+        "durations": [
+            4.933
+        ],
+        "row_count": 100,
+        "result_hash": "f37d836f0a9c911c3ede649c5871f773"
+    },
+    "48": {
+        "durations": [
+            1.221
+        ],
+        "row_count": 1,
+        "result_hash": "e398af1b6caa1cde8478362d4aa218a2"
+    },
+    "49": {
+        "durations": [
+            3.829
+        ],
+        "row_count": 100,
+        "result_hash": "27328e05ca71e81dd16ef7699da40c5a"
+    },
+    "50": {
+        "durations": [
+            4.625
+        ],
+        "row_count": 100,
+        "result_hash": "af359f015a9f78f8b00b54eb41bc76f9"
+    },
+    "51": {
+        "durations": [
+            7.05
+        ],
+        "row_count": 100,
+        "result_hash": "5b3babb026c497b5f39fdfe3913d7f91"
+    },
+    "52": {
+        "durations": [
+            0.617
+        ],
+        "row_count": 100,
+        "result_hash": "a0c907298aea166e4a9b145d24167746"
+    },
+    "53": {
+        "durations": [
+            0.819
+        ],
+        "row_count": 100,
+        "result_hash": "93d066c631e9dd1bc0908a199b82a1c1"
+    },
+    "54": {
+        "durations": [
+            1.538
+        ],
+        "row_count": 35,
+        "result_hash": "248f1eb11ca3499019df0c66e086a6b7"
+    },
+    "55": {
+        "durations": [
+            0.625
+        ],
+        "row_count": 100,
+        "result_hash": "f12fb2245d994cc3e714d759659a6877"
+    },
+    "56": {
+        "durations": [
+            1.286
+        ],
+        "row_count": 100,
+        "result_hash": "60a9e4d7ceb6fecb2100325fd3f7334f"
+    },
+    "57": {
+        "durations": [
+            1.964
+        ],
+        "row_count": 100,
+        "result_hash": "3752d3ff1eb43f37437253a0e3ef6b8d"
+    },
+    "58": {
+        "durations": [
+            2.271
+        ],
+        "row_count": 100,
+        "result_hash": "b2e824284eb29a55ddece7a3b8c89072"
+    },
+    "59": {
+        "durations": [
+            2.193
+        ],
+        "row_count": 100,
+        "result_hash": "f33c5bb3dbf1b4b8516eb637c2f04c31"
+    },
+    "60": {
+        "durations": [
+            1.372
+        ],
+        "row_count": 100,
+        "result_hash": "940cd1a5e7eac1e79de2a10353067974"
+    },
+    "61": {
+        "durations": [
+            2.372
+        ],
+        "row_count": 1,
+        "result_hash": "bbdf883fa10f67b1cddd3a06dd5c09b0"
+    },
+    "62": {
+        "durations": [
+            0.644
+        ],
+        "row_count": 100,
+        "result_hash": "11c5720f866c71759f67b114e96641ef"
+    },
+    "63": {
+        "durations": [
+            0.782
+        ],
+        "row_count": 100,
+        "result_hash": "fd179c9b0ea6de9a113ef00354601ac8"
+    },
+    "64": {
+        "durations": [
+            11.044
+        ],
+        "row_count": 394,
+        "result_hash": "aaba1199b9840346b19e87d74439830f"
+    },
+    "65": {
+        "durations": [
+            5.712
+        ],
+        "row_count": 100,
+        "result_hash": "e436271d1386a15312446a7eae57037e"
+    },
+    "66": {
+        "durations": [
+            1.825
+        ],
+        "row_count": 15,
+        "result_hash": "154ad323aec5ac9d9db3e1b9c2ae61e5"
+    },
+    "67": {
+        "durations": [
+            24.665
+        ],
+        "row_count": 100,
+        "result_hash": "655026489d25868a2d70cf6a88fe32d8"
+    },
+    "68": {
+        "durations": [
+            1.871
+        ],
+        "row_count": 100,
+        "result_hash": "642dd71eb1f165e4cfe7b74683da3c2b"
+    },
+    "69": {
+        "durations": [
+            1.46
+        ],
+        "row_count": 100,
+        "result_hash": "466e9637e63db18a44eb47d1ae674c46"
+    },
+    "70": {
+        "durations": [
+            2.46
+        ],
+        "row_count": 20,
+        "result_hash": "d6fa08ee2af7ed9ee8d9ce4f74a0b526"
+    },
+    "71": {
+        "durations": [
+            1.823
+        ],
+        "row_count": 67681,
+        "result_hash": "16ec1d5c2bc0861c14c2f7a4c7871a16"
+    },
+    "72": {
+        "durations": [
+            95.021
+        ],
+        "row_count": 100,
+        "result_hash": "04ea1207e5926e896a4764dd97eca561"
+    },
+    "73": {
+        "durations": [
+            0.728
+        ],
+        "row_count": 68,
+        "result_hash": "8aefc731af0ce3f28aeb0475017d2f2f"
+    },
+    "74": {
+        "durations": [
+            6.917
+        ],
+        "row_count": 100,
+        "result_hash": "13aae23486316e9b8ec5d98b740c652d"
+    },
+    "75": {
+        "durations": [
+            6.534
+        ],
+        "row_count": 100,
+        "result_hash": "4115818561901c6aa53c9c5ed74042e6"
+    },
+    "76": {
+        "durations": [
+            1.349
+        ],
+        "row_count": 100,
+        "result_hash": "74bb030ebc2b37635e8e212c1f2ee1c4"
+    },
+    "77": {
+        "durations": [
+            1.642
+        ],
+        "row_count": 100,
+        "result_hash": "3f24d4a5ca080b1b47303a019426265d"
+    },
+    "78": {
+        "durations": [
+            21.432
+        ],
+        "row_count": 100,
+        "result_hash": "5e347c60ae0323eaea288c4a2bad7901"
+    },
+    "79": {
+        "durations": [
+            1.434
+        ],
+        "row_count": 100,
+        "result_hash": "8f8c2e29ea0d04bc4197900ba41215ff"
+    },
+    "80": {
+        "durations": [
+            12.374
+        ],
+        "row_count": 100,
+        "result_hash": "cc807ee6f52623ba2b06371d5b42615f"
+    },
+    "81": {
+        "durations": [
+            0.921
+        ],
+        "row_count": 100,
+        "result_hash": "35b11e0f42bb791efb75d1cfc21abe71"
+    },
+    "82": {
+        "durations": [
+            1.037
+        ],
+        "row_count": 27,
+        "result_hash": "165323ceac59c1dcb0dd2a057c2b6cef"
+    },
+    "83": {
+        "durations": [
+            0.507
+        ],
+        "row_count": 100,
+        "result_hash": "d43bb64dc438f1ec08430572cdb60b14"
+    },
+    "84": {
+        "durations": [
+            0.487
+        ],
+        "row_count": 100,
+        "result_hash": "b7c84412fcc1af5268ab6d852defca33"
+    },
+    "85": {
+        "durations": [
+            1.299
+        ],
+        "row_count": 51,
+        "result_hash": "9c1dffbc567b3cd02de97fa5dbfe1972"
+    },
+    "86": {
+        "durations": [
+            0.472
+        ],
+        "row_count": 100,
+        "result_hash": "24f9e3b7e0f38acacc7cde7ee2805dee"
+    },
+    "87": {
+        "durations": [
+            2.375
+        ],
+        "row_count": 1,
+        "result_hash": "3ce9a71b7f5833103b950860d6d01f73"
+    },
+    "88": {
+        "durations": [
+            2.956
+        ],
+        "row_count": 1,
+        "result_hash": "cab03af77227925b97a3a4a5a42ff847"
+    },
+    "89": {
+        "durations": [
+            1.173
+        ],
+        "row_count": 100,
+        "result_hash": "4ee2aaf89865bc989460134b68114ee3"
+    },
+    "90": {
+        "durations": [
+            0.253
+        ],
+        "row_count": 1,
+        "result_hash": "68094e2f6fbfa45c267669869f858613"
+    },
+    "91": {
+        "durations": [
+            0.388
+        ],
+        "row_count": 30,
+        "result_hash": "1e844bbc25910d44a002f4e4028245b8"
+    },
+    "92": {
+        "durations": [
+            0.462
+        ],
+        "row_count": 1,
+        "result_hash": "d5cf36d7475da0491968c6a553fe2d52"
+    },
+    "93": {
+        "durations": [
+            5.768
+        ],
+        "row_count": 100,
+        "result_hash": "8cee09971216c2e33853bfaa7be8d770"
+    },
+    "94": {
+        "durations": [
+            5.035
+        ],
+        "row_count": 1,
+        "result_hash": "12deb85af7ce946b1e725764f90f2346"
+    },
+    "95": {
+        "durations": [
+            20.201
+        ],
+        "row_count": 1,
+        "result_hash": "f53aa6457f2d0df3f3edba0c269e5f5f"
+    },
+    "96": {
+        "durations": [
+            0.416
+        ],
+        "row_count": 1,
+        "result_hash": "c7511e67bb18d80c65ea5398bee758e3"
+    },
+    "97": {
+        "durations": [
+            5.021
+        ],
+        "row_count": 1,
+        "result_hash": "e253001bfbfc8431c8c0911fa21e9cec"
+    },
+    "98": {
+        "durations": [
+            3.25
+        ],
+        "row_count": 30392,
+        "result_hash": "55dbc6362ae10119127c18c9c652eb76"
+    },
+    "99": {
+        "durations": [
+            1.043
+        ],
+        "row_count": 100,
+        "result_hash": "e8ebf7b779dd8148ef7ef0c42a3680ae"
+    }
+}
