@@ -21,14 +21,14 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{LongType, NumericType}
+import org.apache.spark.sql.types.{DateType, DecimalType, LongType, NumericType}
 import org.apache.spark.sql.types.Decimal
 
 import com.google.common.base.Objects
@@ -229,6 +229,37 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     val f = windowExpr.windowSpec.frameSpecification
+
+    // Comet's native window planner ships RANGE frame offsets as
+    // ScalarValue::Int64, but a couple of ORDER BY types don't tolerate that:
+    //   - DATE: arrow-arith requires an Interval RHS for Date32 arithmetic,
+    //     so execution fails with
+    //       Invalid date arithmetic operation: Date32 + Int32
+    //   - DECIMAL: Spark decimal arithmetic widens precision on +/-, so the
+    //     computed boundary (e.g. Decimal(11,0)) doesn't match the current
+    //     value's precision (e.g. Decimal(10,0)) and the comparator fails
+    //     with "Uncomparable values".
+    // Fall back to Spark for those shapes. UNBOUNDED / CURRENT ROW bounds
+    // don't evaluate the offending arithmetic and stay native.
+    f match {
+      case SpecifiedWindowFrame(RangeFrame, lb, ub)
+          if !lb.isInstanceOf[SpecialFrameBoundary] ||
+            !ub.isInstanceOf[SpecialFrameBoundary] =>
+        windowExpr.windowSpec.orderSpec.headOption.map(_.dataType) match {
+          case Some(DateType) =>
+            withInfo(
+              windowExpr,
+              "RANGE frame with explicit offset on DATE ORDER BY is not supported")
+            return None
+          case Some(_: DecimalType) =>
+            withInfo(
+              windowExpr,
+              "RANGE frame with explicit offset on DECIMAL ORDER BY is not supported")
+            return None
+          case _ =>
+        }
+      case _ =>
+    }
 
     val (frameType, lowerBound, upperBound) = f match {
       case SpecifiedWindowFrame(frameType, lBound, uBound) =>

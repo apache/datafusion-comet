@@ -78,6 +78,27 @@ INSERT INTO scores VALUES
   ('carol',  3, 50),
   ('carol',  4, 50)
 
+statement
+CREATE TABLE date_events(val_date date, cate string) USING parquet
+
+statement
+INSERT INTO date_events VALUES
+  (DATE '2017-08-01', 'a'),
+  (DATE '2017-08-01', 'a'),
+  (DATE '2017-08-02', 'a'),
+  (DATE '2020-12-31', 'a'),
+  (DATE '2017-08-01', 'b'),
+  (DATE '2017-08-03', 'b'),
+  (DATE '2020-12-31', 'b'),
+  (NULL, NULL),
+  (DATE '2017-08-01', NULL)
+
+statement
+CREATE TABLE t_single(val int) USING parquet
+
+statement
+INSERT INTO t_single VALUES (1)
+
 -- ############################################################
 -- Section 1: Basic window combinations
 -- ############################################################
@@ -200,7 +221,49 @@ SELECT dept, id, salary,
 FROM emp
 
 -- ============================================================
--- 1.11: multiple PARTITION BY + multiple ORDER BY
+-- 1.11: RANGE BETWEEN with DATE ORDER BY
+-- Spark interprets the integer frame offset N on a DATE ORDER BY column as
+-- N days, so MAX(val_date) OVER (... RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING)
+-- returns the largest val_date within the next 2 days of each row.
+-- Mirrors the "max(val_date) ... RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING"
+-- case from Spark's window.sql. Comet falls back because its native window
+-- planner ships RANGE frame offsets as Int64 while arrow-arith requires an
+-- Interval RHS for Date32 arithmetic. Once the native planner coerces Int ->
+-- Interval for DATE sort keys (as DataFusion's type-coercion analyzer does),
+-- the guard in CometWindowExec can be removed and this test will start
+-- failing because Comet stops falling back — that's the signal to re-enable
+-- native execution.
+-- ============================================================
+
+query expect_fallback(RANGE frame with explicit offset on DATE ORDER BY is not supported)
+SELECT val_date, cate,
+  MAX(val_date) OVER (PARTITION BY cate ORDER BY val_date
+                      RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING) AS mx_d
+FROM date_events
+ORDER BY cate, val_date
+
+-- ============================================================
+-- 1.12: RANGE BETWEEN with DECIMAL ORDER BY DESC
+-- Ported from Spark's typeCoercion/native/windowFrameCoercion.sql:
+--   SELECT COUNT(*) OVER (PARTITION BY 1 ORDER BY cast(1 as decimal(10, 0)) DESC
+--     RANGE BETWEEN CURRENT ROW AND 1 FOLLOWING) FROM t
+-- Comet falls back because Spark decimal arithmetic widens precision on
+-- +/-, so the native frame-boundary arithmetic produces e.g. Decimal(11,0)
+-- while the current row stays Decimal(10,0), and DataFusion's comparator
+-- fails with "Uncomparable values". Once the native planner preserves the
+-- ORDER BY column's precision when computing RANGE boundaries, the guard
+-- in CometWindowExec can be removed and this test will start failing
+-- because Comet stops falling back — that's the signal to re-enable it.
+-- ============================================================
+
+query expect_fallback(RANGE frame with explicit offset on DECIMAL ORDER BY is not supported)
+SELECT COUNT(*) OVER (PARTITION BY 1
+                      ORDER BY CAST(1 AS DECIMAL(10, 0)) DESC
+                      RANGE BETWEEN CURRENT ROW AND 1 FOLLOWING) AS c
+FROM t_single
+
+-- ============================================================
+-- 1.13: multiple PARTITION BY + multiple ORDER BY
 -- ============================================================
 
 query
@@ -210,7 +273,7 @@ SELECT dept, id, hire_yr, salary,
 FROM emp
 
 -- ============================================================
--- 1.12: complex expression in aggregate input
+-- 1.14: complex expression in aggregate input
 -- ============================================================
 
 query
@@ -219,7 +282,7 @@ SELECT dept, id, salary,
 FROM emp
 
 -- ============================================================
--- 1.13: multiple window functions with mixed specs in one query
+-- 1.15: multiple window functions with mixed specs in one query
 -- ============================================================
 
 query
