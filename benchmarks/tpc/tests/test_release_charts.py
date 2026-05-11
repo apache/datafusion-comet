@@ -47,6 +47,11 @@ def test_classify_conf_drops_noise_keys():
         "spark.jars": "/tmp/y.jar",
         "spark.submit.deployMode": "client",
         "spark.repl.class.uri": "...",
+        "spark.app.submitTime": "1776548361806",
+        "spark.app.initial.jar.urls": "spark://10.0.0.1:1234/jars/x.jar",
+        "spark.eventLog.dir": "/tmp/spark-events",
+        "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+        "spark.sql.warehouse.dir": "file:/home/user/warehouse",
     }
     common, spark_only, comet_only = classify_conf(dict(noise), dict(noise))
     assert common == []

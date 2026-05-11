@@ -23,14 +23,18 @@ NOISE_KEYS = frozenset({
     "spark.driver.host",
     "spark.driver.port",
     "spark.executor.id",
-    "spark.app.id",
-    "spark.app.name",
-    "spark.app.startTime",
     "spark.master",
     "spark.jars",
+    "spark.sql.warehouse.dir",
 })
 
-NOISE_PREFIXES = ("spark.submit.", "spark.repl.")
+NOISE_PREFIXES = (
+    "spark.submit.",
+    "spark.repl.",
+    "spark.app.",
+    "spark.eventLog.",
+    "spark.hadoop.",
+)
 
 
 def _is_noise(key: str) -> bool:
