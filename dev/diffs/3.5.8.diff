@@ -937,7 +937,7 @@ index c26757c9cff..d55775f09d7 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 3cf2bfd17ab..b1c1e41e6a9 100644
+index 3cf2bfd17ab..a3effb1eeb8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1521,7 +1521,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -950,6 +950,16 @@ index 3cf2bfd17ab..b1c1e41e6a9 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
+@@ -3750,7 +3751,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+     }
+   }
+ 
+-  test("SPARK-33084: Add jar support Ivy URI in SQL") {
++  test("SPARK-33084: Add jar support Ivy URI in SQL",
++    IgnoreComet("Flaky: depends on external Maven Central download of legacy Hadoop/Hive jars")) {
+     val sc = spark.sparkContext
+     val hiveVersion = "2.3.9"
+     // transitive=false, only download specified jar
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 index 8b4ac474f87..3f79f20822f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
