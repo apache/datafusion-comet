@@ -1,0 +1,47 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Fork-side entry workflow.
+#
+# This fires on every branch push in a contributor's fork and consumes the
+# fork's GitHub Actions minutes. The upstream apache/datafusion-comet repo
+# detects the run via notify_test_workflow.yml and surfaces its status as a
+# "Build" check on the PR. The name is intentionally generic to match
+# Spark's convention ("Build") — GitHub's check-suite-from-workflow mapping
+# picks an arbitrary associated workflow when creating a check run.
+#
+# See also: https://github.community/t/specify-check-suite-when-creating-a-checkrun/118380/10
+
+name: Build
+
+on:
+  push:
+    branches:
+      - '**'
+    paths-ignore:
+      - "benchmarks/**"
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+      - "dev/changelog/*.md"
+
+jobs:
+  run:
+    name: Run
+    permissions:
+      packages: write
+    uses: ./.github/workflows/pr_build_entry.yml
