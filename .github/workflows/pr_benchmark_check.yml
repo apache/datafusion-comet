@@ -46,7 +46,7 @@ env:
 jobs:
   benchmark-check:
     name: Benchmark Compile & Lint Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:

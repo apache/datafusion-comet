@@ -143,7 +143,7 @@ jobs:
           - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
       fail-fast: false
     name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:

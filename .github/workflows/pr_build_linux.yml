@@ -63,7 +63,7 @@ jobs:
   # Fast lint check - gates all other jobs
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
@@ -77,7 +77,7 @@ jobs:
   lint-java:
     needs: lint
     name: Lint Java (${{ matrix.profile.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
       env:
@@ -153,7 +153,7 @@ jobs:
   build-spark-4-1:
     needs: lint
     name: Build Spark 4.1, JDK 17
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
@@ -182,7 +182,7 @@ jobs:
   build-native:
     needs: lint
     name: Build Native Library
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
@@ -234,7 +234,7 @@ jobs:
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
@@ -396,7 +396,7 @@ jobs:
               org.apache.spark.sql.CometCollationSuite
       fail-fast: false
     name: ${{ matrix.profile.name }}/${{ matrix.profile.scan_impl }} [${{ matrix.suite.name }}]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
       env:
@@ -443,7 +443,7 @@ jobs:
   verify-benchmark-results-tpch:
     needs: build-native
     name: Verify TPC-H Results
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     env:
@@ -497,7 +497,7 @@ jobs:
   verify-benchmark-results-tpcds:
     needs: build-native
     name: Verify TPC-DS Results (${{ matrix.join }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     env:
