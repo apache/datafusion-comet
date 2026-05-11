@@ -147,7 +147,7 @@ jobs:
     # Hive tests stay on the standard GitHub-hosted runner: HiveSparkSubmitSuite
     # relies on an Ivy 'local-m2-cache' resolver that the runs-on.com
     # ubuntu24-full-x64 image does not provide, so spark-submit fails there.
-    runs-on: ${{ startsWith(matrix.module.name, 'sql_hive') && 'ubuntu-24.04' || (github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest') }}
+    runs-on: ${{ startsWith(matrix.module.name, 'sql_hive') && 'ubuntu-24.04' || (vars.USE_RUNS_ON == 'true' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest') }}
     container:
       image: amd64/rust
     steps:
@@ -174,12 +174,18 @@ jobs:
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
-            build/sbt -Dsbt.log.noformat=true -mem 6144 ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+            build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
           fi
         env:
           LC_ALL: "C.UTF-8"
+          # Standard GitHub runners have 7 GB RAM; cap SBT heap so forked test
+          # JVMs fit alongside it. The runs-on.com runner has more headroom.
+          SBT_MEM: ${{ vars.USE_RUNS_ON == 'true' && '6144' || '3072' }}
+          # Disable parallel test execution on standard runners to reduce peak
+          # memory usage — mirrors what apache/spark does on GitHub Actions.
+          SERIAL_SBT_TESTS: ${{ vars.USE_RUNS_ON == 'true' && '' || '1' }}
           # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
           # build_java21.yml and build_java25.yml set this same env var to
           # process-isolate the V1/V2 Parquet and Orc source suites because
