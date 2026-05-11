@@ -30,31 +30,22 @@ The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instan
 | --- | --- |
 | spark.cores.max | 16 |
 | spark.driver.memory | 8G |
-| spark.eventLog.dir | /tmp/spark-events |
-| spark.eventLog.enabled | true |
 | spark.executor.cores | 8 |
 | spark.executor.instances | 2 |
 | spark.executor.memory | 16g |
-| spark.hadoop.fs.s3a.aws.credentials.provider | com.amazonaws.auth.DefaultAWSCredentialsProviderChain |
-| spark.hadoop.fs.s3a.impl | org.apache.hadoop.fs.s3a.S3AFileSystem |
 | spark.memory.offHeap.enabled | true |
 | spark.memory.offHeap.size | 16g |
 | spark.rdd.compress | True |
 | spark.serializer.objectStreamReset | 100 |
-| spark.sql.warehouse.dir | file:/home/andy/git/apache/datafusion-comet/benchmarks/tpc/spark-warehouse |
 
 ### Spark
 
-| Property | Value |
-| --- | --- |
-| spark.app.submitTime | 1776548361806 |
+_None._
 
 ### Comet
 
 | Property | Value |
 | --- | --- |
-| spark.app.initial.jar.urls | spark://10.0.0.118:37357/jars/comet-spark-spark3.5_2.12-0.15.0.jar |
-| spark.app.submitTime | 1776548868968 |
 | spark.comet.expression.Cast.allowIncompatible | true |
 | spark.comet.scan.impl | native_datafusion |
 | spark.plugins | org.apache.spark.CometPlugin |
