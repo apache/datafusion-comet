@@ -59,3 +59,48 @@ def test_classify_conf_sorted_by_key():
     comet = {"spark.z": "1", "spark.a": "1", "spark.m": "1"}
     common, _, _ = classify_conf(spark, comet)
     assert [k for k, _ in common] == ["spark.a", "spark.m", "spark.z"]
+
+
+from release_charts import render_conf_tables
+
+
+def test_render_conf_tables_basic():
+    common = [("spark.executor.cores", "8")]
+    spark_only = [("spark.executor.memory", "16g")]
+    comet_only = [
+        ("spark.comet.scan.impl", "native_datafusion"),
+        ("spark.executor.memory", "32g"),
+    ]
+    result = render_conf_tables(common, spark_only, comet_only)
+    assert result == (
+        "### Common\n"
+        "\n"
+        "| Property | Value |\n"
+        "| --- | --- |\n"
+        "| spark.executor.cores | 8 |\n"
+        "\n"
+        "### Spark\n"
+        "\n"
+        "| Property | Value |\n"
+        "| --- | --- |\n"
+        "| spark.executor.memory | 16g |\n"
+        "\n"
+        "### Comet\n"
+        "\n"
+        "| Property | Value |\n"
+        "| --- | --- |\n"
+        "| spark.comet.scan.impl | native_datafusion |\n"
+        "| spark.executor.memory | 32g |\n"
+    )
+
+
+def test_render_conf_tables_empty_sections_use_none_placeholder():
+    result = render_conf_tables([], [("spark.x", "1")], [])
+    assert "### Common\n\n_None._\n" in result
+    assert "### Comet\n\n_None._\n" in result
+    assert "| spark.x | 1 |" in result
+
+
+def test_render_conf_tables_escapes_pipe_in_value():
+    result = render_conf_tables([("spark.x", "a|b")], [], [])
+    assert "| spark.x | a\\|b |" in result

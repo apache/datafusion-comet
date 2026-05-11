@@ -63,3 +63,23 @@ def classify_conf(spark_conf: dict, comet_conf: dict) -> tuple[list, list, list]
                 comet_only.append((key, comet[key]))
 
     return common, spark_only, comet_only
+
+
+def _escape_md_cell(value: str) -> str:
+    return value.replace("|", "\\|")
+
+
+def _render_table(rows):
+    if not rows:
+        return "_None._\n"
+    lines = ["| Property | Value |", "| --- | --- |"]
+    for key, value in rows:
+        lines.append(f"| {key} | {_escape_md_cell(str(value))} |")
+    return "\n".join(lines) + "\n"
+
+
+def render_conf_tables(common, spark_only, comet_only) -> str:
+    parts = []
+    for heading, rows in [("Common", common), ("Spark", spark_only), ("Comet", comet_only)]:
+        parts.append(f"### {heading}\n\n{_render_table(rows)}")
+    return "\n".join(parts)
