@@ -600,9 +600,11 @@ private[udf] object CometBatchKernelCodegenInput {
          |      }""".stripMargin
       case dt: DecimalType =>
         val body =
-          if (dt.precision <= 18)
+          if (dt.precision <= 18) {
             emitDecimalFastBodyUnsafe(s"${childField}_valueAddr", "startIndex + i", "        ")
-          else emitDecimalSlowBody(childField, "startIndex + i", "        ")
+          } else {
+            emitDecimalSlowBody(childField, "startIndex + i", "        ")
+          }
         s"""      @Override
          |      public org.apache.spark.sql.types.Decimal getDecimal(
          |          int i, int precision, int scale) {
@@ -802,9 +804,11 @@ private[udf] object CometBatchKernelCodegenInput {
         val dt = f.sparkType.asInstanceOf[DecimalType]
         val field = s"${path}_f$fi"
         val body =
-          if (dt.precision <= 18)
+          if (dt.precision <= 18) {
             emitDecimalFastBodyUnsafe(s"${field}_valueAddr", "this.rowIdx", "          ")
-          else emitDecimalSlowBody(field, "this.rowIdx", "          ")
+          } else {
+            emitDecimalSlowBody(field, "this.rowIdx", "          ")
+          }
         s"""        case $fi: {
            |$body
            |        }""".stripMargin
