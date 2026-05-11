@@ -124,16 +124,26 @@ BENCHMARKS = [
     {"name": "tpcds", "label": "TPC-DS", "md": "tpc-ds.md"},
 ]
 
+CHART_SECTIONS = [
+    ("allqueries", "Total time to run all queries (lower is better)."),
+    ("queries_compare", "Per-query breakdown showing the relative performance of Spark and Comet."),
+    ("queries_speedup_rel", "How much Comet accelerates each query in relative terms."),
+    ("queries_speedup_abs", "How much Comet accelerates each query in absolute terms."),
+]
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
 def _render_charts_block(bench: str, version: str) -> str:
-    lines = []
-    for base in [f"{bench}_allqueries.png", f"{bench}_queries_compare.png", f"{bench}_queries_speedup_rel.png", f"{bench}_queries_speedup_abs.png"]:
-        lines.append(f"![](../../_static/images/benchmark-results/{version}/{base})\n")
-    return "\n".join(lines)
+    parts = []
+    for suffix, description in CHART_SECTIONS:
+        parts.append(
+            f"{description}\n\n"
+            f"![](../../_static/images/benchmark-results/{version}/{bench}_{suffix}.png)\n"
+        )
+    return "\n".join(parts)
 
 
 def _process_benchmark(bench, version, spark_version, title_suffix, repo_root):
