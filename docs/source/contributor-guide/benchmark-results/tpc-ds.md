@@ -25,47 +25,10 @@ The tracking issue for improving TPC-DS performance is [#858](https://github.com
 
 ## Configuration
 
-Common:
-
-```properties
-spark.executor.instances=32
-spark.executor.cores=16
-spark.memory.fraction=0.6
-spark.memory.storageFraction=0.2
-# Kubernetes CPU constraints
-spark.kubernetes.executor.request.cores=8
-spark.kubernetes.executor.limit.cores=8
-```
-
-Spark:
-
-```properties
-spark.executor.memory=64G
-spark.executor.memoryOverhead=10G
-```
-
-Comet:
-
-```properties
-spark.executor.memory=64G
-spark.executor.memoryOverhead=10G
-spark.memory.offHeap.enabled=true
-spark.memory.offHeap.size=32G
-spark.comet.memoryPool.fraction=0.8
-```
+<!-- AUTO-GENERATED:config:START -->
+<!-- AUTO-GENERATED:config:END -->
 
 ## Benchmark Results
 
-![](../../_static/images/benchmark-results/0.15.0/tpcds_allqueries.png)
-
-Here is a breakdown showing relative performance of Spark and Comet for each query.
-
-![](../../_static/images/benchmark-results/0.15.0/tpcds_queries_compare.png)
-
-The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.
-
-![](../../_static/images/benchmark-results/0.15.0/tpcds_queries_speedup_rel.png)
-
-The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.
-
-![](../../_static/images/benchmark-results/0.15.0/tpcds_queries_speedup_abs.png)
+<!-- AUTO-GENERATED:charts:START -->
+<!-- AUTO-GENERATED:charts:END -->

@@ -23,63 +23,25 @@ The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instan
 
 ## Configuration
 
-Common:
+<!-- AUTO-GENERATED:config:START -->
+<!-- AUTO-GENERATED:config:END -->
+
+### Comet (Tuned)
+
+Hand-tuned configuration used for the "with tuned" chart below:
 
 ```properties
-spark.executor.instances=32
-spark.executor.cores=16
-spark.memory.fraction=0.6
-spark.memory.storageFraction=0.2
-# Kubernetes CPU constraints
-spark.kubernetes.executor.request.cores=8
-spark.kubernetes.executor.limit.cores=8
-```
-
-Spark:
-
-```properties
-spark.executor.memory=64G
-spark.executor.memoryOverhead=10G
-```
-
-Comet:
-
-```properties
-spark.executor.memory=32G
-spark.executor.memoryOverhead=10G
-spark.memory.offHeap.enabled=true
-spark.memory.offHeap.size=32G
-```
-
-Comet (Tuned):
-
-```properties
-spark.executor.memory=32G
-spark.executor.memoryOverhead=10G
-spark.memory.offHeap.enabled=true
-spark.memory.offHeap.size=32G
 spark.comet.exec.replaceSortMergeJoin=true
 spark.comet.memoryPool.fraction=0.8
 ```
 
 ## Benchmark Results
 
-The following chart shows benchmark results comparing Spark to Comet, both with Comet's default settings, and with Hash Join enabled in Comet.
+<!-- AUTO-GENERATED:charts:START -->
+<!-- AUTO-GENERATED:charts:END -->
 
-Comet's Hash Join does not support spilling yet, so it isn't suitable for all workloads.
+### With hand-tuned Comet configuration
+
+The following chart adds a "Comet (Tuned)" run on top of the default Spark vs. Comet comparison.
 
 ![](../../_static/images/benchmark-results/0.15.0/tpch_allqueries_with_tuned.png)
-
-## Comet (with Hash Join enabled)
-
-Here is a breakdown showing relative performance of Spark and Comet for each query.
-
-![](../../_static/images/benchmark-results/0.15.0/tpch_queries_compare.png)
-
-The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.
-
-![](../../_static/images/benchmark-results/0.15.0/tpch_queries_speedup_rel.png)
-
-The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.
-
-![](../../_static/images/benchmark-results/0.15.0/tpch_queries_speedup_abs.png)
