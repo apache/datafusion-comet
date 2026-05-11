@@ -46,31 +46,32 @@ How much Comet accelerates each query in absolute terms.
 ## Configuration
 
 <!-- AUTO-GENERATED:config:START -->
-### Common
+Common:
 
-| Property | Value |
-| --- | --- |
-| spark.cores.max | 16 |
-| spark.driver.memory | 8G |
-| spark.executor.cores | 8 |
-| spark.executor.instances | 2 |
-| spark.executor.memory | 16g |
-| spark.memory.offHeap.enabled | true |
-| spark.memory.offHeap.size | 16g |
-| spark.rdd.compress | True |
-| spark.serializer.objectStreamReset | 100 |
+```properties
+spark.executor.instances=32
+spark.executor.cores=16
+spark.memory.fraction=0.6
+spark.memory.storageFraction=0.2
+# Kubernetes CPU constraints
+spark.kubernetes.executor.request.cores=8
+spark.kubernetes.executor.limit.cores=8
+```
 
-### Spark
+Spark:
 
-_None._
+```properties
+spark.executor.memory=64G
+spark.executor.memoryOverhead=10G
+```
 
-### Comet
+Comet:
 
-| Property | Value |
-| --- | --- |
-| spark.comet.expression.Cast.allowIncompatible | true |
-| spark.comet.scan.impl | native_datafusion |
-| spark.plugins | org.apache.spark.CometPlugin |
-| spark.shuffle.manager | org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager |
-| spark.sql.extensions | org.apache.comet.CometSparkSessionExtensions |
+```properties
+spark.executor.memory=64G
+spark.executor.memoryOverhead=10G
+spark.memory.offHeap.enabled=true
+spark.memory.offHeap.size=32G
+spark.comet.memoryPool.fraction=0.8
+```
 <!-- AUTO-GENERATED:config:END -->

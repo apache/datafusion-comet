@@ -183,14 +183,20 @@ def _process_benchmark(bench, version, spark_version, title_suffix, repo_root):
     with open(comet_json) as f:
         comet_conf = json.load(f).get("spark_conf", {})
 
-    common, spark_only, comet_only = classify_conf(spark_conf, comet_conf)
-    conf_md = render_conf_tables(common, spark_only, comet_only)
     charts_md = _render_charts_block(bench["name"], version)
 
     md_path = repo_root / "docs" / "source" / "contributor-guide" / "benchmark-results" / bench["md"]
     text = md_path.read_text()
     try:
-        text = replace_marker_region(text, "config", conf_md)
+        if spark_conf and comet_conf:
+            common, spark_only, comet_only = classify_conf(spark_conf, comet_conf)
+            conf_md = render_conf_tables(common, spark_only, comet_only)
+            text = replace_marker_region(text, "config", conf_md)
+        else:
+            logger.warning(
+                "%s: spark_conf missing from result JSONs; leaving config section as-is",
+                md_path,
+            )
         text = replace_marker_region(text, "charts", charts_md)
     except ValueError as e:
         logger.error("%s: %s", md_path, e)
