@@ -43,7 +43,7 @@ def _filter(conf: dict) -> dict:
     return {k: v for k, v in conf.items() if not _is_noise(k)}
 
 
-def classify_conf(spark_conf: dict, comet_conf: dict):
+def classify_conf(spark_conf: dict, comet_conf: dict) -> tuple[list, list, list]:
     spark = _filter(spark_conf)
     comet = _filter(comet_conf)
 
