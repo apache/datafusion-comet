@@ -23,6 +23,18 @@ The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instan
 
 The tracking issue for improving TPC-DS performance is [#858](https://github.com/apache/datafusion-comet/issues/858).
 
+## Benchmark Results
+
+<!-- AUTO-GENERATED:charts:START -->
+![](../../_static/images/benchmark-results/0.16.0/tpcds_allqueries.png)
+
+![](../../_static/images/benchmark-results/0.16.0/tpcds_queries_compare.png)
+
+![](../../_static/images/benchmark-results/0.16.0/tpcds_queries_speedup_rel.png)
+
+![](../../_static/images/benchmark-results/0.16.0/tpcds_queries_speedup_abs.png)
+<!-- AUTO-GENERATED:charts:END -->
+
 ## Configuration
 
 <!-- AUTO-GENERATED:config:START -->
@@ -54,15 +66,3 @@ _None._
 | spark.shuffle.manager | org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager |
 | spark.sql.extensions | org.apache.comet.CometSparkSessionExtensions |
 <!-- AUTO-GENERATED:config:END -->
-
-## Benchmark Results
-
-<!-- AUTO-GENERATED:charts:START -->
-![](../../_static/images/benchmark-results/0.16.0/tpcds_allqueries.png)
-
-![](../../_static/images/benchmark-results/0.16.0/tpcds_queries_compare.png)
-
-![](../../_static/images/benchmark-results/0.16.0/tpcds_queries_speedup_rel.png)
-
-![](../../_static/images/benchmark-results/0.16.0/tpcds_queries_speedup_abs.png)
-<!-- AUTO-GENERATED:charts:END -->

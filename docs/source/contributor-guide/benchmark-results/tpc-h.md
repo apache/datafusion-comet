@@ -21,6 +21,24 @@ under the License.
 
 The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instances with EBS storage) with data stored in S3.
 
+## Benchmark Results
+
+<!-- AUTO-GENERATED:charts:START -->
+![](../../_static/images/benchmark-results/0.16.0/tpch_allqueries.png)
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_compare.png)
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_rel.png)
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_abs.png)
+<!-- AUTO-GENERATED:charts:END -->
+
+### With hand-tuned Comet configuration
+
+The following chart adds a "Comet (Tuned)" run on top of the default Spark vs. Comet comparison.
+
+![](../../_static/images/benchmark-results/0.15.0/tpch_allqueries_with_tuned.png)
+
 ## Configuration
 
 <!-- AUTO-GENERATED:config:START -->
@@ -61,21 +79,3 @@ Hand-tuned configuration used for the "with tuned" chart below:
 spark.comet.exec.replaceSortMergeJoin=true
 spark.comet.memoryPool.fraction=0.8
 ```
-
-## Benchmark Results
-
-<!-- AUTO-GENERATED:charts:START -->
-![](../../_static/images/benchmark-results/0.16.0/tpch_allqueries.png)
-
-![](../../_static/images/benchmark-results/0.16.0/tpch_queries_compare.png)
-
-![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_rel.png)
-
-![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_abs.png)
-<!-- AUTO-GENERATED:charts:END -->
-
-### With hand-tuned Comet configuration
-
-The following chart adds a "Comet (Tuned)" run on top of the default Spark vs. Comet comparison.
-
-![](../../_static/images/benchmark-results/0.15.0/tpch_allqueries_with_tuned.png)
