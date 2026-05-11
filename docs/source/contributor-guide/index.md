@@ -19,9 +19,21 @@ under the License.
 
 # Comet Contributor Guide
 
+The Comet contributor guide is for developers working on Comet itself. It covers the project
+architecture, the JVM and native code layout, the Arrow FFI bridge, JVM and native shuffle, and
+how data and plans flow between Spark and the DataFusion execution engine.
+
+It also documents day-to-day workflows including building and testing locally, debugging,
+benchmarking, profiling, tracing, running the SQL test suites, adding new operators and
+expressions, triaging bugs, and the Comet release process.
+
+New contributors should start with the Getting Started page. Select a topic from the navigation
+menu to read more.
+
 ```{toctree}
 :maxdepth: 2
 :caption: Contributor Guide
+:hidden:
 
 Getting Started <contributing>
 Comet Plugin Overview <plugin_overview>
@@ -30,6 +42,7 @@ JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
 Development Guide <development>
 Debugging Guide <debugging>
+ANSI Error Propagation <sql_error_propagation>
 Benchmarking Guide <benchmarking>
 Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>

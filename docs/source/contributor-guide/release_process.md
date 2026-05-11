@@ -158,6 +158,21 @@ commit into the release branch.
 
 ### Build the jars
 
+#### A note on workspace cleanliness
+
+The `common/pom.xml` resource configuration unconditionally bundles
+`native/target/{x86_64,aarch64}-apple-darwin/release/libcomet.dylib` into the
+`common` jar when those files exist on disk. Maven's `clean` removes
+`common/target` but does not touch Cargo's `native/target` directory, so a
+stale dylib left over from a prior local `make release` or `make release-linux`
+on the release manager's workstation can silently end up in a release jar
+(see [#2232](https://github.com/apache/datafusion-comet/issues/2232) for the
+incident in 0.9.1).
+
+The `build-release-comet.sh` script now runs `cargo clean` for you, but as a
+defensive measure, prefer running the release build from a fresh clone of the
+repository rather than your day-to-day working tree.
+
 #### Setup to do the build
 
 The build process requires Docker. Download the latest Docker Desktop from https://www.docker.com/products/docker-desktop/.

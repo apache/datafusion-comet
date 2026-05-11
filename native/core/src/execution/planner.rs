@@ -122,10 +122,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation,
+    Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
+    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal,
+    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -148,6 +148,25 @@ struct JoinParameters {
     pub join_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
     pub join_filter: Option<JoinFilter>,
     pub join_type: DFJoinType,
+}
+
+/// If `expr` evaluates to `Timestamp(_, Some(_))` against `schema`, wrap it in a
+/// metadata-only cast to `Timestamp(_, None)`. This is required because
+/// DataFusion's `SortMergeJoinExec` comparator only supports timezone-less
+/// timestamp types, while Spark's `TimestampType` serializes as
+/// `Timestamp(µs, "UTC")`. The cast preserves ordering on the same time unit.
+fn strip_timestamp_tz(
+    expr: Arc<dyn PhysicalExpr>,
+    schema: &Schema,
+) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+    match expr.data_type(schema)? {
+        DataType::Timestamp(unit, Some(_)) => Ok(Arc::new(CastExpr::new(
+            expr,
+            DataType::Timestamp(unit, None),
+            None,
+        ))),
+        _ => Ok(expr),
+    }
 }
 
 #[derive(Default)]
@@ -699,6 +718,23 @@ impl PhysicalPlanner {
                 Ok(Arc::new(SparkArraysZipFunc::new(
                     children,
                     expr.names.clone(),
+                )))
+            }
+            ExprStruct::JvmScalarUdf(udf) => {
+                let args = udf
+                    .args
+                    .iter()
+                    .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let return_type =
+                    to_arrow_datatype(udf.return_type.as_ref().ok_or_else(|| {
+                        GeneralError("JvmScalarUdf missing return_type".to_string())
+                    })?);
+                Ok(Arc::new(JvmScalarUdfExpr::new(
+                    udf.class_name.clone(),
+                    args,
+                    return_type,
+                    udf.return_nullable,
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
@@ -1727,10 +1763,23 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                let left_schema = left.schema();
+                let right_schema = right.schema();
+                let join_on = join_params
+                    .join_on
+                    .into_iter()
+                    .map(|(l, r)| {
+                        Ok((
+                            strip_timestamp_tz(l, left_schema.as_ref())?,
+                            strip_timestamp_tz(r, right_schema.as_ref())?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, ExecutionError>>()?;
+
                 let join = Arc::new(SortMergeJoinExec::try_new(
                     Arc::clone(&left),
                     Arc::clone(&right),
-                    join_params.join_on,
+                    join_on,
                     join_params.join_filter,
                     join_params.join_type,
                     sort_options,
