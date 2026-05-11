@@ -120,13 +120,6 @@ BENCHMARKS = [
     {"name": "tpcds", "label": "TPC-DS", "md": "tpc-ds.md"},
 ]
 
-CHART_BASENAMES = [
-    "queries_speedup_rel.png",
-    "queries_speedup_abs.png",
-    "queries_compare.png",
-    "allqueries.png",
-]
-
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
