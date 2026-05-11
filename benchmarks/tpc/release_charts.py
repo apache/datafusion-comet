@@ -15,78 +15,26 @@
 # specific language governing permissions and limitations
 # under the License.
 
-NOISE_KEYS = frozenset({
-    "spark.driver.extraJavaOptions",
-    "spark.executor.extraJavaOptions",
-    "spark.driver.extraClassPath",
-    "spark.executor.extraClassPath",
-    "spark.driver.host",
-    "spark.driver.port",
-    "spark.executor.id",
-    "spark.master",
-    "spark.jars",
-    "spark.sql.warehouse.dir",
-})
+import argparse
+import logging
+import subprocess
+import sys
+from pathlib import Path
 
-NOISE_PREFIXES = (
-    "spark.submit.",
-    "spark.repl.",
-    "spark.app.",
-    "spark.eventLog.",
-    "spark.hadoop.",
-)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
+BENCHMARKS = [
+    {"name": "tpch", "label": "TPC-H", "md": "tpc-h.md"},
+    {"name": "tpcds", "label": "TPC-DS", "md": "tpc-ds.md"},
+]
 
-def _is_noise(key: str) -> bool:
-    if key in NOISE_KEYS:
-        return True
-    return any(key.startswith(p) for p in NOISE_PREFIXES)
-
-
-def _filter(conf: dict) -> dict:
-    return {k: v for k, v in conf.items() if not _is_noise(k)}
-
-
-def classify_conf(spark_conf: dict, comet_conf: dict) -> tuple[list, list, list]:
-    spark = _filter(spark_conf)
-    comet = _filter(comet_conf)
-
-    common = []
-    spark_only = []
-    comet_only = []
-
-    for key in sorted(set(spark) | set(comet)):
-        in_spark = key in spark
-        in_comet = key in comet
-        if in_spark and in_comet and spark[key] == comet[key]:
-            common.append((key, spark[key]))
-        else:
-            if in_spark:
-                spark_only.append((key, spark[key]))
-            if in_comet:
-                comet_only.append((key, comet[key]))
-
-    return common, spark_only, comet_only
-
-
-def _escape_md_cell(value: str) -> str:
-    return value.replace("|", "\\|")
-
-
-def _render_table(rows):
-    if not rows:
-        return "_None._\n"
-    lines = ["| Property | Value |", "| --- | --- |"]
-    for key, value in rows:
-        lines.append(f"| {key} | {_escape_md_cell(str(value))} |")
-    return "\n".join(lines) + "\n"
-
-
-def render_conf_tables(common, spark_only, comet_only) -> str:
-    parts = []
-    for heading, rows in [("Common", common), ("Spark", spark_only), ("Comet", comet_only)]:
-        parts.append(f"### {heading}\n\n{_render_table(rows)}")
-    return "\n".join(parts)
+CHART_SECTIONS = [
+    ("allqueries", "Total time to run all queries (lower is better)."),
+    ("queries_compare", "Per-query breakdown showing the relative performance of Spark and Comet."),
+    ("queries_speedup_rel", "How much Comet accelerates each query in relative terms."),
+    ("queries_speedup_abs", "How much Comet accelerates each query in absolute terms."),
+]
 
 
 def replace_marker_region(text: str, name: str, new_content: str) -> str:
@@ -107,29 +55,6 @@ def replace_marker_region(text: str, name: str, new_content: str) -> str:
         new_content = new_content + "\n"
 
     return text[:body_start] + new_content + text[end_idx:]
-
-
-import argparse
-import json
-import logging
-import subprocess
-import sys
-from pathlib import Path
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-logger = logging.getLogger(__name__)
-
-BENCHMARKS = [
-    {"name": "tpch", "label": "TPC-H", "md": "tpc-h.md"},
-    {"name": "tpcds", "label": "TPC-DS", "md": "tpc-ds.md"},
-]
-
-CHART_SECTIONS = [
-    ("allqueries", "Total time to run all queries (lower is better)."),
-    ("queries_compare", "Per-query breakdown showing the relative performance of Spark and Comet."),
-    ("queries_speedup_rel", "How much Comet accelerates each query in relative terms."),
-    ("queries_speedup_abs", "How much Comet accelerates each query in absolute terms."),
-]
 
 
 def _repo_root() -> Path:
@@ -178,29 +103,15 @@ def _process_benchmark(bench, version, spark_version, title_suffix, repo_root):
     logger.info("generating %s charts -> %s", bench["label"], image_dir)
     subprocess.run(cmd, check=True)
 
-    with open(spark_json) as f:
-        spark_conf = json.load(f).get("spark_conf", {})
-    with open(comet_json) as f:
-        comet_conf = json.load(f).get("spark_conf", {})
-
     charts_md = _render_charts_block(bench["name"], version)
 
     md_path = repo_root / "docs" / "source" / "contributor-guide" / "benchmark-results" / bench["md"]
     text = md_path.read_text()
     try:
-        if spark_conf and comet_conf:
-            common, spark_only, comet_only = classify_conf(spark_conf, comet_conf)
-            conf_md = render_conf_tables(common, spark_only, comet_only)
-            text = replace_marker_region(text, "config", conf_md)
-        else:
-            logger.warning(
-                "%s: spark_conf missing from result JSONs; leaving config section as-is",
-                md_path,
-            )
         text = replace_marker_region(text, "charts", charts_md)
     except ValueError as e:
         logger.error("%s: %s", md_path, e)
-        logger.error("add the AUTO-GENERATED:config and AUTO-GENERATED:charts marker pairs first")
+        logger.error("add the AUTO-GENERATED:charts marker pair first")
         raise SystemExit(1)
     md_path.write_text(text)
     logger.info("updated %s", md_path)

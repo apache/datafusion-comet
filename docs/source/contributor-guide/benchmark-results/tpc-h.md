@@ -49,7 +49,6 @@ The following chart adds a "Comet (Tuned)" run on top of the default Spark vs. C
 
 ## Configuration
 
-<!-- AUTO-GENERATED:config:START -->
 Common:
 
 ```properties
@@ -77,7 +76,6 @@ spark.executor.memoryOverhead=10G
 spark.memory.offHeap.enabled=true
 spark.memory.offHeap.size=32G
 ```
-<!-- AUTO-GENERATED:config:END -->
 
 ### Comet (Tuned)
 

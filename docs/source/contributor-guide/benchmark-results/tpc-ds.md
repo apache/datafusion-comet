@@ -45,7 +45,6 @@ How much Comet accelerates each query in absolute terms.
 
 ## Configuration
 
-<!-- AUTO-GENERATED:config:START -->
 Common:
 
 ```properties
@@ -74,4 +73,3 @@ spark.memory.offHeap.enabled=true
 spark.memory.offHeap.size=32G
 spark.comet.memoryPool.fraction=0.8
 ```
-<!-- AUTO-GENERATED:config:END -->
