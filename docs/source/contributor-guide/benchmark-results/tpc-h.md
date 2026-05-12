@@ -23,7 +23,6 @@ The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instan
 
 ## Benchmark Results
 
-<!-- AUTO-GENERATED:charts:START -->
 Total time to run all queries (lower is better).
 
 ![](../../_static/images/benchmark-results/0.16.0/tpch_allqueries.png)
@@ -39,7 +38,6 @@ How much Comet accelerates each query in relative terms.
 How much Comet accelerates each query in absolute terms.
 
 ![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_abs.png)
-<!-- AUTO-GENERATED:charts:END -->
 
 ### With hand-tuned Comet configuration
 

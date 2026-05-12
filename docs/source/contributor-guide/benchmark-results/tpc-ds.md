@@ -25,7 +25,6 @@ The tracking issue for improving TPC-DS performance is [#858](https://github.com
 
 ## Benchmark Results
 
-<!-- AUTO-GENERATED:charts:START -->
 Total time to run all queries (lower is better).
 
 ![](../../_static/images/benchmark-results/0.16.0/tpcds_allqueries.png)
@@ -41,7 +40,6 @@ How much Comet accelerates each query in relative terms.
 How much Comet accelerates each query in absolute terms.
 
 ![](../../_static/images/benchmark-results/0.16.0/tpcds_queries_speedup_abs.png)
-<!-- AUTO-GENERATED:charts:END -->
 
 ## Configuration
 

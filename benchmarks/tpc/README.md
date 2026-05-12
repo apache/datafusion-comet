@@ -109,22 +109,6 @@ Generating charts:
 python3 generate-comparison.py --benchmark tpch --labels "Spark 3.5.3" "Comet 0.9.0" "Gluten 1.4.0" --title "TPC-H @ 100 GB (single executor, 8 cores, local Parquet files)" spark-tpch-1752338506381.json comet-tpch-1752337818039.json gluten-tpch-1752337474344.json
 ```
 
-### Generating release charts
-
-For an official release, drop the four result JSONs into `benchmarks/results/<version>/` under canonical names and run `release_charts.py`. It produces the eight PNGs under `docs/source/_static/images/benchmark-results/<version>/` and updates the Spark-config tables and chart references in `docs/source/contributor-guide/benchmark-results/tpc-h.md` and `tpc-ds.md`.
-
-```shell
-mkdir -p ../results/0.17.0
-mv spark-tpch-*.json ../results/0.17.0/spark-tpch.json
-mv comet-tpch-*.json ../results/0.17.0/comet-tpch.json
-mv spark-tpcds-*.json ../results/0.17.0/spark-tpcds.json
-mv comet-tpcds-*.json ../results/0.17.0/comet-tpcds.json
-
-python3 release_charts.py 0.17.0 --spark-version 3.5.8
-```
-
-The script only touches the regions inside `<!-- AUTO-GENERATED:... -->` markers, so hand-written prose in the markdown files is preserved.
-
 ## Engine Configuration
 
 Each engine is defined by a TOML file in `engines/`. The config specifies JARs, Spark conf overrides,
