@@ -516,6 +516,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             true, // allow_type_promotion: JVM side already validated via TypeUtil.checkParquetType
             session_ctx,
             encryption_enabled,
+            // The iceberg-compat path resolves IDs in the JVM via NativeBatchReader,
+            // so the native side does not need to do field-ID matching here.
+            false,
+            false,
         )?;
 
         let partition_index: usize = 0;

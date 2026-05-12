@@ -21,8 +21,10 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.execution.datasources.FilePartition
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.types.{StructField, StructType}
 
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 package object operator {
@@ -33,6 +35,12 @@ package object operator {
       fieldBuilder.setName(field.name)
       fieldBuilder.setDataType(serializeDataType(field.dataType).get)
       fieldBuilder.setNullable(field.nullable)
+      fieldBuilder.clearMetadata()
+      if (ParquetUtils.hasFieldId(field)) {
+        fieldBuilder.putMetadata(
+          CometParquetUtils.PARQUET_FIELD_ID_META_KEY,
+          ParquetUtils.getFieldId(field).toString)
+      }
       fieldBuilder.build()
     }
   }
