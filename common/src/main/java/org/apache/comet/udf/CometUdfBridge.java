@@ -54,10 +54,11 @@ public class CometUdfBridge {
    *     ScalarFunctionArgs.number_rows}; the only batch-size signal a zero-input UDF (e.g. a
    *     zero-arg non-deterministic ScalaUDF) ever sees.
    * @param taskContext propagated Spark {@link TaskContext} from the driving Spark task thread, or
-   *     {@code null} outside a Spark task. Installed as the thread-local for the duration of the
-   *     call when the current thread has none, so partition-sensitive built-ins ({@code Rand},
-   *     {@code Uuid}, {@code MonotonicallyIncreasingID}) work from Tokio workers. Cleared in {@code
-   *     finally} to avoid leaking across worker reuse.
+   *     {@code null} outside a Spark task. Treated as ground truth for the call: installed as the
+   *     thread-local on entry, with the prior value (if any) saved and restored in {@code finally}.
+   *     Lets partition-sensitive built-ins ({@code Rand}, {@code Uuid}, {@code
+   *     MonotonicallyIncreasingID}) work from Tokio workers and avoids reusing a stale TaskContext
+   *     left on a worker by a previous task.
    */
   public static void evaluate(
       String udfClassName,
@@ -67,17 +68,23 @@ public class CometUdfBridge {
       long outSchemaPtr,
       int numRows,
       TaskContext taskContext) {
-    boolean installedTaskContext = false;
-    if (taskContext != null && TaskContext.get() == null) {
+    // Save-and-restore rather than only-install-if-null: the propagated context is the ground
+    // truth for this call. Any value already on the thread is either (a) the same object on a
+    // Spark task thread, or (b) stale from a prior task on a reused Tokio worker.
+    TaskContext prior = TaskContext.get();
+    if (taskContext != null) {
       CometTaskContextShim.set(taskContext);
-      installedTaskContext = true;
     }
     try {
       evaluateInternal(
           udfClassName, inputArrayPtrs, inputSchemaPtrs, outArrayPtr, outSchemaPtr, numRows);
     } finally {
-      if (installedTaskContext) {
-        CometTaskContextShim.unset();
+      if (taskContext != null) {
+        if (prior != null) {
+          CometTaskContextShim.set(prior);
+        } else {
+          CometTaskContextShim.unset();
+        }
       }
     }
   }

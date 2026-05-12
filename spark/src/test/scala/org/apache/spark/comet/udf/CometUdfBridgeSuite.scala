@@ -119,23 +119,22 @@ class CometUdfBridgeSuite extends AnyFunSuite with BeforeAndAfterAll {
     }
   }
 
-  test("evaluate does not overwrite an existing thread-local TaskContext") {
-    // Spark task threads (as opposed to Tokio workers) already have a TaskContext installed
-    // by Spark; the bridge must not stomp on it with the propagated reference.
+  test("evaluate overwrites a stale thread-local TaskContext and restores it after") {
+    // The thread-local on a reused Tokio worker may be stale from a previous task, so the
+    // bridge treats the propagated TaskContext as ground truth: install it, save the prior,
+    // restore the prior in finally.
     val prior = TaskContext.get()
-    val installed = TaskContext.empty()
-    TaskContext.setTaskContext(installed)
+    val stale = TaskContext.empty()
+    TaskContext.setTaskContext(stale)
     try {
       val propagated = TaskContext.empty()
       RecordTaskContextUDF.reset()
       val out = runEvaluate(classOf[RecordTaskContextUDF].getName, 1, propagated)
       out.close()
       assert(
-        RecordTaskContextUDF.observed === installed,
-        "current thread already has a TaskContext; bridge must leave it in place")
-      assert(
-        TaskContext.get() === installed,
-        "thread-local must still be the originally-installed context after evaluate returns")
+        RecordTaskContextUDF.observed === propagated,
+        "bridge must install the propagated TaskContext over whatever was on the thread")
+      assert(TaskContext.get() === stale, "bridge must restore the prior thread-local in finally")
     } finally {
       TaskContext.unset()
       if (prior != null) TaskContext.setTaskContext(prior)
