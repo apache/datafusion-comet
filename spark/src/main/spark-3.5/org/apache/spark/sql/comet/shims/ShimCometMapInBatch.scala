@@ -19,65 +19,32 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.{JobArtifactSet, TaskContext}
-import org.apache.spark.api.python.{ChainedPythonFunctions, PythonEvalType}
-import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.TaskContext
 import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.execution.python.{ArrowPythonRunner, MapInPandasExec, PythonMapInArrowExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+/**
+ * Spark 3.5 shim for the PyArrow UDF acceleration support.
+ *
+ * The columnar runner introduced in #4234 only targets Spark 4.0+. On Spark 3.5 the matchers
+ * return `None`, the rewrite does not fire, and vanilla Spark handles `mapInArrow` /
+ * `mapInPandas` unchanged. 3.5 support can be added later if there is user demand.
+ */
 trait ShimCometMapInBatch {
 
-  protected def matchMapInArrow(plan: SparkPlan): Option[MapInBatchInfo] =
-    plan match {
-      case p: PythonMapInArrowExec =>
-        Some(
-          MapInBatchInfo(
-            p.func,
-            p.output,
-            p.child,
-            p.isBarrier,
-            PythonEvalType.SQL_MAP_ARROW_ITER_UDF))
-      case _ => None
-    }
+  protected def matchMapInArrow(plan: SparkPlan): Option[MapInBatchInfo] = None
 
-  protected def matchMapInPandas(plan: SparkPlan): Option[MapInBatchInfo] =
-    plan match {
-      case p: MapInPandasExec =>
-        Some(
-          MapInBatchInfo(
-            p.func,
-            p.output,
-            p.child,
-            p.isBarrier,
-            PythonEvalType.SQL_MAP_PANDAS_ITER_UDF))
-      case _ => None
-    }
+  protected def matchMapInPandas(plan: SparkPlan): Option[MapInBatchInfo] = None
 
-  /** Inputs Spark 3.5's `ArrowPythonRunner` constructor needs. */
-  protected case class RunnerInputs(
-      chainedFunc: Seq[ChainedPythonFunctions],
-      timeZoneId: String,
-      largeVarTypes: Boolean,
-      pythonRunnerConf: Map[String, String],
-      jobArtifactUUID: Option[String])
+  /** Stub; never constructed on Spark 3.5 because the matchers always return `None`. */
+  protected case class RunnerInputs()
 
-  /**
-   * Resolves the `SQLConf`-derived inputs the `ArrowPythonRunner` needs. Must be called on the
-   * driver: `conf.sessionLocalTimeZone` etc. read from a thread-local `ConfigReader` that only
-   * exists on the driver, so dereferencing them from a task closure NPEs.
-   */
   protected def runnerInputs(pythonUDF: PythonUDF, conf: SQLConf): RunnerInputs =
-    RunnerInputs(
-      chainedFunc = Seq(ChainedPythonFunctions(Seq(pythonUDF.func))),
-      timeZoneId = conf.sessionLocalTimeZone,
-      largeVarTypes = conf.arrowUseLargeVarTypes,
-      pythonRunnerConf = ArrowPythonRunner.getPythonRunnerConfMap(conf),
-      jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid))
+    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.5")
 
   protected def computeArrowPython(
       runnerInputs: RunnerInputs,
@@ -85,17 +52,8 @@ trait ShimCometMapInBatch {
       argOffsets: Array[Array[Int]],
       schema: StructType,
       pythonMetrics: Map[String, SQLMetric],
-      batchIter: Iterator[Iterator[InternalRow]],
+      batchIter: Iterator[Iterator[ColumnarBatch]],
       partitionId: Int,
       context: TaskContext): Iterator[ColumnarBatch] =
-    new ArrowPythonRunner(
-      runnerInputs.chainedFunc,
-      evalType,
-      argOffsets,
-      schema,
-      runnerInputs.timeZoneId,
-      runnerInputs.largeVarTypes,
-      runnerInputs.pythonRunnerConf,
-      pythonMetrics,
-      runnerInputs.jobArtifactUUID).compute(batchIter, partitionId, context)
+    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.5")
 }
