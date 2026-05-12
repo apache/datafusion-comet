@@ -69,7 +69,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    SumInteger, ToCsv,
+    SparkBloomFilterVersion, SumInteger, ToCsv,
 };
 use datafusion_spark::function::aggregate::collect::SparkCollectSet;
 use iceberg::expr::Bind;
@@ -122,10 +122,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation,
+    Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
+    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal,
+    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -148,6 +148,25 @@ struct JoinParameters {
     pub join_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
     pub join_filter: Option<JoinFilter>,
     pub join_type: DFJoinType,
+}
+
+/// If `expr` evaluates to `Timestamp(_, Some(_))` against `schema`, wrap it in a
+/// metadata-only cast to `Timestamp(_, None)`. This is required because
+/// DataFusion's `SortMergeJoinExec` comparator only supports timezone-less
+/// timestamp types, while Spark's `TimestampType` serializes as
+/// `Timestamp(µs, "UTC")`. The cast preserves ordering on the same time unit.
+fn strip_timestamp_tz(
+    expr: Arc<dyn PhysicalExpr>,
+    schema: &Schema,
+) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+    match expr.data_type(schema)? {
+        DataType::Timestamp(unit, Some(_)) => Ok(Arc::new(CastExpr::new(
+            expr,
+            DataType::Timestamp(unit, None),
+            None,
+        ))),
+        _ => Ok(expr),
+    }
 }
 
 #[derive(Default)]
@@ -699,6 +718,23 @@ impl PhysicalPlanner {
                 Ok(Arc::new(SparkArraysZipFunc::new(
                     children,
                     expr.names.clone(),
+                )))
+            }
+            ExprStruct::JvmScalarUdf(udf) => {
+                let args = udf
+                    .args
+                    .iter()
+                    .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let return_type =
+                    to_arrow_datatype(udf.return_type.as_ref().ok_or_else(|| {
+                        GeneralError("JvmScalarUdf missing return_type".to_string())
+                    })?);
+                Ok(Arc::new(JvmScalarUdfExpr::new(
+                    udf.class_name.clone(),
+                    args,
+                    return_type,
+                    udf.return_nullable,
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
@@ -1323,8 +1359,11 @@ impl PhysicalPlanner {
                     default_values,
                     common.session_timezone.as_str(),
                     common.case_sensitive,
+                    common.return_null_struct_if_all_fields_missing,
                     self.session_ctx(),
                     common.encryption_enabled,
+                    common.use_field_id,
+                    common.ignore_missing_field_id,
                 )?;
                 Ok((
                     vec![],
@@ -1724,10 +1763,23 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                let left_schema = left.schema();
+                let right_schema = right.schema();
+                let join_on = join_params
+                    .join_on
+                    .into_iter()
+                    .map(|(l, r)| {
+                        Ok((
+                            strip_timestamp_tz(l, left_schema.as_ref())?,
+                            strip_timestamp_tz(r, right_schema.as_ref())?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, ExecutionError>>()?;
+
                 let join = Arc::new(SortMergeJoinExec::try_new(
                     Arc::clone(&left),
                     Arc::clone(&right),
-                    join_params.join_on,
+                    join_on,
                     join_params.join_filter,
                     join_params.join_type,
                     sort_options,
@@ -2362,10 +2414,17 @@ impl PhysicalPlanner {
                 let num_bits =
                     self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let version = match expr.version() {
+                    spark_expression::BloomFilterVersion::V2 => SparkBloomFilterVersion::V2,
+                    // Default (Unspecified or V1) preserves the pre-Spark-4.1 format that
+                    // Comet has always emitted, keeping older Spark versions byte-equivalent.
+                    _ => SparkBloomFilterVersion::V1,
+                };
                 let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
                     Arc::clone(&num_items),
                     Arc::clone(&num_bits),
                     datatype,
+                    version,
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
             }
@@ -3010,11 +3069,16 @@ fn convert_spark_types_to_arrow_schema(
     let arrow_fields = spark_types
         .iter()
         .map(|spark_type| {
-            Field::new(
+            let field = Field::new(
                 String::clone(&spark_type.name),
                 to_arrow_datatype(spark_type.data_type.as_ref().unwrap()),
                 spark_type.nullable,
-            )
+            );
+            if spark_type.metadata.is_empty() {
+                field
+            } else {
+                field.with_metadata(spark_type.metadata.clone())
+            }
         })
         .collect_vec();
     let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));

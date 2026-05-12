@@ -59,6 +59,7 @@ jobs:
   # Fast lint check - gates all other jobs (runs on Linux for cost efficiency)
   lint:
     name: Lint
+    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.labels.*.name, 'skip-ci') && !contains(github.event.pull_request.title, '[skip ci]')) }}
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -182,6 +183,7 @@ jobs:
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
           - name: "csv"
             value: |
@@ -195,6 +197,7 @@ jobs:
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.CometNativeSuite
+              org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
               org.apache.spark.CometPluginsDefaultSuite
@@ -210,6 +213,7 @@ jobs:
               org.apache.spark.sql.comet.CometTaskMetricsSuite
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
+              org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.comet.objectstore.NativeConfigSuite
           - name: "expressions"
             value: |

@@ -32,6 +32,7 @@ This guide documents areas where Comet's behavior is known to differ from Spark.
 
 ```{toctree}
 :maxdepth: 1
+:hidden:
 
 scans
 floating-point

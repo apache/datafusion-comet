@@ -36,7 +36,8 @@ permissions:
 jobs:
   analyze:
     name: Analyze Actions
-    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.labels.*.name, 'skip-ci') && !contains(github.event.pull_request.title, '[skip ci]')) }}
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write

@@ -64,14 +64,9 @@ Spark 4.0.2 is supported with Java 17 and Scala 2.13.
   [#4051](https://github.com/apache/datafusion-comet/issues/4051)): Spark 4.0 introduced collation
   support. Non-default collated strings are not yet supported by Comet and will fall back to Spark.
 
-## Spark 4.1 (Experimental)
+## Spark 4.1
 
-Spark 4.1.1 is provided as experimental support with Java 17 and Scala 2.13.
-
-```{warning}
-Spark 4.1 support is experimental and intended for development and testing only. It should not be used
-in production.
-```
+Spark 4.1.1 is supported with Java 17/21 and Scala 2.13.
 
 ### Known Limitations
 
