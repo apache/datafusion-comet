@@ -563,7 +563,7 @@
 - [x] startswith
 - [x] substr
 - [x] substring
-- [ ] substring_index
+- [x] substring_index
 - [ ] to_binary
 - [ ] to_char
 - [ ] to_number
