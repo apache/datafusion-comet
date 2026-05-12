@@ -19,21 +19,17 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.{JobArtifactSet, TaskContext}
+import org.apache.spark.JobArtifactSet
 import org.apache.spark.api.python.{ChainedPythonFunctions, PythonEvalType}
-import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.python.{ArrowPythonRunner, MapInArrowExec, MapInPandasExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
- * Shared 4.x bits for `ShimCometMapInBatch`. The matchers and `getRunnerInputs` helper are
- * identical across 4.0/4.1/4.2; only the `ArrowPythonRunner` constructor parameter list differs
- * per minor, so each minor's `ShimCometMapInBatch` provides only `computeArrowPython`.
+ * Shared 4.x bits for `ShimCometMapInBatch`. The matchers and `runnerInputs` helper are identical
+ * across 4.0/4.1/4.2; only the `ArrowPythonRunner` constructor parameter list differs per minor,
+ * so each minor's `ShimCometMapInBatch` provides only `computeArrowPython`.
  */
 trait Spark4xMapInBatchSupport {
 
@@ -71,6 +67,11 @@ trait Spark4xMapInBatchSupport {
       pythonRunnerConf: Map[String, String],
       jobArtifactUUID: Option[String])
 
+  /**
+   * Resolves the `SQLConf`-derived inputs the `ArrowPythonRunner` needs. Must be called on the
+   * driver: `SQLConf.get` reads from a thread-local `ConfigReader` that only exists on the
+   * driver, so dereferencing `conf.sessionLocalTimeZone` etc. from a task closure NPEs.
+   */
   protected def runnerInputs(pythonUDF: PythonUDF, conf: SQLConf): RunnerInputs =
     RunnerInputs(
       chainedFunc = Seq((ChainedPythonFunctions(Seq(pythonUDF.func)), pythonUDF.resultId.id)),

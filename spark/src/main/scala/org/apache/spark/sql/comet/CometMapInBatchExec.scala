@@ -80,13 +80,16 @@ case class CometMapInBatchExec(
     val numOutputBatches = longMetric("numOutputBatches")
     val numInputRows = longMetric("numInputRows")
 
-    val pythonUDF = func.asInstanceOf[PythonUDF]
     val outputAttrs = output
     val childSchema = child.schema
     val batchSize = conf.arrowMaxRecordsPerBatch
     val evalType = pythonEvalType
-    val sqlConf = conf
     val metricsCopy = pythonMetrics
+
+    // Resolve every `SQLConf`-derived input on the driver. `SQLConf.get` reads from a thread-local
+    // `ConfigReader` that only exists on the driver, so dereferencing `conf` from inside the task
+    // closure NPEs (see #4234 review).
+    val resolvedRunnerInputs = runnerInputs(func.asInstanceOf[PythonUDF], conf)
 
     val inputRDD = child.executeColumnar()
 
@@ -108,11 +111,10 @@ case class CometMapInBatchExec(
         if (batchSize > 0) new BatchIterator(wrappedIter, batchSize) else Iterator(wrappedIter)
 
       val columnarBatchIter = computeArrowPython(
-        pythonUDF,
+        resolvedRunnerInputs,
         evalType,
         argOffsets,
         StructType(Array(StructField("struct", childSchema))),
-        sqlConf,
         metricsCopy,
         batchIter,
         context.partitionId(),

@@ -21,36 +21,31 @@ package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.TaskContext
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.python.ArrowPythonRunner
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 trait ShimCometMapInBatch extends Spark4xMapInBatchSupport {
 
   protected def computeArrowPython(
-      pythonUDF: PythonUDF,
+      runnerInputs: RunnerInputs,
       evalType: Int,
       argOffsets: Array[Array[Int]],
       schema: StructType,
-      conf: SQLConf,
       pythonMetrics: Map[String, SQLMetric],
       batchIter: Iterator[Iterator[InternalRow]],
       partitionId: Int,
-      context: TaskContext): Iterator[ColumnarBatch] = {
-    val r = runnerInputs(pythonUDF, conf)
+      context: TaskContext): Iterator[ColumnarBatch] =
     new ArrowPythonRunner(
-      r.chainedFunc,
+      runnerInputs.chainedFunc,
       evalType,
       argOffsets,
       schema,
-      r.timeZoneId,
-      r.largeVarTypes,
-      r.pythonRunnerConf,
+      runnerInputs.timeZoneId,
+      runnerInputs.largeVarTypes,
+      runnerInputs.pythonRunnerConf,
       pythonMetrics,
-      r.jobArtifactUUID,
+      runnerInputs.jobArtifactUUID,
       None).compute(batchIter, partitionId, context)
-  }
 }

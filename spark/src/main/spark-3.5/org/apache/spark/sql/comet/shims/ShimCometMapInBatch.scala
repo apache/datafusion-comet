@@ -58,27 +58,44 @@ trait ShimCometMapInBatch {
       case _ => None
     }
 
+  /** Inputs Spark 3.5's `ArrowPythonRunner` constructor needs. */
+  protected case class RunnerInputs(
+      chainedFunc: Seq[ChainedPythonFunctions],
+      timeZoneId: String,
+      largeVarTypes: Boolean,
+      pythonRunnerConf: Map[String, String],
+      jobArtifactUUID: Option[String])
+
+  /**
+   * Resolves the `SQLConf`-derived inputs the `ArrowPythonRunner` needs. Must be called on the
+   * driver: `conf.sessionLocalTimeZone` etc. read from a thread-local `ConfigReader` that only
+   * exists on the driver, so dereferencing them from a task closure NPEs.
+   */
+  protected def runnerInputs(pythonUDF: PythonUDF, conf: SQLConf): RunnerInputs =
+    RunnerInputs(
+      chainedFunc = Seq(ChainedPythonFunctions(Seq(pythonUDF.func))),
+      timeZoneId = conf.sessionLocalTimeZone,
+      largeVarTypes = conf.arrowUseLargeVarTypes,
+      pythonRunnerConf = ArrowPythonRunner.getPythonRunnerConfMap(conf),
+      jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid))
+
   protected def computeArrowPython(
-      pythonUDF: PythonUDF,
+      runnerInputs: RunnerInputs,
       evalType: Int,
       argOffsets: Array[Array[Int]],
       schema: StructType,
-      conf: SQLConf,
       pythonMetrics: Map[String, SQLMetric],
       batchIter: Iterator[Iterator[InternalRow]],
       partitionId: Int,
-      context: TaskContext): Iterator[ColumnarBatch] = {
-    val chainedFunc = Seq(ChainedPythonFunctions(Seq(pythonUDF.func)))
-    val jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid)
+      context: TaskContext): Iterator[ColumnarBatch] =
     new ArrowPythonRunner(
-      chainedFunc,
+      runnerInputs.chainedFunc,
       evalType,
       argOffsets,
       schema,
-      conf.sessionLocalTimeZone,
-      conf.arrowUseLargeVarTypes,
-      ArrowPythonRunner.getPythonRunnerConfMap(conf),
+      runnerInputs.timeZoneId,
+      runnerInputs.largeVarTypes,
+      runnerInputs.pythonRunnerConf,
       pythonMetrics,
-      jobArtifactUUID).compute(batchIter, partitionId, context)
-  }
+      runnerInputs.jobArtifactUUID).compute(batchIter, partitionId, context)
 }

@@ -42,12 +42,17 @@ trait ShimCometMapInBatch {
 
   protected def matchMapInPandas(plan: SparkPlan): Option[MapInBatchInfo] = None
 
+  /** Stub; never constructed on Spark 3.4 because the matchers always return `None`. */
+  protected case class RunnerInputs()
+
+  protected def runnerInputs(pythonUDF: PythonUDF, conf: SQLConf): RunnerInputs =
+    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.4")
+
   protected def computeArrowPython(
-      pythonUDF: PythonUDF,
+      runnerInputs: RunnerInputs,
       evalType: Int,
       argOffsets: Array[Array[Int]],
       schema: StructType,
-      conf: SQLConf,
       pythonMetrics: Map[String, SQLMetric],
       batchIter: Iterator[Iterator[InternalRow]],
       partitionId: Int,
