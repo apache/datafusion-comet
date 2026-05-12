@@ -63,7 +63,7 @@ jobs:
   # Fast lint check - gates all other jobs
   lint:
     name: Lint
-    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.title, '[skip ci]') }}
+    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.labels.*.name, 'skip-ci') && !contains(github.event.pull_request.title, '[skip ci]')) }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
