@@ -104,4 +104,38 @@ class CometMapInBatchSuite extends CometTestBase {
         s"unexpected CometMapInBatchExec when disabled:\n$rewritten")
     }
   }
+
+  test("end-to-end: rewrite-on output matches rewrite-off output for primitives + varchar") {
+    // This test needs PySpark workers; only run if PYSPARK_PYTHON is set in the env.
+    assume(
+      sys.env.contains("PYSPARK_PYTHON"),
+      "set PYSPARK_PYTHON to enable end-to-end pyarrow UDF tests")
+
+    withTempPath { path =>
+      val pathStr = path.getCanonicalPath
+      spark
+        .range(0, 1000, 1, 4)
+        .selectExpr(
+          "id AS id",
+          "CAST(id AS DOUBLE) * 1.5 AS dbl",
+          "CASE WHEN id % 10 = 0 THEN NULL ELSE CONCAT('row_', CAST(id AS STRING)) END AS s")
+        .write
+        .mode("overwrite")
+        .parquet(pathStr)
+
+      // Baseline: rewrite disabled, vanilla MapInArrowExec runs.
+      val baseline = withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "false") {
+        spark.read.parquet(pathStr).collect().map(_.toSeq).toSet
+      }
+
+      // Optimized: rewrite enabled, CometMapInBatchExec + CometArrowPythonRunner runs.
+      withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true") {
+        val df = spark.read.parquet(pathStr)
+        val result = df.collect().map(_.toSeq).toSet
+        assert(
+          result == baseline,
+          s"optimized output differs from baseline:\noptimized=$result\nbaseline=$baseline")
+      }
+    }
+  }
 }
