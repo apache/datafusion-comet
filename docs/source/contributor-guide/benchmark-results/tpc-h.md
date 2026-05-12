@@ -25,7 +25,7 @@ The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instan
 
 Total time to run all queries (lower is better).
 
-![](../../_static/images/benchmark-results/0.15.0/tpch_allqueries_with_tuned.png)
+![](../../_static/images/benchmark-results/0.16.0/tpch_allqueries_with_tuned.png)
 
 The following charts are based on the tuned run using hash join.
 
