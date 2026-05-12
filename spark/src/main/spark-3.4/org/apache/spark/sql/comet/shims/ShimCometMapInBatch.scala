@@ -20,7 +20,6 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.TaskContext
-import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -54,7 +53,7 @@ trait ShimCometMapInBatch {
       argOffsets: Array[Array[Int]],
       schema: StructType,
       pythonMetrics: Map[String, SQLMetric],
-      batchIter: Iterator[Iterator[InternalRow]],
+      batchIter: Iterator[Iterator[ColumnarBatch]],
       partitionId: Int,
       context: TaskContext): Iterator[ColumnarBatch] =
     throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.4")
