@@ -22,10 +22,20 @@
 Comet $COMET_VERSION User Guide
 ================================
 
+This guide covers Comet $COMET_VERSION: how to install it, build it from source, configure it for
+your Spark deployment, and get the best results from it. It also documents the data sources, data
+types, operators, and expressions that Comet supports, along with a compatibility guide describing
+known differences from Apache Spark.
+
+Operational topics include reading and understanding Comet query plans, tuning, available metrics,
+and integration guides for Apache Iceberg and Kubernetes. Select a topic from the navigation menu
+to read more.
+
 .. _toc.user-guide-links-$COMET_VERSION:
 .. toctree::
    :maxdepth: 1
    :caption: Comet $COMET_VERSION User Guide
+   :hidden:
 
    Installing Comet <installation>
    Building From Source <source>

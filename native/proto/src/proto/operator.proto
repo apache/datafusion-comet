@@ -74,6 +74,9 @@ message SparkStructField {
   string name = 1;
   spark.spark_expression.DataType data_type = 2;
   bool nullable = 3;
+  // Spark field metadata. Currently used to carry parquet.field.id through
+  // to the native side. Empty when not needed.
+  map<string, string> metadata = 4;
 }
 
 message Scan {
@@ -112,6 +115,12 @@ message NativeScanCommon {
   // pre-4.1 behavior); false preserves the parent struct's nullness from the file
   // so non-null parents return a struct of all-null fields.
   bool return_null_struct_if_all_fields_missing = 14;
+  // True when spark.sql.parquet.fieldId.read.enabled is set and the requested
+  // schema actually carries parquet.field.id metadata. When false the native
+  // scan keeps its existing name-based path with no extra work.
+  bool use_field_id = 15;
+  // True when spark.sql.parquet.fieldId.read.ignoreMissing is set.
+  bool ignore_missing_field_id = 16;
 }
 
 message NativeScan {
