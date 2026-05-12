@@ -80,6 +80,13 @@ public class ArrowConstantColumnReader extends AbstractColumnReader {
 
   @Override
   public void readBatch(int total) {
+    // Fail fast: a non-positive total here would silently yield a zero-length
+    // vector and later surface as a [N, 0] mismatch in NativeUtil.exportBatch
+    // (apache/datafusion-comet#4211).
+    if (total <= 0) {
+      throw new IllegalArgumentException(
+          "ArrowConstantColumnReader.readBatch requires total > 0, got " + total);
+    }
     if (total != currentSize) {
       close();
       initVector(value, total);
