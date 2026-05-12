@@ -21,6 +21,7 @@ use std::sync::OnceLock;
 use url::Url;
 
 use crate::execution::jni_api::get_runtime;
+use crate::parquet::objectstore::comet_credential_bridge;
 use async_trait::async_trait;
 use aws_config::{
     ecs::EcsCredentialsProvider, environment::EnvironmentVariableCredentialsProvider,
@@ -80,9 +81,18 @@ pub fn create_store(
 
     let credential_provider =
         get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))?;
-    builder = match credential_provider {
-        Some(provider) => builder.with_credentials(Arc::new(provider)),
-        None => builder.with_skip_signature(true),
+    builder = if comet_credential_bridge::is_provider_registered() {
+        // A vendor `CometCloudCredentialProvider` is registered on the JVM classpath. Route
+        // every credential fetch through it; the Java provider owns any STS / token refresh
+        // and may return different credentials per S3 path.
+        debug!("Using CometCredentialBridge for bucket {bucket}");
+        let bridge = comet_credential_bridge::CometCredentialBridge::new(bucket, url.path());
+        builder.with_credentials(Arc::new(bridge))
+    } else {
+        match credential_provider {
+            Some(provider) => builder.with_credentials(Arc::new(provider)),
+            None => builder.with_skip_signature(true),
+        }
     };
 
     let s3_configs = extract_s3_config_options(configs, bucket);
