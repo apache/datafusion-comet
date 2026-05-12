@@ -47,7 +47,7 @@
 - [x] bool_or
 - [ ] collect_list
 - [x] collect_set
-- [ ] corr
+- [x] corr
 - [x] count
 - [x] count_if
 - [ ] count_min_sketch
@@ -157,13 +157,13 @@
 ### bitwise_funcs
 
 - [x] `&`
-- [ ] `<<`
-- [ ] `>>`
+- [x] `<<`
+- [x] `>>`
 - [ ] `>>>`
 - [x] `^`
 - [x] bit_count
 - [x] bit_get
-- [ ] getbit
+- [x] getbit
 - [x] shiftright
 - [ ] shiftrightunsigned
 - [x] `|`
@@ -187,7 +187,7 @@
 - [ ] nullifzero
 - [x] nvl
 - [x] nvl2
-- [ ] when
+- [x] when
 - [ ] zeroifnull
 
 ### conversion_funcs
@@ -303,7 +303,7 @@
 - [x] crc32
 - [x] hash
 - [x] md5
-- [ ] sha
+- [x] sha
 - [x] sha1
 - [x] sha2
 - [x] xxhash64
@@ -335,23 +335,23 @@
 
 ### map_funcs
 
-- [ ] element_at
+- [x] element_at
 - [ ] map
 - [ ] map_concat
 - [x] map_contains_key
-- [ ] map_entries
-- [ ] map_from_arrays
-- [ ] map_from_entries
+- [x] map_entries
+- [x] map_from_arrays
+- [x] map_from_entries
 - [x] map_keys
-- [ ] map_values
+- [x] map_values
 - [x] str_to_map
 - [ ] try_element_at
 
 ### math_funcs
 
 - [x] `%`
-- [ ] `*`
-- [ ] `+`
+- [x] `*`
+- [x] `+`
 - [x] `-`
 - [x] `/`
 - [x] abs
@@ -373,7 +373,7 @@
 - [x] cot
 - [ ] csc
 - [x] degrees
-- [ ] div
+- [x] div
 - [ ] e
 - [x] exp
 - [x] expm1
@@ -384,7 +384,7 @@
 - [ ] hypot
 - [ ] least
 - [x] ln
-- [ ] log
+- [x] log
 - [x] log10
 - [ ] log1p
 - [x] log2
@@ -490,7 +490,7 @@
 - [x] `>`
 - [x] `>=`
 - [x] and
-- [ ] between
+- [x] between
 - [x] ilike
 - [x] in
 - [x] isnan
@@ -581,7 +581,7 @@
 ### struct_funcs
 
 - [x] named_struct
-- [ ] struct
+- [x] struct
 
 ### url_funcs
 

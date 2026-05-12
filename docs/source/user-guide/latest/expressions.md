@@ -102,7 +102,7 @@ of expressions that be disabled.
 | ---------------- | ---------------------------- |
 | DateAdd          | `date_add`                   |
 | DateDiff         | `datediff`                   |
-| DateFormat        | `date_format`                |
+| DateFormat       | `date_format`                |
 | DateFromUnixDate | `date_from_unix_date`        |
 | DateSub          | `date_sub`                   |
 | DatePart         | `date_part(field, source)`   |
@@ -131,56 +131,56 @@ of expressions that be disabled.
 
 ## Math Expressions
 
-| Expression     | SQL       |
-| -------------- | --------- |
-| Abs            | `abs`     |
-| Acos           | `acos`    |
-| Acosh          | `acosh`   |
-| Add            | `+`       |
-| Asin           | `asin`    |
-| Asinh          | `asinh`   |
-| Atan           | `atan`    |
-| Atan2          | `atan2`   |
-| Atanh          | `atanh`   |
-| Bin            | `bin`     |
-| BRound         | `bround`  |
-| Cbrt           | `cbrt`    |
-| Ceil           | `ceil`    |
-| Cos            | `cos`     |
-| Cosh           | `cosh`    |
-| Cot            | `cot`     |
-| Divide         | `/`       |
-| Exp            | `exp`     |
-| Expm1          | `expm1`   |
-| Floor          | `floor`   |
-| Hex            | `hex`     |
-| IntegralDivide | `div`     |
-| IsNaN          | `isnan`   |
-| Log            | `log`     |
-| Log2           | `log2`    |
-| Log10          | `log10`   |
-| Multiply       | `*`       |
-| Pi             | `pi`      |
-| Pow            | `power`   |
-| Rand           | `rand`    |
-| Randn          | `randn`   |
-| Remainder      | `%`       |
-| Round          | `round`   |
-| Signum         | `signum`  |
-| Sin            | `sin`     |
-| Sinh           | `sinh`    |
-| Sqrt           | `sqrt`    |
-| Subtract       | `-`       |
-| Tan            | `tan`     |
-| Tanh           | `tanh`    |
-| ToDegrees      | `degrees` |
-| ToRadians      | `radians` |
-| TryAdd         | `try_add` |
-| TryDivide      | `try_div` |
-| TryMultiply    | `try_mul` |
-| TrySubtract    | `try_sub` |
-| UnaryMinus     | `-`       |
-| Unhex          | `unhex`   |
+| Expression     | SQL            |
+| -------------- | -------------- |
+| Abs            | `abs`          |
+| Acos           | `acos`         |
+| Acosh          | `acosh`        |
+| Add            | `+`            |
+| Asin           | `asin`         |
+| Asinh          | `asinh`        |
+| Atan           | `atan`         |
+| Atan2          | `atan2`        |
+| Atanh          | `atanh`        |
+| Bin            | `bin`          |
+| BRound         | `bround`       |
+| Cbrt           | `cbrt`         |
+| Ceil           | `ceil`         |
+| Cos            | `cos`          |
+| Cosh           | `cosh`         |
+| Cot            | `cot`          |
+| Divide         | `/`            |
+| Exp            | `exp`          |
+| Expm1          | `expm1`        |
+| Floor          | `floor`        |
+| Hex            | `hex`          |
+| IntegralDivide | `div`          |
+| IsNaN          | `isnan`        |
+| Log            | `log`          |
+| Log2           | `log2`         |
+| Log10          | `log10`        |
+| Multiply       | `*`            |
+| Pi             | `pi`           |
+| Pow            | `power`        |
+| Rand           | `rand`         |
+| Randn          | `randn`        |
+| Remainder      | `%`            |
+| Round          | `round`        |
+| Signum         | `signum`       |
+| Sin            | `sin`          |
+| Sinh           | `sinh`         |
+| Sqrt           | `sqrt`         |
+| Subtract       | `-`            |
+| Tan            | `tan`          |
+| Tanh           | `tanh`         |
+| ToDegrees      | `degrees`      |
+| ToRadians      | `radians`      |
+| TryAdd         | `try_add`      |
+| TryDivide      | `try_div`      |
+| TryMultiply    | `try_mul`      |
+| TrySubtract    | `try_sub`      |
+| UnaryMinus     | `-`            |
+| Unhex          | `unhex`        |
 | WidthBucket    | `width_bucket` |
 
 ## Hashing Functions
@@ -280,15 +280,16 @@ Comet supports using the following aggregate functions within window contexts wi
 
 ## Map Expressions
 
-| Expression      |
-| --------------- |
-| GetMapValue     |
-| MapContainsKey  |
-| MapKeys         |
-| MapEntries      |
-| MapValues       |
-| MapFromArrays   |
-| StringToMap     |
+| Expression     |
+| -------------- |
+| GetMapValue    |
+| MapContainsKey |
+| MapEntries     |
+| MapFromArrays  |
+| MapFromEntries |
+| MapKeys        |
+| MapValues      |
+| StringToMap    |
 
 ## Struct Expressions
 
