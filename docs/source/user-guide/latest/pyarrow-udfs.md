@@ -181,17 +181,18 @@ on the unoptimized path.
 
 - The optimization currently applies only to `mapInArrow` and `mapInPandas`. Scalar pandas UDFs
   (`@pandas_udf`) and grouped operations (`applyInPandas`) are not yet supported.
-- The internal row-to-Arrow conversion inside the Python runner is still present in this version.
-  Comet currently routes columnar input through `ColumnarBatch.rowIterator()` so that the existing
-  `ArrowPythonRunner` can re-encode the rows back to Arrow IPC. A future optimization will write
-  Arrow batches directly to the Python IPC stream, eliminating the remaining round-trip and
-  achieving near zero-copy data transfer.
 - The optimization requires Arrow data on the input side. If a shuffle sits between the upstream
   Comet operator and the Python UDF, you need Comet's native shuffle for the optimization to
   apply. Set `spark.shuffle.manager` to
   `org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` and enable
   `spark.comet.exec.shuffle.enabled=true` at session startup. With a vanilla Spark `Exchange`
   in the plan the data leaves the shuffle as rows and the optimization cannot fire.
-- Spark 3.4 lacks several APIs the optimization depends on (`MapInBatchExec.isBarrier`,
-  `arrowUseLargeVarTypes`, `JobArtifactSet`, the modern `ArrowPythonRunner` constructor). On
-  Spark 3.4 the feature is a no-op even when enabled. Spark 3.5+ is required.
+- Spark 4.0 or newer is required. On Spark 3.4 and 3.5 the optimization is a no-op even when
+  enabled; vanilla `PythonMapInArrowExec` / `MapInPandasExec` handle the operation. The Spark 3.5
+  `PythonArrowInput` trait has a different contract than 4.x and a separate implementation has
+  not been written. Track 3.5 support as a future follow-on if there is user demand.
+- The current implementation copies Comet's vector buffers into Spark's allocator via
+  `Unsafe.copyMemory` (one bulk memcpy per buffer per column). True zero-copy via
+  `TransferPair` is blocked on Comet's Parquet readers allocating from `ArrowUtils.rootAllocator`
+  (rather than each reader constructing its own independent `RootAllocator`). A future PR that
+  unifies the allocator parent would unlock zero-copy.
