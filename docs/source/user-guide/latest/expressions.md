@@ -229,9 +229,6 @@ of expressions that be disabled.
 | Last          |            |
 | Max           |            |
 | Min           |            |
-| RegrAvgx      | `regr_avgx` |
-| RegrAvgy      | `regr_avgy` |
-| RegrCount     | `regr_count` |
 | StddevPop     |            |
 | StddevSamp    |            |
 | Sum           |            |
