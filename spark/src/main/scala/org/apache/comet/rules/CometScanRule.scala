@@ -301,10 +301,10 @@ case class CometScanRule(session: SparkSession)
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
-      // Iceberg scan - detected by class name
-      case _
-          if scanExec.scan.getClass.getName ==
-            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+      // Iceberg scan - detected by class name. SparkStagedScan covers reads issued by
+      // RewriteDataFiles (and similar maintenance actions) where the planner has already
+      // staged FileScanTasks via ScanTaskSetManager.
+      case _ if IcebergReflection.isIcebergScanClass(scanExec.scan.getClass.getName) =>
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled
