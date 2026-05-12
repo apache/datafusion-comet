@@ -22,12 +22,15 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 import scala.util.Try
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToCsv, StructsToJson}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, Literal, StructsToCsv, StructsToJson}
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
+import org.apache.comet.udf.CometLambdaRegistry
 
 object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
   override def convert(
@@ -109,11 +112,21 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
     "Does not support `+Infinity` and `-Infinity` for numeric types (float, double)." +
       " (https://github.com/apache/datafusion-comet/issues/3016)")
 
-  override def getSupportLevel(expr: StructsToJson): SupportLevel =
-    Incompatible(
-      Some(
-        "Does not support Infinity/-Infinity for numeric types" +
-          " (https://github.com/apache/datafusion-comet/issues/3016)"))
+  override def getSupportLevel(expr: StructsToJson): SupportLevel = {
+    if (CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_JAVA) {
+      expr.child.dataType match {
+        case s: StructType if s.fields.forall(f => isSupportedType(f.dataType)) =>
+          Compatible(None)
+        case _ =>
+          Unsupported(Some("to_json: only StructType with supported fields is supported"))
+      }
+    } else {
+      Incompatible(
+        Some(
+          "Does not support Infinity/-Infinity for numeric types" +
+            " (https://github.com/apache/datafusion-comet/issues/3016)"))
+    }
+  }
 
   override def convert(
       expr: StructsToJson,
@@ -121,41 +134,82 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (expr.options.nonEmpty) {
       withInfo(expr, "StructsToJson with options is not supported")
-      None
-    } else {
-      val isSupported = expr.child.dataType match {
-        case s: StructType =>
-          s.fields.forall(f => isSupportedType(f.dataType))
-        case _: MapType | _: ArrayType =>
-          // Spark supports map and array in StructsToJson but this is not yet
-          // implemented in Comet
-          false
-        case _ =>
-          false
-      }
+      return None
+    }
+    if (CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_JAVA) {
+      return convertViaJvmUdf(expr, inputs, binding)
+    }
+    val isSupported = expr.child.dataType match {
+      case s: StructType =>
+        s.fields.forall(f => isSupportedType(f.dataType))
+      case _: MapType | _: ArrayType =>
+        // Spark supports map and array in StructsToJson but this is not yet
+        // implemented in Comet
+        false
+      case _ =>
+        false
+    }
 
-      if (isSupported) {
-        exprToProtoInternal(expr.child, inputs, binding) match {
-          case Some(p) =>
-            val toJson = ExprOuterClass.ToJson
+    if (isSupported) {
+      exprToProtoInternal(expr.child, inputs, binding) match {
+        case Some(p) =>
+          val toJson = ExprOuterClass.ToJson
+            .newBuilder()
+            .setChild(p)
+            .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+            .setIgnoreNullFields(true)
+            .build()
+          Some(
+            ExprOuterClass.Expr
               .newBuilder()
-              .setChild(p)
-              .setTimezone(expr.timeZoneId.getOrElse("UTC"))
-              .setIgnoreNullFields(true)
-              .build()
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setToJson(toJson)
-                .build())
-          case _ =>
-            withInfo(expr, expr.child)
-            None
-        }
-      } else {
-        withInfo(expr, "Unsupported data type", expr.child)
-        None
+              .setToJson(toJson)
+              .build())
+        case _ =>
+          withInfo(expr, expr.child)
+          None
       }
+    } else {
+      withInfo(expr, "Unsupported data type", expr.child)
+      None
+    }
+  }
+
+  private def convertViaJvmUdf(
+      expr: StructsToJson,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    expr.child.dataType match {
+      case s: StructType if s.fields.forall(f => isSupportedType(f.dataType)) =>
+        val childProto = exprToProtoInternal(expr.child, inputs, binding)
+        if (childProto.isEmpty) return None
+        // TODO follow-up: the registry retains expressions for the JVM lifetime and
+        // does not propagate across executors. This is acceptable for the experimental
+        // engine=java mode in local Spark; cluster runs require encoding the
+        // schema/timezone directly in the JvmScalarUdf args.
+        // Rebind the child so the UDF can call eval(row) against a single-column
+        // wrapper InternalRow without hitting an unevaluable AttributeReference.
+        val rebound =
+          expr.copy(child = BoundReference(0, expr.child.dataType, expr.child.nullable))
+        val key = CometLambdaRegistry.register(rebound)
+        val keyProto =
+          exprToProtoInternal(Literal(UTF8String.fromString(key), StringType), inputs, binding)
+        if (keyProto.isEmpty) return None
+        val returnType = serializeDataType(DataTypes.StringType).getOrElse(return None)
+        val udfBuilder = ExprOuterClass.JvmScalarUdf
+          .newBuilder()
+          .setClassName("org.apache.comet.udf.ToJsonUDF")
+          .addArgs(childProto.get)
+          .addArgs(keyProto.get)
+          .setReturnType(returnType)
+          .setReturnNullable(expr.nullable)
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setJvmScalarUdf(udfBuilder.build())
+            .build())
+      case _ =>
+        withInfo(expr, "to_json: only StructType with supported fields is supported")
+        None
     }
   }
 
@@ -187,8 +241,15 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
   override def getUnsupportedReasons(): Seq[String] = Seq("Requires an explicit schema")
 
   override def getSupportLevel(expr: JsonToStructs): SupportLevel = {
-    // this feature is partially implemented and not comprehensively tested yet
-    Incompatible()
+    if (CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_JAVA) {
+      expr.schema match {
+        case s: StructType if isSupportedSchema(s) => Compatible(None)
+        case _ => Unsupported(Some("from_json: only StructType schemas are supported"))
+      }
+    } else {
+      // this feature is partially implemented and not comprehensively tested yet
+      Incompatible()
+    }
   }
 
   override def convert(
@@ -201,19 +262,11 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
       return None
     }
 
-    def isSupportedType(dt: DataType): Boolean = {
-      dt match {
-        case StructType(fields) =>
-          fields.nonEmpty && fields.forall(f => isSupportedType(f.dataType))
-        case DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
-            DataTypes.DoubleType | DataTypes.BooleanType | DataTypes.StringType =>
-          true
-        case _ => false
-      }
+    if (CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_JAVA) {
+      return convertViaJvmUdf(expr, inputs, binding)
     }
 
-    val schemaType = expr.schema
-    if (!isSupportedType(schemaType)) {
+    if (!isSupportedSchema(expr.schema)) {
       withInfo(expr, "from_json: Unsupported schema type")
       return None
     }
@@ -235,7 +288,7 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
     // Convert child expression and schema to protobuf
     for {
       childProto <- exprToProtoInternal(expr.child, inputs, binding)
-      schemaProto <- serializeDataType(schemaType)
+      schemaProto <- serializeDataType(expr.schema)
     } yield {
       val fromJson = ExprOuterClass.FromJson
         .newBuilder()
@@ -244,6 +297,54 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
         .setTimezone(expr.timeZoneId.getOrElse("UTC"))
         .build()
       ExprOuterClass.Expr.newBuilder().setFromJson(fromJson).build()
+    }
+  }
+
+  private def isSupportedSchema(dt: DataType): Boolean = dt match {
+    case StructType(fields) =>
+      fields.nonEmpty && fields.forall(f => isSupportedSchema(f.dataType))
+    case DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType |
+        DataTypes.BooleanType | DataTypes.StringType =>
+      true
+    case _ => false
+  }
+
+  private def convertViaJvmUdf(
+      expr: JsonToStructs,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    expr.schema match {
+      case s: StructType if isSupportedSchema(s) =>
+        val childProto = exprToProtoInternal(expr.child, inputs, binding)
+        if (childProto.isEmpty) return None
+        // TODO follow-up: the registry retains expressions for the JVM lifetime and
+        // does not propagate across executors. This is acceptable for the experimental
+        // engine=java mode in local Spark; cluster runs require encoding the
+        // schema/timezone directly in the JvmScalarUdf args.
+        // Rebind the child so the UDF can call eval(row) against a single-column
+        // wrapper InternalRow without hitting an unevaluable AttributeReference.
+        val rebound =
+          expr.copy(child = BoundReference(0, expr.child.dataType, expr.child.nullable))
+        val key = CometLambdaRegistry.register(rebound)
+        val keyProto =
+          exprToProtoInternal(Literal(UTF8String.fromString(key), StringType), inputs, binding)
+        if (keyProto.isEmpty) return None
+        val returnType = serializeDataType(expr.schema).getOrElse(return None)
+        val udfBuilder = ExprOuterClass.JvmScalarUdf
+          .newBuilder()
+          .setClassName("org.apache.comet.udf.FromJsonUDF")
+          .addArgs(childProto.get)
+          .addArgs(keyProto.get)
+          .setReturnType(returnType)
+          .setReturnNullable(expr.nullable)
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setJvmScalarUdf(udfBuilder.build())
+            .build())
+      case _ =>
+        withInfo(expr, "from_json: only StructType schemas are supported")
+        None
     }
   }
 }

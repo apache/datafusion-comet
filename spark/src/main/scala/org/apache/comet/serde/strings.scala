@@ -29,7 +29,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -429,27 +429,73 @@ object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Spark allows single-quoted JSON and unescaped control characters which Comet does not" +
-      " support")
+      " support when using engine=rust")
 
-  override def getSupportLevel(expr: GetJsonObject): SupportLevel =
-    Incompatible(
-      Some(
-        "Spark allows single-quoted JSON and unescaped control characters " +
-          "which Comet does not support"))
+  override def getSupportLevel(expr: GetJsonObject): SupportLevel = {
+    if (CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_JAVA) {
+      expr.path match {
+        case _: Literal => Compatible(None)
+        case _ => Unsupported(Some("Only scalar paths are supported"))
+      }
+    } else {
+      Incompatible(
+        Some(
+          "Spark allows single-quoted JSON and unescaped control characters " +
+            "which Comet does not support"))
+    }
+  }
 
   override def convert(
       expr: GetJsonObject,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
-    val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
-    val optExpr = scalarFunctionExprToProtoWithReturnType(
-      "get_json_object",
-      expr.dataType,
-      false,
-      jsonExpr,
-      pathExpr)
-    optExprWithInfo(optExpr, expr, expr.json, expr.path)
+    if (CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_JAVA) {
+      convertViaJvmUdf(expr, inputs, binding)
+    } else {
+      val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
+      val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
+      val optExpr = scalarFunctionExprToProtoWithReturnType(
+        "get_json_object",
+        expr.dataType,
+        false,
+        jsonExpr,
+        pathExpr)
+      optExprWithInfo(optExpr, expr, expr.json, expr.path)
+    }
+  }
+
+  private def convertViaJvmUdf(
+      expr: GetJsonObject,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr.path match {
+      case Literal(value, DataTypes.StringType) =>
+        if (value == null) {
+          withInfo(expr, "Null literal path is handled by Spark fallback")
+          return None
+        }
+        val jsonProto = exprToProtoInternal(expr.json, inputs, binding)
+        val pathProto = exprToProtoInternal(expr.path, inputs, binding)
+        if (jsonProto.isEmpty || pathProto.isEmpty) {
+          return None
+        }
+        val returnType = serializeDataType(DataTypes.StringType).getOrElse(return None)
+        val udfBuilder = ExprOuterClass.JvmScalarUdf
+          .newBuilder()
+          .setClassName("org.apache.comet.udf.GetJsonObjectUDF")
+          .addArgs(jsonProto.get)
+          .addArgs(pathProto.get)
+          .setReturnType(returnType)
+          .setReturnNullable(expr.nullable)
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setJvmScalarUdf(udfBuilder.build())
+            .build())
+      case _ =>
+        withInfo(expr, "Only scalar paths are supported")
+        None
+    }
   }
 }
 

@@ -380,6 +380,24 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val JSON_ENGINE_RUST = "rust"
+  val JSON_ENGINE_JAVA = "java"
+
+  val COMET_JSON_ENGINE: ConfigEntry[String] =
+    conf("spark.comet.exec.json.engine")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Selects the engine used to evaluate supported JSON expressions. " +
+          s"`$JSON_ENGINE_RUST` uses the native DataFusion JSON implementation. " +
+          s"`$JSON_ENGINE_JAVA` is experimental and routes through a JVM-side UDF " +
+          "that delegates to Spark's expression classes for byte-exact compatibility, " +
+          "at the cost of JNI roundtrips per batch. Expressions routed when set to java: " +
+          "get_json_object, from_json, to_json.")
+      .stringConf
+      .transform(_.toLowerCase(Locale.ROOT))
+      .checkValues(Set(JSON_ENGINE_RUST, JSON_ENGINE_JAVA))
+      .createWithDefault(JSON_ENGINE_RUST)
+
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
       .category(CATEGORY_SHUFFLE)
