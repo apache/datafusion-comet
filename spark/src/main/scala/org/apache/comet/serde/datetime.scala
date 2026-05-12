@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, SecondsToTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, FromUTCTimestamp, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, SecondsToTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -363,6 +363,27 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
 object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 
 object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
+
+object CometFromUTCTimestamp extends CometExpressionSerde[FromUTCTimestamp] {
+
+  private val tzParseIncompatReason: String =
+    "Comet's native timezone parser only accepts IANA zone IDs (e.g." +
+      " `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also" +
+      " accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like" +
+      " `PST`; queries using those forms will throw a native parse error at" +
+      " execution time."
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(tzParseIncompatReason)
+
+  override def convert(
+      expr: FromUTCTimestamp,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto("from_utc_timestamp", childExprs: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
 
 object CometNextDay extends CometScalarFunction[NextDay]("next_day")
 
