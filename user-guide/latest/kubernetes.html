@@ -422,7 +422,7 @@ under the License.
     <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
     
     
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.16.0-SNAPSHOT User Guide</a></li>
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.17.0-SNAPSHOT User Guide</a></li>
     
     <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comet Kubernetes Support</span></li>
   </ul>
@@ -504,13 +504,13 @@ metadata:
 spec:
 <span class="w">  </span>type:<span class="w"> </span>Scala
 <span class="w">  </span>mode:<span class="w"> </span>cluster
-<span class="w">  </span>image:<span class="w"> </span>apache/datafusion-comet:0.16.0-SNAPSHOT-spark3.5.5-scala2.12-java11
+<span class="w">  </span>image:<span class="w"> </span>apache/datafusion-comet:0.17.0-SNAPSHOT-spark3.5.5-scala2.12-java11
 <span class="w">  </span>imagePullPolicy:<span class="w"> </span>IfNotPresent
 <span class="w">  </span>mainClass:<span class="w"> </span>org.apache.spark.examples.SparkPi
 <span class="w">  </span>mainApplicationFile:<span class="w"> </span>local:///opt/spark/examples/jars/spark-examples_2.13-4.1.1.jar
 <span class="w">  </span>sparkConf:
-<span class="w">    </span><span class="s2">&quot;spark.executor.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.5_2.12-0.16.0-SNAPSHOT.jar&quot;</span>
-<span class="w">    </span><span class="s2">&quot;spark.driver.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.5_2.12-0.16.0-SNAPSHOT.jar&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.executor.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.5_2.12-0.17.0-SNAPSHOT.jar&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.driver.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.5_2.12-0.17.0-SNAPSHOT.jar&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.plugins&quot;</span>:<span class="w"> </span><span class="s2">&quot;org.apache.spark.CometPlugin&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.comet.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.comet.exec.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>

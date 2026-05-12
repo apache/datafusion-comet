@@ -471,6 +471,18 @@ under the License.
 <section id="apache-datafusion-comet-benchmarks-derived-from-tpc-h">
 <h1>Apache DataFusion Comet: Benchmarks Derived From TPC-H<a class="headerlink" href="#apache-datafusion-comet-benchmarks-derived-from-tpc-h" title="Link to this heading">#</a></h1>
 <p>The following benchmarks were performed on an EKS cluster (<code class="docutils literal notranslate"><span class="pre">r6i.24xlarge</span></code> instances with EBS storage) with data stored in S3.</p>
+<section id="benchmark-results">
+<h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
+<p>Total time to run all queries (lower is better).</p>
+<p><img alt="" src="../../_images/tpch_allqueries_with_tuned.png" /></p>
+<p>The following charts are based on the tuned run using hash join.</p>
+<p>Per-query breakdown showing the relative performance of Spark and Comet.</p>
+<p><img alt="" src="../../_images/tpch_queries_compare.png" /></p>
+<p>How much Comet accelerates each query in relative terms.</p>
+<p><img alt="" src="../../_images/tpch_queries_speedup_rel.png" /></p>
+<p>How much Comet accelerates each query in absolute terms.</p>
+<p><img alt="" src="../../_images/tpch_queries_speedup_abs.png" /></p>
+</section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
 <p>Common:</p>
@@ -495,30 +507,13 @@ under the License.
 <span class="na">spark.memory.offHeap.size</span><span class="o">=</span><span class="s">32G</span>
 </pre></div>
 </div>
-<p>Comet (Tuned):</p>
-<div class="highlight-properties notranslate"><div class="highlight"><pre><span></span><span class="na">spark.executor.memory</span><span class="o">=</span><span class="s">32G</span>
-<span class="na">spark.executor.memoryOverhead</span><span class="o">=</span><span class="s">10G</span>
-<span class="na">spark.memory.offHeap.enabled</span><span class="o">=</span><span class="s">true</span>
-<span class="na">spark.memory.offHeap.size</span><span class="o">=</span><span class="s">32G</span>
-<span class="na">spark.comet.exec.replaceSortMergeJoin</span><span class="o">=</span><span class="s">true</span>
+<section id="comet-tuned">
+<h3>Comet (Tuned)<a class="headerlink" href="#comet-tuned" title="Link to this heading">#</a></h3>
+<div class="highlight-properties notranslate"><div class="highlight"><pre><span></span><span class="na">spark.comet.exec.replaceSortMergeJoin</span><span class="o">=</span><span class="s">true</span>
 <span class="na">spark.comet.memoryPool.fraction</span><span class="o">=</span><span class="s">0.8</span>
 </pre></div>
 </div>
 </section>
-<section id="benchmark-results">
-<h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
-<p>The following chart shows benchmark results comparing Spark to Comet, both with Comet’s default settings, and with Hash Join enabled in Comet.</p>
-<p>Comet’s Hash Join does not support spilling yet, so it isn’t suitable for all workloads.</p>
-<p><img alt="" src="../../_images/tpch_allqueries_with_tuned.png" /></p>
-</section>
-<section id="comet-with-hash-join-enabled">
-<h2>Comet (with Hash Join enabled)<a class="headerlink" href="#comet-with-hash-join-enabled" title="Link to this heading">#</a></h2>
-<p>Here is a breakdown showing relative performance of Spark and Comet for each query.</p>
-<p><img alt="" src="../../_images/tpch_queries_compare.png" /></p>
-<p>The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.</p>
-<p><img alt="" src="../../_images/tpch_queries_speedup_rel.png" /></p>
-<p>The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.</p>
-<p><img alt="" src="../../_images/tpch_queries_speedup_abs.png" /></p>
 </section>
 </section>
 

@@ -471,7 +471,17 @@ under the License.
 <section id="apache-datafusion-comet-benchmarks-derived-from-tpc-ds">
 <h1>Apache DataFusion Comet: Benchmarks Derived From TPC-DS<a class="headerlink" href="#apache-datafusion-comet-benchmarks-derived-from-tpc-ds" title="Link to this heading">#</a></h1>
 <p>The following benchmarks were performed on an EKS cluster (<code class="docutils literal notranslate"><span class="pre">r6i.24xlarge</span></code> instances with EBS storage) with data stored in S3.</p>
-<p>The tracking issue for improving TPC-DS performance is <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/858">#858</a>.</p>
+<section id="benchmark-results">
+<h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
+<p>Total time to run all queries (lower is better).</p>
+<p><img alt="" src="../../_images/tpcds_allqueries.png" /></p>
+<p>Per-query breakdown showing the relative performance of Spark and Comet.</p>
+<p><img alt="" src="../../_images/tpcds_queries_compare.png" /></p>
+<p>How much Comet accelerates each query in relative terms.</p>
+<p><img alt="" src="../../_images/tpcds_queries_speedup_rel.png" /></p>
+<p>How much Comet accelerates each query in absolute terms.</p>
+<p><img alt="" src="../../_images/tpcds_queries_speedup_abs.png" /></p>
+</section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
 <p>Common:</p>
@@ -497,16 +507,6 @@ under the License.
 <span class="na">spark.comet.memoryPool.fraction</span><span class="o">=</span><span class="s">0.8</span>
 </pre></div>
 </div>
-</section>
-<section id="benchmark-results">
-<h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
-<p><img alt="" src="../../_images/tpcds_allqueries.png" /></p>
-<p>Here is a breakdown showing relative performance of Spark and Comet for each query.</p>
-<p><img alt="" src="../../_images/tpcds_queries_compare.png" /></p>
-<p>The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.</p>
-<p><img alt="" src="../../_images/tpcds_queries_speedup_rel.png" /></p>
-<p>The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.</p>
-<p><img alt="" src="../../_images/tpcds_queries_speedup_abs.png" /></p>
 </section>
 </section>
 
