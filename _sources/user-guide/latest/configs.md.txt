@@ -266,6 +266,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.GetStructField.enabled` | Enable Comet acceleration for `GetStructField` | true |
 | `spark.comet.expression.GreaterThan.enabled` | Enable Comet acceleration for `GreaterThan` | true |
 | `spark.comet.expression.GreaterThanOrEqual.enabled` | Enable Comet acceleration for `GreaterThanOrEqual` | true |
+| `spark.comet.expression.Greatest.enabled` | Enable Comet acceleration for `Greatest` | true |
 | `spark.comet.expression.Hex.enabled` | Enable Comet acceleration for `Hex` | true |
 | `spark.comet.expression.Hour.enabled` | Enable Comet acceleration for `Hour` | true |
 | `spark.comet.expression.Hours.enabled` | Enable Comet acceleration for `Hours` | true |
@@ -280,6 +281,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.JsonToStructs.enabled` | Enable Comet acceleration for `JsonToStructs` | true |
 | `spark.comet.expression.KnownFloatingPointNormalized.enabled` | Enable Comet acceleration for `KnownFloatingPointNormalized` | true |
 | `spark.comet.expression.LastDay.enabled` | Enable Comet acceleration for `LastDay` | true |
+| `spark.comet.expression.Least.enabled` | Enable Comet acceleration for `Least` | true |
 | `spark.comet.expression.Left.enabled` | Enable Comet acceleration for `Left` | true |
 | `spark.comet.expression.Length.enabled` | Enable Comet acceleration for `Length` | true |
 | `spark.comet.expression.LessThan.enabled` | Enable Comet acceleration for `LessThan` | true |
