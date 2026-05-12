@@ -216,11 +216,11 @@
 
 - [ ] add_months
 - [ ] convert_timezone
-- [x] curdate
-- [x] current_date
+- [ ] curdate
+- [ ] current_date
 - [ ] current_time
 - [ ] current_timestamp
-- [x] current_timezone
+- [ ] current_timezone
 - [x] date_add
 - [x] date_diff
 - [x] date_format
