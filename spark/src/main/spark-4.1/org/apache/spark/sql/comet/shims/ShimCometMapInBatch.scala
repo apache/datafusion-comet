@@ -20,9 +20,8 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.TaskContext
-import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.execution.python.ArrowPythonRunner
+import org.apache.spark.sql.execution.python.CometArrowPythonRunner
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -34,10 +33,10 @@ trait ShimCometMapInBatch extends Spark4xMapInBatchSupport {
       argOffsets: Array[Array[Int]],
       schema: StructType,
       pythonMetrics: Map[String, SQLMetric],
-      batchIter: Iterator[Iterator[InternalRow]],
+      batchIter: Iterator[Iterator[ColumnarBatch]],
       partitionId: Int,
       context: TaskContext): Iterator[ColumnarBatch] =
-    new ArrowPythonRunner(
+    new CometArrowPythonRunner(
       runnerInputs.chainedFunc,
       evalType,
       argOffsets,
@@ -47,6 +46,5 @@ trait ShimCometMapInBatch extends Spark4xMapInBatchSupport {
       runnerInputs.pythonRunnerConf,
       pythonMetrics,
       runnerInputs.jobArtifactUUID,
-      None,
       None).compute(batchIter, partitionId, context)
 }
