@@ -334,11 +334,6 @@ Comet supports using the following aggregate functions within window contexts wi
 | BloomFilterMightContain      |
 | Coalesce                     |
 | CheckOverflow                |
-| CurrentCatalog               |
-| CurrentDatabase              |
-| CurrentSchema                |
-| CurrentUser                  |
-| EqualNull                    |
 | KnownFloatingPointNormalized |
 | Literal                      |
 | MakeDecimal                  |

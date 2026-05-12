@@ -432,11 +432,11 @@
 - [ ] bitmap_construct_agg
 - [ ] bitmap_count
 - [ ] bitmap_or_agg
-- [x] current_catalog
-- [x] current_database
-- [x] current_schema
-- [x] current_user
-- [x] equal_null
+- [ ] current_catalog
+- [ ] current_database
+- [ ] current_schema
+- [ ] current_user
+- [ ] equal_null
 - [ ] from_avro
 - [ ] from_protobuf
 - [ ] hll_sketch_estimate
