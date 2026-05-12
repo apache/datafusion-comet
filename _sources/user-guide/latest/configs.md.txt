@@ -353,6 +353,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.StructsToCsv.enabled` | Enable Comet acceleration for `StructsToCsv` | true |
 | `spark.comet.expression.StructsToJson.enabled` | Enable Comet acceleration for `StructsToJson` | true |
 | `spark.comet.expression.Substring.enabled` | Enable Comet acceleration for `Substring` | true |
+| `spark.comet.expression.SubstringIndex.enabled` | Enable Comet acceleration for `SubstringIndex` | true |
 | `spark.comet.expression.Subtract.enabled` | Enable Comet acceleration for `Subtract` | true |
 | `spark.comet.expression.Tan.enabled` | Enable Comet acceleration for `Tan` | true |
 | `spark.comet.expression.Tanh.enabled` | Enable Comet acceleration for `Tanh` | true |
