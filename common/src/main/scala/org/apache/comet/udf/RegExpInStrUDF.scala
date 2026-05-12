@@ -58,7 +58,6 @@ class RegExpInStrUDF extends CometUDF {
 
     val patternStr = new String(patternVec.get(0), StandardCharsets.UTF_8)
     val pattern = patternCache.computeIfAbsent(patternStr, Pattern.compile)
-    val idx = idxVec.get(0)
 
     val n = subject.getValueCount
     val out = new IntVector("regexp_instr_result", CometArrowAllocator)
