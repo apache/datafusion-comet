@@ -25,25 +25,11 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+    paths:
+      - "native/**"
   pull_request:
-    paths-ignore:
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+    paths:
+      - "native/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:

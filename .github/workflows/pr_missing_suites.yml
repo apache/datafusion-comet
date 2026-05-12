@@ -25,8 +25,20 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - ".github/workflows/pr_build_linux.yml"
+      - ".github/workflows/pr_build_macos.yml"
+      - "dev/ci/check-suites.py"
   pull_request:
     types: [opened, synchronize, reopened]
+    paths:
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - ".github/workflows/pr_build_linux.yml"
+      - ".github/workflows/pr_build_macos.yml"
+      - "dev/ci/check-suites.py"
 
 jobs:
   check-missing-suites:

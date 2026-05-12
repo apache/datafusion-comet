@@ -27,6 +27,8 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+    paths:
+      - ".github/**"
   schedule:
     - cron: '16 4 * * 1'
 
