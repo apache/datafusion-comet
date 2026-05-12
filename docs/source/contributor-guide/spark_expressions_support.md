@@ -94,9 +94,9 @@
 - [ ] percentile_approx
 - [ ] percentile_cont
 - [ ] percentile_disc
-- [x] regr_avgx
-- [x] regr_avgy
-- [x] regr_count
+- [ ] regr_avgx
+- [ ] regr_avgy
+- [ ] regr_count
 - [ ] regr_intercept
 - [ ] regr_r2
 - [ ] regr_slope
