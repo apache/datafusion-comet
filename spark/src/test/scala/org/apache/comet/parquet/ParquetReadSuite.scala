@@ -967,27 +967,21 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("schema evolution") {
-    Seq(true, false).foreach { enableSchemaEvolution =>
-      Seq(true, false).foreach { useDictionary =>
-        {
-          withSQLConf(
-            CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.key -> enableSchemaEvolution.toString) {
-            val data = (0 until 100).map(i => {
-              val v = if (useDictionary) i % 5 else i
-              (v, v.toFloat)
-            })
-            val readSchema =
-              StructType(
-                Seq(StructField("_1", LongType, false), StructField("_2", DoubleType, false)))
+    // Comet's widening behavior tracks the Spark version (see ShimCometConf):
+    // 3.x rejects INT32 -> LONG and FLOAT -> DOUBLE on read, 4.x accepts.
+    Seq(true, false).foreach { useDictionary =>
+      val data = (0 until 100).map(i => {
+        val v = if (useDictionary) i % 5 else i
+        (v, v.toFloat)
+      })
+      val readSchema =
+        StructType(Seq(StructField("_1", LongType, false), StructField("_2", DoubleType, false)))
 
-            withParquetDataFrame(data, schema = Some(readSchema)) { df =>
-              if (enableSchemaEvolution) {
-                checkAnswer(df, data.map(Row.fromTuple))
-              } else {
-                assertThrows[SparkException](df.collect())
-              }
-            }
-          }
+      withParquetDataFrame(data, schema = Some(readSchema)) { df =>
+        if (CometConf.COMET_SCHEMA_EVOLUTION_ENABLED) {
+          checkAnswer(df, data.map(Row.fromTuple))
+        } else {
+          assertThrows[SparkException](df.collect())
         }
       }
     }
@@ -1041,46 +1035,47 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("type widening: byte → short/int/long, short → int/long, int → long") {
-    withSQLConf(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.key -> "true") {
-      withTempPath { dir =>
-        val path = dir.getCanonicalPath
-        val values = 1 to 10
-        val options: Map[String, String] = Map.empty[String, String]
+    // Widening of INT32 -> LONG is only allowed when Comet's type-promotion
+    // default permits it (Spark 4.x). See ShimCometConf.
+    assume(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      val values = 1 to 10
+      val options: Map[String, String] = Map.empty[String, String]
 
-        // Input types and corresponding DataFrames
-        val inputDFs = Seq(
-          "byte" -> values.map(_.toByte).toDF("col1"),
-          "short" -> values.map(_.toShort).toDF("col1"),
-          "int" -> values.map(_.toInt).toDF("col1"))
+      // Input types and corresponding DataFrames
+      val inputDFs = Seq(
+        "byte" -> values.map(_.toByte).toDF("col1"),
+        "short" -> values.map(_.toShort).toDF("col1"),
+        "int" -> values.map(_.toInt).toDF("col1"))
 
-        // Target Spark read schemas for widening
-        val widenTargets = Seq(
-          "short" -> values.map(_.toShort).toDF("col1"),
-          "int" -> values.map(_.toInt).toDF("col1"),
-          "long" -> values.map(_.toLong).toDF("col1"))
+      // Target Spark read schemas for widening
+      val widenTargets = Seq(
+        "short" -> values.map(_.toShort).toDF("col1"),
+        "int" -> values.map(_.toInt).toDF("col1"),
+        "long" -> values.map(_.toLong).toDF("col1"))
 
-        for ((inputType, inputDF) <- inputDFs) {
-          val writePath = s"$path/$inputType"
-          inputDF.write.format("parquet").options(options).save(writePath)
+      for ((inputType, inputDF) <- inputDFs) {
+        val writePath = s"$path/$inputType"
+        inputDF.write.format("parquet").options(options).save(writePath)
 
-          for ((targetType, targetDF) <- widenTargets) {
-            // Only test valid widenings (e.g., don't test int → short)
-            val wideningValid = (inputType, targetType) match {
-              case ("byte", "short" | "int" | "long") => true
-              case ("short", "int" | "long") => true
-              case ("int", "long") => true
-              case _ => false
-            }
+        for ((targetType, targetDF) <- widenTargets) {
+          // Only test valid widenings (e.g., don't test int → short)
+          val wideningValid = (inputType, targetType) match {
+            case ("byte", "short" | "int" | "long") => true
+            case ("short", "int" | "long") => true
+            case ("int", "long") => true
+            case _ => false
+          }
 
-            if (wideningValid) {
-              val reader = spark.read
-                .schema(s"col1 $targetType")
-                .format("parquet")
-                .options(options)
-                .load(writePath)
+          if (wideningValid) {
+            val reader = spark.read
+              .schema(s"col1 $targetType")
+              .format("parquet")
+              .options(options)
+              .load(writePath)
 
-              checkAnswer(reader, targetDF)
-            }
+            checkAnswer(reader, targetDF)
           }
         }
       }
@@ -1088,37 +1083,38 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("read byte, int, short, long together") {
-    withSQLConf(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.key -> "true") {
-      withTempPath { dir =>
-        val path = dir.getCanonicalPath
+    // Reading INT32-encoded files under a LONG schema only succeeds when Comet's
+    // type-promotion default permits it (Spark 4.x). See ShimCometConf.
+    assume(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
 
-        val byteDF = (Byte.MaxValue - 2 to Byte.MaxValue).map(_.toByte).toDF("col1")
-        val shortDF = (Short.MaxValue - 2 to Short.MaxValue).map(_.toShort).toDF("col1")
-        val intDF = (Int.MaxValue - 2 to Int.MaxValue).toDF("col1")
-        val longDF = (Long.MaxValue - 2 to Long.MaxValue).toDF("col1")
-        val unionDF = byteDF.union(shortDF).union(intDF).union(longDF)
+      val byteDF = (Byte.MaxValue - 2 to Byte.MaxValue).map(_.toByte).toDF("col1")
+      val shortDF = (Short.MaxValue - 2 to Short.MaxValue).map(_.toShort).toDF("col1")
+      val intDF = (Int.MaxValue - 2 to Int.MaxValue).toDF("col1")
+      val longDF = (Long.MaxValue - 2 to Long.MaxValue).toDF("col1")
+      val unionDF = byteDF.union(shortDF).union(intDF).union(longDF)
 
-        val byteDir = s"$path${File.separator}part=byte"
-        val shortDir = s"$path${File.separator}part=short"
-        val intDir = s"$path${File.separator}part=int"
-        val longDir = s"$path${File.separator}part=long"
+      val byteDir = s"$path${File.separator}part=byte"
+      val shortDir = s"$path${File.separator}part=short"
+      val intDir = s"$path${File.separator}part=int"
+      val longDir = s"$path${File.separator}part=long"
 
-        val options: Map[String, String] = Map.empty[String, String]
+      val options: Map[String, String] = Map.empty[String, String]
 
-        byteDF.write.format("parquet").options(options).save(byteDir)
-        shortDF.write.format("parquet").options(options).save(shortDir)
-        intDF.write.format("parquet").options(options).save(intDir)
-        longDF.write.format("parquet").options(options).save(longDir)
+      byteDF.write.format("parquet").options(options).save(byteDir)
+      shortDF.write.format("parquet").options(options).save(shortDir)
+      intDF.write.format("parquet").options(options).save(intDir)
+      longDF.write.format("parquet").options(options).save(longDir)
 
-        val df = spark.read
-          .schema(unionDF.schema)
-          .format("parquet")
-          .options(options)
-          .load(path)
-          .select("col1")
+      val df = spark.read
+        .schema(unionDF.schema)
+        .format("parquet")
+        .options(options)
+        .load(path)
+        .select("col1")
 
-        checkAnswer(df, unionDF)
-      }
+      checkAnswer(df, unionDF)
     }
   }
 
