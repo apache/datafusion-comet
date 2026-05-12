@@ -20,6 +20,7 @@
 package org.apache.comet.udf
 
 import org.apache.arrow.vector.ValueVector
+import org.apache.spark.sql.types.DataType
 
 /**
  * Scalar UDF invoked from native execution via JNI. Receives Arrow vectors as input and returns
@@ -33,5 +34,22 @@ import org.apache.arrow.vector.ValueVector
  * per class is cached and shared across native worker threads for the lifetime of the JVM.
  */
 trait CometUDF {
+
+  /** UDF name as invoked from SQL or DataFrame. Must match the name registered with Spark. */
+  def name: String
+
+  /** Output Arrow vector type. */
+  def returnType: DataType
+
+  /** Whether the result vector may contain nulls. */
+  def nullable: Boolean = true
+
+  /**
+   * Input data types. Required only for columnar-only registration via
+   * [[CometUdfRegistry.registerColumnarOnly]]; ignored when a row-based Spark UDF is also
+   * registered (Spark uses its own input schema in that case).
+   */
+  def inputTypes: Seq[DataType] = Seq.empty
+
   def evaluate(inputs: Array[ValueVector]): ValueVector
 }

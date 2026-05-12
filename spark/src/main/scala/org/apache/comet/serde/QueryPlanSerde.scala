@@ -681,6 +681,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           // `PromotePrecision` is just a wrapper, don't need to serialize it.
           exprToProtoInternal(child, inputs, binding)
 
+        case udf: ScalaUDF =>
+          CometScalaUdf.convert(udf, inputs, binding)
+
         case expr =>
           QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
             case Some(handler) =>
