@@ -1185,7 +1185,8 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     spark.udf.register(
       "sortValues",
       (m: Map[String, Seq[Int]]) =>
-        if (m == null) null else m.view.mapValues(v => if (v == null) null else v.sorted).toMap)
+        if (m == null) null
+        else m.map { case (k, v) => k -> (if (v == null) null else v.sorted) })
     withTable("t") {
       sql("CREATE TABLE t (m MAP<STRING, ARRAY<INT>>) USING parquet")
       sql(
@@ -1206,7 +1207,8 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       "tagValues",
       (m: Map[String, XyPair]) =>
         if (m == null) null
-        else m.view.mapValues(v => if (v == null) null else XyPair(v.x + 1, s"<${v.y}>")).toMap)
+        else
+          m.map { case (k, v) => k -> (if (v == null) null else XyPair(v.x + 1, s"<${v.y}>")) })
     withTable("t") {
       sql("CREATE TABLE t (m MAP<STRING, STRUCT<x: INT, y: STRING>>) USING parquet")
       sql(
