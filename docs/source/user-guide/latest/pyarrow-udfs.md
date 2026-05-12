@@ -81,6 +81,15 @@ spark.comet.exec.pyarrowUdf.enabled=true
 
 The default is `false` while the feature stabilizes.
 
+### Relationship to Spark's PySpark Arrow conversion conf
+
+`spark.comet.exec.pyarrowUdf.enabled` is **not** the same as PySpark's
+[`spark.sql.execution.arrow.pyspark.enabled`](https://spark.apache.org/docs/latest/api/python/tutorial/sql/arrow_pandas.html#enabling-for-conversion-to-from-pandas).
+That conf controls whether Spark uses Arrow when materializing a DataFrame to a Pandas DataFrame
+(`toPandas()`) or constructing one from Pandas. The Comet conf controls a planner rewrite for
+`mapInArrow` / `mapInPandas`, and only affects how Comet's columnar batches feed the Python
+worker. Both confs can be set independently.
+
 ## Supported APIs
 
 | PySpark API                      | Spark Plan Node             | Supported |
