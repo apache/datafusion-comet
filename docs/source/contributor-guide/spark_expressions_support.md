@@ -341,7 +341,7 @@
 - [x] map_contains_key
 - [ ] map_entries
 - [ ] map_from_arrays
-- [ ] map_from_entries
+- [x] map_from_entries
 - [x] map_keys
 - [ ] map_values
 - [x] str_to_map
