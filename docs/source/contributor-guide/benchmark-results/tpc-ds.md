@@ -21,8 +21,6 @@ under the License.
 
 The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instances with EBS storage) with data stored in S3.
 
-The tracking issue for improving TPC-DS performance is [#858](https://github.com/apache/datafusion-comet/issues/858).
-
 ## Benchmark Results
 
 Total time to run all queries (lower is better).
