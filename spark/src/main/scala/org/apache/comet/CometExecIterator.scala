@@ -180,9 +180,11 @@ class CometExecIterator(
           case parquetError() =>
             // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
             // See org.apache.parquet.hadoop.ParquetFileReader for error message.
+            // _LEGACY_ERROR_TEMP_2254 has no message placeholders; Spark 4 strict-checks
+            // parameters and raises INTERNAL_ERROR if any are passed.
             throw new SparkException(
               errorClass = "_LEGACY_ERROR_TEMP_2254",
-              messageParameters = Map("message" -> e.getMessage),
+              messageParameters = Map.empty,
               cause = new SparkException("File is not a Parquet file.", e))
           case _ =>
             throw e

@@ -28,13 +28,16 @@ This guide documents areas where Comet's behavior is known to differ from Spark.
 - **Regular expressions**: differences between the Rust regexp crate and Java's regex engine.
 - **Operators**: operator-level compatibility notes, including window functions and round-robin partitioning.
 - **Expressions**: per-expression compatibility notes, including cast.
+- **Spark versions**: version-specific known issues and limitations.
 
 ```{toctree}
 :maxdepth: 1
+:hidden:
 
 scans
 floating-point
 regex
 operators
 expressions/index
+spark-versions
 ```

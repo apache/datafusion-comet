@@ -214,7 +214,7 @@ impl SumDecimalAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error();
+                let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
             }
             self.sum = None;
@@ -311,57 +311,61 @@ impl Accumulator for SumDecimalAccumulator {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> DFResult<()> {
-        // For decimal sum, always expect 2 state arrays regardless of eval_mode
         assert_eq!(
             states.len(),
             2,
-            "Expect two elements in 'states' but found {}",
+            "expected (sum, is_empty), got {}",
             states.len()
         );
-        assert_eq!(states[0].len(), 1);
-        assert_eq!(states[1].len(), 1);
+        assert_eq!(states[0].len(), states[1].len());
 
-        let that_sum_array = states[0].as_primitive::<Decimal128Type>();
-        let that_sum = if that_sum_array.is_null(0) {
-            None
-        } else {
-            Some(that_sum_array.value(0))
-        };
+        let sum_array = states[0].as_primitive::<Decimal128Type>();
+        let is_empty_array = states[1].as_boolean();
 
-        let that_is_empty = states[1].as_boolean().value(0);
-        let that_overflowed = !that_is_empty && that_sum.is_none();
-        let this_overflowed = !self.is_empty && self.sum.is_none();
-
-        if that_overflowed || this_overflowed {
-            self.sum = None;
-            self.is_empty = false;
-            return Ok(());
-        }
-
-        if that_is_empty {
-            return Ok(());
-        }
-
-        if self.is_empty {
-            self.sum = that_sum;
-            self.is_empty = false;
-            return Ok(());
-        }
-
-        let left = self.sum.unwrap();
-        let right = that_sum.unwrap();
-        let (new_sum, is_overflow) = left.overflowing_add(right);
-
-        if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
-            if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error();
-                return Err(self.wrap_error_with_context(error));
+        // May be called with multiple state rows (e.g. under MergeAsPartial or
+        // non-grouped aggregates merging state from several partitions).
+        for i in 0..sum_array.len() {
+            let that_sum = if sum_array.is_null(i) {
+                None
             } else {
+                Some(sum_array.value(i))
+            };
+            let that_is_empty = is_empty_array.value(i);
+            let that_overflowed = !that_is_empty && that_sum.is_none();
+            let this_overflowed = !self.is_empty && self.sum.is_none();
+
+            // Overflow is sticky; ANSI error was raised upstream.
+            if that_overflowed || this_overflowed {
                 self.sum = None;
                 self.is_empty = false;
+                continue;
             }
-        } else {
-            self.sum = Some(new_sum);
+
+            if that_is_empty {
+                continue;
+            }
+
+            if self.is_empty {
+                self.sum = that_sum;
+                self.is_empty = false;
+                continue;
+            }
+
+            let left = self.sum.unwrap();
+            let right = that_sum.unwrap();
+            let (new_sum, is_overflow) = left.overflowing_add(right);
+
+            if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
+                if self.eval_mode == EvalMode::Ansi {
+                    let error = decimal_sum_overflow_error("sum");
+                    return Err(self.wrap_error_with_context(error));
+                } else {
+                    self.sum = None;
+                    self.is_empty = false;
+                }
+            } else {
+                self.sum = Some(new_sum);
+            }
         }
 
         Ok(())
@@ -426,7 +430,7 @@ impl SumDecimalGroupsAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error();
+                let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
             }
             self.sum[group_index] = None;
@@ -595,7 +599,7 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
 
             if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
                 if self.eval_mode == EvalMode::Ansi {
-                    let error = decimal_sum_overflow_error();
+                    let error = decimal_sum_overflow_error("sum");
                     return Err(self.wrap_error_with_context(error));
                 } else {
                     self.sum[group_index] = None;
@@ -770,5 +774,33 @@ mod tests {
         let result = acc.evaluate(EmitTo::All).unwrap();
         let result = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(result.value(0), 40); // 10 + 30 = 40
+    }
+
+    /// `merge_batch` must consume every row — previously it asserted
+    /// `states[*].len() == 1` and silently dropped the rest.
+    #[test]
+    fn test_accumulator_merge_batch_multi_row() {
+        let data_type = DataType::Decimal128(10, 2);
+        let mut acc = SumDecimalAccumulator::new(
+            10,
+            2,
+            EvalMode::Legacy,
+            None,
+            crate::create_query_context_map(),
+        );
+
+        // sums [100, 200, null, 300], is_empty [false, false, true, false] -> 600
+        let sums: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![Some(100i128), Some(200), None, Some(300)])
+                .with_data_type(data_type.clone()),
+        );
+        let is_empty: ArrayRef = Arc::new(BooleanArray::from(vec![false, false, true, false]));
+        acc.merge_batch(&[sums, is_empty]).unwrap();
+
+        let evaluated = acc.evaluate().unwrap();
+        match evaluated {
+            ScalarValue::Decimal128(Some(v), _, _) => assert_eq!(v, 600),
+            other => panic!("unexpected result: {other:?}"),
+        }
     }
 }

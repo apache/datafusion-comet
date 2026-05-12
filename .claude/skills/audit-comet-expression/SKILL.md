@@ -13,7 +13,7 @@ This audit covers:
 1. Spark implementation across versions 3.4.3, 3.5.8, and 4.0.1
 2. Comet Scala serde implementation
 3. Comet Rust / DataFusion implementation
-4. Existing test coverage (SQL file tests and Scala tests)
+4. Existing test coverage (Comet SQL Tests and Comet Scala Tests)
 5. Gap analysis and test recommendations
 
 ---
@@ -122,6 +122,16 @@ Read the serde implementation and check:
 - Whether `getSupportLevel` is implemented and accurate
 - Whether all input types are handled
 - Whether any types are explicitly marked `Unsupported`
+- Whether `getIncompatibleReasons()` and `getUnsupportedReasons()` are overridden.
+  `getSupportLevel` controls runtime fallback, but `GenerateDocs` reads these two
+  methods to build the Compatibility Guide. If `getSupportLevel` returns
+  `Incompatible(Some(...))` or `Unsupported(Some(...))` but the corresponding
+  `get*Reasons()` method is not overridden, the reason will not appear in the
+  published docs. Expect both to return a `Seq[String]` containing the same
+  reason text used in `getSupportLevel`. Follow the pattern in
+  `spark/src/main/scala/org/apache/comet/serde/structs.scala::CometStructsToJson`
+  or `spark/src/main/scala/org/apache/comet/serde/datetime.scala::CometHour`:
+  extract the reason as a `private val` and reference it from both places.
 
 ### Shims
 
@@ -161,7 +171,7 @@ Read the Rust implementation and check:
 
 ## Step 4: Locate Existing Comet Tests
 
-### SQL file tests
+### Comet SQL Tests
 
 ```bash
 # Find SQL test files for this expression
@@ -179,13 +189,13 @@ Read every SQL test file found and list:
 - Query modes used (`query`, `spark_answer_only`, `tolerance`, `ignore`, `expect_error`)
 - Any ConfigMatrix directives
 
-### Scala tests
+### Comet Scala Tests
 
 ```bash
 grep -r "$ARGUMENTS" spark/src/test/scala/ --include="*.scala" -l
 ```
 
-Read the relevant Scala test files and list:
+Read the relevant Comet Scala Tests and list:
 
 - Input types covered
 - Edge cases exercised
@@ -201,7 +211,7 @@ Compare the Spark test coverage (Step 2) against the Comet test coverage (Step 4
 
 For each of the following dimensions, note whether it is covered in Comet tests or missing:
 
-| Dimension                                                                                              | Spark tests it | Comet SQL test | Comet Scala test | Gap? |
+| Dimension                                                                                              | Spark tests it | Comet SQL Test | Comet Scala Test | Gap? |
 | ------------------------------------------------------------------------------------------------------ | -------------- | -------------- | ---------------- | ---- |
 | Column reference argument(s)                                                                           |                |                |                  |      |
 | Literal argument(s)                                                                                    |                |                |                  |      |
@@ -227,6 +237,7 @@ Also review the Comet implementation (Step 3) against the Spark behavior (Step 1
 - Are there behavioral differences that are NOT marked `Incompatible` but should be?
 - Are there behavioral differences between Spark versions that the Comet implementation does not account for (missing shim)?
 - Does the Rust implementation match the Spark behavior for all edge cases?
+- If `getSupportLevel` returns `Incompatible` or `Unsupported` with a reason, are `getIncompatibleReasons()` / `getUnsupportedReasons()` also overridden so the reason is picked up by `GenerateDocs` and appears in the Compatibility Guide?
 
 ---
 
@@ -256,13 +267,13 @@ After presenting the gap analysis, ask the user:
 >
 > - [list each missing test case]
 >
-> I can add them as SQL file tests in `spark/src/test/resources/sql-tests/expressions/<category>/$ARGUMENTS.sql`
-> (or as Scala tests in `CometExpressionSuite` for cases that require programmatic setup).
+> I can add them as Comet SQL Tests in `spark/src/test/resources/sql-tests/expressions/<category>/$ARGUMENTS.sql`
+> (or as Comet Scala Tests in `CometExpressionSuite` for cases that require programmatic setup).
 
-If the user says yes, implement the missing tests following the SQL file test format described in
-`docs/source/contributor-guide/sql-file-tests.md`. Prefer SQL file tests over Scala tests.
+If the user says yes, implement the missing tests following the Comet SQL Tests format described in
+`docs/source/contributor-guide/sql-file-tests.md`. Prefer Comet SQL Tests over Comet Scala Tests.
 
-### SQL file test template
+### Comet SQL Tests template
 
 ```sql
 -- Licensed to the Apache Software Foundation (ASF) under one

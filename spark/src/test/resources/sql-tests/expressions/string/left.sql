@@ -44,7 +44,7 @@ query expect_fallback(Substring pos and len must be literals)
 SELECT left('hello', n) FROM test_str_left
 
 -- literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3337)
+query
 SELECT left('hello', 3), left('hello', 0), left('hello', -1), left('', 3), left(NULL, 3)
 
 -- unicode
