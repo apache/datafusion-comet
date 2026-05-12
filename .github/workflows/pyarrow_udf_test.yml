@@ -25,27 +25,27 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - "benchmarks/**"
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+    paths: &feature-paths
+      - "pom.xml"
+      - "common/pom.xml"
+      - "common/src/main/scala/org/apache/comet/CometConf.scala"
+      - "spark/pom.xml"
+      - "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala"
+      - "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala"
+      - "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala"
+      - "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala"
+      - "spark/src/test/resources/pyspark/conftest.py"
+      - "spark/src/test/resources/pyspark/test_pyarrow_udf.py"
+      - "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
+      - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
+      - ".github/workflows/pyarrow_udf_test.yml"
   pull_request:
-    paths-ignore:
-      - "benchmarks/**"
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+    paths: *feature-paths
   workflow_dispatch:
 
 permissions:
