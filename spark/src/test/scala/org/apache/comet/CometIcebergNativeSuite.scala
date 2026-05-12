@@ -20,7 +20,6 @@
 package org.apache.comet
 
 import java.io.File
-import java.nio.file.Files
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
@@ -49,17 +48,8 @@ import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 class CometIcebergNativeSuite
     extends CometTestBase
     with RESTCatalogHelper
-    with AdaptiveSparkPlanHelper {
-
-  // Skip these tests if Iceberg is not available in classpath
-  private def icebergAvailable: Boolean = {
-    try {
-      Class.forName("org.apache.iceberg.catalog.Catalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
-    }
-  }
+    with AdaptiveSparkPlanHelper
+    with CometIcebergTestBase {
 
   /** Collects all CometIcebergNativeScanExec nodes from a plan */
   private def collectIcebergNativeScans(plan: SparkPlan): Seq[CometIcebergNativeScanExec] = {
@@ -2515,23 +2505,6 @@ class CometIcebergNativeSuite
         spark.sql("DROP TABLE rest_cat.db.test_table")
         spark.sql("DROP NAMESPACE rest_cat.db")
       }
-    }
-  }
-
-  // Helper to create temp directory
-  def withTempIcebergDir(f: File => Unit): Unit = {
-    val dir = Files.createTempDirectory("comet-iceberg-test").toFile
-    try {
-      f(dir)
-    } finally {
-      def deleteRecursively(file: File): Unit = {
-        if (file.isDirectory) {
-          file.listFiles().foreach(deleteRecursively)
-        }
-        file.delete()
-      }
-
-      deleteRecursively(dir)
     }
   }
 

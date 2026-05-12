@@ -17,30 +17,34 @@
  * under the License.
  */
 
-package org.apache.comet.fuzz
+package org.apache.comet
 
-import scala.util.Random
+import java.io.File
+import java.nio.file.Files
 
-object Utils {
+import org.apache.comet.iceberg.IcebergReflection
 
-  def randomChoice[T](list: Seq[T], r: Random): T = {
-    list(r.nextInt(list.length))
-  }
+/**
+ * Shared fixtures for Iceberg-backed test suites: classpath probe and per-test temp directory.
+ */
+trait CometIcebergTestBase {
 
-  def randomWeightedChoice[T](valuesWithWeights: Seq[(T, Double)], r: Random): T = {
-    val totalWeight = valuesWithWeights.map(_._2).sum
-    val randomValue = r.nextDouble() * totalWeight
-    var cumulativeWeight = 0.0
-
-    for ((value, weight) <- valuesWithWeights) {
-      cumulativeWeight += weight
-      if (cumulativeWeight >= randomValue) {
-        return value
-      }
+  protected def icebergAvailable: Boolean =
+    try {
+      IcebergReflection.loadClass("org.apache.iceberg.catalog.Catalog")
+      true
+    } catch {
+      case _: ClassNotFoundException => false
     }
 
-    // If for some reason the loop doesn't return, return the last value
-    valuesWithWeights.last._1
+  protected def withTempIcebergDir(f: File => Unit): Unit = {
+    val dir = Files.createTempDirectory("comet-iceberg-test").toFile
+    try f(dir)
+    finally deleteRecursively(dir)
   }
 
+  private def deleteRecursively(file: File): Unit = {
+    if (file.isDirectory) file.listFiles().foreach(deleteRecursively)
+    file.delete()
+  }
 }
