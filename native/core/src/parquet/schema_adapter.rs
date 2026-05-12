@@ -487,12 +487,14 @@ impl SparkPhysicalExprAdapter {
             }
 
             // Type promotion (widening) check.
-            // When allow_type_promotion is false, reject numeric type widening
-            // (INT32→INT64, FLOAT→DOUBLE) to match Spark 3.x behavior where
-            // reading a column with a promoted type throws
-            // SchemaColumnConvertNotSupportedException. When allow_type_promotion
-            // is true (Spark 4.0+ default), these promotions are allowed.
-            // This mirrors TypeUtil.checkParquetType in the JVM code.
+            // When allow_type_promotion is false, reject the three widenings
+            // (INT32→INT64, FLOAT→DOUBLE, INT32→DOUBLE) gated by
+            // spark.comet.schemaEvolution.enabled in TypeUtil.checkParquetType.
+            // These match what Spark 3.x's vectorized reader rejects when
+            // schemaEvolution is disabled. Conversions Spark rejects
+            // unconditionally on all supported versions (e.g. long→int,
+            // double→float, float→long, int→timestamp) are NOT covered here
+            // and remain silent wrong-answer paths — tracked in #4297.
             if !self.parquet_options.allow_type_promotion {
                 let is_disallowed_promotion = matches!(
                     (physical_type, target_type),
