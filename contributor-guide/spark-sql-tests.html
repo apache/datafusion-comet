@@ -364,6 +364,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
 <li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_spark_version.html">Adding a New Spark Version</a></li>
 <li class="toctree-l2"><a class="reference internal" href="spark_expressions_support.html">Supported Spark Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
 <li class="toctree-l2"><a class="reference internal" href="profiling.html">Profiling</a></li>
@@ -541,6 +542,9 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <p>Once Comet has support for a new Spark version, we need to create a diff file that can be applied to that version
 of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can
 vary depending on the changes in the new version of Spark, but here is a general guide to the process.</p>
+<p>If you are bringing up a brand new Spark major or minor version, this work is one stage of a larger sequence
+covered in <a class="reference internal" href="adding_a_new_spark_version.html"><span class="std std-doc">Adding Support for a New Spark Version</span></a>. Start there for the
+overall plan; the steps below cover only the diff-file mechanics.</p>
 <p>We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests
 for Spark version 3.5.6 we may start by applying the existing diff for 3.5.5 first.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>git/apache/spark

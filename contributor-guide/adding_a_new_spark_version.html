@@ -1,0 +1,856 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Adding Support for a New Spark Version &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/adding_a_new_spark_version';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Supported Spark Expressions" href="spark_expressions_support.html" />
+    <link rel="prev" title="Adding a New Expression" href="adding_a_new_expression.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Contributor Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql_error_propagation.html">ANSI Error Propagation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Adding a New Spark Version</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark_expressions_support.html">Supported Spark Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="profiling.html">Profiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l2"><a class="reference internal" href="release_process.html">Release Process</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../about/gluten_comparison.html">Comparison with Gluten</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Adding Support for a New Spark Version</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="adding-support-for-a-new-spark-version">
+<h1>Adding Support for a New Spark Version<a class="headerlink" href="#adding-support-for-a-new-spark-version" title="Link to this heading">#</a></h1>
+<p>This guide describes how to bring up support for a new Apache Spark release in
+Comet. Past examples include the work to add Spark 4.0, Spark 4.1, and the
+Spark 4.2 preview profile. The goal is a repeatable recipe that keeps each
+pull request small, reviewable, and easy to revert if a problem is discovered
+later.</p>
+<section id="why-stage-the-work">
+<h2>Why Stage the Work<a class="headerlink" href="#why-stage-the-work" title="Link to this heading">#</a></h2>
+<p>Adding a new Spark version touches the build, the shim layer, CI, and three
+different test suites (Comet’s own JVM tests, Spark’s SQL tests, and the
+plan stability golden files). Bundling everything into one pull request
+produces a diff that is hard to review and almost impossible to bisect. A
+staged approach instead introduces one capability at a time, with CI proving
+each stage green before the next one lands.</p>
+<p>A typical bring-up uses several focused PRs:</p>
+<ol class="arabic simple">
+<li><p><strong>Stage 1</strong>: Maven profile, shims, and a compile-only CI job.</p></li>
+<li><p><strong>Stage 2</strong>: Enable Comet’s own JVM test suite under the new profile.</p></li>
+<li><p><strong>Stage 3</strong>: Enable Spark’s SQL tests under the new profile, skipping
+the failing ones with linked issues.</p></li>
+<li><p><strong>Stage 4</strong>: Add the version to the experimental tier in the user
+guide.</p></li>
+<li><p><strong>Stage 5</strong>: Follow-up PRs that fix one skipped test (or one related
+cluster of tests) per PR, removing the skip as part of the fix.</p></li>
+<li><p><strong>Stage 6</strong>: Eventual promotion PR that moves the version from
+experimental to supported in the user guide.</p></li>
+</ol>
+<p>The sections below describe each stage in detail.</p>
+</section>
+<section id="stage-1-maven-profile-shims-and-compile-only-ci">
+<h2>Stage 1: Maven Profile, Shims, and Compile-Only CI<a class="headerlink" href="#stage-1-maven-profile-shims-and-compile-only-ci" title="Link to this heading">#</a></h2>
+<p>The first PR should produce a configuration where <code class="docutils literal notranslate"><span class="pre">./mvnw</span> <span class="pre">-Pspark-X.Y</span> <span class="pre">compile</span></code>
+succeeds, but no tests are required to pass yet. Keeping this PR
+compilation-only avoids mixing build issues with test failures.</p>
+<section id="add-the-maven-profile">
+<h3>Add the Maven Profile<a class="headerlink" href="#add-the-maven-profile" title="Link to this heading">#</a></h3>
+<p>Add a new <code class="docutils literal notranslate"><span class="pre">&lt;profile&gt;</span></code> block to the top-level <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code>. Copy the most recent
+existing profile (for example <code class="docutils literal notranslate"><span class="pre">spark-4.1</span></code>) and update the version
+properties:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.version</span></code>: the full upstream version, including any qualifier
+(for example <code class="docutils literal notranslate"><span class="pre">4.2.0-preview4</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.version.short</span></code>: the major.minor (for example <code class="docutils literal notranslate"><span class="pre">4.2</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">parquet.version</span></code>, <code class="docutils literal notranslate"><span class="pre">slf4j.version</span></code>, <code class="docutils literal notranslate"><span class="pre">scala.version</span></code>,
+<code class="docutils literal notranslate"><span class="pre">scala.binary.version</span></code>, <code class="docutils literal notranslate"><span class="pre">java.version</span></code>: align with what the new Spark
+release actually publishes. Use the exact Scala patch version Spark
+publishes, not a looser pin; a mismatch causes <code class="docutils literal notranslate"><span class="pre">NoSuchMethodError</span></code> at
+runtime.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">shims.majorVerSrc</span></code> and <code class="docutils literal notranslate"><span class="pre">shims.minorVerSrc</span></code>: the directory names the
+build helper plugin will add to the source path. By convention the
+major-version directory groups shims that are identical across the family
+(for example <code class="docutils literal notranslate"><span class="pre">spark-4.x</span></code>), and the minor-version directory holds
+per-release overrides (for example <code class="docutils literal notranslate"><span class="pre">spark-4.2</span></code>).</p></li>
+</ul>
+</section>
+<section id="lay-out-the-shim-directories">
+<h3>Lay Out the Shim Directories<a class="headerlink" href="#lay-out-the-shim-directories" title="Link to this heading">#</a></h3>
+<p>The build helper plugin in <code class="docutils literal notranslate"><span class="pre">spark/pom.xml</span></code> adds <code class="docutils literal notranslate"><span class="pre">src/main/${shims.majorVerSrc}</span></code>
+and <code class="docutils literal notranslate"><span class="pre">src/main/${shims.minorVerSrc}</span></code> to the compile source roots. Files in the
+minor directory shadow files in the major directory, so the typical pattern
+is:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-4.x/org/apache/comet/shims/</span></code> for shims that work for
+the whole 4.x family.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-X.Y/org/apache/comet/shims/</span></code> for files that have to
+diverge for one specific release.</p></li>
+</ul>
+<p>When Spark X.Y is brand new and you do not yet know which shims will need to
+diverge, start by setting <code class="docutils literal notranslate"><span class="pre">shims.majorVerSrc</span></code> to an existing major directory
+(for example <code class="docutils literal notranslate"><span class="pre">spark-4.x</span></code>) and <code class="docutils literal notranslate"><span class="pre">shims.minorVerSrc</span></code> to a new empty
+<code class="docutils literal notranslate"><span class="pre">spark-X.Y</span></code> directory. Compile the project; the compiler will tell you which
+shims need a per-version override. Add only those, and leave the rest in the
+shared major directory. Commit <code class="docutils literal notranslate"><span class="pre">13e5f8cf5</span></code> (“refactor: consolidate identical
+spark-4.0 and spark-4.1 shims into spark-4.x”) shows the cleanup that
+follows when shims that previously diverged turn out to be identical.</p>
+<p>The same layering applies to <code class="docutils literal notranslate"><span class="pre">spark/src/test/spark-X.Y/</span></code> and
+<code class="docutils literal notranslate"><span class="pre">common/src/main/spark-X.Y/</span></code>.</p>
+</section>
+<section id="add-a-version-detection-helper">
+<h3>Add a Version-Detection Helper<a class="headerlink" href="#add-a-version-detection-helper" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions.scala</span></code> exposes helpers like <code class="docutils literal notranslate"><span class="pre">isSpark40Plus</span></code> and
+<code class="docutils literal notranslate"><span class="pre">isSpark41Plus</span></code> that the rest of the codebase uses to gate version-specific
+logic and to skip tests. Add the matching helper for the new version
+(<code class="docutils literal notranslate"><span class="pre">isSpark42Plus</span></code>, etc.) in this PR so that later stages can use it.</p>
+</section>
+<section id="add-a-compile-only-ci-job">
+<h3>Add a Compile-Only CI Job<a class="headerlink" href="#add-a-compile-only-ci-job" title="Link to this heading">#</a></h3>
+<p>Edit <code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_build_linux.yml</span></code> and <code class="docutils literal notranslate"><span class="pre">pr_build_macos.yml</span></code> to add
+the new Spark version to the <code class="docutils literal notranslate"><span class="pre">build-spark</span></code> (or equivalent compile-only) job
+matrix. Do not add it to the heavier test matrices yet. A compile-only job
+keeps the CI cost of stage 1 small and prevents test failures on the new
+version from blocking unrelated PRs.</p>
+<p>When CI capacity is constrained (the macOS runners in particular), it is
+acceptable to drop an older minor version from the macOS PR matrix while a
+preview version is being stabilized. PR #4104 (“ci: reduce macOS PR matrix
+to single Spark 4.0 profile”) is a precedent for this kind of trim.</p>
+</section>
+<section id="what-to-avoid-in-stage-1">
+<h3>What to Avoid in Stage 1<a class="headerlink" href="#what-to-avoid-in-stage-1" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Do not enable any test job for the new version yet.</p></li>
+<li><p>Do not regenerate golden files yet. Plan stability output is sensitive to
+shim correctness, and regenerating before the shims are stable produces
+noisy diffs that get overwritten in stage 2.</p></li>
+<li><p>Do not modify <code class="docutils literal notranslate"><span class="pre">dev/generate-versions.py</span></code> or other release-doc scripts in
+this PR. Those are owned by the release process and have their own update
+cadence.</p></li>
+</ul>
+</section>
+</section>
+<section id="stage-2-enable-comet-s-jvm-tests">
+<h2>Stage 2: Enable Comet’s JVM Tests<a class="headerlink" href="#stage-2-enable-comet-s-jvm-tests" title="Link to this heading">#</a></h2>
+<p>Once the new profile compiles cleanly in CI, the next PR turns on Comet’s
+own test suites under the new profile.</p>
+<section id="add-the-new-profile-to-the-test-matrix">
+<h3>Add the New Profile to the Test Matrix<a class="headerlink" href="#add-the-new-profile-to-the-test-matrix" title="Link to this heading">#</a></h3>
+<p>Promote the new Spark version from the compile-only job to the main test
+jobs in <code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_build_linux.yml</span></code> (and <code class="docutils literal notranslate"><span class="pre">pr_build_macos.yml</span></code> if
+capacity allows). Use <code class="docutils literal notranslate"><span class="pre">scan_impl:</span> <span class="pre">&quot;auto&quot;</span></code> so both <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and
+<code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> get exercised, matching how earlier versions are
+configured.</p>
+</section>
+<section id="run-the-suite-locally-first">
+<h3>Run the Suite Locally First<a class="headerlink" href="#run-the-suite-locally-first" title="Link to this heading">#</a></h3>
+<p>Run the JVM test suite locally against the new profile before pushing, since
+CI iterations are slow:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>make
+./mvnw<span class="w"> </span>-Pspark-X.Y<span class="w"> </span><span class="nb">test</span>
+</pre></div>
+</div>
+<p>Expect failures. Triage them into three buckets:</p>
+<ol class="arabic simple">
+<li><p><strong>Real shim gaps</strong>: a Spark API changed and the shim still calls the old
+signature. Fix these in this PR. Per-version overrides go under
+<code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-X.Y/</span></code>; if the change applies to the whole family,
+put the fix in the shared major-version directory.</p></li>
+<li><p><strong>Behavioral differences that need a code change</strong>: for example a new
+Spark error class, a renamed config, or a new <code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code> planning
+path. Fix the small ones in this PR. Larger ones should be split into
+their own PRs and the affected tests skipped.</p></li>
+<li><p><strong>Things that are clearly broken and need real investigation</strong>: skip with
+a linked issue (see the next section) and fix in a follow-up.</p></li>
+</ol>
+</section>
+<section id="skip-failing-tests-with-linked-issues">
+<h3>Skip Failing Tests with Linked Issues<a class="headerlink" href="#skip-failing-tests-with-linked-issues" title="Link to this heading">#</a></h3>
+<p>For tests that cannot be fixed in this PR, use ScalaTest’s <code class="docutils literal notranslate"><span class="pre">assume()</span></code> with a
+GitHub issue link as the message:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">assume</span><span class="p">(</span><span class="o">!</span><span class="n">isSpark42Plus</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;https://github.com/apache/datafusion-comet/issues/NNNN&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Open one issue per test or per cluster of related tests, and reference the
+issue from the <code class="docutils literal notranslate"><span class="pre">assume()</span></code> call. The link is what makes the skip
+recoverable: a contributor can grep for it later when the underlying problem
+is fixed.</p>
+<p>Resist the temptation to disable a whole test class. Per-test skips keep the
+coverage loss visible and minimize the risk of silently dropping a real
+regression.</p>
+</section>
+<section id="update-fallback-reason-strings-if-needed">
+<h3>Update Fallback Reason Strings If Needed<a class="headerlink" href="#update-fallback-reason-strings-if-needed" title="Link to this heading">#</a></h3>
+<p>Some Comet rules (notably in <code class="docutils literal notranslate"><span class="pre">CometScanRule.scala</span></code>) match on Spark error
+messages or class names. Spark releases occasionally rename these. Update
+matchers to use a common substring that works across all supported versions
+rather than branching on <code class="docutils literal notranslate"><span class="pre">isSparkXYPlus</span></code>, so the matcher stays compact.</p>
+</section>
+<section id="what-to-avoid-in-stage-2">
+<h3>What to Avoid in Stage 2<a class="headerlink" href="#what-to-avoid-in-stage-2" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Do not regenerate plan stability golden files yet. That belongs to
+stage 3 once Comet’s own suite is green.</p></li>
+<li><p>Do not enable Spark’s SQL tests yet. They are larger, noisier, and
+benefit from landing on a known-good Comet test baseline.</p></li>
+</ul>
+</section>
+</section>
+<section id="stage-3-enable-spark-sql-tests-and-plan-stability">
+<h2>Stage 3: Enable Spark SQL Tests and Plan Stability<a class="headerlink" href="#stage-3-enable-spark-sql-tests-and-plan-stability" title="Link to this heading">#</a></h2>
+<p>The third PR turns on the externally-driven test suites: Spark’s own SQL
+tests run through Comet, and the TPC-DS plan stability golden files.</p>
+<section id="plan-stability-golden-files">
+<h3>Plan Stability Golden Files<a class="headerlink" href="#plan-stability-golden-files" title="Link to this heading">#</a></h3>
+<p>Plan stability tests live under
+<code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/tpcds-plan-stability/approved-plans-{v1_4,v2_7}-sparkX_Y/</span></code>.
+The suite (<code class="docutils literal notranslate"><span class="pre">CometPlanStabilitySuite</span></code>) falls back through earlier versions
+when no version-specific approved plan exists, so most queries do not need
+their own copy. Wire the new version into the fallback chain:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">private</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">planName</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">isSpark42Plus</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="s">&quot;approved-plans-v1_4-spark4_2&quot;</span>
+<span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">isSpark41Plus</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="s">&quot;approved-plans-v1_4-spark4_1&quot;</span>
+<span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">isSpark40Plus</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="s">&quot;approved-plans-v1_4-spark4_0&quot;</span>
+<span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="p">...</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Update the version regex in <code class="docutils literal notranslate"><span class="pre">dev/regenerate-golden-files.sh</span></code> to allow the
+new version, then regenerate:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./dev/regenerate-golden-files.sh<span class="w"> </span>--spark-version<span class="w"> </span>X.Y
+</pre></div>
+</div>
+<p>The script automatically deduplicates: if a regenerated plan matches the
+fallback chain it is removed from the version-specific directory. Only the
+queries whose plans actually differ on the new version end up under
+<code class="docutils literal notranslate"><span class="pre">approved-plans-*-sparkX_Y/</span></code>. Inspect each surviving diff: a small,
+explainable difference is fine, but a large or mysterious diff is usually a
+sign of a shim bug worth investigating before approving the plan.</p>
+</section>
+<section id="spark-sql-test-overrides">
+<h3>Spark SQL Test Overrides<a class="headerlink" href="#spark-sql-test-overrides" title="Link to this heading">#</a></h3>
+<p>Spark SQL tests run against patched Spark sources under <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code>. Each
+supported Spark version has its own diff file. The mechanics of starting
+from the closest existing diff, applying it with <code class="docutils literal notranslate"><span class="pre">--reject</span></code>, resolving the
+rejects (often with <code class="docutils literal notranslate"><span class="pre">wiggle</span></code>), and regenerating the new diff file are
+described in detail in <a class="reference internal" href="spark-sql-tests.html"><span class="std std-doc">Spark SQL Tests</span></a>. Follow that
+page for the diff workflow itself; the additional points specific to a
+new-version bring-up are:</p>
+<ul class="simple">
+<li><p>When Spark introduces new error classes (Spark 4.1 changed
+<code class="docutils literal notranslate"><span class="pre">DIVIDE_BY_ZERO</span></code> to <code class="docutils literal notranslate"><span class="pre">REMAINDER_BY_ZERO</span></code> for modulo, for example), prefer
+matchers that work across versions, like matching on the substring
+<code class="docutils literal notranslate"><span class="pre">BY_ZERO</span></code>, rather than branching by version.</p></li>
+<li><p>The same skip-with-linked-issue rule applies as in stage 2: one issue per
+test or cluster, and do not disable whole suites.</p></li>
+</ul>
+</section>
+<section id="ci-for-the-spark-sql-tests">
+<h3>CI for the Spark SQL Tests<a class="headerlink" href="#ci-for-the-spark-sql-tests" title="Link to this heading">#</a></h3>
+<p>Spark SQL tests do not run from the main PR build workflows. They have
+their own dedicated workflow files:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/spark_sql_test.yml</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/spark_sql_test_native_iceberg_compat.yml</span></code></p></li>
+</ul>
+<p>Add the new version to the matrix in each of these files (<code class="docutils literal notranslate"><span class="pre">spark-short</span></code>,
+<code class="docutils literal notranslate"><span class="pre">spark-full</span></code>, <code class="docutils literal notranslate"><span class="pre">java</span></code>, <code class="docutils literal notranslate"><span class="pre">scan-impl</span></code>). Use the closest existing entry as a
+template.</p>
+<p>Before merging, run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">format</span></code>, run clippy
+(<code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">native</span> <span class="pre">&amp;&amp;</span> <span class="pre">cargo</span> <span class="pre">clippy</span> <span class="pre">--all-targets</span> <span class="pre">--workspace</span> <span class="pre">--</span> <span class="pre">-D</span> <span class="pre">warnings</span></code>), and
+confirm every skip introduced in this PR has a linked GitHub issue.</p>
+</section>
+</section>
+<section id="stage-4-announce-the-version-in-the-user-guide">
+<h2>Stage 4: Announce the Version in the User Guide<a class="headerlink" href="#stage-4-announce-the-version-in-the-user-guide" title="Link to this heading">#</a></h2>
+<p>Once stage 3 is merged and CI is green, advertise the version to users.</p>
+<p>The single source of truth for which Spark versions Comet works with is the
+<code class="docutils literal notranslate"><span class="pre">###</span> <span class="pre">Supported</span> <span class="pre">Spark</span> <span class="pre">Versions</span></code> section in
+<code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/installation.md</span></code>. It contains two tables and a
+list of per-version jar download links. Update each:</p>
+<ul class="simple">
+<li><p>Add a row to the <strong>experimental</strong> table (the one introduced by the
+sentence “Experimental support is provided for the following versions
+…”). Include the Java version, Scala version, and the <code class="docutils literal notranslate"><span class="pre">Yes</span></code>/<code class="docutils literal notranslate"><span class="pre">No</span></code>
+values for “Comet Tests in CI” and “Spark SQL Tests in CI” that match
+what stage 2 and stage 3 actually enabled.</p></li>
+<li><p>Add a <code class="docutils literal notranslate"><span class="pre">(Experimental)</span></code> jar download link below the existing entries.</p></li>
+</ul>
+<p>Do not add the new version to the main “Supported Spark Versions” table
+yet. That table is reserved for versions that have completed the promotion
+criteria described in the next section.</p>
+<p>Other user-guide pages (<code class="docutils literal notranslate"><span class="pre">operators.md</span></code>, <code class="docutils literal notranslate"><span class="pre">datatypes.md</span></code>,
+<code class="docutils literal notranslate"><span class="pre">understanding-comet-plans.md</span></code>, etc.) generally do not mention specific
+Spark versions and do not need editing for a new bring-up. The exception is
+text that calls out a specific version’s behavior, for example
+<code class="docutils literal notranslate"><span class="pre">understanding-comet-plans.md</span></code> mentions <code class="docutils literal notranslate"><span class="pre">Spark</span> <span class="pre">4.0</span> <span class="pre">and</span> <span class="pre">newer</span></code>. Search the
+user guide for the previous version string when adding a new one and
+extend any such phrases that should now apply.</p>
+<p><code class="docutils literal notranslate"><span class="pre">docs/generate-versions.py</span></code> is about Comet release branches, not Spark
+versions, and does not need editing.</p>
+</section>
+<section id="stage-5-fix-the-skipped-tests-follow-up-prs">
+<h2>Stage 5: Fix the Skipped Tests (Follow-Up PRs)<a class="headerlink" href="#stage-5-fix-the-skipped-tests-follow-up-prs" title="Link to this heading">#</a></h2>
+<p>Each follow-up PR should target one issue (or one cluster of related issues)
+opened during stages 2 and 3. The pattern is:</p>
+<ol class="arabic simple">
+<li><p>Reproduce the failure under <code class="docutils literal notranslate"><span class="pre">-Pspark-X.Y</span></code>.</p></li>
+<li><p>Identify the root cause: shim gap, expression behavior change, planner
+change, or genuine Comet bug exposed on the new version.</p></li>
+<li><p>Implement the fix.</p></li>
+<li><p>Remove the corresponding <code class="docutils literal notranslate"><span class="pre">assume()</span></code> skip and rerun the suite.</p></li>
+<li><p>Reference the issue in the PR title or description so it auto-closes on
+merge.</p></li>
+</ol>
+<p>Avoid bundling unrelated skip removals into one PR. A targeted PR per
+issue keeps the diff small and makes regressions easy to bisect.</p>
+</section>
+<section id="stage-6-promote-from-experimental-to-supported">
+<h2>Stage 6: Promote from Experimental to Supported<a class="headerlink" href="#stage-6-promote-from-experimental-to-supported" title="Link to this heading">#</a></h2>
+<p>The user guide currently uses two tiers, “Supported” and “Experimental”.
+Comet uses “Experimental” to describe its confidence in its own
+integration with a Spark version, distinct from Spark’s “preview” tag
+(which refers to upstream release qualifiers like <code class="docutils literal notranslate"><span class="pre">4.2.0-preview4</span></code>). The
+term is already established in <code class="docutils literal notranslate"><span class="pre">installation.md</span></code>, <code class="docutils literal notranslate"><span class="pre">operators.md</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">datasources.md</span></code>, so keep using it rather than introducing a new label.</p>
+<p>A version starts experimental in stage 4 and is promoted later. Promotion
+is its own small PR, gated by these criteria:</p>
+<ul class="simple">
+<li><p>The Spark version is a final upstream release, not a preview, snapshot,
+or release candidate.</p></li>
+<li><p>Both “Comet Tests in CI” and “Spark SQL Tests in CI” are <code class="docutils literal notranslate"><span class="pre">Yes</span></code> for the
+version, and have been <code class="docutils literal notranslate"><span class="pre">Yes</span></code> continuously for at least one Comet release
+cycle.</p></li>
+<li><p>No <code class="docutils literal notranslate"><span class="pre">assume(!isSparkXYPlus,</span> <span class="pre">...)</span></code> skip remains for a known correctness
+issue. Skips for unrelated, infrastructural, or environment-specific
+reasons are acceptable; correctness skips are not.</p></li>
+<li><p>No open <code class="docutils literal notranslate"><span class="pre">Critical</span></code> or <code class="docutils literal notranslate"><span class="pre">Blocker</span></code>-tagged issue references the version.</p></li>
+</ul>
+<p>When the criteria are met, the promotion PR moves the version’s row from
+the experimental table into the main “Supported Spark Versions” table and
+removes the <code class="docutils literal notranslate"><span class="pre">(Experimental)</span></code> qualifier from the jar download link. No
+shim, code, or test changes should be bundled with this promotion. Keeping
+it as a doc-only PR makes it easy to revert if a problem shows up after
+the promotion.</p>
+</section>
+<section id="related-documentation">
+<h2>Related Documentation<a class="headerlink" href="#related-documentation" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="development.html"><span class="std std-doc">Development Guide</span></a>: build prerequisites, test commands,
+and the canonical Maven invocations.</p></li>
+<li><p><a class="reference internal" href="plugin_overview.html"><span class="std std-doc">Comet Plugin Overview</span></a>: how the planner rules and
+shims fit together, useful when diagnosing version-specific failures.</p></li>
+<li><p><a class="reference internal" href="spark-sql-tests.html"><span class="std std-doc">Spark SQL Tests</span></a>: mechanics of running Spark’s own
+SQL tests through Comet.</p></li>
+<li><p><a class="reference internal" href="bug_triage.html"><span class="std std-doc">Bug Triage</span></a>: conventions for opening and labeling issues
+for the skipped tests.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="adding_a_new_expression.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Adding a New Expression</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="spark_expressions_support.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Supported Spark Expressions</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
