@@ -19,6 +19,9 @@
 """
 End-to-end wall-clock benchmark for Comet's PyArrow UDF acceleration.
 
+Requires PySpark 4.0.1+ (Comet's columnar runner targets Spark 4.0+ only;
+3.5 and 3.4 are documented no-ops).
+
 Times `df.mapInArrow(passthrough, schema).count()` and the equivalent
 `mapInPandas` query with `spark.comet.exec.pyarrowUdf.enabled` set
 to false (vanilla Spark path) and true (Comet's optimized path). Both
@@ -26,8 +29,10 @@ modes run the same Python worker, so the measured delta covers what the
 optimization actually changes for users:
 
   * vanilla:   CometScan -> ColumnarToRow + UnsafeProjection -> ArrowPythonRunner
-  * optimized: CometScan -> rowIterator -> ArrowPythonRunner (same runner;
-              no UnsafeProjection, output kept as ColumnarBatch)
+              (per-row InternalRow.getXXX() loop inside ArrowWriter.write)
+  * optimized: CometScan -> CometMapInBatchExec -> CometArrowPythonRunner
+              (per-buffer Unsafe.copyMemory from Comet's vectors into the
+              runner's persistent VectorSchemaRoot; no row materialization)
 
 Results are wall-clock seconds, so they include Python interpreter,
 Arrow IPC, and downstream count() costs. That's intentional: the
