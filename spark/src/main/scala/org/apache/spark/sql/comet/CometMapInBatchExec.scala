@@ -19,9 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.JavaConverters._
-
-import org.apache.spark.{ContextAwareIterator, TaskContext}
+import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
@@ -30,20 +28,17 @@ import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.shims.ShimCometMapInBatch
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.execution.python.{BatchIterator, PythonSQLMetrics}
+import org.apache.spark.sql.execution.python.PythonSQLMetrics
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.vectorized.{ArrowColumnVector, ColumnarBatch}
 
 /**
  * Comet replacement for Spark's `MapInBatchExec` family (`PythonMapInArrowExec` /
- * `MapInArrowExec` in 4.1+ / `MapInPandasExec`). Accepts columnar input directly from a Comet
- * child instead of going through the per-row `UnsafeProjection` that `ColumnarToRowExec` applies,
- * and keeps the Python runner output as `ColumnarBatch` so downstream Comet operators consume it
- * natively.
+ * `MapInArrowExec` in 4.1+ / `MapInPandasExec`). Feeds upstream Comet `ColumnarBatch` values
+ * directly to a `CometArrowPythonRunner`, eliminating the per-row `InternalRow.getXXX` loop that
+ * vanilla Spark's `ArrowPythonRunner` performs.
  *
- * What this eliminates: two `UnsafeProjection` copies (input and output) and the row transition
- * between Comet and the Python operator. The internal row-to-Arrow IPC re-encoding inside
- * `ArrowPythonRunner` is unchanged; full round-trip elimination is tracked in #4240.
+ * Per-Spark-minor wiring lives in `ShimCometMapInBatch.computeArrowPython`.
  */
 case class CometMapInBatchExec(
     func: Expression,
@@ -69,8 +64,8 @@ case class CometMapInBatchExec(
     pythonMetrics
 
   // Fallback for row-consuming parents (e.g. a top-level `collect()` that produces rows).
-  // Wraps this columnar exec in `ColumnarToRowExec`, reintroducing exactly the row transition
-  // this operator otherwise eliminates. Only fires when nothing downstream consumes columnar.
+  // Wraps this columnar exec in `ColumnarToRowExec`, reintroducing the row transition this
+  // operator otherwise eliminates. Only fires when nothing downstream consumes columnar.
   override def doExecute(): RDD[InternalRow] = {
     ColumnarToRowExec(this).doExecute()
   }
@@ -82,45 +77,32 @@ case class CometMapInBatchExec(
 
     val outputAttrs = output
     val childSchema = child.schema
-    val batchSize = conf.arrowMaxRecordsPerBatch
     val evalType = pythonEvalType
     val metricsCopy = pythonMetrics
 
     // Resolve every `SQLConf`-derived input on the driver. `SQLConf.get` reads from a thread-local
     // `ConfigReader` that only exists on the driver, so dereferencing `conf` from inside the task
-    // closure NPEs (see #4234 review).
+    // closure NPEs.
     val resolvedRunnerInputs = runnerInputs(func.asInstanceOf[PythonUDF], conf)
 
     val inputRDD = child.executeColumnar()
 
     def processPartition(batches: Iterator[ColumnarBatch]): Iterator[ColumnarBatch] = {
       val context = TaskContext.get()
-      val argOffsets = Array(Array(0))
-
-      val rowIter = batches.flatMap { batch =>
-        numInputRows += batch.numRows()
-        batch.rowIterator().asScala
-      }
-
-      val contextAwareIterator = new ContextAwareIterator(context, rowIter)
-
-      // Wrap rows as a struct, matching MapInBatchEvaluatorFactory behavior
-      val wrappedIter = contextAwareIterator.map(InternalRow(_))
-
-      val batchIter =
-        if (batchSize > 0) new BatchIterator(wrappedIter, batchSize) else Iterator(wrappedIter)
+      val counting = batches.map { b => numInputRows += b.numRows(); b }
 
       val columnarBatchIter = computeArrowPython(
         resolvedRunnerInputs,
         evalType,
-        argOffsets,
+        Array(Array(0)),
         StructType(Array(StructField("struct", childSchema))),
         metricsCopy,
-        batchIter,
+        Iterator(counting),
         context.partitionId(),
         context)
 
       columnarBatchIter.map { batch =>
+        // Python returns a single struct column; flatten to the user's output columns.
         val structVector = batch.column(0).asInstanceOf[ArrowColumnVector]
         val outputVectors = outputAttrs.indices.map(structVector.getChild)
         val flattenedBatch = new ColumnarBatch(outputVectors.toArray)
