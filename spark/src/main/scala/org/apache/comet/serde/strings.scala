@@ -388,7 +388,7 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
       return None
     }
     (expr.regexp, expr.idx) match {
-      case (Literal(pattern, DataTypes.StringType), Literal(idx, _: IntegerType)) =>
+      case (Literal(pattern, DataTypes.StringType), Literal(_, _: IntegerType)) =>
         if (pattern == null) {
           withInfo(expr, "Null literal pattern is handled by Spark fallback")
           return None
@@ -457,7 +457,7 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
       return None
     }
     (expr.regexp, expr.idx) match {
-      case (Literal(pattern, DataTypes.StringType), Literal(idx, _: IntegerType)) =>
+      case (Literal(pattern, DataTypes.StringType), Literal(_, _: IntegerType)) =>
         if (pattern == null) {
           withInfo(expr, "Null literal pattern is handled by Spark fallback")
           return None
@@ -527,7 +527,7 @@ object CometRegExpInStr extends CometExpressionSerde[RegExpInStr] {
       return None
     }
     (expr.regexp, expr.idx) match {
-      case (Literal(pattern, DataTypes.StringType), Literal(idx, _: IntegerType)) =>
+      case (Literal(pattern, DataTypes.StringType), Literal(_, _: IntegerType)) =>
         if (pattern == null) {
           withInfo(expr, "Null literal pattern is handled by Spark fallback")
           return None
