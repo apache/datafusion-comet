@@ -25,7 +25,9 @@ The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instan
 
 Total time to run all queries (lower is better).
 
-![](../../_static/images/benchmark-results/0.16.0/tpch_allqueries.png)
+![](../../_static/images/benchmark-results/0.15.0/tpch_allqueries_with_tuned.png)
+
+The following charts are based on the tuned run using hash join.
 
 Per-query breakdown showing the relative performance of Spark and Comet.
 
@@ -38,12 +40,6 @@ How much Comet accelerates each query in relative terms.
 How much Comet accelerates each query in absolute terms.
 
 ![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_abs.png)
-
-### With hand-tuned Comet configuration
-
-The following chart adds a "Comet (Tuned)" run on top of the default Spark vs. Comet comparison.
-
-![](../../_static/images/benchmark-results/0.15.0/tpch_allqueries_with_tuned.png)
 
 ## Configuration
 
@@ -76,8 +72,6 @@ spark.memory.offHeap.size=32G
 ```
 
 ### Comet (Tuned)
-
-Hand-tuned configuration used for the "with tuned" chart below:
 
 ```properties
 spark.comet.exec.replaceSortMergeJoin=true
