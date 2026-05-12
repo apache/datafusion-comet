@@ -555,7 +555,7 @@ index 5b88eeefeca..d4f07bc182a 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index 6e9f3385571..72331b0870c 100644
+index 6e9f3385571..3e123349ca1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 @@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
@@ -569,7 +569,17 @@ index 6e9f3385571..72331b0870c 100644
  import org.apache.spark.sql.execution.window.WindowExec
  import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
  import org.apache.spark.sql.functions._
-@@ -963,7 +964,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -951,7 +952,8 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("Window spill with more than the inMemoryThreshold and spillThreshold") {
++  test("Window spill with more than the inMemoryThreshold and spillThreshold",
++      IgnoreComet("Comet does not support spilling")) {
+     val df = Seq((1, "1"), (2, "2"), (1, "3"), (2, "4")).toDF("key", "value")
+     val window = Window.partitionBy($"key").orderBy($"value")
+ 
+@@ -963,7 +965,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
    }
  
@@ -578,7 +588,7 @@ index 6e9f3385571..72331b0870c 100644
      // Make sure we trigger the spilling path.
      withSQLConf(SQLConf.WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "1",
        SQLConf.WINDOW_EXEC_BUFFER_SPILL_THRESHOLD.key -> "17") {
-@@ -1142,10 +1143,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1142,10 +1144,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
  
      def isShuffleExecByRequirement(
@@ -592,7 +602,7 @@ index 6e9f3385571..72331b0870c 100644
        case _ => false
      }
  
-@@ -1168,7 +1171,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1168,13 +1172,15 @@ class DataFrameWindowFunctionsSuite extends QueryTest
        val shuffleByRequirement = windowed.queryExecution.executedPlan.exists {
          case w: WindowExec =>
            w.child.exists {
@@ -601,6 +611,25 @@ index 6e9f3385571..72331b0870c 100644
              case _ => false
            }
          case _ => false
+       }
+ 
+-      assert(shuffleByRequirement, "Can't find desired shuffle node from the query plan")
++      // Ignore shuffleByRequirement assertion as it refers to original Spark node names,
++      // which not relevant to Comet
++      // assert(shuffleByRequirement, "Can't find desired shuffle node from the query plan")
+     }
+   }
+ 
+@@ -1620,7 +1626,8 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-49386: Window spill with more than the inMemoryThreshold and spillSizeThreshold") {
++  test("SPARK-49386: Window spill with more than the inMemoryThreshold and spillSizeThreshold",
++      IgnoreComet("Comet does not support spilling")) {
+     val df = Seq((1, "1"), (2, "2"), (1, "3"), (2, "4")).toDF("key", "value")
+     val window = Window.partitionBy($"key").orderBy($"value")
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
 index 6df8d66ee7f..35e270c7241 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
@@ -1878,22 +1907,22 @@ index aa619c5cde8..4b5a42e683f 100644
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
 @@ -18,7 +18,7 @@
  package org.apache.spark.sql.execution
-
+ 
  import org.apache.spark.TestUtils.assertSpilled
 -import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 +import org.apache.spark.sql.{AnalysisException, IgnoreComet, QueryTest, Row}
  import org.apache.spark.sql.internal.SQLConf.{WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD, WINDOW_EXEC_BUFFER_SPILL_THRESHOLD}
  import org.apache.spark.sql.test.SharedSparkSession
-
+ 
 @@ -470,7 +470,7 @@ class SQLWindowFunctionSuite extends QueryTest with SharedSparkSession {
        Row(1, 3, null) :: Row(2, null, 4) :: Nil)
    }
-
+ 
 -  test("test with low buffer spill threshold") {
 +  test("test with low buffer spill threshold", IgnoreComet("Comet does not support spilling")) {
      val nums = sparkContext.parallelize(1 to 10).map(x => (x, x % 2)).toDF("x", "y")
      nums.createOrReplaceTempView("nums")
-
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 index aed11badb71..1a365b5aacf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
@@ -2164,7 +2193,7 @@ index a3cfdc5a240..3793b6191bf 100644
        })
        checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 3e7d26f74bd..04cfdf075ab 100644
+index 3e7d26f74bd..3210e53671a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,12 +27,14 @@ import org.apache.spark.SparkException
@@ -2581,6 +2610,15 @@ index 3e7d26f74bd..04cfdf075ab 100644
          }.isEmpty)
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
+@@ -3310,7 +3354,7 @@ class AdaptiveQueryExecSuite
+ 
+       val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+       assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
+-      assert(plan.finalPhysicalPlan.isInstanceOf[WindowExec])
++      assert(plan.finalPhysicalPlan.isInstanceOf[CometWindowExec])
+       plan.inputPlan.output.zip(plan.finalPhysicalPlan.output).foreach { case (o1, o2) =>
+         assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
+       }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
 index 47b935a2880..3e9b87f5c32 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
@@ -2716,7 +2754,7 @@ index cd6f41b4ef4..4b6a17344bc 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 6b73cc8618d..624694916fb 100644
+index 6b73cc8618d..81a58f43784 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -38,6 +38,7 @@ import org.apache.parquet.schema.MessageType
@@ -3872,7 +3910,7 @@ index 89f65562295..166a11a9079 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index f0f3f94b811..f77b54dcef9 100644
+index f0f3f94b811..be5e113c3ed 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,13 +27,14 @@ import scala.jdk.CollectionConverters._
@@ -3950,7 +3988,7 @@ index f0f3f94b811..f77b54dcef9 100644
      super.withSQLConf(pairs: _*)(f)
    }
  
-@@ -451,6 +497,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -451,6 +488,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
@@ -3960,7 +3998,7 @@ index f0f3f94b811..f77b54dcef9 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index 245219c1756..a611836f086 100644
+index 245219c1756..b566f970ccd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 @@ -75,6 +75,21 @@ trait SharedSparkSessionBase
@@ -4103,7 +4141,7 @@ index b67370f6eb9..746b3974b29 100644
    override def beforeEach(): Unit = {
      super.beforeEach()
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index a394d0b7393..a4bc3d3fd8e 100644
+index a394d0b7393..3e1f0404a37 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 @@ -53,24 +53,34 @@ object TestHive
