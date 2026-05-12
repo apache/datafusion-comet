@@ -27,6 +27,12 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - "benchmarks/**"
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+      - "dev/changelog/*.md"
   schedule:
     - cron: '16 4 * * 1'
 
