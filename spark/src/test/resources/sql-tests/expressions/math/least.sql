@@ -163,3 +163,49 @@ SELECT least(10, 9, 8, 7, 6, 5, 4, 3, 2, 1)
 
 query
 SELECT least(a, b, c, a, b) FROM test_least
+
+-- array type (lexicographic ordering)
+statement
+CREATE TABLE test_least_array(a array<int>, b array<int>) USING parquet
+
+statement
+INSERT INTO test_least_array VALUES
+  (array(1, 2, 3), array(1, 2, 4)),
+  (array(1, 2), array(1, 2, 0)),
+  (array(3), array(2, 9, 9)),
+  (array(1, 1), array(1, 1)),
+  (NULL, array(1)),
+  (array(1), NULL),
+  (NULL, NULL)
+
+query
+SELECT least(a, b) FROM test_least_array
+
+query
+SELECT least(array(1, 2), array(1, 3), array(1, 1))
+
+query
+SELECT least(array('b', 'a'), array('a', 'z'))
+
+-- struct type (field-by-field ordering)
+statement
+CREATE TABLE test_least_struct(a struct<x:int, y:string>, b struct<x:int, y:string>) USING parquet
+
+statement
+INSERT INTO test_least_struct VALUES
+  (named_struct('x', 1, 'y', 'a'), named_struct('x', 2, 'y', 'a')),
+  (named_struct('x', 1, 'y', 'b'), named_struct('x', 1, 'y', 'a')),
+  (named_struct('x', 3, 'y', 'z'), named_struct('x', 3, 'y', 'z')),
+  (NULL, named_struct('x', 1, 'y', 'a')),
+  (named_struct('x', 1, 'y', 'a'), NULL),
+  (NULL, NULL)
+
+query
+SELECT least(a, b) FROM test_least_struct
+
+query
+SELECT least(named_struct('x', 1, 'y', 'b'), named_struct('x', 1, 'y', 'a'))
+
+-- nested complex type: array of structs
+query
+SELECT least(array(named_struct('x', 1)), array(named_struct('x', 2)))
