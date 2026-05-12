@@ -51,7 +51,8 @@ on:
 jobs:
   miri:
     name: "Miri"
-    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.labels.*.name, 'skip-ci') && !contains(github.event.pull_request.title, '[skip ci]')) }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Install Build Dependencies

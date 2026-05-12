@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.16.0-SNAPSHOT</version>
+  <version>0.17.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -38,7 +38,6 @@ under the License.
     <module>common</module>
     <module>spark</module>
     <module>spark-integration</module>
-    <module>fuzz-testing</module>
   </modules>
 
   <properties>

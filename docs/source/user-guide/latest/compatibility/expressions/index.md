@@ -27,6 +27,7 @@ Compatibility notes are grouped by expression category:
 
 ```{toctree}
 :maxdepth: 1
+:hidden:
 
 aggregate
 array
