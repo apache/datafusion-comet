@@ -43,11 +43,13 @@ use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg_storage_opendal::OpenDalStorageFactory;
 
 use crate::execution::operators::ExecutionError;
+use crate::parquet::objectstore::comet_credential_bridge::{self, CometCredentialBridge};
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::FileScanTask;
+use iceberg_storage_opendal::CustomAwsCredentialLoader;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -207,9 +209,12 @@ impl IcebergScanExec {
         };
         match scheme {
             "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
-            "s3" | "s3a" => Ok(Arc::new(OpenDalStorageFactory::S3 {
-                customized_credential_load: None,
-            })),
+            "s3" | "s3a" => {
+                let customized_credential_load = build_s3_credential_loader(path);
+                Ok(Arc::new(OpenDalStorageFactory::S3 {
+                    customized_credential_load,
+                }))
+            }
             "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
             "oss" => Ok(Arc::new(OpenDalStorageFactory::Oss)),
             _ => Err(DataFusionError::Execution(format!(
@@ -231,6 +236,20 @@ impl IcebergScanExec {
 
         Ok(file_io_builder.build())
     }
+}
+
+/// Build a `CustomAwsCredentialLoader` from the registered Comet cloud credential provider, if
+/// any. Returns `None` when no Java provider is registered, when the metadata URL is malformed,
+/// or when no bucket can be extracted - in those cases opendal falls back to its default
+/// credential resolution.
+fn build_s3_credential_loader(metadata_location: &str) -> Option<CustomAwsCredentialLoader> {
+    if !comet_credential_bridge::is_provider_registered() {
+        return None;
+    }
+    let url = url::Url::parse(metadata_location).ok()?;
+    let bucket = url.host_str()?.to_string();
+    let bridge = CometCredentialBridge::new(bucket, metadata_location.to_string());
+    Some(CustomAwsCredentialLoader::new(bridge))
 }
 
 /// Metrics for IcebergScanExec

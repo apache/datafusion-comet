@@ -23,14 +23,29 @@
 use crate::execution::operators::ExecutionError;
 use crate::jvm_bridge::{check_exception, JVMClasses};
 use async_trait::async_trait;
+use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
 use jni::objects::{JClass, JFieldID, JStaticMethodID, JString};
 use jni::signature::{Primitive, ReturnType};
 use jni::strings::JNIString;
-use log::debug;
+use log::{debug, warn};
 use object_store::aws::AwsCredential;
 use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
+use reqsign_core::time::Timestamp;
+use reqsign_core::{
+    Context, Error as ReqsignError, ErrorKind as ReqsignErrorKind,
+    ProvideCredential as IcebergProvideCredential,
+};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Default expiration to attach when the Java provider returns
+/// `CometCredentials.expirationEpochMillis == 0` ("unknown"). Without a non-None expiry, opendal
+/// would cache the credential for the entire executor lifetime - a silent footgun for Spark
+/// jobs that run for hours. Five minutes is short enough to limit blast radius and long enough
+/// to avoid per-request JNI overhead. Vendors that want a different cadence should set
+/// `expirationEpochMillis` on every returned POJO.
+const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
 
 const DISPATCHER_CLASS: &str = "org/apache/comet/cloud/CometCloudCredentialDispatcher";
 const CREDENTIALS_CLASS: &str = "org/apache/comet/cloud/CometCredentials";
@@ -71,6 +86,7 @@ struct BridgeHandle {
     field_access_key_id: JFieldID,
     field_secret_access_key: JFieldID,
     field_session_token: JFieldID,
+    field_expiration_epoch_millis: JFieldID,
 }
 
 // SAFETY: The cached `JClass`, `JStaticMethodID`, and `JFieldID` are all global identifiers
@@ -184,6 +200,17 @@ fn init_handle() -> BridgeHandleState {
             .map_err(|e| {
                 ExecutionError::GeneralError(format!("Failed to resolve sessionToken field: {e}"))
             })?;
+        let field_expiration_epoch_millis = env_static
+            .get_field_id(
+                &credentials_class,
+                jni::jni_str!("expirationEpochMillis"),
+                jni::jni_sig!("J"),
+            )
+            .map_err(|e| {
+                ExecutionError::GeneralError(format!(
+                    "Failed to resolve expirationEpochMillis field: {e}"
+                ))
+            })?;
 
         Ok(BridgeHandleState::Registered(BridgeHandle {
             dispatcher_class,
@@ -192,6 +219,7 @@ fn init_handle() -> BridgeHandleState {
             field_access_key_id,
             field_secret_access_key,
             field_session_token,
+            field_expiration_epoch_millis,
         }))
     });
 
@@ -219,9 +247,11 @@ pub fn is_provider_registered() -> bool {
 
 /// Per-request credential provider that delegates to the Java SPI via JNI.
 ///
-/// One instance is constructed per S3 store (which is itself per-URL in `create_store`), so the
-/// `bucket` and `path` fields uniquely identify the access. The Java provider receives both on
-/// every credential fetch and is free to return different credentials for different paths.
+/// One instance is constructed per S3 store for the `object_store` path (per-URL in
+/// `s3.rs::create_store`) or per FileIO for the iceberg-rust path. The Java provider receives
+/// `(bucket, path)` on every credential fetch and is free to return different credentials per
+/// path; on the iceberg-rust path the path is the table's metadata location, so credentials are
+/// effectively per-table.
 #[derive(Debug)]
 pub struct CometCredentialBridge {
     bucket: String,
@@ -235,26 +265,22 @@ impl CometCredentialBridge {
             path: path.into(),
         }
     }
-}
 
-#[async_trait]
-impl CredentialProvider for CometCredentialBridge {
-    type Credential = AwsCredential;
-
-    async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
-        let handle = get_handle().ok_or_else(|| object_store::Error::Generic {
-            store: "S3",
-            source: "CometCredentialBridge invoked but no Java provider is registered".into(),
+    /// Invoke the Java dispatcher and extract the three string fields off the returned POJO.
+    /// Shared between the `object_store::CredentialProvider` and `reqsign_core::ProvideCredential`
+    /// impls.
+    fn fetch_raw(&self) -> Result<RawCredentials, ExecutionError> {
+        let handle = get_handle().ok_or_else(|| {
+            ExecutionError::GeneralError(
+                "CometCredentialBridge invoked but no Java provider is registered".to_string(),
+            )
         })?;
 
-        let bucket = self.bucket.clone();
-        let path = self.path.clone();
-
-        let cred = JVMClasses::with_env(|env| -> Result<AwsCredential, ExecutionError> {
-            let bucket_jstr = env.new_string(&bucket).map_err(|e| {
+        JVMClasses::with_env(|env| -> Result<RawCredentials, ExecutionError> {
+            let bucket_jstr = env.new_string(&self.bucket).map_err(|e| {
                 ExecutionError::GeneralError(format!("Failed to create bucket JString: {e}"))
             })?;
-            let path_jstr = env.new_string(&path).map_err(|e| {
+            let path_jstr = env.new_string(&self.path).map_err(|e| {
                 ExecutionError::GeneralError(format!("Failed to create path JString: {e}"))
             })?;
 
@@ -312,19 +338,97 @@ impl CredentialProvider for CometCredentialBridge {
             .ok_or_else(|| ExecutionError::GeneralError("secretAccessKey was null".to_string()))?;
             let session_token =
                 read_string_field(env, &creds_obj, handle.field_session_token, "sessionToken")?;
+            let expiration_epoch_millis = unsafe {
+                env.get_field_unchecked(
+                    &creds_obj,
+                    handle.field_expiration_epoch_millis,
+                    ReturnType::Primitive(Primitive::Long),
+                )
+            }
+            .map_err(|e| {
+                ExecutionError::GeneralError(format!("Failed to read expirationEpochMillis: {e}"))
+            })?
+            .j()
+            .map_err(|e| {
+                ExecutionError::GeneralError(format!("expirationEpochMillis was not a long: {e}"))
+            })?;
 
-            Ok(AwsCredential {
-                key_id: access_key_id,
-                secret_key: secret_access_key,
-                token: session_token,
+            Ok(RawCredentials {
+                access_key_id,
+                secret_access_key,
+                session_token,
+                expiration_epoch_millis,
             })
         })
-        .map_err(|e: ExecutionError| object_store::Error::Generic {
+    }
+}
+
+struct RawCredentials {
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
+    /// Provider-supplied absolute expiry. `0` means "unknown"; callers translate that into a
+    /// short fallback so opendal cannot cache the credential for the entire executor lifetime.
+    expiration_epoch_millis: i64,
+}
+
+#[async_trait]
+impl CredentialProvider for CometCredentialBridge {
+    type Credential = AwsCredential;
+
+    async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
+        let raw = self.fetch_raw().map_err(|e| object_store::Error::Generic {
             store: "S3",
             source: e.to_string().into(),
         })?;
+        Ok(Arc::new(AwsCredential {
+            key_id: raw.access_key_id,
+            secret_key: raw.secret_access_key,
+            token: raw.session_token,
+        }))
+    }
+}
 
-        Ok(Arc::new(cred))
+impl IcebergProvideCredential for CometCredentialBridge {
+    type Credential = IcebergAwsCredential;
+
+    async fn provide_credential(
+        &self,
+        _ctx: &Context,
+    ) -> reqsign_core::Result<Option<Self::Credential>> {
+        let raw = self
+            .fetch_raw()
+            .map_err(|e| ReqsignError::new(ReqsignErrorKind::CredentialInvalid, e.to_string()))?;
+
+        let expires_in = if raw.expiration_epoch_millis > 0 {
+            Some(
+                Timestamp::from_millisecond(raw.expiration_epoch_millis).map_err(|e| {
+                    ReqsignError::new(
+                        ReqsignErrorKind::CredentialInvalid,
+                        format!(
+                            "Invalid expirationEpochMillis {}: {e}",
+                            raw.expiration_epoch_millis
+                        ),
+                    )
+                })?,
+            )
+        } else {
+            // Provider did not set an expiration. Opendal would otherwise cache this credential
+            // for the entire executor lifetime; force a refresh after DEFAULT_EXPIRY_WHEN_UNKNOWN.
+            warn!(
+                "CometCloudCredentialProvider returned credentials with no expiration; \
+                 defaulting to {}s expiry to bound opendal caching",
+                DEFAULT_EXPIRY_WHEN_UNKNOWN.as_secs()
+            );
+            Some(Timestamp::now() + DEFAULT_EXPIRY_WHEN_UNKNOWN)
+        };
+
+        Ok(Some(IcebergAwsCredential {
+            access_key_id: raw.access_key_id,
+            secret_access_key: raw.secret_access_key,
+            session_token: raw.session_token,
+            expires_in,
+        }))
     }
 }
 
