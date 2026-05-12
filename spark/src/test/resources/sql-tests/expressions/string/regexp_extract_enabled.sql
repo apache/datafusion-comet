@@ -18,8 +18,6 @@
 -- Test regexp_extract() with the per-expression allowIncompatible flag enabled (happy path).
 -- Config: spark.comet.expression.RegExpExtract.allowIncompatible=true
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_regexp_extract_enabled(s string) USING parquet
 
