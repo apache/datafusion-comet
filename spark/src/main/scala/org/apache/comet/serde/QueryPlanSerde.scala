@@ -179,6 +179,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Like] -> CometLike,
       classOf[Lower] -> CometLower,
       classOf[OctetLength] -> CometScalarFunction("octet_length"),
+      classOf[RegExpExtract] -> CometRegExpExtract,
+      classOf[RegExpExtractAll] -> CometRegExpExtractAll,
       classOf[RegExpReplace] -> CometRegExpReplace,
       classOf[Reverse] -> CometReverse,
       classOf[RLike] -> CometRLike,
