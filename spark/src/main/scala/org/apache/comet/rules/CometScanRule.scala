@@ -349,37 +349,32 @@ case class CometScanRule(session: SparkSession)
         // at execution time (DPP expressions are filtered out of the
         // planning-time InterpretedPredicate and applied by Spark post-scan).
         if (DeltaReflection.isDeltaFileFormat(r.fileFormat)) {
-          // Decline when the plan references `input_file_name()` /
-          // `input_file_block_*`. Those expressions read from
-          // `InputFileBlockHolder`, a thread-local set per file. Comet's
-          // `CometExecRDD.setInputFileForDeltaScan` *does* populate it but
-          // only with the FIRST task's path -- correct only if the partition
-          // holds exactly one task. Both `splitTasks` (byte-range chunking)
-          // and `CometDeltaNativeScanExec.packTasks` (bin-packing) can put
-          // multiple tasks per partition, so the path would be wrong for
-          // rows from other files. Breaks Delta UPDATE which finds touched
-          // files via `select(input_file_name()).distinct()`.
-          //
-          // TODO(#75 design A): instead of declining the whole scan, propagate
-          // a `needsInputFileName` flag into CometDeltaNativeScan.convert ->
-          // splitTasks (skip byte-range chunking) and CometDeltaNativeScanExec
-          // (skip packTasks). With 1 task per partition, setInputFileForDeltaScan
-          // sets the correct path and `input_file_name()` evaluated JVM-side
-          // (no native serde exists, so it stays in a Project layer above
-          // Comet) returns the right value.
-          if (plan.exists(node =>
-              node.expressions.exists(_.exists {
-                case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength =>
-                  true
-                case _ => false
-              }))) {
-            return withInfo(
-              scanExec,
-              "Native Delta scan is not compatible with input_file_name, " +
-                "input_file_block_start, or input_file_block_length")
-          }
-          return nativeDeltaScan(session, scanExec, r, hadoopConfOrNull = null)
-            .getOrElse(scanExec)
+          // #75 design A: when the plan references `input_file_name()` /
+          // `input_file_block_*`, we stay on native but signal CometDeltaNativeScan
+          // to disable byte-range chunking AND task bin-packing so each Spark
+          // partition holds exactly one file. `CometExecRDD.setInputFileForDeltaScan`
+          // then sets `InputFileBlockHolder` to that file's path; Spark evaluates
+          // input_file_name() JVM-side (no native serde) in any Project above the
+          // Comet exec frontier, against the per-partition thread-local. Without
+          // this gating, byte-range chunks or bin-packed task groups would mis-
+          // attribute rows to the FIRST task's path.
+          val needsInputFileName = plan.exists(node =>
+            node.expressions.exists(_.exists {
+              case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength =>
+                true
+              case _ => false
+            }))
+          // Tag the relation so CometDeltaNativeScan.convert (which runs in a LATER
+          // CometExecRule pass) can read the signal. Thread-locals cleared by this
+          // rule would not survive across passes; embedding in options ensures it
+          // travels with the scan node.
+          val scanForDelta = if (needsInputFileName) {
+            val taggedOptions = r.options + (CometScanRule.NeedsInputFileNameOption -> "true")
+            val taggedRelation = r.copy(options = taggedOptions)(r.sparkSession)
+            scanExec.copy(relation = taggedRelation)
+          } else scanExec
+          return nativeDeltaScan(session, scanForDelta, scanForDelta.relation,
+            hadoopConfOrNull = null).getOrElse(scanForDelta)
         }
         // DPP fallback for non-Delta scans (DataFusion/Iceberg-compat paths
         // don't support DPP natively).
@@ -1477,6 +1472,14 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
 }
 
 object CometScanRule extends Logging {
+
+  /**
+   * Synthetic option key set by CometScanRule on a Delta HadoopFsRelation when the surrounding
+   * plan references `input_file_name()` / `input_file_block_*`. Read by
+   * `CometDeltaNativeScan.convert` / `createExec` (a later rule pass) to disable byte-range
+   * chunking + task bin-packing so each Spark partition holds exactly one file. See #75 design A.
+   */
+  val NeedsInputFileNameOption: String = "comet.delta.needsInputFileName"
 
   /**
    * Validating object store configs can cause requests to be made to S3 APIs (such as when

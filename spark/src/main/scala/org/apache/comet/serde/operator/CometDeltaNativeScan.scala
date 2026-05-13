@@ -61,6 +61,20 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
   // during planning so a simple ThreadLocal is safe.
   private val lastTaskListBytes = new ThreadLocal[Array[Byte]]()
 
+  // #75 design A: when the surrounding plan references `input_file_name()` /
+  // `input_file_block_*`, CometScanRule tags the relation's options with
+  // `CometScanRule.NeedsInputFileNameOption`. We read it here to (a) skip
+  // byte-range splitting in splitTasks and (b) emit `oneTaskPerPartition = true`
+  // on the CometDeltaNativeScanExec so packTasks keeps each task in its own
+  // partition. With 1 task per partition, `CometExecRDD.setInputFileForDeltaScan`
+  // sets InputFileBlockHolder to the correct path and Spark's JVM-side
+  // input_file_name() evaluation (no native serde exists) returns the right
+  // value.
+  private def scanNeedsInputFileName(scan: CometScanExec): Boolean =
+    scan.relation.options
+      .get(org.apache.comet.rules.CometScanRule.NeedsInputFileNameOption)
+      .contains("true")
+
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_DELTA_NATIVE_ENABLED)
 
@@ -638,10 +652,12 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       scan: CometScanExec,
       tasks: Seq[OperatorOuterClass.DeltaScanTask]): Seq[OperatorOuterClass.DeltaScanTask] = {
     if (tasks.isEmpty) return tasks
-    // TODO(#75 design A): when the plan needs input_file_name() (signal threaded down
-    // from CometScanRule), bail out here so each task remains 1:1 with a file. The
-    // executor-side `CometDeltaNativeScanExec.packTasks` also needs to honour the
-    // same flag.
+    // #75 design A: when the plan needs input_file_name(), keep each task 1:1 with
+    // a file so `setInputFileForDeltaScan` (which reads only the first task) sets
+    // the correct path. Without this, byte-range chunking would create multiple
+    // tasks for one file -- still same path -- BUT combined with packTasks below
+    // could end up with multiple FILES per partition.
+    if (scanNeedsInputFileName(scan)) return tasks
     val sizes = tasks.map(_.getFileSize)
     val msb = maxSplitBytes(scan, sizes)
     if (msb <= 0) return tasks
@@ -778,6 +794,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       } finally {
         lastTaskListBytes.remove()
       }
+    val oneTaskPerPartition = scanNeedsInputFileName(op)
 
     val dppFilters = op.partitionFilters.filter(
       _.exists(_.isInstanceOf[org.apache.spark.sql.catalyst.expressions.PlanExpression[_]]))
@@ -791,6 +808,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       tableRoot,
       tlBytes,
       dppFilters,
-      partitionSchema)
+      partitionSchema,
+      oneTaskPerPartition = oneTaskPerPartition)
   }
 }

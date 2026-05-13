@@ -60,7 +60,14 @@ case class CometDeltaNativeScanExec(
     tableRoot: String,
     @transient taskListBytes: Array[Byte],
     @transient dppFilters: Seq[Expression] = Seq.empty,
-    partitionSchema: StructType = new StructType())
+    partitionSchema: StructType = new StructType(),
+    /**
+     * #75 design A: when true, `packTasks` emits one group (= one partition) per task so
+     * `CometExecRDD.setInputFileForDeltaScan` correctly sets `InputFileBlockHolder` to the
+     * partition's only file path. Set by `CometDeltaNativeScan.createExec` when the surrounding
+     * plan references `input_file_name()` / `input_file_block_*`.
+     */
+    oneTaskPerPartition: Boolean = false)
     extends CometLeafExec {
 
   override val supportsColumnar: Boolean = true
@@ -141,12 +148,13 @@ case class CometDeltaNativeScanExec(
     }
   }
 
-  // TODO(#75 design A): when input_file_name() is needed (signal threaded from
-  // CometScanRule via convert), return one-task-per-group so setInputFileForDeltaScan
-  // correctly attributes the path. The CometScanRule TODO at the early-decline gate
-  // documents the full design.
+  // #75 design A: when input_file_name() is needed (signal threaded from CometScanRule
+  // via CometDeltaNativeScan.createExec into `oneTaskPerPartition`), short-circuit
+  // packing so each task gets its own partition. `setInputFileForDeltaScan` reads
+  // task[0]'s path; with 1 task per partition that path correctly attributes every row.
   private def packTasks(tasks: Seq[OperatorOuterClass.DeltaScanTask])
       : Seq[Seq[OperatorOuterClass.DeltaScanTask]] = {
+    if (oneTaskPerPartition) return tasks.map(t => Seq(t))
     val conf = originalPlan.relation.sparkSession.sessionState.conf
     val openCostInBytes = conf.filesOpenCostInBytes
     val maxPartitionBytes = conf.filesMaxPartitionBytes
