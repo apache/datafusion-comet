@@ -37,7 +37,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithIn
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends ShimCometExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -181,7 +181,7 @@ trait CometExprShim extends CommonStringExprs {
           optExprWithInfo(mapSortExpr, ms, ms.child)
         }
 
-      case _ => None
+      case _ => sparkExprToProto(expr, inputs, binding)
     }
   }
 }
