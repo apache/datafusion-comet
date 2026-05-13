@@ -108,9 +108,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Exp] -> CometScalarFunction("exp"),
     classOf[Expm1] -> CometScalarFunction("expm1"),
     classOf[Floor] -> CometFloor,
+    classOf[Greatest] -> CometScalarFunction("greatest"),
     classOf[Hex] -> CometHex,
     classOf[IntegralDivide] -> CometIntegralDivide,
     classOf[IsNaN] -> CometIsNaN,
+    classOf[Least] -> CometScalarFunction("least"),
     classOf[Log] -> CometLog,
     classOf[Log2] -> CometLog2,
     classOf[Log10] -> CometLog10,
@@ -201,6 +203,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Left] -> CometLeft,
       classOf[Right] -> CometRight,
       classOf[Substring] -> CometSubstring,
+      classOf[SubstringIndex] -> CometSubstringIndex,
       classOf[Upper] -> CometUpper)
 
   private val bitwiseExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
