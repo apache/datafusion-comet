@@ -17,7 +17,9 @@
 
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
+use arrow::array::new_empty_array;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
+use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::physical_expr::expressions::Column;
@@ -31,7 +33,10 @@ use datafusion_physical_expr_adapter::{
     PhysicalExprAdapterFactory,
 };
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+use std::any::Any;
 use std::collections::HashMap;
+use std::fmt::{self, Display};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// Factory for creating Spark-compatible physical expression adapters.
@@ -632,6 +637,12 @@ impl SparkPhysicalExprAdapter {
             // supported versions (e.g. long→int, double→float, float→long,
             // int→timestamp) are NOT covered here and remain silent
             // wrong-answer paths — tracked in #4297.
+            //
+            // The rejection is deferred to runtime via `RejectOnNonEmpty` so
+            // that files with no row groups (e.g. an empty DataFrame written
+            // to Parquet) pass through unaffected, matching Spark's
+            // per-row-group `ParquetVectorUpdaterFactory.getUpdater` check
+            // (SPARK-26709).
             if !self.parquet_options.allow_type_promotion {
                 let is_disallowed_promotion = matches!(
                     (physical_type, target_type),
@@ -640,14 +651,14 @@ impl SparkPhysicalExprAdapter {
                         | (DataType::Int32, DataType::Float64)
                 );
                 if is_disallowed_promotion {
-                    return Err(DataFusionError::External(Box::new(
-                        SparkError::ParquetSchemaConvert {
-                            file_path: String::new(),
-                            column: format!("[{}]", cast.input_field().name()),
-                            physical_type: parquet_primitive_name(physical_type).to_string(),
-                            spark_type: spark_catalog_name(target_type).to_string(),
-                        },
-                    )));
+                    let rejection: Arc<dyn PhysicalExpr> = Arc::new(RejectOnNonEmpty {
+                        child,
+                        target_field: Arc::clone(cast.target_field()),
+                        column: format!("[{}]", cast.input_field().name()),
+                        physical_type: parquet_primitive_name(physical_type).to_string(),
+                        spark_type: spark_catalog_name(target_type).to_string(),
+                    });
+                    return Ok(Transformed::yes(rejection));
                 }
             }
 
@@ -807,6 +818,110 @@ impl SparkPhysicalExprAdapter {
     }
 }
 
+/// Defers a Parquet type-promotion rejection to runtime: returns an empty array
+/// when the input batch has no rows, and raises `ParquetSchemaConvert` otherwise.
+///
+/// Mirrors Spark's vectorized reader, which only invokes
+/// `ParquetVectorUpdaterFactory.getUpdater` while decoding a row group. A
+/// Parquet file with no row groups (e.g. one written from an empty DataFrame)
+/// never triggers the per-row-group check, so a partition mixing such a file
+/// with another whose schema would otherwise fail the type-promotion check
+/// (SPARK-26709) is still readable.
+#[derive(Debug, Eq)]
+struct RejectOnNonEmpty {
+    child: Arc<dyn PhysicalExpr>,
+    target_field: FieldRef,
+    column: String,
+    physical_type: String,
+    spark_type: String,
+}
+
+impl PartialEq for RejectOnNonEmpty {
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child)
+            && self.target_field.eq(&other.target_field)
+            && self.column == other.column
+            && self.physical_type == other.physical_type
+            && self.spark_type == other.spark_type
+    }
+}
+
+impl Hash for RejectOnNonEmpty {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.target_field.hash(state);
+        self.column.hash(state);
+        self.physical_type.hash(state);
+        self.spark_type.hash(state);
+    }
+}
+
+impl Display for RejectOnNonEmpty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "REJECT_PARQUET_TYPE_PROMOTION({} AS {})",
+            self.column, self.spark_type
+        )
+    }
+}
+
+impl PhysicalExpr for RejectOnNonEmpty {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn data_type(&self, _input_schema: &Schema) -> DataFusionResult<DataType> {
+        Ok(self.target_field.data_type().clone())
+    }
+
+    fn nullable(&self, _input_schema: &Schema) -> DataFusionResult<bool> {
+        Ok(self.target_field.is_nullable())
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
+        if batch.num_rows() == 0 {
+            return Ok(ColumnarValue::Array(new_empty_array(
+                self.target_field.data_type(),
+            )));
+        }
+        Err(DataFusionError::External(Box::new(
+            SparkError::ParquetSchemaConvert {
+                file_path: String::new(),
+                column: self.column.clone(),
+                physical_type: self.physical_type.clone(),
+                spark_type: self.spark_type.clone(),
+            },
+        )))
+    }
+
+    fn return_field(&self, _input_schema: &Schema) -> DataFusionResult<FieldRef> {
+        Ok(Arc::clone(&self.target_field))
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        assert_eq!(children.len(), 1);
+        Ok(Arc::new(RejectOnNonEmpty {
+            child: children.pop().expect("child"),
+            target_field: Arc::clone(&self.target_field),
+            column: self.column.clone(),
+            physical_type: self.physical_type.clone(),
+            spark_type: self.spark_type.clone(),
+        }))
+    }
+
+    fn fmt_sql(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
@@ -850,6 +965,101 @@ mod test {
 
         let _ = roundtrip(&batch, required_schema).await?;
 
+        Ok(())
+    }
+
+    /// SPARK-26709: an empty Parquet file with a column that would otherwise fail
+    /// the type-promotion check (INT32 read as INT64 when allow_type_promotion is
+    /// false) must still be readable. Spark's vectorized reader only enforces the
+    /// check per row group, so a file with no row groups passes silently. The
+    /// adapter's plan-time rejection must not fire for the empty-file case.
+    #[tokio::test]
+    async fn parquet_empty_file_disallowed_widening() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("col", DataType::Int32, false)]));
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+        let file = File::create(&filename)?;
+        let writer = ArrowWriter::try_new(file, Arc::clone(&file_schema), None)?;
+        writer.close()?;
+
+        let required_schema =
+            Arc::new(Schema::new(vec![Field::new("col", DataType::Int64, false)]));
+
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_parquet_options.allow_type_promotion = false;
+
+        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
+        );
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let parquet_source = ParquetSource::new(required_schema);
+        let files = FileGroup::new(vec![PartitionedFile::from_path(filename)?]);
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, Arc::new(parquet_source))
+                .with_file_groups(vec![files])
+                .with_expr_adapter(Some(expr_adapter_factory))
+                .build();
+
+        let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
+        let mut stream = parquet_exec.execute(0, Arc::new(TaskContext::default()))?;
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            assert_eq!(batch.num_rows(), 0);
+        }
+        Ok(())
+    }
+
+    /// Companion to `parquet_empty_file_disallowed_widening`: a file with rows
+    /// must still raise `ParquetSchemaConvert` when the same widening is
+    /// rejected. Verifies the runtime check fires on non-empty input,
+    /// matching Spark's per-row-group behavior.
+    #[tokio::test]
+    async fn parquet_non_empty_file_disallowed_widening_errors() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("col", DataType::Int32, false)]));
+        let values = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
+
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+        let file = File::create(&filename)?;
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&file_schema), None)?;
+        writer.write(&batch)?;
+        writer.close()?;
+
+        let required_schema =
+            Arc::new(Schema::new(vec![Field::new("col", DataType::Int64, false)]));
+
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_parquet_options.allow_type_promotion = false;
+
+        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
+        );
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let parquet_source = ParquetSource::new(required_schema);
+        let files = FileGroup::new(vec![PartitionedFile::from_path(filename)?]);
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, Arc::new(parquet_source))
+                .with_file_groups(vec![files])
+                .with_expr_adapter(Some(expr_adapter_factory))
+                .build();
+
+        let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
+        let mut stream = parquet_exec.execute(0, Arc::new(TaskContext::default()))?;
+        let first = stream.next().await.unwrap();
+        let err = first.expect_err("expected ParquetSchemaConvert error on non-empty file");
+        let msg = err.to_string();
+        // The JVM shim sees the inner "[col]" via the JSON `column` field, matching
+        // Spark's `Arrays.toString(descriptor.getPath())` format. The Rust display
+        // wraps with another `[...]` from the error template.
+        assert!(
+            msg.contains("Column: [[col]]")
+                && msg.contains("Expected: bigint")
+                && msg.contains("Found: INT32"),
+            "unexpected error: {msg}"
+        );
         Ok(())
     }
 

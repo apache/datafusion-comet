@@ -918,7 +918,7 @@ index b5b34922694..a72403780c4 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 525d97e4998..fbd0421fd06 100644
+index 525d97e4998..f600e162da3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1508,7 +1508,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -931,17 +931,7 @@ index 525d97e4998..fbd0421fd06 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
-@@ -3107,7 +3108,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-     }
-   }
- 
--  test("SPARK-26709: OptimizeMetadataOnlyQuery does not handle empty records correctly") {
-+  test("SPARK-26709: OptimizeMetadataOnlyQuery does not handle empty records correctly",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
-     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
-       Seq(true, false).foreach { enableOptimizeMetadataOnlyQuery =>
-         withSQLConf(SQLConf.OPTIMIZER_METADATA_ONLY.key ->
-@@ -3730,7 +3732,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+@@ -3730,7 +3731,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
      }
    }
  
@@ -2163,7 +2153,7 @@ index 8670d95c65e..9411af57a26 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index 29cb224c878..ee5a87fa200 100644
+index 29cb224c878..1f7a0ebf0bd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
