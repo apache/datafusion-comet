@@ -37,7 +37,7 @@ import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, V2CommandExec}
+import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, V2CommandExec, V2ExistingTableWriteExec}
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
@@ -50,6 +50,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
+import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
@@ -287,6 +288,14 @@ case class CometExecRule(session: SparkSession)
 
       case op: DataWritingCommandExec =>
         convertToComet(op, CometDataWritingCommand).getOrElse(op)
+
+      // Spark's V2 existing-table write operators -- `AppendDataExec`,
+      // `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `ReplaceDataExec` --
+      // are shared across DSv2 connectors (Iceberg, Delta, Hudi, etc.). Gating on the underlying
+      // `Write` being an Iceberg `SparkWrite` keeps non-Iceberg DSv2 writes out of the serde,
+      // so unrelated plans aren't tagged with confusing fall-back reasons.
+      case op: V2ExistingTableWriteExec if IcebergReflection.isIcebergSparkWrite(op.write) =>
+        convertToComet(op, CometIcebergNativeWrite).getOrElse(op)
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>

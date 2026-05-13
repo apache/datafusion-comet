@@ -49,4 +49,5 @@ to read more.
    Tuning Guide <tuning>
    Metrics Guide <metrics>
    Iceberg Guide <iceberg>
+   Iceberg Writes <iceberg-writes>
    Kubernetes Guide <kubernetes>

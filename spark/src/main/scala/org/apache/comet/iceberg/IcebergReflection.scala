@@ -48,6 +48,9 @@ object IcebergReflection extends Logging {
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
+    val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
+    val TABLE_PROPERTIES = "org.apache.iceberg.TableProperties"
+    val TYPE_UTIL = "org.apache.iceberg.types.TypeUtil"
   }
 
   /**
@@ -647,6 +650,101 @@ object IcebergReflection extends Logging {
     }
 
     unsupportedTypes.toList
+  }
+
+  /**
+   * Probes a class via reflection at most once, then memoises the outcome. Returns `None` when
+   * Iceberg is not on the classpath so Comet stays buildable in non-Iceberg deployments.
+   */
+  private def tryLoadClass(name: String): Option[Class[_]] =
+    try Some(loadClass(name))
+    catch { case _: ClassNotFoundException => None }
+
+  private lazy val sparkWriteClassOpt: Option[Class[_]] = tryLoadClass(ClassNames.SPARK_WRITE)
+  private lazy val tablePropertiesClassOpt: Option[Class[_]] =
+    tryLoadClass(ClassNames.TABLE_PROPERTIES)
+
+  /**
+   * Returns true when `write` is an Iceberg `SparkWrite` (or subclass). `Class.isInstance` itself
+   * never throws; the only failure mode is Iceberg being absent from the classpath, in which case
+   * `sparkWriteClassOpt` is `None`.
+   *
+   * Verified against `SparkWrite` in Iceberg 1.5.2 (spark-3.4 profile), 1.8.1 (spark-3.5), and
+   * 1.10.0 (spark-4.x) -- all expose the same class name under `org.apache.iceberg.spark.source`.
+   */
+  def isIcebergSparkWrite(write: Any): Boolean =
+    sparkWriteClassOpt.exists(_.isInstance(write))
+
+  /**
+   * Reads the private `table` field from a `SparkWrite` instance.
+   *
+   * `SparkWrite.table` is a `private final Table` set by the constructor; verified consistent
+   * across Iceberg 1.5.2 / 1.8.1 / 1.10.0 for the v3.4, v3.5, and v4.0 Spark integrations. No
+   * public accessor exists on the V2 API path, so reflection with `setAccessible(true)` is
+   * required.
+   */
+  def getTableFromSparkWrite(sparkWrite: Any): Option[Any] = {
+    sparkWriteClassOpt.flatMap { cls =>
+      try {
+        val field = cls.getDeclaredField("table")
+        field.setAccessible(true)
+        Option(field.get(sparkWrite))
+      } catch {
+        case e: Exception =>
+          logError(
+            "Iceberg reflection failure: Failed to get table from SparkWrite: " +
+              e.getMessage)
+          None
+      }
+    }
+  }
+
+  /**
+   * Reads a static `String` constant from Iceberg's `org.apache.iceberg.TableProperties` by field
+   * name (e.g. `"DEFAULT_FILE_FORMAT"` -> `"write.format.default"`). Throws when Iceberg is
+   * absent or the constant has been renamed/removed; both cases indicate a version we have not
+   * vetted. Verified present since Iceberg 1.5.2 for every constant Comet uses.
+   */
+  def tablePropertyConstant(fieldName: String): String =
+    readTablePropertiesField(fieldName).asInstanceOf[String]
+
+  /**
+   * Reads a static `int` constant from Iceberg's `org.apache.iceberg.TableProperties` (e.g. one
+   * of the `*_DEFAULT` numeric defaults). Same failure semantics as `tablePropertyConstant`.
+   */
+  def tablePropertyIntConstant(fieldName: String): Int =
+    readTablePropertiesField(fieldName).asInstanceOf[Integer].intValue()
+
+  private def readTablePropertiesField(fieldName: String): Any = {
+    val cls = tablePropertiesClassOpt.getOrElse(
+      throw new IllegalStateException(s"${ClassNames.TABLE_PROPERTIES} is not on the classpath"))
+    try cls.getField(fieldName).get(null)
+    catch {
+      case e: NoSuchFieldException =>
+        throw new IllegalStateException(
+          s"${ClassNames.TABLE_PROPERTIES}.$fieldName not found " +
+            "(unsupported Iceberg version?)",
+          e)
+    }
+  }
+
+  private lazy val typeUtilClassOpt: Option[Class[_]] = tryLoadClass(ClassNames.TYPE_UTIL)
+  private lazy val schemaClassOpt: Option[Class[_]] = tryLoadClass(ClassNames.SCHEMA)
+
+  /**
+   * Returns the number of "projected" field IDs in the schema -- the same count Iceberg-Java uses
+   * to decide when `write.metadata.metrics.max-inferred-column-defaults` kicks in
+   * (`TypeUtil.getProjectedIds(Schema)`). Counts top-level + nested fields.
+   */
+  def getProjectedFieldIdCount(schema: Any): Option[Int] = {
+    for {
+      typeUtilClass <- typeUtilClassOpt
+      schemaClass <- schemaClassOpt
+    } yield {
+      val method = typeUtilClass.getMethod("getProjectedIds", schemaClass)
+      val ids = method.invoke(null, schema.asInstanceOf[AnyRef]).asInstanceOf[java.util.Set[_]]
+      ids.size()
+    }
   }
 }
 
