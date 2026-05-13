@@ -1005,7 +1005,8 @@ mod test {
     #[tokio::test]
     async fn parquet_string_read_as_int_errors() -> Result<(), DataFusionError> {
         let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
-        let values = Arc::new(StringArray::from(vec!["bcd", "efg"])) as Arc<dyn arrow::array::Array>;
+        let values =
+            Arc::new(StringArray::from(vec!["bcd", "efg"])) as Arc<dyn arrow::array::Array>;
         let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
 
         let required_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
