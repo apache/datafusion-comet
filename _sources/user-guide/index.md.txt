@@ -31,9 +31,9 @@ navigation menu to view its guide.
 :caption: User Guides
 :hidden:
 
-0.16.0-SNAPSHOT <latest/index>
+0.17.0-SNAPSHOT <latest/index>
+0.16.x <0.16/index>
 0.15.x <0.15/index>
 0.14.x <0.14/index>
 0.13.x <0.13/index>
-0.12.x <0.12/index>
 ```
