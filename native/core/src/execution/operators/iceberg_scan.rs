@@ -246,9 +246,11 @@ fn build_s3_credential_loader(metadata_location: &str) -> Option<CustomAwsCreden
     }
     let url = url::Url::parse(metadata_location).ok()?;
     let bucket = url.host_str()?.to_string();
+    // Pass the URL path component (matches `s3.rs::create_store`); SPI vendors expect the
+    // (bucket, path) pair to compose into a single URI without re-parsing a scheme out.
     let bridge = CometCredentialBridge::new(
         bucket,
-        metadata_location.to_string(),
+        url.path().to_string(),
         comet_credential_bridge::AccessMode::Read,
     );
     Some(CustomAwsCredentialLoader::new(bridge))
