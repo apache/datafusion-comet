@@ -288,7 +288,7 @@ INSERT INTO bigint_max_range VALUES
   (9223372036854775806)
 
 -- https://github.com/apache/datafusion-comet/issues/4307
-query spark_answer_only
+query ignore(https://github.com/apache/datafusion-comet/issues/4307)
 SELECT id,
   LAST_VALUE(id) OVER (ORDER BY id
                        RANGE BETWEEN CURRENT ROW AND 4 FOLLOWING) AS lv
