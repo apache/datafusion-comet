@@ -55,13 +55,14 @@ of expressions that be disabled.
 ## String Functions
 
 | Expression      |
-| --------------- |
+|-----------------|
 | Ascii           |
 | BitLength       |
 | Chr             |
 | Concat          |
 | ConcatWs        |
 | Contains        |
+| Encode          |
 | EndsWith        |
 | InitCap         |
 | Left            |

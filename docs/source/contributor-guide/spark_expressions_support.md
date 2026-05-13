@@ -519,7 +519,7 @@
 - [x] contains
 - [ ] decode
 - [ ] elt
-- [ ] encode
+- [x] encode
 - [x] endswith
 - [ ] find_in_set
 - [ ] format_number
