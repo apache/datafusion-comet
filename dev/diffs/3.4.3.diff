@@ -2121,7 +2121,7 @@ index 104b4e416cd..4adb273170a 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8670d95c65e..9411af57a26 100644
+index 8670d95c65e..513258ea041 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -41,6 +41,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
@@ -2132,17 +2132,7 @@ index 8670d95c65e..9411af57a26 100644
  import org.apache.spark.sql.catalyst.{InternalRow, ScalaReflection}
  import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeRow}
  import org.apache.spark.sql.catalyst.util.DateTimeUtils
-@@ -1075,7 +1076,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-35640: int as long should throw schema incompatible error") {
-+  test("SPARK-35640: int as long should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
-     val data = (1 to 4).map(i => Tuple1(i))
-     val readSchema = StructType(Seq(StructField("_1", DataTypes.LongType)))
- 
-@@ -1335,7 +1337,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1335,7 +1336,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2309,7 +2299,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index bf5c51b89bb..dc3aac281c3 100644
+index bf5c51b89bb..33190702c91 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -2330,16 +2320,6 @@ index bf5c51b89bb..dc3aac281c3 100644
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = false)
        val expectedMessage = "Encountered error while reading file"
-@@ -1026,7 +1028,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
-     }
-   }
- 
--  test("schema mismatch failure error message for parquet vectorized reader") {
-+  test("schema mismatch failure error message for parquet vectorized reader",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
-     withTempPath { dir =>
-       val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
-       assert(e.getCause.isInstanceOf[SparkException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index 3a0bd35cb70..b28f06a757f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala

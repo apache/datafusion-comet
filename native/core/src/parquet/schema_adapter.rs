@@ -249,6 +249,11 @@ fn spark_catalog_name(dt: &DataType) -> &'static str {
         DataType::Int64 => "bigint",
         DataType::Float32 => "float",
         DataType::Float64 => "double",
+        DataType::Utf8 | DataType::LargeUtf8 => "string",
+        DataType::Binary | DataType::LargeBinary => "binary",
+        DataType::Date32 => "date",
+        DataType::Timestamp(_, Some(_)) => "timestamp",
+        DataType::Timestamp(_, None) => "timestamp_ntz",
         _ => "unknown",
     }
 }
@@ -262,6 +267,7 @@ fn parquet_primitive_name(dt: &DataType) -> &'static str {
         DataType::Int64 => "INT64",
         DataType::Float32 => "FLOAT",
         DataType::Float64 => "DOUBLE",
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary => "BINARY",
         _ => "UNKNOWN",
     }
 }
@@ -584,9 +590,33 @@ impl SparkPhysicalExprAdapter {
                 return Err(DataFusionError::External(Box::new(
                     SparkError::ParquetSchemaConvert {
                         file_path: String::new(),
-                        column: cast.input_field().name().to_string(),
-                        physical_type: physical_type.to_string(),
-                        spark_type: target_type.to_string(),
+                        column: format!("[{}]", cast.input_field().name()),
+                        physical_type: parquet_primitive_name(physical_type).to_string(),
+                        spark_type: spark_catalog_name(target_type).to_string(),
+                    },
+                )));
+            }
+
+            // Reject reading a non-string/binary Parquet column as
+            // StringType/BinaryType. Spark's vectorized reader rejects this in
+            // every `ParquetVectorUpdaterFactory.getUpdater` case other than
+            // BINARY / FIXED_LEN_BYTE_ARRAY: an INT32/INT64/FLOAT/DOUBLE/INT96
+            // column has no "read as string" updater. Without this guard,
+            // Spark's Cast below would silently produce string values from the
+            // numeric column.
+            if matches!(
+                target_type,
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+            ) && !matches!(
+                physical_type,
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+            ) {
+                return Err(DataFusionError::External(Box::new(
+                    SparkError::ParquetSchemaConvert {
+                        file_path: String::new(),
+                        column: format!("[{}]", cast.input_field().name()),
+                        physical_type: parquet_primitive_name(physical_type).to_string(),
+                        spark_type: spark_catalog_name(target_type).to_string(),
                     },
                 )));
             }
@@ -946,25 +976,50 @@ mod test {
     use std::fs::File;
     use std::sync::Arc;
 
+    /// Reading a non-BINARY Parquet column as `StringType` must raise the same
+    /// `_LEGACY_ERROR_TEMP_2063`-shaped error as Spark's vectorized reader
+    /// (`ParquetVectorUpdaterFactory.getUpdater` has no INT32 -> string updater).
     #[tokio::test]
-    async fn parquet_roundtrip_int_as_string() -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, false),
-        ]));
+    async fn parquet_int_read_as_string_errors() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let values = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
 
-        let ids = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
-        let names = Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"]))
-            as Arc<dyn arrow::array::Array>;
-        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![ids, names])?;
+        let required_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
 
-        let required_schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("name", DataType::Utf8, false),
-        ]));
+        let err = roundtrip(&batch, required_schema)
+            .await
+            .expect_err("expected ParquetSchemaConvert error for INT32 -> string");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Column: [[a]]")
+                && msg.contains("Expected: string")
+                && msg.contains("Found: INT32"),
+            "unexpected error: {msg}"
+        );
+        Ok(())
+    }
 
-        let _ = roundtrip(&batch, required_schema).await?;
+    /// Companion: BINARY (string physical) read as IntegerType must raise the
+    /// same Spark-compatible error.
+    #[tokio::test]
+    async fn parquet_string_read_as_int_errors() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
+        let values = Arc::new(StringArray::from(vec!["bcd", "efg"])) as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
 
+        let required_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+
+        let err = roundtrip(&batch, required_schema)
+            .await
+            .expect_err("expected ParquetSchemaConvert error for BINARY -> int");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Column: [[a]]")
+                && msg.contains("Expected: int")
+                && msg.contains("Found: BINARY"),
+            "unexpected error: {msg}"
+        );
         Ok(())
     }
 
