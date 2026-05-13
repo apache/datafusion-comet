@@ -117,6 +117,24 @@ the Unix epoch.
 - Returning `null` is reserved for "this provider does not handle this path"; the native caller
   treats it as an authorization failure rather than falling back to other providers.
 
+### Iceberg path: explicit S3 region required
+
+When the bridge is registered, Comet wires it into `iceberg-storage-opendal` as a custom
+`AwsCredentialLoad`. opendal then requires explicit S3 region (and, for non-AWS endpoints, an
+explicit endpoint) on the catalog properties — its built-in region auto-detection only runs
+when no custom credential loader is configured.
+
+In practice this means deployments using the bridge for Iceberg must set, on the Spark catalog:
+
+```
+spark.sql.catalog.<catalog>.s3.region        = us-east-1     (or your real region)
+spark.sql.catalog.<catalog>.s3.endpoint      = https://...   (only for non-AWS)
+spark.sql.catalog.<catalog>.s3.path-style-access = true      (only for path-style endpoints)
+```
+
+If a deployment hits `region is missing. Please find it by S3::detect_region() or set them
+in env`, this is the missing config.
+
 ## Discovery
 
 Discovery is purely classpath-based. Register your implementation by adding a service file:
@@ -155,6 +173,32 @@ Vendors that need to pick between Spark 3 and Spark 4 implementations, or betwee
 v2 backends, do so inside their own provider class. Comet is unaware of either. Common patterns
 include reflectively probing for an SDK class on the classpath, or shipping two service files (one
 per Spark profile) that each register a different provider class.
+
+## Build setup
+
+Vendor implementations need the Comet SPI classes at compile time only. The standard pattern is
+a `provided`-scope Maven dependency on `comet-common`:
+
+```xml
+<dependency>
+  <groupId>org.apache.datafusion</groupId>
+  <artifactId>comet-common-spark${spark.version.short}_${scala.binary.version}</artifactId>
+  <version>${comet.version}</version>
+  <scope>provided</scope>
+</dependency>
+```
+
+`provided` scope means:
+
+- Compile-time only — your jar resolves the `CometCloudCredentialProvider` interface and
+  `CometCredentials` POJO for compilation.
+- No runtime bundling — your jar does not ship Comet classes; no fat-jar bloat, no version
+  conflict on the executor classpath.
+- The API classes are already present at runtime because Comet itself is loaded (that's the
+  whole reason the bridge exists).
+
+Same pattern vendors already use for implementing Hadoop S3A `AwsSignerInitializer` and Iceberg
+`AwsClientFactory` — Comet is a third entry in the same list, not a different shape.
 
 ## Worked example
 

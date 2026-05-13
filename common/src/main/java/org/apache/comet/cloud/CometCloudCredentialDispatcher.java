@@ -99,8 +99,7 @@ import org.slf4j.LoggerFactory;
  */
 public final class CometCloudCredentialDispatcher {
 
-  private static final Logger LOG =
-      LoggerFactory.getLogger(CometCloudCredentialDispatcher.class);
+  private static final Logger LOG = LoggerFactory.getLogger(CometCloudCredentialDispatcher.class);
 
   /*
    * Process-lifetime singleton, justified per the contributor guide's "Global singletons"

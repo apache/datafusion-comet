@@ -44,6 +44,13 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
     conf.set("spark.sql.catalog.s3_catalog", "org.apache.iceberg.spark.SparkCatalog")
     conf.set("spark.sql.catalog.s3_catalog.type", "hadoop")
     conf.set("spark.sql.catalog.s3_catalog.warehouse", s"s3a://$testBucketName/warehouse")
+    // Required by Comet's native Iceberg reader (iceberg-rust + opendal). When a custom
+    // credential loader is wired in (CometCloudCredentialBridge), opendal stops auto-detecting
+    // region and requires explicit S3 config. See the contributor guide page on
+    // CometCloudCredentialProvider.
+    conf.set("spark.sql.catalog.s3_catalog.s3.endpoint", minioContainer.getS3URL)
+    conf.set("spark.sql.catalog.s3_catalog.s3.region", "us-east-1")
+    conf.set("spark.sql.catalog.s3_catalog.s3.path-style-access", "true")
 
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
@@ -237,6 +244,7 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
       "s3.access-key-id" -> "WRONG_ACCESS_KEY",
       "s3.secret-access-key" -> "WRONG_SECRET_KEY",
       "s3.endpoint" -> minioContainer.getS3URL,
+      "s3.region" -> "us-east-1",
       "s3.path-style-access" -> "true")
     val warehouse = s"s3a://$testBucketName/warehouse-bad-creds"
 
@@ -269,6 +277,7 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
       "s3.access-key-id" -> userName,
       "s3.secret-access-key" -> password,
       "s3.endpoint" -> minioContainer.getS3URL,
+      "s3.region" -> "us-east-1",
       "s3.path-style-access" -> "true")
     val warehouse = s"s3a://$testBucketName/warehouse-vending"
 
