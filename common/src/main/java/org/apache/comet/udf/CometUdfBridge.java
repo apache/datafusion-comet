@@ -27,6 +27,8 @@ import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.spark.TaskContext;
+import org.apache.spark.comet.CometTaskContextShim;
 
 /**
  * JNI entry point for native execution to invoke a {@link CometUDF}. Matches the static-method
@@ -48,13 +50,52 @@ public class CometUdfBridge {
    * @param inputSchemaPtrs addresses of pre-allocated FFI_ArrowSchema structs (one per input)
    * @param outArrayPtr address of pre-allocated FFI_ArrowArray for the result
    * @param outSchemaPtr address of pre-allocated FFI_ArrowSchema for the result
+   * @param numRows row count of the current batch. Mirrors DataFusion's {@code
+   *     ScalarFunctionArgs.number_rows}; the only batch-size signal a zero-input UDF (e.g. a
+   *     zero-arg non-deterministic ScalaUDF) ever sees.
+   * @param taskContext propagated Spark {@link TaskContext} from the driving Spark task thread, or
+   *     {@code null} outside a Spark task. Treated as ground truth for the call: installed as the
+   *     thread-local on entry, with the prior value (if any) saved and restored in {@code finally}.
+   *     Lets partition-sensitive built-ins ({@code Rand}, {@code Uuid}, {@code
+   *     MonotonicallyIncreasingID}) work from Tokio workers and avoids reusing a stale TaskContext
+   *     left on a worker by a previous task.
    */
   public static void evaluate(
       String udfClassName,
       long[] inputArrayPtrs,
       long[] inputSchemaPtrs,
       long outArrayPtr,
-      long outSchemaPtr) {
+      long outSchemaPtr,
+      int numRows,
+      TaskContext taskContext) {
+    // Save-and-restore rather than only-install-if-null: the propagated context is the ground
+    // truth for this call. Any value already on the thread is either (a) the same object on a
+    // Spark task thread, or (b) stale from a prior task on a reused Tokio worker.
+    TaskContext prior = TaskContext.get();
+    if (taskContext != null) {
+      CometTaskContextShim.set(taskContext);
+    }
+    try {
+      evaluateInternal(
+          udfClassName, inputArrayPtrs, inputSchemaPtrs, outArrayPtr, outSchemaPtr, numRows);
+    } finally {
+      if (taskContext != null) {
+        if (prior != null) {
+          CometTaskContextShim.set(prior);
+        } else {
+          CometTaskContextShim.unset();
+        }
+      }
+    }
+  }
+
+  private static void evaluateInternal(
+      String udfClassName,
+      long[] inputArrayPtrs,
+      long[] inputSchemaPtrs,
+      long outArrayPtr,
+      long outSchemaPtr,
+      int numRows) {
     CometUDF udf =
         INSTANCES.computeIfAbsent(
             udfClassName,
@@ -84,23 +125,17 @@ public class CometUdfBridge {
         inputs[i] = Data.importVector(allocator, inArr, inSch, null);
       }
 
-      result = udf.evaluate(inputs);
+      result = udf.evaluate(inputs, numRows);
       if (!(result instanceof FieldVector)) {
         throw new RuntimeException(
             "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());
       }
-      // Result length must match the longest input. Scalar (length-1) inputs
-      // are allowed to be shorter, but a vector input bounds the output.
-      int expectedLen = 0;
-      for (ValueVector v : inputs) {
-        expectedLen = Math.max(expectedLen, v.getValueCount());
-      }
-      if (result.getValueCount() != expectedLen) {
+      if (result.getValueCount() != numRows) {
         throw new RuntimeException(
             "CometUDF.evaluate() returned "
                 + result.getValueCount()
                 + " rows, expected "
-                + expectedLen);
+                + numRows);
       }
       ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
       ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);

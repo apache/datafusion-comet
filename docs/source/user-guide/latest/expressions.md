@@ -43,12 +43,13 @@ of expressions that be disabled.
 | EqualNullSafe      | `<=>`         |
 | GreaterThan        | `>`           |
 | GreaterThanOrEqual | `>=`          |
-| LessThan           | `<`           |
-| LessThanOrEqual    | `<=`          |
+| ILike              | `ILIKE`       |
 | In                 | `IN`          |
+| InSet              | `IN (...)`    |
 | IsNotNull          | `IS NOT NULL` |
 | IsNull             | `IS NULL`     |
-| InSet              | `IN (...)`    |
+| LessThan           | `<`           |
+| LessThanOrEqual    | `<=`          |
 | Not                | `NOT`         |
 | Or                 | `OR`          |
 
@@ -71,7 +72,9 @@ of expressions that be disabled.
 | Lower           |
 | OctetLength     |
 | Reverse         |
+| Right           |
 | RLike           |
+| Split           |
 | StartsWith      |
 | StringInstr     |
 | StringRepeat    |
@@ -85,6 +88,7 @@ of expressions that be disabled.
 | StringTrimLeft  |
 | StringTrimRight |
 | Substring       |
+| SubstringIndex  |
 | Upper           |
 
 ## JSON Functions
@@ -95,82 +99,96 @@ of expressions that be disabled.
 
 ## Date/Time Functions
 
-| Expression     | SQL                          |
-| -------------- | ---------------------------- |
-| DateAdd        | `date_add`                   |
-| DateDiff       | `datediff`                   |
-| DateFormat     | `date_format`                |
-| DateSub        | `date_sub`                   |
-| DatePart       | `date_part(field, source)`   |
-| Days           | `days`                       |
-| Extract        | `extract(field FROM source)` |
-| FromUnixTime   | `from_unixtime`              |
-| Hour           | `hour`                       |
-| LastDay        | `last_day`                   |
-| Minute         | `minute`                     |
-| Second         | `second`                     |
-| TruncDate      | `trunc`                      |
-| TruncTimestamp | `date_trunc`                 |
-| UnixDate       | `unix_date`                  |
-| UnixTimestamp  | `unix_timestamp`             |
-| Year           | `year`                       |
-| Month          | `month`                      |
-| DayOfMonth     | `day`/`dayofmonth`           |
-| DayOfWeek      | `dayofweek`                  |
-| WeekDay        | `weekday`                    |
-| DayOfYear      | `dayofyear`                  |
-| WeekOfYear     | `weekofyear`                 |
-| Quarter        | `quarter`                    |
+| Expression       | SQL                          |
+| ---------------- | ---------------------------- |
+| DateAdd          | `date_add`                   |
+| DateDiff         | `datediff`                   |
+| DateFormat       | `date_format`                |
+| DateFromUnixDate | `date_from_unix_date`        |
+| DateSub          | `date_sub`                   |
+| DatePart         | `date_part(field, source)`   |
+| Days             | `days`                       |
+| Extract          | `extract(field FROM source)` |
+| FromUnixTime     | `from_unixtime`              |
+| Hour             | `hour`                       |
+| LastDay          | `last_day`                   |
+| MakeDate         | `make_date`                  |
+| Minute           | `minute`                     |
+| NextDay          | `next_day`                   |
+| Second           | `second`                     |
+| TimestampSeconds | `timestamp_seconds`          |
+| TruncDate        | `trunc`                      |
+| TruncTimestamp   | `date_trunc`                 |
+| UnixDate         | `unix_date`                  |
+| UnixTimestamp    | `unix_timestamp`             |
+| Year             | `year`                       |
+| Month            | `month`                      |
+| DayOfMonth       | `day`/`dayofmonth`           |
+| DayOfWeek        | `dayofweek`                  |
+| WeekDay          | `weekday`                    |
+| DayOfYear        | `dayofyear`                  |
+| WeekOfYear       | `weekofyear`                 |
+| Quarter          | `quarter`                    |
 
 ## Math Expressions
 
-| Expression     | SQL       |
-| -------------- | --------- |
-| Abs            | `abs`     |
-| Acos           | `acos`    |
-| Add            | `+`       |
-| Asin           | `asin`    |
-| Atan           | `atan`    |
-| Atan2          | `atan2`   |
-| BRound         | `bround`  |
-| Ceil           | `ceil`    |
-| Cos            | `cos`     |
-| Cosh           | `cosh`    |
-| Cot            | `cot`     |
-| Divide         | `/`       |
-| Exp            | `exp`     |
-| Expm1          | `expm1`   |
-| Floor          | `floor`   |
-| Hex            | `hex`     |
-| IntegralDivide | `div`     |
-| IsNaN          | `isnan`   |
-| Log            | `log`     |
-| Log2           | `log2`    |
-| Log10          | `log10`   |
-| Multiply       | `*`       |
-| Pow            | `power`   |
-| Rand           | `rand`    |
-| Randn          | `randn`   |
-| Remainder      | `%`       |
-| Round          | `round`   |
-| Signum         | `signum`  |
-| Sin            | `sin`     |
-| Sinh           | `sinh`    |
-| Sqrt           | `sqrt`    |
-| Subtract       | `-`       |
-| Tan            | `tan`     |
-| Tanh           | `tanh`    |
-| TryAdd         | `try_add` |
-| TryDivide      | `try_div` |
-| TryMultiply    | `try_mul` |
-| TrySubtract    | `try_sub` |
-| UnaryMinus     | `-`       |
-| Unhex          | `unhex`   |
+| Expression     | SQL            |
+| -------------- | -------------- |
+| Abs            | `abs`          |
+| Acos           | `acos`         |
+| Acosh          | `acosh`        |
+| Add            | `+`            |
+| Asin           | `asin`         |
+| Asinh          | `asinh`        |
+| Atan           | `atan`         |
+| Atan2          | `atan2`        |
+| Atanh          | `atanh`        |
+| Bin            | `bin`          |
+| BRound         | `bround`       |
+| Cbrt           | `cbrt`         |
+| Ceil           | `ceil`         |
+| Cos            | `cos`          |
+| Cosh           | `cosh`         |
+| Cot            | `cot`          |
+| Divide         | `/`            |
+| Exp            | `exp`          |
+| Expm1          | `expm1`        |
+| Floor          | `floor`        |
+| Hex            | `hex`          |
+| IntegralDivide | `div`          |
+| IsNaN          | `isnan`        |
+| Log            | `log`          |
+| Log2           | `log2`         |
+| Log10          | `log10`        |
+| Multiply       | `*`            |
+| Pi             | `pi`           |
+| Pow            | `power`        |
+| Rand           | `rand`         |
+| Randn          | `randn`        |
+| Remainder      | `%`            |
+| Round          | `round`        |
+| Signum         | `signum`       |
+| Sin            | `sin`          |
+| Sinh           | `sinh`         |
+| Sqrt           | `sqrt`         |
+| Subtract       | `-`            |
+| Tan            | `tan`          |
+| Tanh           | `tanh`         |
+| ToDegrees      | `degrees`      |
+| ToRadians      | `radians`      |
+| TryAdd         | `try_add`      |
+| TryDivide      | `try_div`      |
+| TryMultiply    | `try_mul`      |
+| TrySubtract    | `try_sub`      |
+| UnaryMinus     | `-`            |
+| Unhex          | `unhex`        |
+| WidthBucket    | `width_bucket` |
 
 ## Hashing Functions
 
 | Expression  |
 | ----------- |
+| Crc32       |
 | Md5         |
 | Murmur3Hash |
 | Sha1        |
@@ -203,6 +221,7 @@ of expressions that be disabled.
 | CollectSet    |            |
 | Corr          |            |
 | Count         |            |
+| CountIf       | `count_if` |
 | CovPopulation |            |
 | CovSample     |            |
 | First         |            |
@@ -247,25 +266,31 @@ Comet supports using the following aggregate functions within window contexts wi
 | ArrayJoin      |
 | ArrayMax       |
 | ArrayMin       |
+| ArrayPosition  |
 | ArrayRemove    |
 | ArrayRepeat    |
+| ArraysZip      |
 | ArrayUnion     |
 | ArraysOverlap  |
 | CreateArray    |
 | ElementAt      |
 | Flatten        |
 | GetArrayItem   |
+| Size           |
+| SortArray      |
 
 ## Map Expressions
 
-| Expression    |
-| ------------- |
-| GetMapValue   |
-| MapKeys       |
-| MapEntries    |
-| MapValues     |
-| MapFromArrays |
-| StringToMap   |
+| Expression     |
+| -------------- |
+| GetMapValue    |
+| MapContainsKey |
+| MapEntries     |
+| MapFromArrays  |
+| MapFromEntries |
+| MapKeys        |
+| MapValues      |
+| StringToMap    |
 
 ## Struct Expressions
 
@@ -276,6 +301,14 @@ Comet supports using the following aggregate functions within window contexts wi
 | GetStructField       |
 | JsonToStructs        |
 | StructsToJson        |
+
+## URL Functions
+
+| Expression   |
+| ------------ |
+| TryUrlDecode |
+| UrlDecode    |
+| UrlEncode    |
 
 ## Conversion Expressions
 
