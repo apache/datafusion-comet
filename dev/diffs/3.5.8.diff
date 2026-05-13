@@ -2860,7 +2860,7 @@ index abe606ad9c1..2d930b64cca 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index e937173a590..4d8783e9054 100644
+index e937173a590..3134078a122 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,6 +27,7 @@ import scala.concurrent.duration._
@@ -2926,6 +2926,15 @@ index e937173a590..4d8783e9054 100644
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
+@@ -435,6 +470,8 @@ private[sql] trait SQLTestUtilsBase
+     val schema = df.schema
+     val withoutFilters = df.queryExecution.executedPlan.transform {
+       case FilterExec(_, child) => child
++      case CometFilterExec(_, _, _, _, child, _) => child
++      case CometProjectExec(_, _, _, _, CometFilterExec(_, _, _, _, child, _), _) => child
+     }
+ 
+     spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 index ed2e309fa07..25b798d2c1c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
