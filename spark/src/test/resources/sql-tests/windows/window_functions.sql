@@ -263,7 +263,39 @@ SELECT COUNT(*) OVER (PARTITION BY 1
 FROM t_single
 
 -- ============================================================
--- 1.13: multiple PARTITION BY + multiple ORDER BY
+-- 1.13: RANGE frame with BIGINT ORDER BY values near Long.MaxValue
+-- Ported from Spark's postgreSQL/window_part2.sql:
+--   select x.id, last(x.id) over (order by x.id range between current row and 4 following)
+--   from range(9223372036854775804, 9223372036854775807) x;
+-- ANSI is off here (the file default) so this is not an overflow
+-- error case. When Spark computes the frame upper bound
+-- `current + 4` for a row near Long.MaxValue the addition
+-- overflows; Spark's non-ANSI Add wraps to a negative value, so
+-- the upper bound ends up below the current row and the range
+-- frame is empty — LAST_VALUE returns NULL for every overflowing
+-- row. The test verifies Comet propagates that overflow through
+-- the native RANGE frame and produces the same NULL result rather
+-- than a wrapped id or a saturated Long.MaxValue bound.
+-- ============================================================
+
+statement
+CREATE TABLE bigint_max_range(id bigint) USING parquet
+
+statement
+INSERT INTO bigint_max_range VALUES
+  (9223372036854775804),
+  (9223372036854775805),
+  (9223372036854775806)
+
+-- https://github.com/apache/datafusion-comet/issues/4307
+query spark_answer_only
+SELECT id,
+  LAST_VALUE(id) OVER (ORDER BY id
+                       RANGE BETWEEN CURRENT ROW AND 4 FOLLOWING) AS lv
+FROM bigint_max_range
+
+-- ============================================================
+-- 1.14: multiple PARTITION BY + multiple ORDER BY
 -- ============================================================
 
 query
@@ -273,7 +305,7 @@ SELECT dept, id, hire_yr, salary,
 FROM emp
 
 -- ============================================================
--- 1.14: complex expression in aggregate input
+-- 1.15: complex expression in aggregate input
 -- ============================================================
 
 query
@@ -282,7 +314,7 @@ SELECT dept, id, salary,
 FROM emp
 
 -- ============================================================
--- 1.15: multiple window functions with mixed specs in one query
+-- 1.16: multiple window functions with mixed specs in one query
 -- ============================================================
 
 query
@@ -379,6 +411,35 @@ SELECT dept, id, salary,
     nth_value(salary, 1) IGNORE NULLS OVER (PARTITION BY dept ORDER BY id, salary
                                                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS nth_ignore
 FROM emp
+
+-- ============================================================
+-- 2.7: AVG with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+-- over trailing NULLs (inverse transition).
+-- Ported from Spark's postgreSQL/window_part4.sql:
+--   SELECT i, AVG(v) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
+--   FROM (VALUES (1,1),(2,2),(3,NULL),(4,NULL)) t(i,v);
+-- As each row advances the frame shrinks from the front, so the
+-- aggregate is updated by its inverse-transition path. The test
+-- exercises that the running count correctly excludes NULL values
+-- and that AVG returns NULL once only NULL rows remain in the
+-- frame (expected 1.5, 2.0, NULL, NULL).
+-- ============================================================
+
+statement
+CREATE TABLE avg_nulls_trailing(i int, v int) USING parquet
+
+statement
+INSERT INTO avg_nulls_trailing VALUES
+  (1, 1),
+  (2, 2),
+  (3, NULL),
+  (4, NULL)
+
+query
+SELECT i,
+  AVG(v) OVER (ORDER BY i
+               ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS a
+FROM avg_nulls_trailing
 
 -- ############################################################
 -- Section 3: Window functions with GROUP BY
