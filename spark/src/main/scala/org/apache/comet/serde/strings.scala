@@ -479,4 +479,28 @@ trait CommonStringExprs {
         None
     }
   }
+
+  def stringEncode(
+      expr: Expression,
+      charset: Expression,
+      value: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    charset match {
+      case Literal(str, DataTypes.StringType)
+          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+        // encode(col, 'utf-8') is byte-equivalent to cast(string AS binary)
+        // because Spark's UTF8String already holds valid UTF-8 bytes.
+        val strExpr = exprToProtoInternal(value, inputs, binding)
+        if (strExpr.isDefined) {
+          CometCast.castToProto(expr, None, DataTypes.BinaryType, strExpr.get, CometEvalMode.LEGACY)
+        } else {
+          withInfo(expr, value)
+          None
+        }
+      case _ =>
+        withInfo(expr, "Comet only supports encoding with 'utf-8'.")
+        None
+    }
+  }
 }
