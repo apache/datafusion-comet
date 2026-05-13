@@ -2147,7 +2147,7 @@ index f6472ba3d9d..5ea2d938664 100644
  
 -  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
 +  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4219")) {
      val data = (1 to 1000).map { i =>
        val ts = new java.sql.Timestamp(i)
        Row(ts)
