@@ -2838,14 +2838,14 @@ index 6b73cc8618d..81a58f43784 100644
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 3072657a095..c19122b3415 100644
+index 3072657a095..599d169cf8a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -40,6 +40,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
  import org.apache.spark.{SPARK_VERSION_SHORT, SparkException, TestUtils}
  import org.apache.spark.rdd.RDD
  import org.apache.spark.sql._
-+import org.apache.spark.sql.{IgnoreComet, IgnoreCometNativeDataFusion}
++import org.apache.spark.sql.IgnoreComet
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow, UnsafeRow}
  import org.apache.spark.sql.catalyst.util.{DateTimeConstants, DateTimeUtils}
@@ -3021,7 +3021,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index 56076175d60..3e43a0c6a3e 100644
+index 56076175d60..eec8b442da1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,7 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -3029,7 +3029,7 @@ index 56076175d60..3e43a0c6a3e 100644
  
  import org.apache.spark.SparkException
 -import org.apache.spark.sql.{AnalysisException, Row}
-+import org.apache.spark.sql.{AnalysisException, IgnoreComet, IgnoreCometNativeDataFusion, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, Row}
  import org.apache.spark.sql.catalyst.expressions.Cast.toSQLType
  import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
  import org.apache.spark.sql.functions.desc
