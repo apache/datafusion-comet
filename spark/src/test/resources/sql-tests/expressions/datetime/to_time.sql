@@ -245,3 +245,16 @@ SELECT try_to_time(' 1:00:00 PM')
 -- to_time with format pattern falls back to Spark (not supported natively)
 query expect_fallback(invoke is not supported)
 SELECT to_time('12:30:45', 'HH:mm:ss')
+
+statement
+CREATE TABLE test_to_time_col_fmt(s STRING, f STRING) USING parquet
+
+statement
+INSERT INTO test_to_time_col_fmt VALUES
+  ('14.30.00', 'HH.mm.ss'),
+  ('1230', 'HHmm')
+
+-- A non-foldable format column should fall back to Spark because Comet does
+-- not implement the format-pattern variant of to_time.
+query expect_fallback(invoke is not supported)
+SELECT to_time(s, f) FROM test_to_time_col_fmt
