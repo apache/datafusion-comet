@@ -241,9 +241,8 @@ object DeltaReflection extends Logging {
   private def invokeNoArg(obj: Any, methodName: String): Option[AnyRef] = {
     if (obj == null) return None
     try {
-      val m =
-        obj.getClass.getMethods.find(x => x.getName == methodName && x.getParameterCount == 0)
-      m.flatMap(mm => Option(mm.invoke(obj)))
+      val m = lookupNoArgMethod(obj.getClass, methodName)
+      if (m == null) None else Option(m.invoke(obj))
     } catch {
       case scala.util.control.NonFatal(_) => None
     }
@@ -510,14 +509,35 @@ object DeltaReflection extends Logging {
     if (obj == null) return None
     val cls = obj.getClass
     names.foreach { n =>
-      try {
-        val m = cls.getMethod(n)
-        return Option(m.invoke(obj))
-      } catch {
-        case _: NoSuchMethodException => // try next
+      val m = lookupNoArgMethod(cls, n)
+      if (m != null) {
+        try return Option(m.invoke(obj))
+        catch { case scala.util.control.NonFatal(_) => return None }
       }
     }
     None
+  }
+
+  // Cache no-arg java.lang.reflect.Method handles by (class, name). Hot path for plan
+  // walks: every CometScanRule call into Delta does many name-based lookups per file.
+  // `MISSING` sentinel caches negative lookups so we don't re-scan getMethods on misses.
+  private val MISSING: java.lang.reflect.Method = classOf[Object].getMethod("toString")
+  private val noArgMethodCache =
+    new java.util.concurrent.ConcurrentHashMap[(Class[_], String), java.lang.reflect.Method]()
+
+  private def lookupNoArgMethod(cls: Class[_], name: String): java.lang.reflect.Method = {
+    val key = (cls, name)
+    val cached = noArgMethodCache.get(key)
+    if (cached ne null) return if (cached eq MISSING) null else cached
+    val resolved =
+      try {
+        val m = cls.getMethod(name)
+        if (m.getParameterCount == 0) m else null
+      } catch {
+        case _: NoSuchMethodException => null
+      }
+    noArgMethodCache.putIfAbsent(key, if (resolved == null) MISSING else resolved)
+    resolved
   }
 
   private def stringMember(obj: Any, name: String): Option[String] =
