@@ -15,7 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test RLIKE via JVM regex engine (default engine)
+-- Test RLIKE via JVM regex engine
+-- Config: spark.comet.exec.regexp.engine=java
 
 statement
 CREATE TABLE test_rlike_java(s string) USING parquet
