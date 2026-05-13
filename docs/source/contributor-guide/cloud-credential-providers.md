@@ -89,10 +89,10 @@ Implementations must be thread-safe.
 
 The `mode` is the access intent for this credential request:
 
-| Value             | Used for                                                                |
-| ----------------- | ----------------------------------------------------------------------- |
-| `READ`            | All native scan paths (raw Parquet, Iceberg). Comet today only sends READ. |
-| `WRITE`           | Reserved for future native write paths (Iceberg writes, native INSERT). |
+| Value   | Used for                                                                   |
+| ------- | -------------------------------------------------------------------------- |
+| `READ`  | All native scan paths (raw Parquet, Iceberg). Comet today only sends READ. |
+| `WRITE` | Reserved for future native write paths (Iceberg writes, native INSERT).    |
 
 The SPI does not promise that a `WRITE` credential is also read-capable; vendors that need
 read-during-write workflows (multipart-completion HEAD, Iceberg manifest reads on the write path,
@@ -113,19 +113,19 @@ The returned `CometCredentials` POJO carries:
 
 The SPI follows the same shape as every other AWS-credential SPI in the JVM ecosystem:
 
-| SPI                                         | Method                                       | Behavior                  |
-| ------------------------------------------- | -------------------------------------------- | ------------------------- |
-| AWS SDK v1 `AWSCredentialsProvider`         | `getCredentials()`                           | returns or throws         |
-| AWS SDK v2 `AwsCredentialsProvider`         | `resolveCredentials()`                       | returns or throws         |
-| Hadoop S3A `AWSCredentialsProvider`         | `getCredentials()`                           | returns or throws         |
-| Iceberg `VendedCredentialsProvider`         | `resolveCredentials()`                       | returns or throws         |
-| Iceberg `AwsClientFactory`                  | `s3()`                                       | returns a configured client |
-| **Comet `CometCloudCredentialProvider`**    | `getCredentialsForPath(bucket, path, mode)`  | **returns or throws**     |
+| SPI                                      | Method                                      | Behavior                    |
+| ---------------------------------------- | ------------------------------------------- | --------------------------- |
+| AWS SDK v1 `AWSCredentialsProvider`      | `getCredentials()`                          | returns or throws           |
+| AWS SDK v2 `AwsCredentialsProvider`      | `resolveCredentials()`                      | returns or throws           |
+| Hadoop S3A `AWSCredentialsProvider`      | `getCredentials()`                          | returns or throws           |
+| Iceberg `VendedCredentialsProvider`      | `resolveCredentials()`                      | returns or throws           |
+| Iceberg `AwsClientFactory`               | `s3()`                                      | returns a configured client |
+| **Comet `CometCloudCredentialProvider`** | `getCredentialsForPath(bucket, path, mode)` | **returns or throws**       |
 
-Chaining/fallback in the AWS world is a separate concern, composed *outside* the provider —
+Chaining/fallback in the AWS world is a separate concern, composed _outside_ the provider —
 e.g. AWS SDK v2's `AwsCredentialsProviderChain.builder().credentialsProviders(...)`, or the Hadoop
 S3A `fs.s3a.aws.credentials.provider` comma-separated list resolved by
-`AWSCredentialsProviderChain`. Each *individual* provider is atomic ("give me a credential or
+`AWSCredentialsProviderChain`. Each _individual_ provider is atomic ("give me a credential or
 fail"); a chain class composes them.
 
 Comet's SPI keeps to this convention. We considered an alternative `Optional<CometCredentials>`
@@ -191,7 +191,7 @@ the Unix epoch.
 - Returning `null` is a contract violation; the native bridge surfaces it as a request failure.
   Implementations that want to defer to a default credential chain on a subset of paths should
   resolve the default chain themselves and return its credentials — see the worked pattern under
-  *Why this SPI returns or throws* above.
+  _Why this SPI returns or throws_ above.
 
 #### Iceberg path: error message fidelity
 
@@ -252,8 +252,8 @@ identical credentials.
 A vendor that wants to compose multiple credential sources (per-path STS for some prefixes, a
 catchall provider for others) does so inside their single provider implementation — same as how
 AWS SDK v1/v2 providers compose into `AwsCredentialsProviderChain` at the call site rather than
-exposing chain semantics through the individual provider contract. See *Why this SPI returns or
-throws* above for a worked example.
+exposing chain semantics through the individual provider contract. See _Why this SPI returns or
+throws_ above for a worked example.
 
 ## Threading and lifecycle
 
