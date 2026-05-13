@@ -23,6 +23,7 @@
 
 use crate::execution::operators::ExecutionError;
 use crate::jvm_bridge::{check_exception, JVMClasses};
+use crate::JAVA_VM;
 use async_trait::async_trait;
 use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
 use jni::objects::{JFieldID, JObject, JString, JValue};
@@ -55,6 +56,12 @@ static PROVIDER_REGISTERED: OnceCell<bool> = OnceCell::new();
 /// in front of the default credential paths.
 pub fn is_provider_registered() -> bool {
     *PROVIDER_REGISTERED.get_or_init(|| {
+        // Unit tests construct stores without a JVM; treat that as "no provider registered" so we
+        // don't trip `with_env`'s debug_assert. In production the JVM is always initialized before
+        // any object_store is built.
+        if JAVA_VM.get().is_none() {
+            return false;
+        }
         JVMClasses::with_env(|env| -> Result<bool, ExecutionError> {
             let dispatcher = &JVMClasses::get().comet_cloud_credential_dispatcher;
             let result = unsafe {
