@@ -597,28 +597,43 @@ impl SparkPhysicalExprAdapter {
                 )));
             }
 
-            // Reject reading a non-string/binary Parquet column as
-            // StringType/BinaryType. Spark's vectorized reader rejects this in
-            // every `ParquetVectorUpdaterFactory.getUpdater` case other than
-            // BINARY / FIXED_LEN_BYTE_ARRAY: an INT32/INT64/FLOAT/DOUBLE/INT96
-            // column has no "read as string" updater. Without this guard,
-            // Spark's Cast below would silently produce string values from the
-            // numeric column.
-            if matches!(
-                target_type,
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-            ) && !matches!(
+            // Reject reading a BOOLEAN/INT/FLOAT/DOUBLE Parquet column as
+            // StringType/BinaryType. Spark's `ParquetVectorUpdaterFactory.getUpdater`
+            // has no `int -> string` etc. updater for these primitive cases,
+            // and without this guard Spark's Cast below silently produces
+            // string values from the numeric column. FIXED_LEN_BYTE_ARRAY,
+            // dictionary-encoded, and decimal-typed physical columns are NOT
+            // rejected here because Spark either allows the read or it falls
+            // outside the documented mismatch set.
+            //
+            // Deferred to runtime via `RejectOnNonEmpty` so files with no row
+            // groups pass silently (matching Spark's per-row-group check) and
+            // the JVM shim translates the error to
+            // `SchemaColumnConvertNotSupportedException`.
+            let physical_is_primitive_numeric = matches!(
                 physical_type,
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-            ) {
-                return Err(DataFusionError::External(Box::new(
-                    SparkError::ParquetSchemaConvert {
-                        file_path: String::new(),
-                        column: format!("[{}]", cast.input_field().name()),
-                        physical_type: parquet_primitive_name(physical_type).to_string(),
-                        spark_type: spark_catalog_name(target_type).to_string(),
-                    },
-                )));
+                DataType::Boolean
+                    | DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::Float32
+                    | DataType::Float64
+            );
+            if physical_is_primitive_numeric
+                && matches!(
+                    target_type,
+                    DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+                )
+            {
+                let rejection: Arc<dyn PhysicalExpr> = Arc::new(RejectOnNonEmpty {
+                    child,
+                    target_field: Arc::clone(cast.target_field()),
+                    column: format!("[{}]", cast.input_field().name()),
+                    physical_type: parquet_primitive_name(physical_type).to_string(),
+                    spark_type: spark_catalog_name(target_type).to_string(),
+                });
+                return Ok(Transformed::yes(rejection));
             }
 
             // Decimal-to-decimal scale-narrowing check.
