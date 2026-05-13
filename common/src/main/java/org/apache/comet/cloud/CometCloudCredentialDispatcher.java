@@ -53,7 +53,7 @@ import org.slf4j.LoggerFactory;
  *   │  └────────────────────────────────────┘  │       |     │  ╔════════════════════════════════════╗  │
  *   │              │                           │       |     │  ║          JNI CALL:                 ║  │
  *   │              ▼                           │       |     │  ║    getCredentialsForPath(          ║  │
- *   │  ┌────────────────────────────────────┐  │       |     │  ║        bucket, path)               ║  │
+ *   │  ┌────────────────────────────────────┐  │       |     │  ║      bucket, path, mode)           ║  │
  *   │  │  return CometCredentials POJO      │──┼───────┼─────┼─►║                                    ║  │
  *   │  │  (access key, secret, token,       │  │       |     │  ╚════════════════════════════════════╝  │
  *   │  │   region, expiration)              │  │       |     │              │                           │
@@ -73,7 +73,7 @@ import org.slf4j.LoggerFactory;
  *
  * Runtime Phase (per S3 request):
  * 4. object_store / opendal calls its async credential trait on CometCredentialBridge.
- * 5. Bridge enters JNI, invokes dispatcher.getCredentialsForPath(bucket, path).
+ * 5. Bridge enters JNI, invokes dispatcher.getCredentialsForPath(bucket, path, mode).
  * 6. Provider returns a CometCredentials POJO; vendor may call its own STS / authorization service.
  * 7. Rust reads fields via JNI accessors, returns AwsCredential for request signing.
  */
@@ -128,19 +128,26 @@ public final class CometCloudCredentialDispatcher {
   /**
    * Invoked by native code via JNI. Delegates to the registered provider.
    *
+   * <p>{@code mode} is passed as a {@code String} (the {@link CometAccessMode} name) rather than
+   * the enum itself to keep the JNI signature trivial — Rust passes a Java string, this method
+   * parses to the enum and forwards.
+   *
    * @throws IllegalStateException if no provider is registered (callers should check {@link
    *     #isProviderRegistered()} first)
+   * @throws IllegalArgumentException if {@code mode} is not a recognized {@link CometAccessMode}
+   *     name
    */
-  public static CometCredentials getCredentialsForPath(String bucket, String path)
+  public static CometCredentials getCredentialsForPath(String bucket, String path, String mode)
       throws Exception {
     if (PROVIDER == null) {
       throw new IllegalStateException(
           "No CometCloudCredentialProvider registered; check META-INF/services on the classpath");
     }
+    CometAccessMode accessMode = CometAccessMode.valueOf(mode);
     if (LOG.isDebugEnabled()) {
-      LOG.debug("Fetching credentials for bucket={} path={}", bucket, path);
+      LOG.debug("Fetching credentials for bucket={} path={} mode={}", bucket, path, accessMode);
     }
-    return PROVIDER.getCredentialsForPath(bucket, path);
+    return PROVIDER.getCredentialsForPath(bucket, path, accessMode);
   }
 
   private static CometCloudCredentialProvider resolve() {

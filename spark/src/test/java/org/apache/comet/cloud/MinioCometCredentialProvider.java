@@ -63,7 +63,7 @@ public final class MinioCometCredentialProvider implements CometCloudCredentialP
   }
 
   @Override
-  public CometCredentials getCredentialsForPath(String bucket, String path) {
+  public CometCredentials getCredentialsForPath(String bucket, String path, CometAccessMode mode) {
     CALL_COUNT.incrementAndGet();
     LAST_BUCKET.set(bucket);
     LAST_PATH.set(path);

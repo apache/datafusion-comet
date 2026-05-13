@@ -83,7 +83,11 @@ pub fn create_store(
         get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))?;
     builder = if comet_credential_bridge::is_provider_registered() {
         debug!("Using CometCredentialBridge for bucket {bucket}");
-        let bridge = comet_credential_bridge::CometCredentialBridge::new(bucket, url.path());
+        let bridge = comet_credential_bridge::CometCredentialBridge::new(
+            bucket,
+            url.path(),
+            comet_credential_bridge::AccessMode::Read,
+        );
         builder.with_credentials(Arc::new(bridge))
     } else {
         match credential_provider {

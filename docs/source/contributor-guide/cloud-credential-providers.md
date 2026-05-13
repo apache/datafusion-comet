@@ -79,12 +79,25 @@ Implement `org.apache.comet.cloud.CometCloudCredentialProvider`:
 package org.apache.comet.cloud;
 
 public interface CometCloudCredentialProvider {
-    CometCredentials getCredentialsForPath(String bucket, String path) throws Exception;
+    CometCredentials getCredentialsForPath(
+        String bucket, String path, CometAccessMode mode) throws Exception;
 }
 ```
 
 `getCredentialsForPath` may be invoked concurrently from many native tokio worker threads.
 Implementations must be thread-safe.
+
+The `mode` is the access intent for this credential request:
+
+| Value             | Used for                                                                |
+| ----------------- | ----------------------------------------------------------------------- |
+| `READ`            | All native scan paths (raw Parquet, Iceberg). Comet today only sends READ. |
+| `WRITE`           | Reserved for future native write paths (Iceberg writes, native INSERT). |
+
+The SPI does not promise that a `WRITE` credential is also read-capable; vendors that need
+read-during-write workflows (multipart-completion HEAD, Iceberg manifest reads on the write path,
+etc.) include the necessary read permissions in the IAM policy attached to their `WRITE`
+credentials.
 
 The returned `CometCredentials` POJO carries:
 
@@ -95,6 +108,66 @@ The returned `CometCredentials` POJO carries:
 | `sessionToken`          | `String` (nullable) | Pass `null` for non-STS credentials.                   |
 | `region`                | `String` (nullable) | `null` lets the native reader fall back to its config. |
 | `expirationEpochMillis` | `long`              | `0` means "unknown" (see expiration semantics below).  |
+
+### Why this SPI returns or throws (no fallthrough return value)
+
+The SPI follows the same shape as every other AWS-credential SPI in the JVM ecosystem:
+
+| SPI                                         | Method                                       | Behavior                  |
+| ------------------------------------------- | -------------------------------------------- | ------------------------- |
+| AWS SDK v1 `AWSCredentialsProvider`         | `getCredentials()`                           | returns or throws         |
+| AWS SDK v2 `AwsCredentialsProvider`         | `resolveCredentials()`                       | returns or throws         |
+| Hadoop S3A `AWSCredentialsProvider`         | `getCredentials()`                           | returns or throws         |
+| Iceberg `VendedCredentialsProvider`         | `resolveCredentials()`                       | returns or throws         |
+| Iceberg `AwsClientFactory`                  | `s3()`                                       | returns a configured client |
+| **Comet `CometCloudCredentialProvider`**    | `getCredentialsForPath(bucket, path, mode)`  | **returns or throws**     |
+
+Chaining/fallback in the AWS world is a separate concern, composed *outside* the provider —
+e.g. AWS SDK v2's `AwsCredentialsProviderChain.builder().credentialsProviders(...)`, or the Hadoop
+S3A `fs.s3a.aws.credentials.provider` comma-separated list resolved by
+`AWSCredentialsProviderChain`. Each *individual* provider is atomic ("give me a credential or
+fail"); a chain class composes them.
+
+Comet's SPI keeps to this convention. We considered an alternative `Optional<CometCredentials>`
+return where empty would mean "fall through to Comet's native default AWS chain" — convenient
+for path-scoped vendors but inconsistent with everything else at this layer. Composition is
+cheap to do vendor-side and keeps the SPI surface narrow.
+
+#### Pattern: vendor that handles only a subset of paths
+
+If your provider is authoritative only for a subset of buckets/prefixes (e.g. you have indexed
+policies for some paths and want others to use the host's default AWS credentials), construct
+the default chain in your provider and return its credentials directly:
+
+```java
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+
+public final class PathScopedProvider implements CometCloudCredentialProvider {
+
+    private final DefaultCredentialsProvider defaultChain = DefaultCredentialsProvider.create();
+
+    @Override
+    public CometCredentials getCredentialsForPath(
+            String bucket, String path, CometAccessMode mode) throws Exception {
+        if (handlesPath(bucket, path)) {
+            return mintFromMyVendorService(bucket, path, mode);
+        }
+        AwsCredentials c = defaultChain.resolveCredentials();
+        String token = (c instanceof AwsSessionCredentials)
+                ? ((AwsSessionCredentials) c).sessionToken()
+                : null;
+        return new CometCredentials(c.accessKeyId(), c.secretAccessKey(), token, null, 0L);
+    }
+}
+```
+
+This mirrors how Iceberg's `VendedCredentialsProvider` is implemented (it composes
+`HTTPClient` + `CachedSupplier` internally; the SPI itself just returns or throws). Pick AWS SDK
+v1 vs v2 to match whatever your existing signer / `AwsClientFactory` integration uses — the
+choice is invisible to Comet because only `CometCredentials` (a plain POJO with strings + a long)
+crosses the JNI boundary.
 
 ### Expiration semantics
 
@@ -113,16 +186,34 @@ the Unix epoch.
 ### Error semantics
 
 - Throwing from `getCredentialsForPath` aborts the native S3 request and surfaces the exception
-  message (and chained causes) to the caller.
-- Returning `null` is reserved for "this provider does not handle this path"; the native caller
-  treats it as an authorization failure rather than falling back to other providers.
+  message (and chained causes) to the caller. (See the iceberg-path note below for one current
+  exception to that propagation.)
+- Returning `null` is a contract violation; the native bridge surfaces it as a request failure.
+  Implementations that want to defer to a default credential chain on a subset of paths should
+  resolve the default chain themselves and return its credentials — see the worked pattern under
+  *Why this SPI returns or throws* above.
+
+#### Iceberg path: error message fidelity
+
+When the bridge is wired into `iceberg-rust` (Iceberg native scans), iceberg-rust currently wraps
+our credential loader in its own `ProvideCredentialChain`. That outer chain swallows errors into
+"no credential" before the request reaches opendal (see `reqsign-core::ProvideCredentialChain`),
+so a thrown exception surfaces as an opaque opendal/anonymous-request failure rather than your
+exception message. The credential is still not issued and the request still fails — only the
+message is degraded.
+
+This is tied to opendal's chain semantics. It would resolve if iceberg-rust either (a) stops
+wrapping custom loaders in its own outer chain, or (b) moves Iceberg's S3 storage backend to
+`object_store` (whose `CredentialProvider` has no chain-swallow behavior — auth failures
+propagate cleanly as they do on Comet's raw Parquet path today). No Comet SPI change is needed
+in either case.
 
 ### Iceberg path: explicit S3 region required
 
-When the bridge is registered, Comet wires it into `iceberg-storage-opendal` as a custom
-`AwsCredentialLoad`. opendal then requires explicit S3 region (and, for non-AWS endpoints, an
-explicit endpoint) on the catalog properties — its built-in region auto-detection only runs
-when no custom credential loader is configured.
+When the bridge is registered, Comet wires it into `iceberg-storage-opendal` as a
+`CustomAwsCredentialLoader`. opendal then requires explicit S3 region (and, for non-AWS
+endpoints, an explicit endpoint) on the catalog properties — its built-in region auto-detection
+only runs when no custom credential loader is configured.
 
 In practice this means deployments using the bridge for Iceberg must set, on the Spark catalog:
 
@@ -158,33 +249,11 @@ There is no Comet-specific config knob for selecting a provider. Discovery follo
 of truth Spark itself reads, so a query that falls back from Comet to Spark mid-execution sees
 identical credentials.
 
-### Future: multi-provider chains
-
-The "exactly one" rule is a design choice, not a fundamental constraint. Hadoop S3A's
-`fs.s3a.aws.credentials.provider` chain (try each provider in order; first non-null wins) is a
-familiar pattern, and a vendor with both a per-path STS provider and a catchall bucket provider
-might reasonably want to compose them.
-
-If demand emerges, the dispatcher would change shape roughly as follows:
-
-- Replace the multi-impl `IllegalStateException` with "store the list."
-- On `getCredentialsForPath`, iterate the list; first non-null return wins. Returning `null`
-  becomes a "I don't handle this path; try the next provider" signal rather than an authorization
-  failure.
-- Order would be controlled by an explicit Spark config (e.g. a comma-separated list of class
-  names) because `ServiceLoader` iteration order is unspecified across JDKs.
-
-Until then, a vendor that needs chaining should implement the chain logic _inside_ a single
-provider (e.g. try STS, fall back to vended creds, fall back to instance metadata). That keeps
-ordering decisions in vendor code and avoids committing Comet to a chaining contract before there
-is real usage to inform it.
-
-Note that this only applies to Comet SPI implementations. Existing JVM-side
-`AwsCredentialsProvider` chains in `fs.s3a.aws.credentials.provider` are not reachable from
-Comet's native readers regardless: the providers there implement AWS SDK interfaces, not the Comet
-SPI, and calling them would force Comet to depend on the AWS SDK (and pick v1 vs v2). Vendors who
-want their existing JVM chain to apply to Comet's native scans need a thin Comet SPI that
-delegates to it.
+A vendor that wants to compose multiple credential sources (per-path STS for some prefixes, a
+catchall provider for others) does so inside their single provider implementation — same as how
+AWS SDK v1/v2 providers compose into `AwsCredentialsProviderChain` at the call site rather than
+exposing chain semantics through the individual provider contract. See *Why this SPI returns or
+throws* above for a worked example.
 
 ## Threading and lifecycle
 
@@ -235,6 +304,7 @@ A minimal static-credential provider, suitable for tests and development:
 ```java
 package com.example.comet.test;
 
+import org.apache.comet.cloud.CometAccessMode;
 import org.apache.comet.cloud.CometCloudCredentialProvider;
 import org.apache.comet.cloud.CometCredentials;
 
@@ -244,7 +314,8 @@ public final class StaticCometCredentialProvider implements CometCloudCredential
     private static final String REGION = System.getenv().getOrDefault("EXAMPLE_REGION", "us-east-1");
 
     @Override
-    public CometCredentials getCredentialsForPath(String bucket, String path) {
+    public CometCredentials getCredentialsForPath(
+            String bucket, String path, CometAccessMode mode) {
         return new CometCredentials(ACCESS_KEY, SECRET_KEY, null, REGION, 0L);
     }
 }

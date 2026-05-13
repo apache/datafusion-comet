@@ -40,6 +40,7 @@ use datafusion::physical_plan::{
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
 use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
+use iceberg_storage_opendal::CustomAwsCredentialLoader;
 use iceberg_storage_opendal::OpenDalStorageFactory;
 
 use crate::execution::operators::ExecutionError;
@@ -49,7 +50,6 @@ use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::FileScanTask;
-use iceberg_storage_opendal::CustomAwsCredentialLoader;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -246,7 +246,11 @@ fn build_s3_credential_loader(metadata_location: &str) -> Option<CustomAwsCreden
     }
     let url = url::Url::parse(metadata_location).ok()?;
     let bucket = url.host_str()?.to_string();
-    let bridge = CometCredentialBridge::new(bucket, metadata_location.to_string());
+    let bridge = CometCredentialBridge::new(
+        bucket,
+        metadata_location.to_string(),
+        comet_credential_bridge::AccessMode::Read,
+    );
     Some(CustomAwsCredentialLoader::new(bridge))
 }
 

@@ -31,6 +31,7 @@ public class TestCometCloudCredentialProvider implements CometCloudCredentialPro
   static final AtomicInteger callCount = new AtomicInteger(0);
   static volatile String lastBucket;
   static volatile String lastPath;
+  static volatile CometAccessMode lastMode;
   static volatile RuntimeException throwOnNext;
   static volatile CometCredentials nextResult =
       new CometCredentials("AKIATEST", "secret", "session-tok", "us-east-1", 0L);
@@ -39,15 +40,17 @@ public class TestCometCloudCredentialProvider implements CometCloudCredentialPro
     callCount.set(0);
     lastBucket = null;
     lastPath = null;
+    lastMode = null;
     throwOnNext = null;
     nextResult = new CometCredentials("AKIATEST", "secret", "session-tok", "us-east-1", 0L);
   }
 
   @Override
-  public CometCredentials getCredentialsForPath(String bucket, String path) {
+  public CometCredentials getCredentialsForPath(String bucket, String path, CometAccessMode mode) {
     callCount.incrementAndGet();
     lastBucket = bucket;
     lastPath = path;
+    lastMode = mode;
     RuntimeException toThrow = throwOnNext;
     if (toThrow != null) {
       throwOnNext = null;

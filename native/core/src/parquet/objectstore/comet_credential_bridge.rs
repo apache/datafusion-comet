@@ -20,6 +20,10 @@
 //! See `common/src/main/java/org/apache/comet/cloud/CometCloudCredentialDispatcher.java` for the
 //! Java side and the architecture diagram. JNI handles are cached on `JVMClasses` next to all
 //! the other Comet JNI bridges; this file holds only the Rust trait impls that delegate through.
+//!
+//! Contract: the SPI returns credentials or throws. There is no "fall through" return value. See
+//! `docs/source/contributor-guide/cloud-credential-providers.md` for the rationale and patterns
+//! for vendors that need to defer to a default credential chain on a subset of paths.
 
 use crate::execution::operators::ExecutionError;
 use crate::jvm_bridge::{check_exception, JVMClasses};
@@ -50,6 +54,27 @@ const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
 /// Cached "is a Java provider registered?" answer. Resolution is one JNI round-trip and the
 /// result never changes within a JVM lifetime, so memoize.
 static PROVIDER_REGISTERED: OnceCell<bool> = OnceCell::new();
+
+/// Access intent passed to the Java SPI. Mirrors `CometAccessMode` on the Java side; the JVM-side
+/// `valueOf` parses these names so they are part of the cross-language contract.
+#[derive(Debug, Clone, Copy)]
+pub enum AccessMode {
+    Read,
+    /// Reserved for future native write paths (Iceberg writes, native INSERT). No call site
+    /// constructs this yet; allow it to keep the enum complete and to lock the JVM-side
+    /// `CometAccessMode.valueOf("WRITE")` contract.
+    #[allow(dead_code)]
+    Write,
+}
+
+impl AccessMode {
+    fn as_jvm_str(self) -> &'static str {
+        match self {
+            AccessMode::Read => "READ",
+            AccessMode::Write => "WRITE",
+        }
+    }
+}
 
 /// True iff a `CometCloudCredentialProvider` was discovered on the JVM classpath. Used by
 /// `s3.rs::create_store` and `iceberg_scan.rs` to decide whether to wire a [`CometCredentialBridge`]
@@ -99,13 +124,13 @@ pub fn is_provider_registered() -> bool {
 /// Per-request credential provider that delegates to the Java SPI via JNI.
 ///
 /// One instance is constructed per S3 store (per-URL in `create_store`) or per FileIO (the
-/// metadata location, in `iceberg_scan.rs`). The `(bucket, path)` tuple is forwarded verbatim
-/// on every credential fetch; the Java provider is free to return different credentials for
-/// different paths.
+/// metadata location, in `iceberg_scan.rs`). The `(bucket, path, mode)` tuple is forwarded
+/// verbatim on every credential fetch.
 #[derive(Debug)]
 pub struct CometCredentialBridge {
     bucket: String,
     path: String,
+    mode: AccessMode,
     /// Latched once the bridge observes a credential without an expiry, so the warning that
     /// goes with [`DEFAULT_EXPIRY_WHEN_UNKNOWN`] only fires once per bridge instance instead of
     /// per request.
@@ -113,10 +138,11 @@ pub struct CometCredentialBridge {
 }
 
 impl CometCredentialBridge {
-    pub fn new(bucket: impl Into<String>, path: impl Into<String>) -> Self {
+    pub fn new(bucket: impl Into<String>, path: impl Into<String>, mode: AccessMode) -> Self {
         Self {
             bucket: bucket.into(),
             path: path.into(),
+            mode,
             warned_missing_expiry: AtomicBool::new(false),
         }
     }
@@ -132,6 +158,9 @@ impl CometCredentialBridge {
             let path_jstr = env
                 .new_string(&self.path)
                 .map_err(|e| ExecutionError::GeneralError(format!("new_string(path): {e}")))?;
+            let mode_jstr = env
+                .new_string(self.mode.as_jvm_str())
+                .map_err(|e| ExecutionError::GeneralError(format!("new_string(mode): {e}")))?;
 
             let result = unsafe {
                 env.call_static_method_unchecked(
@@ -141,6 +170,7 @@ impl CometCredentialBridge {
                     &[
                         JValue::from(&bucket_jstr).as_jni(),
                         JValue::from(&path_jstr).as_jni(),
+                        JValue::from(&mode_jstr).as_jni(),
                     ],
                 )
             };

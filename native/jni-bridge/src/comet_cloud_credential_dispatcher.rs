@@ -59,7 +59,7 @@ impl<'a> CometCloudCredentialDispatcher<'a> {
                 JNIString::new(Self::JVM_CLASS),
                 jni::jni_str!("getCredentialsForPath"),
                 jni::jni_sig!(
-                    "(Ljava/lang/String;Ljava/lang/String;)Lorg/apache/comet/cloud/CometCredentials;"
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lorg/apache/comet/cloud/CometCredentials;"
                 ),
             )?,
             method_get_credentials_for_path_ret: ReturnType::Object,

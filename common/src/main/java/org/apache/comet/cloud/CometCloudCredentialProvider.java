@@ -33,6 +33,11 @@ package org.apache.comet.cloud;
  *
  * <p>Implementations must be thread-safe; {@link #getCredentialsForPath} may be invoked
  * concurrently from many native tokio tasks.
+ *
+ * <p>Contract: returns credentials or throws. There is no "fall through to the default chain"
+ * return value; if a provider is registered, it is responsible for every credential fetch on the
+ * paths it sees. See the contributor guide section on cloud credential providers for the rationale
+ * and patterns for vendors that need to defer to a default credential chain on a subset of paths.
  */
 public interface CometCloudCredentialProvider {
 
@@ -40,9 +45,12 @@ public interface CometCloudCredentialProvider {
    * Returns credentials usable to sign an S3 request for the given path.
    *
    * @param bucket the S3 bucket name (no scheme, no path)
-   * @param path the object key being accessed (no leading slash)
-   * @return credentials, or {@code null} if this provider does not handle the given path
+   * @param path the object key or prefix being accessed; the URL path of the store, leading slash
+   *     included
+   * @param mode the access intent for this credential request
+   * @return non-null credentials
    * @throws Exception any failure surfaces to the native caller and aborts the request
    */
-  CometCredentials getCredentialsForPath(String bucket, String path) throws Exception;
+  CometCredentials getCredentialsForPath(String bucket, String path, CometAccessMode mode)
+      throws Exception;
 }
