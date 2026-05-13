@@ -93,15 +93,15 @@ trait CometExprShim extends CommonStringExprs {
         stringDecode(expr, charset, bin, inputs, binding)
 
       case s: StaticInvoke
-        if s.staticObject == classOf[Encode] &&
-          s.dataType.isInstanceOf[BinaryType] &&
-          s.functionName == "encode" &&
-          s.arguments.size == 4 &&
-          s.inputTypes == Seq(
-            StringTypeWithCollation(supportsTrimCollation = true),
-            StringTypeWithCollation(supportsTrimCollation = true),
-            BooleanType,
-            BooleanType) =>
+          if s.staticObject == classOf[Encode] &&
+            s.dataType.isInstanceOf[BinaryType] &&
+            s.functionName == "encode" &&
+            s.arguments.size == 4 &&
+            s.inputTypes == Seq(
+              StringTypeWithCollation(supportsTrimCollation = true),
+              StringTypeWithCollation(supportsTrimCollation = true),
+              BooleanType,
+              BooleanType) =>
         val Seq(value, charset, _, _) = s.arguments
         stringEncode(expr, charset, value, inputs, binding)
 

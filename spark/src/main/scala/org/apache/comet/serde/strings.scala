@@ -493,7 +493,12 @@ trait CommonStringExprs {
         // because Spark's UTF8String already holds valid UTF-8 bytes.
         val strExpr = exprToProtoInternal(value, inputs, binding)
         if (strExpr.isDefined) {
-          CometCast.castToProto(expr, None, DataTypes.BinaryType, strExpr.get, CometEvalMode.LEGACY)
+          CometCast.castToProto(
+            expr,
+            None,
+            DataTypes.BinaryType,
+            strExpr.get,
+            CometEvalMode.LEGACY)
         } else {
           withInfo(expr, value)
           None
