@@ -145,16 +145,22 @@ pub(crate) fn init_datasource_exec(
 
     // Route data filters through `try_pushdown_filters` rather than calling
     // `with_predicate` directly. This is the contract DataFusion's optimizer
-    // uses, and it correctly classifies any filter that ParquetSource cannot
-    // evaluate as a row filter (e.g., references to virtual columns like
-    // Parquet `row_number`) as `PushedDown::No`. Spark's Filter operator above
-    // the scan re-evaluates all dataFilters anyway, so the No-classified ones
-    // remain correct without us needing to add a FilterExec here.
+    // uses, and it correctly classifies any filter ParquetSource cannot
+    // evaluate as a `RowFilter` (e.g. virtual-column refs like Parquet
+    // `row_number`) as `PushedDown::No`. The predicate still flows into
+    // `source.predicate` for row-group / page-index / bloom-filter pruning
+    // even when `datafusion.execution.parquet.pushdown_filters=false`; that
+    // config only gates per-row `RowFilter` evaluation. We discard
+    // `propagation.parent_pushdown_result` because Spark's Filter above the
+    // scan re-evaluates every dataFilter, so No-classified filters stay
+    // correct without us inserting a FilterExec here.
     let file_source: Arc<dyn FileSource> = match data_filters {
         Some(filters) if !filters.is_empty() => {
             let state = session_ctx.state();
             let propagation =
                 parquet_source.try_pushdown_filters(filters, state.config_options())?;
+            // `updated_node` is `None` when every filter classified as `No`
+            // (nothing pushable); keep the unmodified source in that case.
             propagation
                 .updated_node
                 .unwrap_or_else(|| Arc::new(parquet_source))
