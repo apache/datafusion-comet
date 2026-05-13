@@ -180,7 +180,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
     val taskListBytes =
       if (DeltaReflection.isBatchFileIndex(relation.location)) {
         DeltaReflection.extractBatchAddFiles(relation.location) match {
-          case Some(addFiles) if addFiles.forall(!_.hasDeletionVector) =>
+          case Some(addFiles) =>
             // Under column mapping, Delta stores partition values in AddFile keyed by the
             // PHYSICAL column name. `relation.partitionSchema.fields[*].metadata` has had
             // Delta's columnMapping metadata stripped by HadoopFsRelation, so look in the
@@ -199,23 +199,51 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
                 None
               }
             }.toMap
+            // DV materialization for the pre-materialised-index path (streaming + MERGE).
+            // For AddFiles that carry a DeletionVectorDescriptor, read the DV via Delta's
+            // `HadoopFileSystemDVStore` on the driver and feed the resulting row-index list
+            // through the proto's existing `deleted_row_indexes` field. The native side then
+            // wraps the file group in `DeltaDvFilterExec` (planner.rs ~1460) which already
+            // honours per-file deleted row indexes. If any DV fails to materialise we have
+            // to fall back -- silently dropping a DV is a correctness violation (would
+            // return rows that should have been hidden).
+            val hadoopConf = relation.sparkSession.sessionState
+              .newHadoopConfWithOptions(relation.options)
+            val deletedRowIndexesByPath: Map[String, Array[Long]] = {
+              val builder = scala.collection.mutable.Map.empty[String, Array[Long]]
+              val it = addFiles.iterator
+              var failed = false
+              while (it.hasNext && !failed) {
+                val af = it.next()
+                if (af.hasDeletionVector) {
+                  DeltaReflection.materializeDeletedRowIndexes(
+                    af.dvDescriptor,
+                    tableRoot,
+                    hadoopConf) match {
+                    case Some(arr) => builder.put(af.path, arr)
+                    case None => failed = true
+                  }
+                }
+              }
+              if (failed) {
+                import org.apache.comet.CometSparkSessionExtensions.withInfo
+                withInfo(
+                  scan,
+                  "Native Delta scan: pre-materialised FileIndex with deletion vectors " +
+                    "but failed to materialise one or more DVs (DV file missing, unsupported " +
+                    "Delta version, or read error); falling back to Spark+Delta.")
+                return None
+              }
+              builder.toMap
+            }
             buildTaskListFromAddFiles(
               tableRoot,
               snapshotVersion,
               addFiles,
               nativeOp = null,
               columnNames,
-              physicalToLogicalPartitionNames = physToLogical).toByteArray
-          case Some(_) =>
-            // Phase 1 of the pre-materialized-index path: fall back when any
-            // AddFile carries a DeletionVectorDescriptor. Phase 2 can apply the
-            // DV inline via our DeltaDvFilterExec.
-            import org.apache.comet.CometSparkSessionExtensions.withInfo
-            withInfo(
-              scan,
-              "Native Delta scan falls back for pre-materialized FileIndex with " +
-                "deletion vectors (streaming/MERGE with DVs).")
-            return None
+              physicalToLogicalPartitionNames = physToLogical,
+              deletedRowIndexesByPath = deletedRowIndexesByPath).toByteArray
           case None =>
             // Reflection failed; fall back conservatively.
             import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -693,7 +721,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       addFiles: Seq[DeltaReflection.ExtractedAddFile],
       nativeOp: AnyRef,
       columnNames: Array[String],
-      physicalToLogicalPartitionNames: Map[String, String] = Map.empty)
+      physicalToLogicalPartitionNames: Map[String, String] = Map.empty,
+      deletedRowIndexesByPath: Map[String, Array[Long]] = Map.empty)
       : OperatorOuterClass.DeltaScanTaskList = {
     val tlBuilder = OperatorOuterClass.DeltaScanTaskList.newBuilder()
     tlBuilder.setTableRoot(tableRoot)
@@ -725,6 +754,13 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       }
       af.baseRowId.foreach(taskBuilder.setBaseRowId)
       af.defaultRowCommitVersion.foreach(taskBuilder.setDefaultRowCommitVersion)
+      deletedRowIndexesByPath.get(af.path).foreach { rowIndexes =>
+        var i = 0
+        while (i < rowIndexes.length) {
+          taskBuilder.addDeletedRowIndexes(rowIndexes(i))
+          i += 1
+        }
+      }
       tlBuilder.addTasks(taskBuilder.build())
     }
     tlBuilder.build()

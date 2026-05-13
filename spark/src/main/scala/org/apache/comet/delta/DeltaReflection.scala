@@ -347,6 +347,14 @@ object DeltaReflection extends Logging {
       /** True if this AddFile has a non-null DeletionVectorDescriptor. */
       hasDeletionVector: Boolean,
       /**
+       * The raw `DeletionVectorDescriptor` object (opaque via reflection -- the concrete type is
+       * `org.apache.spark.sql.delta.actions.DeletionVectorDescriptor` but we keep it as `AnyRef`
+       * to preserve the no-compile-time-dep-on-spark-delta property). `null` when the AddFile
+       * has no DV. Pass to `materializeDeletedRowIndexes` to convert into a `Array[Long]` of
+       * deleted row indexes.
+       */
+      dvDescriptor: AnyRef,
+      /**
        * Delta row-tracking fields. `baseRowId` is the first logical row id covered by this file;
        * `defaultRowCommitVersion` is the commit that last wrote it. Both are `None` for tables
        * that don't have the rowTracking table feature enabled (or for pre-backfill files on a
@@ -437,6 +445,7 @@ object DeltaReflection extends Logging {
             pv,
             stats,
             hasDeletionVector = dv != null,
+            dvDescriptor = dv,
             baseRowId = baseRowId,
             defaultRowCommitVersion = defaultRowCommitVersion)
         }
@@ -446,6 +455,54 @@ object DeltaReflection extends Logging {
       case e: Exception =>
         logWarning(
           s"Failed to extract AddFiles from ${location.getClass.getName}: ${e.getMessage}")
+        None
+    }
+  }
+
+  /**
+   * Materialize a `DeletionVectorDescriptor` into the list of deleted row indexes (0-based,
+   * sorted ascending) using Delta's own `HadoopFileSystemDVStore` + `RoaringBitmapArray.toArray`.
+   *
+   * Returns `None` when:
+   *   - `dvDescriptor` is null (no DV on this file)
+   *   - the Delta classes aren't on the classpath (different Delta version layout, etc.)
+   *   - the read itself fails (corrupt DV file, missing file, etc.)
+   *
+   * Callers that need DV semantics must fall back to Spark+Delta when this returns `None`.
+   *
+   * Driver-side only: don't call this on executors, since it touches the filesystem and the DV
+   * store may not be initialised. The native side then plumbs the row-index array into the proto
+   * task's `deleted_row_indexes` field, which `DeltaDvFilterExec` already consumes.
+   */
+  def materializeDeletedRowIndexes(
+      dvDescriptor: AnyRef,
+      tableRoot: String,
+      hadoopConf: org.apache.hadoop.conf.Configuration): Option[Array[Long]] = {
+    if (dvDescriptor == null) return None
+    try {
+      // scalastyle:off classforname
+      val storeCls =
+        Class.forName("org.apache.spark.sql.delta.storage.dv.HadoopFileSystemDVStore")
+      // scalastyle:on classforname
+      val store = storeCls
+        .getConstructor(classOf[org.apache.hadoop.conf.Configuration])
+        .newInstance(hadoopConf)
+        .asInstanceOf[AnyRef]
+      val readMethod = storeCls.getMethods.find { m =>
+        m.getName == "read" &&
+        m.getParameterCount == 2 &&
+        m.getParameterTypes()(1) == classOf[org.apache.hadoop.fs.Path]
+      }.getOrElse(return None)
+      val tablePath = new org.apache.hadoop.fs.Path(tableRoot)
+      val bitmap = readMethod.invoke(store, dvDescriptor, tablePath)
+      // RoaringBitmapArray.toArray returns Array[Long] of all set bits (= deleted row indexes).
+      val toArrayMethod = bitmap.getClass.getMethod("toArray")
+      val indexes = toArrayMethod.invoke(bitmap).asInstanceOf[Array[Long]]
+      Some(indexes)
+    } catch {
+      case scala.util.control.NonFatal(e) =>
+        logWarning(
+          s"materializeDeletedRowIndexes failed for table $tableRoot: ${e.getMessage}")
         None
     }
   }
