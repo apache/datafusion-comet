@@ -479,7 +479,7 @@ trait CommonStringExprs {
       binding: Boolean): Option[Expr] = {
     charset match {
       case Literal(str, DataTypes.StringType)
-          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+          if str != null && str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
         // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
         // for invalid strings.
         // Left child is the binary expression.
@@ -504,7 +504,7 @@ trait CommonStringExprs {
       binding: Boolean): Option[Expr] = {
     charset match {
       case Literal(str, DataTypes.StringType)
-          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+          if str != null && str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
         // encode(col, 'utf-8') is byte-equivalent to cast(string AS binary)
         // because Spark's UTF8String already holds valid UTF-8 bytes.
         val strExpr = exprToProtoInternal(value, inputs, binding)
