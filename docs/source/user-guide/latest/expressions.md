@@ -129,10 +129,10 @@ of expressions that be disabled.
 | DayOfYear        | `dayofyear`                  |
 | WeekOfYear       | `weekofyear`                 |
 | Quarter          | `quarter`                    |
-| MakeDate       | `make_date`                  |
-| MakeTime       | `make_time`                  |
-| ToTime         | `to_time`                    |
-| TryToTime      | `try_to_time`                |
+| MakeDate         | `make_date`                  |
+| MakeTime         | `make_time`                  |
+| ToTime           | `to_time`                    |
+| TryToTime        | `try_to_time`                |
 
 ## Math Expressions
 
