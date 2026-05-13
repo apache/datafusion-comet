@@ -46,6 +46,7 @@ ANSI Error Propagation <sql_error_propagation>
 Benchmarking Guide <benchmarking>
 Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
+Adding a New Spark Version <adding_a_new_spark_version>
 Cloud Credential Providers <cloud-credential-providers>
 Supported Spark Expressions <spark_expressions_support>
 Tracing <tracing>
