@@ -478,8 +478,8 @@ under the License.
       </dependency>
       <!--
         Override docker-java transitive (testcontainers 1.21.x pins 3.4.2, which speaks Docker
-        API 1.32 max). Modern daemons (Colima, OrbStack, Apple container, recent Docker Desktop)
-        require API >= 1.40. docker-java 3.7.0+ defaults to API 1.44.
+        API 1.32 max). Modern daemons (Colima, OrbStack, recent Docker Desktop) require API
+        >= 1.40. docker-java 3.7.0+ defaults to API 1.44.
       -->
       <dependency>
         <groupId>com.github.docker-java</groupId>

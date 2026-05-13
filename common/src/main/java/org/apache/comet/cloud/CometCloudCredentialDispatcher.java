@@ -74,7 +74,7 @@ import org.slf4j.LoggerFactory;
  * Runtime Phase (per S3 request):
  * 4. object_store / opendal calls its async credential trait on CometCredentialBridge.
  * 5. Bridge enters JNI, invokes dispatcher.getCredentialsForPath(bucket, path).
- * 6. Provider returns a CometCredentials POJO; vendor may call its own STS / authz service.
+ * 6. Provider returns a CometCredentials POJO; vendor may call its own STS / authorization service.
  * 7. Rust reads fields via JNI accessors, returns AwsCredential for request signing.
  */
 // spotless:on
