@@ -43,27 +43,12 @@ class CometCloudCredentialBridgeS3Suite extends CometS3TestBase with AdaptiveSpa
 
   override protected val testBucketName = "bridge-test-bucket"
 
-  private def icebergAvailable: Boolean = {
-    try {
-      Class.forName("org.apache.iceberg.catalog.Catalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
-    }
-  }
-
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
     conf.set("spark.sql.catalog.s3_catalog", "org.apache.iceberg.spark.SparkCatalog")
     conf.set("spark.sql.catalog.s3_catalog.type", "hadoop")
     conf.set("spark.sql.catalog.s3_catalog.warehouse", s"s3a://$testBucketName/warehouse")
-    // Comet's native Iceberg reader uses iceberg-rust + opendal which requires explicit S3 config
-    // when a custom credential loader is wired in (opendal skips its default region-detection
-    // path in that case). The Hadoop catalog above doesn't propagate these, so we set them
-    // directly on the catalog config.
-    conf.set("spark.sql.catalog.s3_catalog.s3.endpoint", minioContainer.getS3URL)
-    conf.set("spark.sql.catalog.s3_catalog.s3.region", "us-east-1")
-    conf.set("spark.sql.catalog.s3_catalog.s3.path-style-access", "true")
+    applyS3CatalogProps(conf, "s3_catalog")
     conf.set(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key, "true")
     conf
   }
@@ -88,12 +73,14 @@ class CometCloudCredentialBridgeS3Suite extends CometS3TestBase with AdaptiveSpa
 
   test("Parquet read on S3 routes credentials through CometCloudCredentialProvider") {
     val testFilePath = s"s3a://$testBucketName/data/bridge-parquet.parquet"
-    spark.range(0, 1000).write.format("parquet").mode(SaveMode.Overwrite).save(testFilePath)
+    val rowCount = 1000L
+    spark.range(0, rowCount).write.format("parquet").mode(SaveMode.Overwrite).save(testFilePath)
+    val expectedSum = (0L until rowCount).sum
 
     MinioCometCredentialProvider.resetCounters()
     val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
     assertHasCometParquetScan(df.queryExecution.executedPlan)
-    assert(df.first().getLong(0) == 499500)
+    assert(df.first().getLong(0) == expectedSum)
 
     assert(
       MinioCometCredentialProvider.callCount() > 0,

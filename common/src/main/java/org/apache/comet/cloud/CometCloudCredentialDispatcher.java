@@ -20,9 +20,9 @@
 package org.apache.comet.cloud;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.ServiceLoader;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -121,7 +121,6 @@ public final class CometCloudCredentialDispatcher {
 
   private CometCloudCredentialDispatcher() {}
 
-  /** Returns true if a provider was discovered on the classpath. */
   public static boolean isProviderRegistered() {
     return PROVIDER != null;
   }
@@ -146,10 +145,9 @@ public final class CometCloudCredentialDispatcher {
 
   private static CometCloudCredentialProvider resolve() {
     List<CometCloudCredentialProvider> impls = new ArrayList<>();
-    Iterator<CometCloudCredentialProvider> it =
-        ServiceLoader.load(CometCloudCredentialProvider.class).iterator();
-    while (it.hasNext()) {
-      impls.add(it.next());
+    for (CometCloudCredentialProvider impl :
+        ServiceLoader.load(CometCloudCredentialProvider.class)) {
+      impls.add(impl);
     }
     if (impls.isEmpty()) {
       LOG.info(
@@ -158,10 +156,8 @@ public final class CometCloudCredentialDispatcher {
       return null;
     }
     if (impls.size() > 1) {
-      List<String> names = new ArrayList<>(impls.size());
-      for (CometCloudCredentialProvider impl : impls) {
-        names.add(impl.getClass().getName());
-      }
+      List<String> names =
+          impls.stream().map(p -> p.getClass().getName()).collect(Collectors.toList());
       LOG.error("Multiple CometCloudCredentialProvider impls on classpath: {}", names);
       throw new IllegalStateException(
           "Multiple CometCloudCredentialProvider impls on classpath: " + names);

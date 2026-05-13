@@ -29,28 +29,13 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
 
   override protected val testBucketName = "test-iceberg-bucket"
 
-  private def icebergAvailable: Boolean = {
-    try {
-      Class.forName("org.apache.iceberg.catalog.Catalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
-    }
-  }
-
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
 
     conf.set("spark.sql.catalog.s3_catalog", "org.apache.iceberg.spark.SparkCatalog")
     conf.set("spark.sql.catalog.s3_catalog.type", "hadoop")
     conf.set("spark.sql.catalog.s3_catalog.warehouse", s"s3a://$testBucketName/warehouse")
-    // Required by Comet's native Iceberg reader (iceberg-rust + opendal). When a custom
-    // credential loader is wired in (CometCloudCredentialBridge), opendal stops auto-detecting
-    // region and requires explicit S3 config. See the contributor guide page on
-    // CometCloudCredentialProvider.
-    conf.set("spark.sql.catalog.s3_catalog.s3.endpoint", minioContainer.getS3URL)
-    conf.set("spark.sql.catalog.s3_catalog.s3.region", "us-east-1")
-    conf.set("spark.sql.catalog.s3_catalog.s3.path-style-access", "true")
+    applyS3CatalogProps(conf, "s3_catalog")
 
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")

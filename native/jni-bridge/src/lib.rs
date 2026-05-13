@@ -190,12 +190,14 @@ impl<'a> TryFrom<JValueOwned<'a>> for BinaryWrapper<'a> {
 mod comet_exec;
 pub use comet_exec::*;
 mod batch_iterator;
+mod comet_cloud_credential_dispatcher;
 mod comet_metric_node;
 mod comet_task_memory_manager;
 mod comet_udf_bridge;
 mod shuffle_block_iterator;
 
 use batch_iterator::CometBatchIterator;
+pub use comet_cloud_credential_dispatcher::CometCloudCredentialDispatcher;
 pub use comet_metric_node::*;
 pub use comet_task_memory_manager::*;
 use comet_udf_bridge::CometUdfBridge;
@@ -233,6 +235,10 @@ pub struct JVMClasses<'a> {
     /// The CometUdfBridge class used to dispatch JVM scalar UDFs.
     /// `None` if the class is not on the classpath.
     pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
+    /// JNI handles for the CometCloudCredentialDispatcher SPI and the CometCredentials POJO.
+    /// Always present (the classes ship in `comet-common`); whether a vendor provider is actually
+    /// registered is a separate runtime check.
+    pub comet_cloud_credential_dispatcher: CometCloudCredentialDispatcher<'a>,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -310,6 +316,8 @@ impl JVMClasses<'_> {
                     }
                     bridge
                 },
+                comet_cloud_credential_dispatcher: CometCloudCredentialDispatcher::new(env)
+                    .unwrap(),
             }
         });
     }

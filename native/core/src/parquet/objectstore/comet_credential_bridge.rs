@@ -18,15 +18,15 @@
 //! JNI bridge to the Java `CometCloudCredentialDispatcher` SPI for per-request AWS credentials.
 //!
 //! See `common/src/main/java/org/apache/comet/cloud/CometCloudCredentialDispatcher.java` for the
-//! Java side and the architecture diagram.
+//! Java side and the architecture diagram. JNI handles are cached on `JVMClasses` next to all
+//! the other Comet JNI bridges; this file holds only the Rust trait impls that delegate through.
 
 use crate::execution::operators::ExecutionError;
 use crate::jvm_bridge::{check_exception, JVMClasses};
 use async_trait::async_trait;
 use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
-use jni::objects::{JClass, JFieldID, JStaticMethodID, JString};
+use jni::objects::{JFieldID, JObject, JString, JValue};
 use jni::signature::{Primitive, ReturnType};
-use jni::strings::JNIString;
 use log::{debug, warn};
 use object_store::aws::AwsCredential;
 use object_store::CredentialProvider;
@@ -36,226 +36,73 @@ use reqsign_core::{
     Context, Error as ReqsignError, ErrorKind as ReqsignErrorKind,
     ProvideCredential as IcebergProvideCredential,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Default expiration to attach when the Java provider returns
-/// `CometCredentials.expirationEpochMillis == 0` ("unknown"). Without a non-None expiry, opendal
-/// would cache the credential for the entire executor lifetime - a silent footgun for Spark
-/// jobs that run for hours. Five minutes is short enough to limit blast radius and long enough
-/// to avoid per-request JNI overhead. Vendors that want a different cadence should set
-/// `expirationEpochMillis` on every returned POJO.
+/// Bound on opendal's credential cache when the Java provider returns `expirationEpochMillis = 0`
+/// ("unknown"). Without this, opendal would hold the credential for the entire executor lifetime,
+/// a silent footgun for Spark jobs that run for hours. Five minutes trades a small JNI-call
+/// cadence for a tight staleness bound. Vendors that know the real expiry should set it.
 const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
 
-const DISPATCHER_CLASS: &str = "org/apache/comet/cloud/CometCloudCredentialDispatcher";
-const CREDENTIALS_CLASS: &str = "org/apache/comet/cloud/CometCredentials";
+/// Cached "is a Java provider registered?" answer. Resolution is one JNI round-trip and the
+/// result never changes within a JVM lifetime, so memoize.
+static PROVIDER_REGISTERED: OnceCell<bool> = OnceCell::new();
 
-/// Process-lifetime cache of the JNI handles needed to call into the dispatcher.
-///
-/// ## Why static / process lifetime?
-///
-/// `JStaticMethodID` and `JFieldID` are tied to their owning `JClass`; the class itself must
-/// remain reachable for the IDs to stay valid. Resolving the class and IDs requires a JNI
-/// round-trip, so caching them once per executor avoids per-request overhead.
-///
-/// ## Bounded
-///
-/// One entry, populated exactly once. `OnceCell` enforces single initialization.
-///
-/// ## Credential refresh
-///
-/// This cache holds *no* credentials, only the JNI handles needed to invoke the Java provider.
-/// Every `get_credential` call dispatches through JNI; the Java provider owns all token / STS
-/// refresh logic. There is no Rust-side credential staleness window.
-static BRIDGE_HANDLE: OnceCell<BridgeHandleState> = OnceCell::new();
-
-enum BridgeHandleState {
-    /// Java dispatcher reported a registered provider; cached handles are usable.
-    Registered(BridgeHandle),
-    /// Java dispatcher reported no provider, or initialization could not reach the JVM.
-    /// Native callers should fall back to the default AWS credential chain.
-    NotRegistered,
-}
-
-struct BridgeHandle {
-    /// Used by `get_credential` to invoke the static dispatcher method.
-    dispatcher_class: JClass<'static>,
-    /// Kept alive so that the cached field IDs remain valid.
-    _credentials_class: JClass<'static>,
-    method_get_credentials: JStaticMethodID,
-    field_access_key_id: JFieldID,
-    field_secret_access_key: JFieldID,
-    field_session_token: JFieldID,
-    field_expiration_epoch_millis: JFieldID,
-}
-
-// SAFETY: The cached `JClass`, `JStaticMethodID`, and `JFieldID` are all global identifiers
-// that may be used from any thread once acquired. JVMClasses applies the same reasoning to its
-// own cached classes/methods.
-unsafe impl Send for BridgeHandle {}
-unsafe impl Sync for BridgeHandle {}
-
-/// Attempt to initialize the JNI handles. Returns `Some(handle)` if the dispatcher reports a
-/// registered provider, `None` otherwise. Cached after the first call.
-fn get_handle() -> Option<&'static BridgeHandle> {
-    let state = BRIDGE_HANDLE.get_or_init(init_handle);
-    match state {
-        BridgeHandleState::Registered(h) => Some(h),
-        BridgeHandleState::NotRegistered => None,
-    }
-}
-
-fn init_handle() -> BridgeHandleState {
-    let result: Result<BridgeHandleState, ExecutionError> = JVMClasses::with_env(|env| {
-        // SAFETY: Match the transmute trick in `JVMClasses::init` so that classes acquired here
-        // can be cached for process lifetime.
-        let env_static =
-            unsafe { std::mem::transmute::<&mut jni::Env, &'static mut jni::Env>(env) };
-
-        let dispatcher_class = env_static
-            .find_class(JNIString::new(DISPATCHER_CLASS))
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!("Failed to find {DISPATCHER_CLASS}: {e}"))
-            })?;
-
-        let is_registered_method = env_static
-            .get_static_method_id(
-                JNIString::new(DISPATCHER_CLASS),
-                jni::jni_str!("isProviderRegistered"),
-                jni::jni_sig!("()Z"),
-            )
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!("Failed to resolve isProviderRegistered: {e}"))
-            })?;
-
-        let registered = unsafe {
-            env_static.call_static_method_unchecked(
-                &dispatcher_class,
-                is_registered_method,
-                ReturnType::Primitive(Primitive::Boolean),
-                &[],
-            )
-        }
-        .map_err(|e| {
-            ExecutionError::GeneralError(format!("isProviderRegistered call failed: {e}"))
-        })?
-        .z()
-        .map_err(|e| {
-            ExecutionError::GeneralError(format!(
-                "isProviderRegistered did not return boolean: {e}"
-            ))
-        })?;
-
-        if !registered {
-            debug!("CometCloudCredentialDispatcher reports no registered provider");
-            return Ok(BridgeHandleState::NotRegistered);
-        }
-
-        let method_get_credentials = env_static
-            .get_static_method_id(
-                JNIString::new(DISPATCHER_CLASS),
-                jni::jni_str!("getCredentialsForPath"),
-                jni::jni_sig!(
-                    "(Ljava/lang/String;Ljava/lang/String;)Lorg/apache/comet/cloud/CometCredentials;"
-                ),
-            )
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!(
-                    "Failed to resolve getCredentialsForPath: {e}"
-                ))
-            })?;
-
-        let credentials_class = env_static
-            .find_class(JNIString::new(CREDENTIALS_CLASS))
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!("Failed to find {CREDENTIALS_CLASS}: {e}"))
-            })?;
-
-        let field_access_key_id = env_static
-            .get_field_id(
-                &credentials_class,
-                jni::jni_str!("accessKeyId"),
-                jni::jni_sig!("Ljava/lang/String;"),
-            )
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!("Failed to resolve accessKeyId field: {e}"))
-            })?;
-        let field_secret_access_key = env_static
-            .get_field_id(
-                &credentials_class,
-                jni::jni_str!("secretAccessKey"),
-                jni::jni_sig!("Ljava/lang/String;"),
-            )
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!(
-                    "Failed to resolve secretAccessKey field: {e}"
-                ))
-            })?;
-        let field_session_token = env_static
-            .get_field_id(
-                &credentials_class,
-                jni::jni_str!("sessionToken"),
-                jni::jni_sig!("Ljava/lang/String;"),
-            )
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!("Failed to resolve sessionToken field: {e}"))
-            })?;
-        let field_expiration_epoch_millis = env_static
-            .get_field_id(
-                &credentials_class,
-                jni::jni_str!("expirationEpochMillis"),
-                jni::jni_sig!("J"),
-            )
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!(
-                    "Failed to resolve expirationEpochMillis field: {e}"
-                ))
-            })?;
-
-        Ok(BridgeHandleState::Registered(BridgeHandle {
-            dispatcher_class,
-            _credentials_class: credentials_class,
-            method_get_credentials,
-            field_access_key_id,
-            field_secret_access_key,
-            field_session_token,
-            field_expiration_epoch_millis,
-        }))
-    });
-
-    match result {
-        Ok(state) => {
-            if matches!(state, BridgeHandleState::Registered(_)) {
-                debug!("CometCredentialBridge initialized; will route credentials through JNI");
-            }
-            state
-        }
-        Err(e) => {
-            // Initialization is best-effort. If the JVM isn't reachable or the dispatcher
-            // class isn't on the classpath, fall back silently to the default chain.
-            debug!("CometCredentialBridge unavailable, falling back to default chain: {e}");
-            BridgeHandleState::NotRegistered
-        }
-    }
-}
-
-/// Returns true if a `CometCloudCredentialProvider` is registered on the JVM classpath.
-/// Used by `s3.rs::create_store` to decide whether to construct a [`CometCredentialBridge`].
+/// True iff a `CometCloudCredentialProvider` was discovered on the JVM classpath. Used by
+/// `s3.rs::create_store` and `iceberg_scan.rs` to decide whether to wire a [`CometCredentialBridge`]
+/// in front of the default credential paths.
 pub fn is_provider_registered() -> bool {
-    get_handle().is_some()
+    *PROVIDER_REGISTERED.get_or_init(|| {
+        JVMClasses::with_env(|env| -> Result<bool, ExecutionError> {
+            let dispatcher = &JVMClasses::get().comet_cloud_credential_dispatcher;
+            let result = unsafe {
+                env.call_static_method_unchecked(
+                    &dispatcher.class,
+                    dispatcher.method_is_provider_registered,
+                    dispatcher.method_is_provider_registered_ret,
+                    &[],
+                )
+            }
+            .map_err(|e| {
+                ExecutionError::GeneralError(format!("isProviderRegistered call failed: {e}"))
+            })?;
+            if let Some(exception) = check_exception(env)
+                .map_err(|e| ExecutionError::GeneralError(format!("Exception check failed: {e}")))?
+            {
+                return Err(ExecutionError::GeneralError(format!(
+                    "Java exception in isProviderRegistered: {exception}"
+                )));
+            }
+            result.z().map_err(|e| {
+                ExecutionError::GeneralError(format!("isProviderRegistered did not return Z: {e}"))
+            })
+        })
+        .unwrap_or_else(|e| {
+            debug!(
+                "CometCloudCredentialDispatcher.isProviderRegistered failed; \
+                 native S3 readers will use the default AWS credential chain: {e}"
+            );
+            false
+        })
+    })
 }
 
 /// Per-request credential provider that delegates to the Java SPI via JNI.
 ///
-/// One instance is constructed per S3 store for the `object_store` path (per-URL in
-/// `s3.rs::create_store`) or per FileIO for the iceberg-rust path. The Java provider receives
-/// `(bucket, path)` on every credential fetch and is free to return different credentials per
-/// path; on the iceberg-rust path the path is the table's metadata location, so credentials are
-/// effectively per-table.
+/// One instance is constructed per S3 store (per-URL in `create_store`) or per FileIO (the
+/// metadata location, in `iceberg_scan.rs`). The `(bucket, path)` tuple is forwarded verbatim
+/// on every credential fetch; the Java provider is free to return different credentials for
+/// different paths.
 #[derive(Debug)]
 pub struct CometCredentialBridge {
     bucket: String,
     path: String,
+    /// Latched once the bridge observes a credential without an expiry, so the warning that
+    /// goes with [`DEFAULT_EXPIRY_WHEN_UNKNOWN`] only fires once per bridge instance instead of
+    /// per request.
+    warned_missing_expiry: AtomicBool,
 }
 
 impl CometCredentialBridge {
@@ -263,53 +110,45 @@ impl CometCredentialBridge {
         Self {
             bucket: bucket.into(),
             path: path.into(),
+            warned_missing_expiry: AtomicBool::new(false),
         }
     }
 
-    /// Invoke the Java dispatcher and extract the three string fields off the returned POJO.
-    /// Shared between the `object_store::CredentialProvider` and `reqsign_core::ProvideCredential`
-    /// impls.
+    /// Single JNI round-trip to the dispatcher; both async trait impls share this.
     fn fetch_raw(&self) -> Result<RawCredentials, ExecutionError> {
-        let handle = get_handle().ok_or_else(|| {
-            ExecutionError::GeneralError(
-                "CometCredentialBridge invoked but no Java provider is registered".to_string(),
-            )
-        })?;
-
         JVMClasses::with_env(|env| -> Result<RawCredentials, ExecutionError> {
-            let bucket_jstr = env.new_string(&self.bucket).map_err(|e| {
-                ExecutionError::GeneralError(format!("Failed to create bucket JString: {e}"))
-            })?;
-            let path_jstr = env.new_string(&self.path).map_err(|e| {
-                ExecutionError::GeneralError(format!("Failed to create path JString: {e}"))
-            })?;
+            let dispatcher = &JVMClasses::get().comet_cloud_credential_dispatcher;
+
+            let bucket_jstr = env
+                .new_string(&self.bucket)
+                .map_err(|e| ExecutionError::GeneralError(format!("new_string(bucket): {e}")))?;
+            let path_jstr = env
+                .new_string(&self.path)
+                .map_err(|e| ExecutionError::GeneralError(format!("new_string(path): {e}")))?;
 
             let result = unsafe {
                 env.call_static_method_unchecked(
-                    &handle.dispatcher_class,
-                    handle.method_get_credentials,
-                    ReturnType::Object,
+                    &dispatcher.class,
+                    dispatcher.method_get_credentials_for_path,
+                    dispatcher.method_get_credentials_for_path_ret,
                     &[
-                        jni::objects::JValue::from(&bucket_jstr).as_jni(),
-                        jni::objects::JValue::from(&path_jstr).as_jni(),
+                        JValue::from(&bucket_jstr).as_jni(),
+                        JValue::from(&path_jstr).as_jni(),
                     ],
                 )
             };
 
-            if let Some(exception) = check_exception(env).map_err(|e| {
-                ExecutionError::GeneralError(format!("Failed to check Java exception: {e}"))
-            })? {
+            if let Some(exception) = check_exception(env)
+                .map_err(|e| ExecutionError::GeneralError(format!("Exception check failed: {e}")))?
+            {
                 return Err(ExecutionError::GeneralError(format!(
-                    "Java exception in CometCloudCredentialDispatcher.getCredentialsForPath: \
-                     {exception}"
+                    "Java exception in getCredentialsForPath: {exception}"
                 )));
             }
 
             let creds_obj = result
                 .map_err(|e| {
-                    ExecutionError::GeneralError(format!(
-                        "getCredentialsForPath JNI call failed: {e}"
-                    ))
+                    ExecutionError::GeneralError(format!("getCredentialsForPath JNI call: {e}"))
                 })?
                 .l()
                 .map_err(|e| {
@@ -320,44 +159,42 @@ impl CometCredentialBridge {
 
             if creds_obj.is_null() {
                 return Err(ExecutionError::GeneralError(
-                    "getCredentialsForPath returned null".to_string(),
+                    "getCredentialsForPath returned null (contract violation)".to_string(),
                 ));
             }
 
-            let access_key_id =
-                read_string_field(env, &creds_obj, handle.field_access_key_id, "accessKeyId")?
-                    .ok_or_else(|| {
-                        ExecutionError::GeneralError("accessKeyId was null".to_string())
-                    })?;
-            let secret_access_key = read_string_field(
-                env,
-                &creds_obj,
-                handle.field_secret_access_key,
-                "secretAccessKey",
-            )?
-            .ok_or_else(|| ExecutionError::GeneralError("secretAccessKey was null".to_string()))?;
-            let session_token =
-                read_string_field(env, &creds_obj, handle.field_session_token, "sessionToken")?;
-            let expiration_epoch_millis = unsafe {
-                env.get_field_unchecked(
-                    &creds_obj,
-                    handle.field_expiration_epoch_millis,
-                    ReturnType::Primitive(Primitive::Long),
-                )
-            }
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!("Failed to read expirationEpochMillis: {e}"))
-            })?
-            .j()
-            .map_err(|e| {
-                ExecutionError::GeneralError(format!("expirationEpochMillis was not a long: {e}"))
-            })?;
-
             Ok(RawCredentials {
-                access_key_id,
-                secret_access_key,
-                session_token,
-                expiration_epoch_millis,
+                access_key_id: read_required_string(
+                    env,
+                    &creds_obj,
+                    dispatcher.field_access_key_id,
+                    "accessKeyId",
+                )?,
+                secret_access_key: read_required_string(
+                    env,
+                    &creds_obj,
+                    dispatcher.field_secret_access_key,
+                    "secretAccessKey",
+                )?,
+                session_token: read_optional_string(
+                    env,
+                    &creds_obj,
+                    dispatcher.field_session_token,
+                )?,
+                expiration_epoch_millis: unsafe {
+                    env.get_field_unchecked(
+                        &creds_obj,
+                        dispatcher.field_expiration_epoch_millis,
+                        ReturnType::Primitive(Primitive::Long),
+                    )
+                }
+                .map_err(|e| {
+                    ExecutionError::GeneralError(format!("read expirationEpochMillis: {e}"))
+                })?
+                .j()
+                .map_err(|e| {
+                    ExecutionError::GeneralError(format!("expirationEpochMillis not a long: {e}"))
+                })?,
             })
         })
     }
@@ -367,8 +204,8 @@ struct RawCredentials {
     access_key_id: String,
     secret_access_key: String,
     session_token: Option<String>,
-    /// Provider-supplied absolute expiry. `0` means "unknown"; callers translate that into a
-    /// short fallback so opendal cannot cache the credential for the entire executor lifetime.
+    /// Provider-supplied absolute expiry. `0` means the provider didn't say; callers translate
+    /// that into a short fallback so opendal can't cache a stale credential indefinitely.
     expiration_epoch_millis: i64,
 }
 
@@ -413,13 +250,15 @@ impl IcebergProvideCredential for CometCredentialBridge {
                 })?,
             )
         } else {
-            // Provider did not set an expiration. Opendal would otherwise cache this credential
-            // for the entire executor lifetime; force a refresh after DEFAULT_EXPIRY_WHEN_UNKNOWN.
-            warn!(
-                "CometCloudCredentialProvider returned credentials with no expiration; \
-                 defaulting to {}s expiry to bound opendal caching",
-                DEFAULT_EXPIRY_WHEN_UNKNOWN.as_secs()
-            );
+            if !self.warned_missing_expiry.swap(true, Ordering::Relaxed) {
+                warn!(
+                    "CometCloudCredentialProvider returned credentials without expiration for \
+                     bucket={} path={}; defaulting to {}s expiry to bound opendal caching",
+                    self.bucket,
+                    self.path,
+                    DEFAULT_EXPIRY_WHEN_UNKNOWN.as_secs()
+                );
+            }
             Some(Timestamp::now() + DEFAULT_EXPIRY_WHEN_UNKNOWN)
         };
 
@@ -432,29 +271,30 @@ impl IcebergProvideCredential for CometCredentialBridge {
     }
 }
 
-/// Read a Java `String` instance field via cached `JFieldID`. Returns `Ok(None)` if the field
-/// value is null (allowed for nullable fields like `sessionToken`).
-fn read_string_field(
+fn read_required_string(
     env: &mut jni::Env,
-    instance: &jni::objects::JObject,
-    field_id: JFieldID,
-    field_name: &str,
-) -> Result<Option<String>, ExecutionError> {
-    let value = unsafe { env.get_field_unchecked(instance, field_id, ReturnType::Object) }
-        .map_err(|e| {
-            ExecutionError::GeneralError(format!("Failed to read field {field_name}: {e}"))
-        })?
-        .l()
-        .map_err(|e| {
-            ExecutionError::GeneralError(format!("Field {field_name} was not an Object: {e}"))
-        })?;
+    instance: &JObject,
+    field: JFieldID,
+    name: &str,
+) -> Result<String, ExecutionError> {
+    read_optional_string(env, instance, field)?
+        .ok_or_else(|| ExecutionError::GeneralError(format!("{name} was null")))
+}
 
+fn read_optional_string(
+    env: &mut jni::Env,
+    instance: &JObject,
+    field: JFieldID,
+) -> Result<Option<String>, ExecutionError> {
+    let value = unsafe { env.get_field_unchecked(instance, field, ReturnType::Object) }
+        .map_err(|e| ExecutionError::GeneralError(format!("get_field_unchecked: {e}")))?
+        .l()
+        .map_err(|e| ExecutionError::GeneralError(format!("field was not an Object: {e}")))?;
     if value.is_null() {
         return Ok(None);
     }
     let jstr = unsafe { JString::from_raw(env, value.into_raw()) };
-    let s = jstr.try_to_string(env).map_err(|e| {
-        ExecutionError::GeneralError(format!("Failed to read field {field_name} as String: {e}"))
-    })?;
-    Ok(Some(s))
+    jstr.try_to_string(env)
+        .map(Some)
+        .map_err(|e| ExecutionError::GeneralError(format!("try_to_string: {e}")))
 }

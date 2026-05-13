@@ -238,10 +238,8 @@ impl IcebergScanExec {
     }
 }
 
-/// Build a `CustomAwsCredentialLoader` from the registered Comet cloud credential provider, if
-/// any. Returns `None` when no Java provider is registered, when the metadata URL is malformed,
-/// or when no bucket can be extracted - in those cases opendal falls back to its default
-/// credential resolution.
+/// Wires the registered Comet credential provider into opendal's S3 service for this scan, or
+/// returns `None` so opendal falls back to its default credential chain.
 fn build_s3_credential_loader(metadata_location: &str) -> Option<CustomAwsCredentialLoader> {
     if !comet_credential_bridge::is_provider_registered() {
         return None;

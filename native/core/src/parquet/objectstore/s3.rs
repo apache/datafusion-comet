@@ -82,9 +82,6 @@ pub fn create_store(
     let credential_provider =
         get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))?;
     builder = if comet_credential_bridge::is_provider_registered() {
-        // A vendor `CometCloudCredentialProvider` is registered on the JVM classpath. Route
-        // every credential fetch through it; the Java provider owns any STS / token refresh
-        // and may return different credentials per S3 path.
         debug!("Using CometCredentialBridge for bucket {bucket}");
         let bridge = comet_credential_bridge::CometCredentialBridge::new(bucket, url.path());
         builder.with_credentials(Arc::new(bridge))
