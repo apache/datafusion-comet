@@ -20,12 +20,14 @@ index 280efcc..ffd0785 100644
      ),
      Compile / packageBin / mappings := (Compile / packageBin / mappings).value ++
          listPythonFiles(baseDirectory.value.getParentFile / "python"),
-@@ -459,7 +463,25 @@ lazy val spark = (project in file("spark"))
+@@ -459,7 +463,27 @@ lazy val spark = (project in file("spark"))
        "-Ddelta.log.cacheSize=3",
        "-Dspark.databricks.delta.delta.log.cacheSize=3",
        "-Dspark.sql.sources.parallelPartitionDiscovery.parallelism=5",
 -      "-Xmx1024m"
-+      "-Xmx1024m",
++      // Bumped from default 1024m: 1GB is too tight for Spark + Delta + parquet I/O +
++      // Comet native lib. Caused GC thrashing on memory-heavy suites (DV, Merge, CDC).
++      "-Xmx4g",
 +      // Required to run Spark 3.5 on Java 17+ (for Comet regression testing)
 +      "--add-opens=java.base/java.lang=ALL-UNNAMED",
 +      "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
