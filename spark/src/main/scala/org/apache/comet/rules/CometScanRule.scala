@@ -351,10 +351,22 @@ case class CometScanRule(session: SparkSession)
         if (DeltaReflection.isDeltaFileFormat(r.fileFormat)) {
           // Decline when the plan references `input_file_name()` /
           // `input_file_block_*`. Those expressions read from
-          // `InputFileBlockHolder`, a thread-local that Spark's `FileScanRDD`
-          // sets per file. Comet's `CometExecRDD` doesn't populate it, so the
-          // expressions return empty, breaking commands like Delta UPDATE
-          // which find touched files via `select(input_file_name()).distinct()`.
+          // `InputFileBlockHolder`, a thread-local set per file. Comet's
+          // `CometExecRDD.setInputFileForDeltaScan` *does* populate it but
+          // only with the FIRST task's path -- correct only if the partition
+          // holds exactly one task. Both `splitTasks` (byte-range chunking)
+          // and `CometDeltaNativeScanExec.packTasks` (bin-packing) can put
+          // multiple tasks per partition, so the path would be wrong for
+          // rows from other files. Breaks Delta UPDATE which finds touched
+          // files via `select(input_file_name()).distinct()`.
+          //
+          // TODO(#75 design A): instead of declining the whole scan, propagate
+          // a `needsInputFileName` flag into CometDeltaNativeScan.convert ->
+          // splitTasks (skip byte-range chunking) and CometDeltaNativeScanExec
+          // (skip packTasks). With 1 task per partition, setInputFileForDeltaScan
+          // sets the correct path and `input_file_name()` evaluated JVM-side
+          // (no native serde exists, so it stays in a Project layer above
+          // Comet) returns the right value.
           if (plan.exists(node =>
               node.expressions.exists(_.exists {
                 case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength =>

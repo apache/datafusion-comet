@@ -638,6 +638,10 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       scan: CometScanExec,
       tasks: Seq[OperatorOuterClass.DeltaScanTask]): Seq[OperatorOuterClass.DeltaScanTask] = {
     if (tasks.isEmpty) return tasks
+    // TODO(#75 design A): when the plan needs input_file_name() (signal threaded down
+    // from CometScanRule), bail out here so each task remains 1:1 with a file. The
+    // executor-side `CometDeltaNativeScanExec.packTasks` also needs to honour the
+    // same flag.
     val sizes = tasks.map(_.getFileSize)
     val msb = maxSplitBytes(scan, sizes)
     if (msb <= 0) return tasks

@@ -141,6 +141,10 @@ case class CometDeltaNativeScanExec(
     }
   }
 
+  // TODO(#75 design A): when input_file_name() is needed (signal threaded from
+  // CometScanRule via convert), return one-task-per-group so setInputFileForDeltaScan
+  // correctly attributes the path. The CometScanRule TODO at the early-decline gate
+  // documents the full design.
   private def packTasks(tasks: Seq[OperatorOuterClass.DeltaScanTask])
       : Seq[Seq[OperatorOuterClass.DeltaScanTask]] = {
     val conf = originalPlan.relation.sparkSession.sessionState.conf
