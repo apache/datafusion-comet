@@ -23,6 +23,15 @@ It is sometimes preferable to build from source for a specific platform.
 
 ## Using a Published Source Release
 
+<!-- IF_SNAPSHOT -->
+
+This documentation is for the current development version of Comet. Published source releases are only available for released versions.
+To use this version of Comet, see the following section on building from the GitHubn repository.
+
+<!-- ENDIF -->
+
+<!-- IF_RELEASE -->
+
 Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/
 
 ```console
@@ -40,6 +49,8 @@ Build
 ```console
 make release-nogit PROFILES="-Pspark-4.1"
 ```
+
+<!-- ENDIF -->
 
 ## Building from the GitHub repository
 

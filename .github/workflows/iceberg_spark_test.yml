@@ -36,7 +36,6 @@ on:
       - "spark/src/test/**"
       - "common/src/test/**"
       - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-      - "fuzz-testing/**"
       - "spark-integration/**"
   pull_request:
     paths-ignore:
@@ -50,7 +49,6 @@ on:
       - "spark/src/test/**"
       - "common/src/test/**"
       - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-      - "fuzz-testing/**"
       - "spark-integration/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
