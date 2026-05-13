@@ -158,6 +158,34 @@ There is no Comet-specific config knob for selecting a provider. Discovery follo
 of truth Spark itself reads, so a query that falls back from Comet to Spark mid-execution sees
 identical credentials.
 
+### Future: multi-provider chains
+
+The "exactly one" rule is a design choice, not a fundamental constraint. Hadoop S3A's
+`fs.s3a.aws.credentials.provider` chain (try each provider in order; first non-null wins) is a
+familiar pattern, and a vendor with both a per-path STS provider and a catchall bucket provider
+might reasonably want to compose them.
+
+If demand emerges, the dispatcher would change shape roughly as follows:
+
+- Replace the multi-impl `IllegalStateException` with "store the list."
+- On `getCredentialsForPath`, iterate the list; first non-null return wins. Returning `null`
+  becomes a "I don't handle this path; try the next provider" signal rather than an authorization
+  failure.
+- Order would be controlled by an explicit Spark config (e.g. a comma-separated list of class
+  names) because `ServiceLoader` iteration order is unspecified across JDKs.
+
+Until then, a vendor that needs chaining should implement the chain logic _inside_ a single
+provider (e.g. try STS, fall back to vended creds, fall back to instance metadata). That keeps
+ordering decisions in vendor code and avoids committing Comet to a chaining contract before there
+is real usage to inform it.
+
+Note that this only applies to Comet SPI implementations. Existing JVM-side
+`AwsCredentialsProvider` chains in `fs.s3a.aws.credentials.provider` are not reachable from
+Comet's native readers regardless: the providers there implement AWS SDK interfaces, not the Comet
+SPI, and calling them would force Comet to depend on the AWS SDK (and pick v1 vs v2). Vendors who
+want their existing JVM chain to apply to Comet's native scans need a thin Comet SPI that
+delegates to it.
+
 ## Threading and lifecycle
 
 - The dispatcher caches the resolved provider in a `static final` field for the JVM lifetime. Your
