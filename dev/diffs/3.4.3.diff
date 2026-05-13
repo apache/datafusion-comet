@@ -2291,14 +2291,14 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index bf5c51b89bb..ca22370ca3b 100644
+index bf5c51b89bb..7e143a0e0f9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
  import org.apache.parquet.schema.Type._
  
  import org.apache.spark.SparkException
-+import org.apache.spark.sql.IgnoreComet
++import org.apache.spark.sql.{IgnoreComet, IgnoreCometNativeDataFusion}
  import org.apache.spark.sql.catalyst.ScalaReflection
  import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
  import org.apache.spark.sql.functions.desc
@@ -2312,6 +2312,16 @@ index bf5c51b89bb..ca22370ca3b 100644
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = false)
        val expectedMessage = "Encountered error while reading file"
+@@ -1026,7 +1028,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+     }
+   }
+ 
+-  test("schema mismatch failure error message for parquet vectorized reader") {
++  test("schema mismatch failure error message for parquet vectorized reader",
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4316")) {
+     withTempPath { dir =>
+       val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
+       assert(e.getCause.isInstanceOf[SparkException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index 3a0bd35cb70..b28f06a757f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
