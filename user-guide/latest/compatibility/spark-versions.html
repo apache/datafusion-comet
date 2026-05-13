@@ -484,6 +484,10 @@ compatibility guide.</p>
 <li><p><strong>Reading <code class="docutils literal notranslate"><span class="pre">TimestampLTZ</span></code> as <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code></strong>: Spark 3.4 raises an error for this operation
 (SPARK-36182), but Comet’s <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan silently returns the raw UTC value instead.
 See <a class="reference internal" href="scans.html#native-datafusion-limitations"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
+<li><p><strong>Unsupported Parquet type conversions</strong>: Spark 3.4 raises schema incompatibility errors for
+certain type mismatches (e.g., reading INT32 as BIGINT, decimal precision changes), but Comet’s
+<code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan may not detect these and could return unexpected values.
+See <a class="reference internal" href="scans.html#native-datafusion-limitations"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
 </ul>
 </section>
 </section>
@@ -495,6 +499,10 @@ See <a class="reference internal" href="scans.html#native-datafusion-limitations
 <ul class="simple">
 <li><p><strong>Reading <code class="docutils literal notranslate"><span class="pre">TimestampLTZ</span></code> as <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code></strong>: Spark 3.5 raises an error for this operation
 (SPARK-36182), but Comet’s <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan silently returns the raw UTC value instead.
+See <a class="reference internal" href="scans.html#native-datafusion-limitations"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
+<li><p><strong>Unsupported Parquet type conversions</strong>: Spark 3.5 raises schema incompatibility errors for
+certain type mismatches (e.g., reading INT32 as BIGINT, decimal precision changes), but Comet’s
+<code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan may not detect these and could return unexpected values.
 See <a class="reference internal" href="scans.html#native-datafusion-limitations"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
 </ul>
 </section>
