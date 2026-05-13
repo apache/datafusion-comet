@@ -656,15 +656,33 @@ case class CometScanRule(session: SparkSession)
     val scanWithMappedSchema = withDeltaColumnMappingMetadata(scanExec)
 
     // Targeted fallback: when the table is column-mapped AND the scan's required schema
-    // contains complex (Array/Map/Struct) columns, decline Comet acceleration. The
-    // metadata-attach path above covers most column-mapped reads, but the CometScanExec
-    // [native_delta_compat] fallback route that `CometDeltaNativeScan.convert` leaves in
-    // place when it bails out doesn't consistently thread nested-type physical names
-    // through to `CometParquetFileFormat`. For scalar-only column-mapped reads the
-    // CometDeltaNativeScan serde handles them correctly; for complex-type reads the
-    // fallback produces "Invalid comparison operation: Utf8 <= Int32" downstream.
-    // Fixes DeltaDropColumnSuite "drop column with constraints" (struct / array access
-    // through CHECK constraints on a column-mapped table).
+    // contains complex (Array/Map/Struct) columns, decline Comet acceleration. Both the
+    // CometDeltaNativeScan path AND the CometScanExec [native_delta_compat] fallback
+    // produce "Invalid argument error: Invalid comparison operation: Utf8 <= Int32" on
+    // DeltaDropColumnSuite "drop column with constraints" -- a CHECK constraint
+    // referencing `b.d` (INT) on a CM-name table with `b: STRUCT<c: STRING, d: INT>`.
+    //
+    // Investigation 2026-05-13 (still open):
+    //   * Empirically verified: Delta DOES write nested-struct children with PHYSICAL
+    //     names in CM-name parquet files (probed via stock Delta 3.3.2 + pyarrow). So
+    //     `data_schema` arriving at the native planner with physical nested names IS
+    //     correct -- it matches the file.
+    //   * `withDeltaColumnMappingMetadata` re-attaches `delta.columnMapping.physicalName`
+    //     metadata to every nested StructField (recurses into Struct/Array/Map).
+    //   * `CometDeltaNativeScan.physicaliseNestedTypesOnly` substitutes physical names
+    //     into data_schema's nested children but keeps required_schema's nested children
+    //     logical.
+    //   * Hypothesis A (physicalise required_schema's nested children too, planner-side
+    //     rename then handles top-level): did NOT fix the failure. Same Utf8 <= Int32.
+    //   * `GetStructField` serializes by ORDINAL not name, so the wrong-field hypothesis
+    //     via name-matching inside the struct doesn't fit cleanly.
+    //   * Next step: instrument the native planner's `data_filters` rewrite path and
+    //     the DataFusion default schema-adapter's behavior on nested struct fields with
+    //     name mismatches -- need to confirm whether the adapter casts mismatched types
+    //     vs. silently passes the wrong column up.
+    //
+    // Until rooted, the gate keeps both paths declining and Spark+Delta handles complex
+    // column-mapped reads correctly via vanilla fallback.
     val metadataConfig = DeltaReflection.extractMetadataConfiguration(r).getOrElse(Map.empty)
     val isColumnMapped = metadataConfig
       .get("delta.columnMapping.mode")
@@ -681,8 +699,8 @@ case class CometScanRule(session: SparkSession)
         withInfo(
           scanExec,
           "Native Delta scan declines column-mapped tables with complex (Array/Map/Struct) " +
-            "columns in the scan output -- fallback reader path doesn't consistently " +
-            "remap physical names through to the native expression evaluator.")
+            "columns in the scan output -- nested-type physical name remapping is not " +
+            "yet correct (Item #79 deferred follow-up).")
         return None
       }
     }
