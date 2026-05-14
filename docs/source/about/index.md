@@ -70,4 +70,5 @@ Refer to the [Comet Installation Guide] to get started.
 :hidden:
 
 Comparison with Gluten <gluten_comparison>
+Versioning Policy <versioning_policy>
 ```
