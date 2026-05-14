@@ -56,7 +56,7 @@ of expressions that be disabled.
 ## String Functions
 
 | Expression      |
-|-----------------|
+| --------------- |
 | Ascii           |
 | BitLength       |
 | Chr             |
