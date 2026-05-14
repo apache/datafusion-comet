@@ -17,14 +17,26 @@
 
 //! Worked reference implementation of a Comet contrib extension.
 //!
-//! Registers a single `ContribOperatorPlanner` under `kind = "example-no-op"`. The
-//! planner is intentionally trivial: it returns a clear `ContribError::Plan` so tests can
-//! verify the full dispatch chain (JVM serde → ContribOp envelope → JNI → native planner
-//! → contrib registry → this planner) without needing to actually execute anything.
+//! Demonstrates two patterns future contribs will follow:
 //!
-//! Real contribs (Delta, Hudi, etc.) replace `NoOpPlanner::plan` with a function that
-//! decodes the contrib's own proto message from `payload` and constructs an
-//! `ExecutionPlan` for the contrib's native operator.
+//!   1. **Dispatch wiring** -- registers a `ContribOperatorPlanner` against a stable
+//!      `kind` string at lib-init time via `#[ctor::ctor]`. The planner is called from
+//!      core's `OpStruct::ContribOp` dispatcher with the contrib's payload bytes.
+//!
+//!   2. **Proto layer** -- the contrib has its own `proto/` directory with its own
+//!      `.proto` schema (`example_op.proto`). `build.rs` runs `prost-build` over it;
+//!      generated Rust types live under `src/generated/` (gitignored). The planner
+//!      decodes the payload via `prost::Message::decode` -- the same way real contribs
+//!      (Delta etc.) will.
+//!
+//! Two planner kinds are registered:
+//!
+//!   * `example-no-op`            -- returns a sentinel error. Tests use this to verify
+//!                                   the dispatch chain end-to-end.
+//!   * `example-constant-scan`    -- decodes an `ExampleConstantScan` payload, returns
+//!                                   an `EmptyExec` sized by the payload's `row_count`.
+//!                                   Real contribs (Delta) follow the same pattern,
+//!                                   just with their own message and operator.
 //!
 //! The whole crate is gated by `native/core/Cargo.toml`'s `contrib-example` feature flag.
 //! Build core without that feature (`cargo build --no-default-features`) and zero bytes
@@ -32,19 +44,28 @@
 
 use std::sync::Arc;
 
-use comet_contrib_spi::{
-    register_contrib_planner, ContribError, ContribOperatorPlanner,
-};
+use comet_contrib_spi::{register_contrib_planner, ContribError, ContribOperatorPlanner};
+use datafusion::arrow::datatypes::Schema;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::ExecutionPlan;
+use prost::Message;
 
-/// Stable identifier the example registers under. The Scala side writes this same string
-/// into `ContribOp.kind` when building a payload for the example operator. Convention:
-/// `<contrib-short-name>-<operator-short-name>`.
+/// Generated Rust types for the contrib's proto schema. `build.rs` writes the module
+/// here at compile time; `src/generated/` is gitignored.
+pub mod proto {
+    include!(concat!("generated/", "comet.contrib.example.rs"));
+}
+
+/// Sentinel kind used by tests to verify dispatch reaches this contrib at all.
 pub const EXAMPLE_NO_OP_KIND: &str = "example-no-op";
 
-/// A planner that intentionally does no plan-building work. It exists only to prove the
-/// dispatch chain is wired up correctly: tests construct an Operator with this kind, ship
-/// it through JNI, and assert that the returned error mentions this string.
+/// Kind for the proto-decoding constant-scan planner. Demonstrates the
+/// proto-decode-and-build path real contribs will use.
+pub const EXAMPLE_CONSTANT_SCAN_KIND: &str = "example-constant-scan";
+
+/// A planner that intentionally does no plan-building work. Returns a sentinel error so
+/// dispatch tests can assert the message reaches this code path. The payload is ignored;
+/// children are ignored.
 struct NoOpPlanner;
 
 impl ContribOperatorPlanner for NoOpPlanner {
@@ -60,13 +81,77 @@ impl ContribOperatorPlanner for NoOpPlanner {
     }
 }
 
-/// Registers `NoOpPlanner` against `EXAMPLE_NO_OP_KIND` at library-init time. Called by
-/// the linker before `main`/`JNI_OnLoad` because of `#[ctor::ctor]`. Comet's main
-/// `libcomet` is what gets loaded by the JVM; this constructor runs during its init.
+/// Decodes the payload as an `ExampleConstantScan` proto and returns an `EmptyExec`
+/// with a schema-less output. Real contribs use the same decode-then-build pattern --
+/// they just decode richer messages and return richer execs.
+struct ConstantScanPlanner;
+
+impl ContribOperatorPlanner for ConstantScanPlanner {
+    fn plan(
+        &self,
+        payload: &[u8],
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>, ContribError> {
+        let msg = proto::ExampleConstantScan::decode(payload).map_err(|e| {
+            ContribError::BadPayload(format!(
+                "ExampleConstantScan: decode failed: {e}"
+            ))
+        })?;
+        log::info!(
+            "comet-contrib-example: ConstantScanPlanner produces {} synthetic rows",
+            msg.row_count
+        );
+        // For the worked example we don't actually populate rows -- EmptyExec is fine to
+        // demonstrate the build path. Real contribs return their domain-specific exec
+        // (Delta returns the file scan + DV filter wrap).
+        Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
+    }
+}
+
+/// Registers all of the example contrib's planners against the contrib registry at
+/// library-init time. `#[ctor::ctor]` runs this constructor before
+/// `main`/`JNI_OnLoad`. Comet's `libcomet` cdylib is the single library the JVM loads;
+/// this constructor runs during that one library's init.
 #[ctor::ctor]
 fn register() {
     log::info!(
-        "comet-contrib-example: registering ContribOperatorPlanner kind={EXAMPLE_NO_OP_KIND:?}"
+        "comet-contrib-example: registering ContribOperatorPlanners \
+         (no-op={EXAMPLE_NO_OP_KIND:?}, constant-scan={EXAMPLE_CONSTANT_SCAN_KIND:?})"
     );
     register_contrib_planner(EXAMPLE_NO_OP_KIND, Arc::new(NoOpPlanner));
+    register_contrib_planner(EXAMPLE_CONSTANT_SCAN_KIND, Arc::new(ConstantScanPlanner));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use comet_contrib_spi::lookup_contrib_planner_by_kind;
+
+    #[test]
+    fn ctor_registers_both_planners() {
+        // The #[ctor] above runs at process-init time for test binaries too.
+        assert!(lookup_contrib_planner_by_kind(EXAMPLE_NO_OP_KIND).is_some());
+        assert!(lookup_contrib_planner_by_kind(EXAMPLE_CONSTANT_SCAN_KIND).is_some());
+    }
+
+    #[test]
+    fn constant_scan_decodes_payload_and_builds() {
+        let payload = proto::ExampleConstantScan { row_count: 42 }.encode_to_vec();
+        let planner = ConstantScanPlanner;
+        let plan = planner.plan(&payload, vec![]).expect("decode + build");
+        // We don't care about the concrete exec type beyond "it built something";
+        // confirms the decode path works end-to-end.
+        assert!(plan.schema().fields().is_empty());
+    }
+
+    #[test]
+    fn constant_scan_surfaces_bad_payload() {
+        let planner = ConstantScanPlanner;
+        let bad = b"not a valid proto";
+        let err = planner.plan(bad, vec![]).expect_err("garbage should fail decode");
+        match err {
+            ContribError::BadPayload(_) => {} // expected
+            other => panic!("expected BadPayload, got {other:?}"),
+        }
+    }
 }

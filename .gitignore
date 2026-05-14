@@ -10,6 +10,7 @@ metastore_db/
 spark-warehouse/
 dependency-reduced-pom.xml
 native/proto/src/generated
+contrib/example/native/src/generated
 prebuild
 .flattened-pom.xml
 rat.txt

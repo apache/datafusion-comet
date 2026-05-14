@@ -1493,6 +1493,8 @@ dependencies = [
  "ctor 0.4.3",
  "datafusion",
  "log",
+ "prost",
+ "prost-build",
 ]
 
 [[package]]

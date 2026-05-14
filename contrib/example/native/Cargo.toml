@@ -38,9 +38,14 @@ crate-type = ["rlib"]
 
 [dependencies]
 # Depend on the thin SPI crate, NOT on core. This is what breaks the cycle: core
-# depends on contribs (Cargo feature → rlib link); both depend on contrib-spi; nothing
+# depends on contribs (Cargo feature -> rlib link); both depend on contrib-spi; nothing
 # depends back on core from a contrib.
 comet-contrib-spi = { path = "../../../native/contrib-spi" }
 datafusion = { workspace = true }
+prost = "0.14.3"
 ctor = "0.4"
 log = "0.4"
+
+# Each contrib runs its own prost-build over its own .proto files (see build.rs).
+[build-dependencies]
+prost-build = "0.14.3"

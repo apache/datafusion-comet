@@ -54,9 +54,32 @@ writes into the proto.
 
 | Trait / Object | Purpose |
 |---|---|
-| `CometScanRuleExtension` | Intercept scan-tree transformation. Override `matchesV1` / `transformV1` for V1 `FileSourceScanExec`; `matchesV2` / `transformV2` for V2 `BatchScanExec`. The first matching extension wins, returning `None` falls back to core's existing file-format dispatch. |
+| `CometScanRuleExtension` | Intercept scan-tree transformation. Override `preTransform` for tree-level rewrites (e.g., undoing your format's own Catalyst strategy); `matchesV1` / `transformV1` for V1 `FileSourceScanExec`; `matchesV2` / `transformV2` for V2 `BatchScanExec`. The first matching extension wins, returning `None` falls back to core's existing file-format dispatch. |
 | `CometOperatorSerdeExtension` | Contribute additional `SparkPlan` class → `CometOperatorSerde` mappings to `CometExecRule`. Used when the contrib has its own physical operator (e.g. a contrib-specific scan exec) that needs native serialization. |
 | `CometExtensionRegistry` | Process-wide singleton. `load()` is called once during `CometSparkSessionExtensions.apply`; subsequent calls are no-ops. Test-only `resetForTesting()` for unit tests that need a clean registry. |
+
+### Convention: define your own SparkPlan subclass for serde dispatch
+
+`CometExecRule` dispatches by **class identity** (`op.getClass`) when matching an
+operator to its serde. Contribs that need a custom executor (e.g., a contrib-specific
+scan exec carrying contrib-private state) should define a dedicated subclass:
+
+```scala
+case class CometMyFormatScanExec(...) extends CometScanExec(..., SCAN_NATIVE_DELTA_COMPAT)
+```
+
+and register the serde keyed on the new class:
+
+```scala
+class MyFormatSerdeExtension extends CometOperatorSerdeExtension {
+  override def serdes: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+    Map(classOf[CometMyFormatScanExec] -> CometMyFormatScanSerde)
+}
+```
+
+Avoid relying on the legacy `scanImpl: String` tag pattern on a generic `CometScanExec`;
+that approach has no analogue in the SPI's class-based dispatch and would require core
+changes to support.
 
 ### Native side: `comet-contrib-spi` crate
 
@@ -85,8 +108,22 @@ contrib/<name>/
     <SomeClass>Suite.scala                                         ← integration test
   native/
     Cargo.toml                                                     ← rlib crate, workspace = "../../../native"
+    build.rs                                                       ← runs prost-build over your proto schema
     src/lib.rs                                                     ← ContribOperatorPlanner impl + #[ctor] registration
+    src/proto/<your_op>.proto                                      ← contrib-private proto schema, your own package
+    src/generated/                                                 ← (gitignored) prost-build output
 ```
+
+### Proto layer
+
+Each contrib carries its own `.proto` schema defining the message its `ContribOp.payload`
+carries. The Scala side serializes that message and sets it on the operator proto's
+`contrib_op` envelope; the Rust side `prost::Message::decode`s the same bytes back.
+`contrib/example/`'s `ExampleConstantScan { row_count }` is the trivial reference.
+
+Use your own proto **package name** (e.g., `comet.contrib.<name>`) so symbols never
+collide with core or with other contribs. Add `contrib/<name>/native/src/generated/` to
+the repository `.gitignore` (the build script writes generated `.rs` there each compile).
 
 Plus three edits to existing files:
 

@@ -115,7 +115,16 @@ case class CometScanRule(session: SparkSession)
       metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
     }
 
-    val fullPlan = plan
+    // Contrib SPI tree-level pre-pass. Each registered extension gets a chance to rewrite
+    // the whole plan tree before per-scan dispatch begins. Used by contribs that need to
+    // undo wrapper rewrites from their own Catalyst strategies (Delta's
+    // `PreprocessTableWithDVs` is the canonical case). Fold in registration order so
+    // contribs see each other's outputs deterministically. Extensions that don't override
+    // `preTransform` inherit the trait's identity default -- zero overhead.
+    val prepped = CometExtensionRegistry.scanExtensions
+      .foldLeft(plan)((p, ext) => ext.preTransform(p, session))
+
+    val fullPlan = prepped
 
     def transformScan(scanNode: SparkPlan): SparkPlan = scanNode match {
       // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep a peer scan
@@ -142,7 +151,7 @@ case class CometScanRule(session: SparkSession)
         }
     }
 
-    plan.transform {
+    prepped.transform {
       case scan if isSupportedScanNode(scan) => transformScan(scan)
     }
   }

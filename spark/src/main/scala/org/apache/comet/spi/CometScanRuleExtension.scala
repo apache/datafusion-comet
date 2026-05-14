@@ -50,6 +50,28 @@ trait CometScanRuleExtension {
   def name: String
 
   /**
+   * Tree-level pre-pass run once per plan before per-scan dispatch begins. Default: identity.
+   *
+   * Use this to undo wrapper rewrites that a format's own Catalyst strategy applied. The
+   * canonical example is Delta's `PreprocessTableWithDVs` strategy, which wraps every
+   * DV-bearing Delta scan in a `Project(Filter(...))` subtree referencing a synthetic
+   * `__delta_internal_is_row_deleted` column produced by Delta's own reader. Comet reads via
+   * its own parquet path; without unwrapping that subtree, the synthetic column never gets
+   * produced and the downstream `Filter` silently drops every row. The Delta contrib's
+   * `preTransform` strips the wrapper so the clean scan reaches per-scan dispatch.
+   *
+   * Implementations MUST NOT modify scans they don't recognise. Multiple registered
+   * extensions are folded over the plan in registration order; an extension that rewrites
+   * scans outside its format's domain will silently corrupt other formats' plans.
+   *
+   * Shared state between this pre-pass and later `transformV1` / `transformV2` calls is the
+   * contrib's problem. The recommended pattern is to attach a Spark `TreeNodeTag` to nodes
+   * during `preTransform` and read it during `transformV1`. Spark's tag mechanism is
+   * tree-immutable-safe and survives plan transformations.
+   */
+  def preTransform(plan: SparkPlan, session: SparkSession): SparkPlan = plan
+
+  /**
    * Whether this extension wants to handle the given V1 scan. Implementations should make a cheap
    * decision here (typically file-format class-name probe) so non-matching paths add no per-scan
    * overhead.
