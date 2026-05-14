@@ -22,16 +22,17 @@ package org.apache.comet.udf
 import java.nio.charset.StandardCharsets
 import java.time.LocalDate
 
-import org.apache.arrow.vector.{DateDayVector, VarCharVector}
 import org.scalatest.funsuite.AnyFunSuite
+
+import org.apache.arrow.vector.{DateDayVector, VarCharVector}
 
 import org.apache.comet.CometArrowAllocator
 import org.apache.comet.udf.builtin.DateFormatUdf
 
 /**
  * Smoke test verifying that a `CometUDF` implementation in the spark module can directly
- * manipulate Arrow vectors. Validates that the post-#4325 layout removes the shading boundary
- * for UDF authors.
+ * manipulate Arrow vectors. Validates that the post-#4325 layout removes the shading boundary for
+ * UDF authors.
  */
 class DateFormatUdfSuite extends AnyFunSuite {
 
