@@ -232,6 +232,11 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
+        // Contrib operators carry their concrete identity in `ContribOp.kind`, but
+        // `op_name` returns `&'static str` for tracing/error messages. Keep the label
+        // generic here; downstream code that needs the specific contrib reads `kind`
+        // off the proto directly.
+        OpStruct::ContribOp(_) => "ContribOp",
     }
 }
 

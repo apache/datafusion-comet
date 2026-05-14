@@ -151,5 +151,11 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Explode(_) => None, // Not yet in OperatorType enum
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => None, // Not yet in OperatorType enum
+        // Contrib operators go through the contrib registry instead, keyed by
+        // ContribOp.kind. Returning None here keeps `OperatorRegistry::can_handle` false
+        // for contribs so they don't get caught by the in-tree registry; the dispatch
+        // arm in `planner.rs` for OpStruct::ContribOp handles them explicitly via
+        // `lookup_contrib_planner_by_kind`.
+        OpStruct::ContribOp(_) => None,
     }
 }

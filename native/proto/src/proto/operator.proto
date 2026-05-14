@@ -53,7 +53,29 @@ message Operator {
     Explode explode = 114;
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
+    // Generic envelope for operators contributed by an extension. The contrib's JVM-side
+    // serde fills the payload with a contrib-private proto message; core's native planner
+    // dispatches to a `ContribOperatorPlanner` registered (at lib-init time) by the
+    // contrib's Rust crate, keyed by `kind`. Lets core stay format-agnostic while contrib
+    // authors evolve their own wire format on a separate cadence.
+    ContribOp contrib_op = 117;
   }
+}
+
+// Envelope for a contrib-contributed operator. Core's native planner dispatches by `kind`
+// to a `ContribOperatorPlanner` registered at library-init time (see
+// `native/core/src/execution/planner/contrib.rs`); the `payload` is opaque to core --
+// the contrib's planner decodes it into its own proto type. Each contrib ships:
+//   * a JVM JAR (Scala extension code + ServiceLoader entry), discovered via classpath
+//   * a Rust crate (rlib) compiled INTO core's cdylib via a Cargo feature flag on core,
+//     not shipped as a separate cdylib
+// Reusing the same envelope for every contrib keeps core's proto stable when contribs
+// ship/evolve independently.
+message ContribOp {
+  // Stable identifier the contrib registered under (e.g. "delta-scan", "example-constant").
+  string kind = 1;
+  // Contrib-private payload bytes. Format defined by the contrib's own proto schema.
+  bytes payload = 2;
 }
 
 message SparkPartitionedFile {

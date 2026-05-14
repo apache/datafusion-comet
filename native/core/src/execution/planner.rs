@@ -17,6 +17,7 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
+pub mod contrib;
 pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
