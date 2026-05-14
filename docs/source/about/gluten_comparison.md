@@ -24,7 +24,7 @@ between them. This document is likely biased because the Comet community maintai
 
 We recommend trying out both Comet and Gluten to see which is the best fit for your needs.
 
-This document is based on Comet 0.15.0 and Gluten 1.6.0.
+This document is based on Comet 0.16.0 and Gluten 1.6.0.
 
 ## Architecture
 
