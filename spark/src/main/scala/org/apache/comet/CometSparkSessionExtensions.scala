@@ -87,6 +87,11 @@ class CometSparkSessionExtensions
     with Logging
     with ShimCometSparkSessionExtensions {
   override def apply(extensions: SparkSessionExtensions): Unit = {
+    // Discover contrib extensions on the classpath BEFORE registering our rules so that
+    // CometScanRule / CometExecRule see the contribs the first time they run. Idempotent
+    // and safe to call multiple times across SparkSession instances within the same JVM.
+    org.apache.comet.spi.CometExtensionRegistry.load()
+
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
     // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
