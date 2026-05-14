@@ -17,59 +17,37 @@
   under the License.
 -->
 
-# JVM UDF dispatch
+# ScalaUDF codegen dispatch
 
-Comet can route scalar expressions that lack a native DataFusion implementation, or whose native implementation diverges from Spark, through a JVM-side kernel that processes Arrow batches directly. Surrounding native operators stay on the Comet path instead of forcing a whole-plan fallback to Spark. The tradeoff is a JNI roundtrip and per-batch JVM execution.
-
-## Supported expressions
-
-- User-defined scalar functions registered via `spark.udf.register` (Scala `UDF1`/`UDF2`/... or Java functional interfaces), `udf(...)`, or SQL `CREATE FUNCTION ... AS 'com.example.MyUDF'`.
-- Regex family: `rlike`, `regexp_replace`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, and `split` with a literal regex pattern.
-
-Not supported:
-
-- Aggregate UDFs, table UDFs, generators.
-- Python `@udf` and Pandas `@pandas_udf`.
-- Hive `GenericUDF` / `SimpleUDF`.
-
-## Supported types
-
-Scalar: `Boolean`, `Byte`, `Short`, `Int`, `Long`, `Float`, `Double`, `Decimal`, `String`, `Binary`, `Date`, `Timestamp`, `TimestampNTZ`.
-
-Complex (as both input and output, including arbitrary nesting): `ArrayType`, `StructType`, `MapType`.
+Comet can route Spark `ScalaUDF` expressions through a JVM-side kernel that processes Arrow batches directly, instead of falling back to Spark for the whole operator. The kernel is compiled per `(expression, input schema)` pair via Janino and reused across batches of the same query. Surrounding native operators stay on the Comet path. The cost is one JNI roundtrip per batch.
 
 ## Configuration
 
-| Key                                     | Default | Description                                                                                                                                                                                          |
-| --------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.exec.codegenDispatch.mode` | `auto`  | `auto` routes through JVM codegen when it is the serde's primary path (regex with java engine, ScalaUDF). `force` routes through codegen whenever accepted. `disabled` never routes through codegen. |
-| `spark.comet.exec.regexp.engine`        | `java`  | `java` uses the JVM codegen path for the regex family. `rust` prefers the native DataFusion engine where one exists and falls back to Spark otherwise.                                               |
+| Key                                         | Default | Description                                                                                                                                       |
+| ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spark.comet.exec.scalaUDF.codegen.enabled` | `true`  | When `true`, eligible `ScalaUDF`s route through the dispatcher. When `false`, plans containing a `ScalaUDF` fall back to Spark for that operator. |
 
-## Regex routing
+## Supported
 
-Cells name the path the expression takes. `Spark` means the plan falls back to Spark. `codegen` means the JVM codegen dispatcher. `native` means the DataFusion scalar function.
+- User functions registered via `udf(...)`, `spark.udf.register(...)` (Scala or Java functional interfaces), or SQL `CREATE FUNCTION ... AS 'com.example.MyUDF'`.
+- Scalar input and output types: `Boolean`, `Byte`, `Short`, `Int`, `Long`, `Float`, `Double`, `Decimal`, `String`, `Binary`, `Date`, `Timestamp`, `TimestampNTZ`.
+- Complex input and output types with arbitrary nesting: `ArrayType`, `StructType`, `MapType`.
+- Composition with other Catalyst expressions inside the user function's argument tree (e.g. `myUdf(upper(s))` binds the whole tree and compiles into one kernel).
 
-| Expression           | `java, auto` | `java, force` | `java, disabled` | `rust, auto` | `rust, force` | `rust, disabled` |
-| -------------------- | ------------ | ------------- | ---------------- | ------------ | ------------- | ---------------- |
-| `rlike`              | codegen      | codegen       | Spark            | native       | codegen       | native           |
-| `regexp_replace`     | codegen      | codegen       | Spark            | native       | codegen       | native           |
-| `regexp_extract`     | codegen      | codegen       | Spark            | Spark        | Spark         | Spark            |
-| `regexp_extract_all` | codegen      | codegen       | Spark            | Spark        | Spark         | Spark            |
-| `regexp_instr`       | codegen      | codegen       | Spark            | Spark        | Spark         | Spark            |
-| `split`              | codegen      | codegen       | Spark            | native       | codegen       | native           |
+## Not supported
 
-`regexp_extract`, `regexp_extract_all`, and `regexp_instr` have no native DataFusion path, so rust-engine cells read `Spark` regardless of dispatch mode. Rust-engine cells also require `spark.comet.expr.allow.incompat=true` for patterns the rust engine evaluates incompatibly with Spark; otherwise the plan falls back to Spark.
+- Aggregate UDFs (`ScalaAggregator`, `TypedImperativeAggregate`, the legacy `UserDefinedAggregateFunction`).
+- Table UDFs and generators.
+- Python `@udf` and Pandas `@pandas_udf`.
+- Hive `GenericUDF` and `SimpleUDF`.
+- `CalendarIntervalType` arguments and return types.
 
-## Behavior notes
+## Behavior
 
-- Non-deterministic expressions (`rand`, `uuid`, `monotonically_increasing_id`) produce per-partition sequences consistent with Spark. One kernel instance lives per partition; state is reset on partition boundaries.
-- ScalaUDF bodies that read `TaskContext.get()` see the correct partition context even when executed on a Tokio worker thread.
+- Non-deterministic expressions referenced from the UDF's argument tree (`rand`, `uuid`, `monotonically_increasing_id`) produce per-partition sequences consistent with Spark. The kernel instance lives for one Spark task; state resets at task boundaries.
+- `TaskContext.get()` inside the user function returns the driving Spark task's context even though the kernel runs on a Tokio worker thread.
 - The user function must be closure-serializable. The same function that works with Spark's executor execution works here.
 
 ## Known limitations
 
-- Dictionary-encoded inputs are not handled. Comet's native scan and shuffle paths materialize dictionaries before the dispatcher, so this is not a current failure mode. If you observe it, file an issue.
-- `regexp_replace` on a collated subject rejects at plan time; Spark wraps the pattern in `Collate(Literal, ...)` and the serde requires a bare `Literal`.
-- `rlike` on ICU collations (e.g. `UNICODE_CI`) is a type mismatch in Spark itself, not a Comet-specific limitation. Binary collations like `UTF8_LCASE` work.
-
-For internals (architecture, caching, compile-time specializations, open work items), see the contributor guide [JVM UDF Dispatch](../../contributor-guide/jvm_udf_dispatch.md) page.
+- Each query analysis recompiles the kernel once. Spark's analyzer produces a fresh `ScalaUDF` instance per query, and the encoders embedded in that instance carry attribute references with fresh ids that the cache key cannot canonicalize across queries. Within one query, multiple batches of the same shape reuse the compiled kernel.
