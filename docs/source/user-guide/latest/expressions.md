@@ -106,6 +106,7 @@ of expressions that be disabled.
 | FromUnixTime   | `from_unixtime`              |
 | Hour           | `hour`                       |
 | LastDay        | `last_day`                   |
+| LocalTimestamp | `localtimestamp`             |
 | Minute         | `minute`                     |
 | Second         | `second`                     |
 | TruncDate      | `trunc`                      |
