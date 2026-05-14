@@ -41,16 +41,13 @@ pub struct JvmScalarUdfExpr {
     args: Vec<Arc<dyn PhysicalExpr>>,
     return_type: DataType,
     return_nullable: bool,
-    /// Spark `TaskContext` captured on the driving Spark task thread, stashed in the
-    /// [`ExecutionContext`] at `createPlan` time, and threaded here by the planner. Passed
-    /// through the JNI bridge so [`CometUdfBridge.evaluate`] can install it as the
-    /// thread-local `TaskContext` on the Tokio worker that drives the UDF call. Without this,
-    /// partition-sensitive built-ins inside a user UDF tree (`Rand`, `Uuid`,
-    /// `MonotonicallyIncreasingID`, custom UDF code that reads
-    /// `TaskContext.get().partitionId()`) see a null `TaskContext` and seed / branch
-    /// incorrectly. `None` means the surrounding driver had no `TaskContext` to propagate
-    /// (unit tests, direct native driver runs); the bridge then leaves whatever
-    /// `TaskContext.get()` already returns in place.
+    /// Captured at `createPlan` time and threaded here by the planner. Passed through the
+    /// JNI bridge so `CometUdfBridge.evaluate` can install it as the Tokio worker's
+    /// thread-local `TaskContext`. Without this, partition-sensitive built-ins inside a UDF
+    /// tree (`Rand`, `Uuid`, `MonotonicallyIncreasingID`, user code reading
+    /// `TaskContext.get()`) see `null` and seed / branch incorrectly. `None` when no driving
+    /// Spark task is available; the bridge then leaves whatever `TaskContext.get()` already
+    /// returns in place.
     task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 
@@ -123,10 +120,10 @@ impl PhysicalExpr for JvmScalarUdfExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DFResult<ColumnarValue> {
-        // Scalar children (e.g. literal patterns) are sent as length-1 vectors rather than
-        // expanded to batch-row count, so the JVM bridge does not pay an O(rows) copy for
-        // values that never vary across the batch. The JVM side gets `numRows` directly via
-        // the bridge so it doesn't need the scalar to carry batch length.
+        // Step 1: evaluate child expressions to get Arrow arrays. Scalar children
+        // (e.g. literal patterns) are sent as length-1 vectors rather than expanded
+        // to batch-row count, so the JVM bridge does not pay an O(rows) copy for
+        // values that never vary across the batch.
         let arrays: Vec<ArrayRef> = self
             .args
             .iter()
@@ -136,6 +133,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             })
             .collect::<DFResult<_>>()?;
 
+        // Step 2: allocate FFI structs on the Rust heap and collect their raw pointers.
         // The JVM writes into the out_array/out_schema slots and reads from the in_ slots.
         let in_ffi_arrays: Vec<Box<FFI_ArrowArray>> = arrays
             .iter()
@@ -159,6 +157,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             .map(|b| b.as_ref() as *const FFI_ArrowSchema as i64)
             .collect();
 
+        // Allocate output FFI slots.
         let mut out_array = Box::new(FFI_ArrowArray::empty());
         let mut out_schema = Box::new(FFI_ArrowSchema::empty());
         let out_arr_ptr = out_array.as_mut() as *mut FFI_ArrowArray as i64;
@@ -167,20 +166,22 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         let class_name = self.class_name.clone();
         let n_args = arrays.len();
 
+        // Step 3: attach a JNI env for this thread and call the static bridge method.
         JVMClasses::with_env(|env| {
             let bridge = JVMClasses::get().comet_udf_bridge.as_ref().ok_or_else(|| {
                 CometError::from(ExecutionError::GeneralError(
                     "JVM UDF bridge unavailable: org.apache.comet.udf.CometUdfBridge \
-                     class was not found on the JVM classpath. Set \
-                     spark.comet.exec.regexp.engine=rust to disable this path."
+                     class was not found on the JVM classpath."
                         .to_string(),
                 ))
             })?;
 
+            // Build the JVM String for the class name.
             let jclass_name = env
                 .new_string(&class_name)
                 .map_err(|e| CometError::JNI { source: e })?;
 
+            // Build the long[] arrays for input pointers.
             let in_arr_java = env
                 .new_long_array(n_args)
                 .map_err(|e| CometError::JNI { source: e })?;
@@ -195,10 +196,9 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 .set_region(env, 0, &in_sch_ptrs)
                 .map_err(|e| CometError::JNI { source: e })?;
 
-            // Resolve the TaskContext reference once before building the arg array so the
-            // borrow lives until `call_static_method_unchecked` returns. When no TaskContext
-            // was propagated, pass a null object so the bridge's null-guard leaves the thread-
-            // local alone.
+            // Pass a null jobject when no TaskContext was propagated so the bridge's null-guard
+            // leaves the worker thread's current TaskContext.get() in place. The borrow must
+            // outlive `call_static_method_unchecked`.
             let null_task_context = JObject::null();
             let task_context_ref: &JObject = match &self.task_context {
                 Some(gref) => gref.as_obj(),
@@ -229,6 +229,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             Ok(())
         })?;
 
+        // Step 4: import the result from the FFI slots filled by the JVM.
         // SAFETY: `*out_array` moves the FFI_ArrowArray out of the Box (the heap
         // allocation is freed by the move), and `from_ffi` wraps it in an Arc that
         // keeps the JVM-installed release callback alive until the resulting
@@ -236,19 +237,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         // exactly once when the Box drops at end of scope.
         let result_data = unsafe { from_ffi(*out_array, &out_schema) }
             .map_err(|e| CometError::Arrow { source: e })?;
-        let result_array = make_array(result_data);
-
-        // The JVM may produce arrays with different field names (e.g. Arrow Java's
-        // ListVector uses "$data$" for child fields) than what DataFusion expects
-        // (e.g. "item"). Cast to the declared return_type to normalize schema.
-        let result_array = if result_array.data_type() != &self.return_type {
-            arrow::compute::cast(&result_array, &self.return_type)
-                .map_err(|e| CometError::Arrow { source: e })?
-        } else {
-            result_array
-        };
-
-        Ok(ColumnarValue::Array(result_array))
+        Ok(ColumnarValue::Array(make_array(result_data)))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {

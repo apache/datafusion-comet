@@ -462,8 +462,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             };
 
             // Capture the driving Spark task's TaskContext as a JNI global reference when
-            // non-null. The `Arc<Global<JObject>>` releases its global ref on drop, so
-            // cleanup is automatic when the ExecutionContext drops.
+            // non-null. The `Arc<Global<JObject>>` releases its global ref on drop, so cleanup
+            // is automatic when the ExecutionContext drops.
             let task_context = if !task_context_obj.is_null() {
                 Some(Arc::new(jni_new_global_ref!(env, task_context_obj)?))
             } else {
