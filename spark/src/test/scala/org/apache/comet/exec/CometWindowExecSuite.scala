@@ -1104,10 +1104,10 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("emp")
       val df = sql("""
         SELECT dept, id, salary,
-          /*first_value(salary) IGNORE NULLS OVER (PARTITION BY dept ORDER BY id, salary
+          first_value(salary) IGNORE NULLS OVER (PARTITION BY dept ORDER BY id, salary
                                                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS fv_ignore,
           nth_value(salary, 1) IGNORE NULLS OVER (PARTITION BY dept ORDER BY id, salary
-                                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS nv_ignore,   */
+                                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS nv_ignore,
           last_value(salary) IGNORE NULLS OVER (PARTITION BY dept ORDER BY id, salary
                                                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS lv_ignore
 
