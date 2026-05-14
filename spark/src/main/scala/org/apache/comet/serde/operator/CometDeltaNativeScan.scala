@@ -458,17 +458,89 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
           StructField(f.name, physicaliseDataType(metaField.dataType), f.nullable, f.metadata)
         case None => f
       }
-    // Only `data_schema` (the on-disk parquet schema) takes physical names; keep
-    // `required_schema` in logical names because the planner's `ColumnMappingFilterRewriter`
-    // + schema-adapter chain uses the name delta between the two to produce physical reads and
-    // logical-named outputs. Physicalising required_schema would break downstream operators
-    // that reference the output by logical name (aggregations, joins, etc.).
-    val physicalFileDataSchemaFields =
-      if (columnMappingActive) fileDataSchemaFields.map(physicaliseNestedTypesOnly)
-      else fileDataSchemaFields
+    // For `required_schema` we MUST preserve the field's pruned shape (Spark's
+    // nested column pruning can leave a struct with only the accessed children) while
+    // still rewriting nested names to their physical equivalents. Using the data-schema
+    // helper above (which replaces the whole struct with the snapshot's full shape)
+    // would lose pruning and produce nested children Spark's plan does not expect,
+    // causing GetStructField ordinals to point at the wrong child. Walks `req`'s tree
+    // and pairs each node with the corresponding snapshot node by logical name to find
+    // the physical name; fields not present in the snapshot pass through untouched.
+    def physicaliseDataTypePreserving(req: DataType, snap: DataType): DataType =
+      (req, snap) match {
+        case (rs: StructType, ms: StructType) =>
+          val snapByLogical = ms.fields.map(f => f.name -> f).toMap
+          StructType(rs.fields.map { rf =>
+            snapByLogical.get(rf.name) match {
+              case Some(mf) =>
+                val physName =
+                  if (mf.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
+                    mf.metadata.getString(DeltaReflection.PhysicalNameMetadataKey)
+                  } else rf.name
+                StructField(
+                  physName,
+                  physicaliseDataTypePreserving(rf.dataType, mf.dataType),
+                  rf.nullable,
+                  rf.metadata)
+              case None => rf
+            }
+          })
+        case (ra: ArrayType, ma: ArrayType) =>
+          ArrayType(
+            physicaliseDataTypePreserving(ra.elementType, ma.elementType),
+            ra.containsNull)
+        case (rm: MapType, mm: MapType) =>
+          MapType(
+            physicaliseDataTypePreserving(rm.keyType, mm.keyType),
+            physicaliseDataTypePreserving(rm.valueType, mm.valueType),
+            rm.valueContainsNull)
+        case _ => req
+      }
+    def physicaliseRequiredField(f: StructField): StructField =
+      physicalByLogicalName.get(f.name) match {
+        case Some(metaField) =>
+          StructField(
+            f.name,
+            physicaliseDataTypePreserving(f.dataType, metaField.dataType),
+            f.nullable,
+            f.metadata)
+        case None => f
+      }
+    // `data_schema` describes what we want the native parquet reader to read from
+    // the file. Under column mapping, parquet column matching is by PHYSICAL name
+    // (at every level of nesting). The reader projects by leaf column path -- it
+    // can read just `b.col-d` even if the file's `b` also has `col-c`. To make
+    // that happen, we send data_schema with the SAME shape as the required output:
+    // top-level fields that are required carry the pruned + physicalised nested
+    // shape; non-required top-level fields keep their full physicalised shape (no
+    // read attempt is made for them anyway because they don't appear in
+    // projection_vector). Without this overlay, the reader would emit a struct
+    // with ALL nested children (full file shape), and upstream GetStructField
+    // ordinals -- computed by Catalyst against the PRUNED required_schema --
+    // would pick the wrong child. Manifested as "Invalid comparison Utf8 <= Int32"
+    // on `b.d > 0` (d is INT, ordinal 0 in pruned `b: struct<d>`, but ordinal 0
+    // in the file struct is `c` STRING). #79 fix 2026-05-13.
+    val requiredSchemaFields =
+      if (columnMappingActive) scan.requiredSchema.fields.map(physicaliseRequiredField)
+      else scan.requiredSchema.fields
+    val physicalFileDataSchemaFields = if (columnMappingActive) {
+      val requiredByName = requiredSchemaFields
+        .map(f => f.name.toLowerCase(Locale.ROOT) -> f)
+        .toMap
+      fileDataSchemaFields.map { f =>
+        requiredByName.get(f.name.toLowerCase(Locale.ROOT)) match {
+          // Required asks for this field -- adopt its pruned, physicalised shape so
+          // the parquet reader projects only the required nested children.
+          case Some(req) => StructField(f.name, req.dataType, f.nullable, f.metadata)
+          // Field not required -- physicalise the full snapshot shape (used only if
+          // some other consumer references it; harmless when projection_vector skips it).
+          case None => physicaliseNestedTypesOnly(f)
+        }
+      }
+    } else fileDataSchemaFields
 
     val dataSchema = schema2Proto(physicalFileDataSchemaFields)
-    val requiredSchema = schema2Proto(scan.requiredSchema.fields)
+    val requiredSchema = schema2Proto(requiredSchemaFields)
     val partitionSchema = schema2Proto(relation.partitionSchema.fields)
     commonBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
     commonBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
