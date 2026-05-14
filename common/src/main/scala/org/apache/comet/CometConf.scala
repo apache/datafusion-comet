@@ -810,10 +810,10 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Selects the engine used to evaluate supported date/time expressions. " +
-          s"`$DATETIME_ENGINE_RUST` uses native DataFusion implementations. " +
+          s"`$DATETIME_ENGINE_RUST` uses the native DataFusion datetime engine. " +
           s"`$DATETIME_ENGINE_JAVA` is experimental and routes through a JVM-side " +
           "UDF for bit-exact Spark semantics, at the cost of JNI roundtrips per " +
-          "batch. Expressions routed when set to java: hour, minute, second.")
+          "batch. Expressions routed when set to java: hour, minute, and second.")
       .stringConf
       .transform(_.toLowerCase(Locale.ROOT))
       .checkValues(Set(DATETIME_ENGINE_RUST, DATETIME_ENGINE_JAVA))
