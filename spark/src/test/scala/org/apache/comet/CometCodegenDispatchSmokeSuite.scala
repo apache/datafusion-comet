@@ -575,6 +575,19 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
+  test("ScalaUDF on BinaryType (VarBinaryVector, getBinary)") {
+    // Binary input getter path: VarBinaryVector with byte[] reads via Spark's `getBinary` getter.
+    spark.udf.register("blen", (b: Array[Byte]) => if (b == null) -1 else b.length)
+    withTable("t") {
+      sql("CREATE TABLE t (b BINARY) USING parquet")
+      sql("INSERT INTO t VALUES (CAST('abc' AS BINARY)), (CAST('hello' AS BINARY)), (NULL)")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT blen(b) FROM t"))
+      }
+      assertKernelSignaturePresent(Seq(classOf[VarBinaryVector]), IntegerType)
+    }
+  }
+
   test("ScalaUDF returning ArrayType(StringType) (ListVector output writer)") {
     // First use of the ArrayType output path end-to-end. The UDF returns a `Seq[String]`,
     // which Spark encodes as `ArrayType(StringType, containsNull = true)`. The dispatcher's
@@ -933,6 +946,23 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       sql("INSERT INTO t VALUES (map('a', 1, 'b', 2)), (map()), (null)")
       assertCodegenDidWork {
         checkSparkAnswerAndOperator(sql("SELECT sumMap(m) FROM t"))
+      }
+    }
+  }
+
+  test("ScalaUDF round-trips Map<Int, Int> (primitive key and value)") {
+    // Map with non-string keys: exercises the primitive-key element getter on the input side
+    // and the corresponding writer on the output side. Spark's encoder for `Map[Int, Int]` calls
+    // `getInt(0)` / `getInt(1)` on the entries struct, hitting the kernel's typed scalar getter
+    // for each side rather than the UTF8 path.
+    spark.udf.register(
+      "incValues",
+      (m: Map[Int, Int]) => if (m == null) null else m.map { case (k, v) => k -> (v + 1) })
+    withTable("t") {
+      sql("CREATE TABLE t (m MAP<INT, INT>) USING parquet")
+      sql("INSERT INTO t VALUES (map(1, 10, 2, 20)), (map()), (null)")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT incValues(m) FROM t"))
       }
     }
   }
