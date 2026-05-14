@@ -46,7 +46,7 @@ class RegExpExtractAllUDF extends CometUDF {
 
   private val patternCache = new ConcurrentHashMap[String, Pattern]()
 
-  override def evaluate(inputs: Array[ValueVector]): ValueVector = {
+  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
     require(inputs.length == 3, s"RegExpExtractAllUDF expects 3 inputs, got ${inputs.length}")
     val subject = inputs(0).asInstanceOf[VarCharVector]
     val patternVec = inputs(1).asInstanceOf[VarCharVector]
