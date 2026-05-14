@@ -27,19 +27,19 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 
 /**
- * Process-wide singleton that discovers and exposes contrib extensions found on the
- * classpath via `java.util.ServiceLoader`.
+ * Process-wide singleton that discovers and exposes contrib extensions found on the classpath via
+ * `java.util.ServiceLoader`.
  *
  * Discovery happens once per JVM, idempotent: the first `load()` call enumerates every
  * `META-INF/services/org.apache.comet.spi.CometScanRuleExtension` and
- * `META-INF/services/org.apache.comet.spi.CometOperatorSerdeExtension` resource on the
- * Comet classloader. Subsequent calls are no-ops.
+ * `META-INF/services/org.apache.comet.spi.CometOperatorSerdeExtension` resource on the Comet
+ * classloader. Subsequent calls are no-ops.
  *
- * `CometSparkSessionExtensions.apply` calls `load()` during Comet extension installation
- * (PR1.6) so contrib JARs are picked up automatically when present.
+ * `CometSparkSessionExtensions.apply` calls `load()` during Comet extension installation (PR1.6)
+ * so contrib JARs are picked up automatically when present.
  *
- * Failures to instantiate individual extensions are logged but do NOT fail Comet
- * startup -- a misconfigured contrib JAR shouldn't take down the whole Spark session.
+ * Failures to instantiate individual extensions are logged but do NOT fail Comet startup -- a
+ * misconfigured contrib JAR shouldn't take down the whole Spark session.
  */
 object CometExtensionRegistry extends Logging {
 
@@ -48,8 +48,8 @@ object CometExtensionRegistry extends Logging {
   @volatile private var serdeExts: Seq[CometOperatorSerdeExtension] = Seq.empty
 
   /**
-   * Discover contrib extensions on the classpath. Idempotent. Safe to call from multiple
-   * threads (only the first call performs discovery).
+   * Discover contrib extensions on the classpath. Idempotent. Safe to call from multiple threads
+   * (only the first call performs discovery).
    */
   def load(): Unit = {
     if (loaded.compareAndSet(false, true)) {
@@ -71,8 +71,8 @@ object CometExtensionRegistry extends Logging {
   def serdeExtensions: Seq[CometOperatorSerdeExtension] = serdeExts
 
   /**
-   * Test-only: reset the registry to the empty state. Lets unit tests re-run discovery
-   * with a different classpath / overridden services. Not for production use.
+   * Test-only: reset the registry to the empty state. Lets unit tests re-run discovery with a
+   * different classpath / overridden services. Not for production use.
    */
   private[comet] def resetForTesting(): Unit = {
     loaded.set(false)

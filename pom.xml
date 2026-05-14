@@ -38,6 +38,14 @@ under the License.
     <module>common</module>
     <module>spark</module>
     <module>spark-integration</module>
+    <!--
+      contrib/<name>/ modules. Each is a self-contained extension that ships as a
+      separate Maven artifact; when the matching Cargo feature on core is enabled
+      (default-on), the contrib's Rust rlib is linked into libcomet so the native side
+      of the SPI works without a second cdylib. See
+      docs/contrib-delta-migration-plan.md.
+    -->
+    <module>contrib/example</module>
   </modules>
 
   <properties>

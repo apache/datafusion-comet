@@ -25,26 +25,24 @@ import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
 /**
- * SPI hook that lets a contrib extension intercept scan transformation in
- * `CometScanRule`. Contribs typically use this to recognise a specific table format (Delta,
- * Hudi, etc.) and route it through a contrib-specific native execution path.
+ * SPI hook that lets a contrib extension intercept scan transformation in `CometScanRule`.
+ * Contribs typically use this to recognise a specific table format (Delta, Hudi, etc.) and route
+ * it through a contrib-specific native execution path.
  *
  * `CometScanRule` discovers implementations via `CometExtensionRegistry.scanExtensions`
  * (ServiceLoader-backed) and offers each candidate scan to every registered extension in
  * registration order. The first extension whose [[matches]] returns `true` wins -- its
- * [[transformV1]] / [[transformV2]] is called and the returned plan replaces the scan
- * branch. If no extension matches, the core's existing file-format dispatch handles the
- * scan as before.
+ * [[transformV1]] / [[transformV2]] is called and the returned plan replaces the scan branch. If
+ * no extension matches, the core's existing file-format dispatch handles the scan as before.
  *
  * Contribs are discovered via the standard Java ServiceLoader. Each contrib JAR ships a
- * `META-INF/services/org.apache.comet.spi.CometScanRuleExtension` resource listing its
- * extension class.
+ * `META-INF/services/org.apache.comet.spi.CometScanRuleExtension` resource listing its extension
+ * class.
  *
- * Implementations MUST be safe to invoke from `CometScanRule`'s `apply` method --
- * specifically: pure, stateless, side-effect-free with respect to the plan tree (any state
- * needed should be derived from `scanExec` / `relation` / the surrounding plan). The
- * registry caches instances across plans, so per-plan state on the implementation will
- * leak between queries.
+ * Implementations MUST be safe to invoke from `CometScanRule`'s `apply` method -- specifically:
+ * pure, stateless, side-effect-free with respect to the plan tree (any state needed should be
+ * derived from `scanExec` / `relation` / the surrounding plan). The registry caches instances
+ * across plans, so per-plan state on the implementation will leak between queries.
  */
 trait CometScanRuleExtension {
 
@@ -52,9 +50,9 @@ trait CometScanRuleExtension {
   def name: String
 
   /**
-   * Whether this extension wants to handle the given V1 scan. Implementations should make a
-   * cheap decision here (typically file-format class-name probe) so non-matching paths add
-   * no per-scan overhead.
+   * Whether this extension wants to handle the given V1 scan. Implementations should make a cheap
+   * decision here (typically file-format class-name probe) so non-matching paths add no per-scan
+   * overhead.
    *
    * Default returns false; override `matchesV1` and `transformV1` for V1 scan support.
    */
@@ -63,9 +61,8 @@ trait CometScanRuleExtension {
   /**
    * Transform the matched V1 scan. Called only when `matchesV1` returned true.
    *
-   * Returning `None` means "I matched but ultimately can't accelerate this one" -- the
-   * core falls back to its existing file-format dispatch. Returning `Some(plan)` replaces
-   * the scan subtree.
+   * Returning `None` means "I matched but ultimately can't accelerate this one" -- the core falls
+   * back to its existing file-format dispatch. Returning `Some(plan)` replaces the scan subtree.
    */
   def transformV1(
       plan: SparkPlan,
