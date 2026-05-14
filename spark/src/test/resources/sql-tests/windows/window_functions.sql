@@ -435,7 +435,7 @@ INSERT INTO avg_nulls_trailing VALUES
   (3, NULL),
   (4, NULL)
 
-query
+query ignore(https://github.com/apache/datafusion/issues/22138)
 SELECT i,
   AVG(v) OVER (ORDER BY i
                ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS a
