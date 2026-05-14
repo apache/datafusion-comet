@@ -21,6 +21,7 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+use crate::execution::jni_credential_loader::IcebergCredentialFactory;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
@@ -1474,12 +1475,35 @@ impl PhysicalPlanner {
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
                 let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
 
+                let credential_loader = self
+                    .session_ctx
+                    .state()
+                    .config()
+                    .get_extension::<IcebergCredentialFactory>()
+                    .map(|factory| {
+                        let table_location = derive_table_location(&metadata_location).to_string();
+                        factory
+                            .loader_for(table_location)
+                            .map(|loader| {
+                                iceberg_storage_opendal::CustomAwsCredentialLoader::new(Arc::new(
+                                    loader,
+                                ))
+                            })
+                            .map_err(|e| {
+                                GeneralError(format!(
+                                    "Failed to create JNI credential loader for Iceberg scan: {e}"
+                                ))
+                            })
+                    })
+                    .transpose()?;
+
                 let iceberg_scan = IcebergScanExec::new(
                     metadata_location,
                     required_schema,
                     catalog_properties,
                     tasks,
                     data_file_concurrency_limit,
+                    credential_loader,
                 )?;
 
                 Ok((
@@ -3903,6 +3927,22 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
     }
 }
 
+/// Strips a trailing `/metadata/<file>` segment from an Iceberg metadata URI.
+fn derive_table_location(metadata_location: &str) -> &str {
+    const SEGMENT: &str = "/metadata/";
+    match metadata_location.rfind(SEGMENT) {
+        Some(idx) if idx > 0 => {
+            let suffix = &metadata_location[idx + SEGMENT.len()..];
+            if suffix.is_empty() || suffix.contains('/') {
+                metadata_location
+            } else {
+                &metadata_location[..idx]
+            }
+        }
+        _ => metadata_location,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::{poll, StreamExt};
@@ -3943,6 +3983,68 @@ mod tests {
         spark_operator::{operator::OpStruct, Operator},
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    use super::derive_table_location;
+
+    #[test]
+    fn test_derive_table_location_strips_metadata_suffix() {
+        assert_eq!(
+            derive_table_location("s3://bucket/db/table/metadata/v1.metadata.json"),
+            "s3://bucket/db/table"
+        );
+        assert_eq!(
+            derive_table_location("s3://bucket/db/table/metadata/snap-123.avro"),
+            "s3://bucket/db/table"
+        );
+    }
+
+    #[test]
+    fn test_derive_table_location_preserves_input_without_metadata_segment() {
+        assert_eq!(
+            derive_table_location("s3://bucket/db/table"),
+            "s3://bucket/db/table"
+        );
+        assert_eq!(
+            derive_table_location("/local/path/table"),
+            "/local/path/table"
+        );
+    }
+
+    #[test]
+    fn test_derive_table_location_handles_alternate_schemes() {
+        assert_eq!(
+            derive_table_location("s3a://bucket/db/table/metadata/v1.metadata.json"),
+            "s3a://bucket/db/table"
+        );
+        assert_eq!(
+            derive_table_location("file:///tmp/warehouse/table/metadata/v1.metadata.json"),
+            "file:///tmp/warehouse/table"
+        );
+    }
+
+    #[test]
+    fn test_derive_table_location_rejects_leading_metadata_segment() {
+        assert_eq!(
+            derive_table_location("/metadata/v1.metadata.json"),
+            "/metadata/v1.metadata.json"
+        );
+    }
+
+    #[test]
+    fn test_derive_table_location_strips_only_last_metadata_segment() {
+        assert_eq!(
+            derive_table_location("s3://bucket/metadata/dwh/tbl/metadata/v1.metadata.json"),
+            "s3://bucket/metadata/dwh/tbl"
+        );
+    }
+
+    #[test]
+    fn test_derive_table_location_preserves_input_with_nested_metadata_suffix() {
+        assert_eq!(
+            derive_table_location("s3://bucket/db/table/metadata/sub/v1.metadata.json"),
+            "s3://bucket/db/table/metadata/sub/v1.metadata.json"
+        );
+    }
 
     #[test]
     fn test_unpack_dictionary_primitive() {

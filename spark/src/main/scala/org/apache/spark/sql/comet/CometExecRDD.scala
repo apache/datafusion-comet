@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet
 
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffledBatchRDD
 import org.apache.spark.sql.execution.ScalarSubquery
@@ -66,8 +67,10 @@ private[spark] class CometExecRDD(
     subqueries: Seq[ScalarSubquery],
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleScanIndices: Set[Int] = Set.empty)
-    extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
+    shuffleScanIndices: Set[Int] = Set.empty,
+    credentialProviderBroadcast: Option[Broadcast[AnyRef]] = None)
+    extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd)))
+    with Logging {
 
   // Determine partition count: from inputs if available, otherwise from parameter
   private val numPartitions: Int = if (inputRDDs.nonEmpty) {
@@ -120,6 +123,8 @@ private[spark] class CometExecRDD(
       }
     }.toMap
 
+    val credentialProvider = resolveCredentialProvider(context)
+
     val it = new CometExecIterator(
       CometExec.newIterId,
       inputs,
@@ -130,7 +135,8 @@ private[spark] class CometExecRDD(
       partition.index,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      shuffleBlockIters)
+      shuffleBlockIters,
+      credentialProvider)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
@@ -153,6 +159,21 @@ private[spark] class CometExecRDD(
     // Prefer nodes where all inputs are local; fall back to any input's preferred location
     val intersection = prefs.reduce((a, b) => a.intersect(b))
     if (intersection.nonEmpty) intersection else prefs.flatten.distinct
+  }
+
+  private def resolveCredentialProvider(context: TaskContext): AnyRef = {
+    credentialProviderBroadcast match {
+      case None => null
+      case Some(broadcast) =>
+        val provider = broadcast.value
+        if (provider == null) {
+          val partitionId = if (context != null) context.partitionId() else -1
+          logWarning(
+            s"Broadcast credential provider id=${broadcast.id} returned null " +
+              s"(partition=$partitionId)")
+        }
+        provider
+    }
   }
 
   override def clearDependencies(): Unit = {
@@ -179,7 +200,8 @@ object CometExecRDD {
       subqueries: Seq[ScalarSubquery],
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
       encryptedFilePaths: Seq[String] = Seq.empty,
-      shuffleScanIndices: Set[Int] = Set.empty): CometExecRDD = {
+      shuffleScanIndices: Set[Int] = Set.empty,
+      credentialProviderBroadcast: Option[Broadcast[AnyRef]] = None): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -194,6 +216,7 @@ object CometExecRDD {
       subqueries,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      shuffleScanIndices)
+      shuffleScanIndices,
+      credentialProviderBroadcast)
   }
 }

@@ -219,6 +219,10 @@ case class CometIcebergNativeScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
+
+    val credentialProviderBroadcast =
+      CometIcebergCredentialBroadcasts.buildBroadcast(sparkContext, this)
+
     new CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
@@ -228,7 +232,8 @@ case class CometIcebergNativeScanExec(
       defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty) {
+      subqueries = Seq.empty,
+      credentialProviderBroadcast = credentialProviderBroadcast) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         val res = super.compute(split, context)
         Option(context).foreach(nativeMetrics.reportScanInputMetrics)

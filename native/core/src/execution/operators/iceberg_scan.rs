@@ -40,7 +40,7 @@ use datafusion::physical_plan::{
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
 use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
-use iceberg_storage_opendal::OpenDalStorageFactory;
+use iceberg_storage_opendal::{CustomAwsCredentialLoader, OpenDalStorageFactory};
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
@@ -66,6 +66,7 @@ pub struct IcebergScanExec {
     tasks: Vec<FileScanTask>,
     /// Number of data files to read concurrently
     data_file_concurrency_limit: usize,
+    credential_loader: Option<CustomAwsCredentialLoader>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -77,6 +78,7 @@ impl IcebergScanExec {
         catalog_properties: HashMap<String, String>,
         tasks: Vec<FileScanTask>,
         data_file_concurrency_limit: usize,
+        credential_loader: Option<CustomAwsCredentialLoader>,
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), 1);
@@ -90,6 +92,7 @@ impl IcebergScanExec {
             catalog_properties,
             tasks,
             data_file_concurrency_limit,
+            credential_loader,
             metrics,
         })
     }
@@ -154,7 +157,11 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
-        let file_io = Self::load_file_io(&self.catalog_properties, &self.metadata_location)?;
+        let file_io = Self::load_file_io(
+            &self.catalog_properties,
+            &self.metadata_location,
+            self.credential_loader.clone(),
+        )?;
         let batch_size = context.session_config().batch_size();
 
         let metrics = IcebergScanMetrics::new(&self.metrics);
@@ -199,7 +206,10 @@ impl IcebergScanExec {
         Ok(Box::pin(wrapped_stream))
     }
 
-    fn storage_factory_for(path: &str) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
+    fn storage_factory_for(
+        path: &str,
+        credential_loader: Option<CustomAwsCredentialLoader>,
+    ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
         let scheme = if path.contains("://") {
             path.split("://").next().unwrap_or("file")
         } else {
@@ -208,7 +218,7 @@ impl IcebergScanExec {
         match scheme {
             "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
             "s3" | "s3a" => Ok(Arc::new(OpenDalStorageFactory::S3 {
-                customized_credential_load: None,
+                customized_credential_load: credential_loader,
             })),
             "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
             "oss" => Ok(Arc::new(OpenDalStorageFactory::Oss)),
@@ -221,8 +231,9 @@ impl IcebergScanExec {
     fn load_file_io(
         catalog_properties: &HashMap<String, String>,
         metadata_location: &str,
+        credential_loader: Option<CustomAwsCredentialLoader>,
     ) -> Result<FileIO, DataFusionError> {
-        let factory = Self::storage_factory_for(metadata_location)?;
+        let factory = Self::storage_factory_for(metadata_location, credential_loader)?;
         let mut file_io_builder = FileIOBuilder::new(factory);
 
         for (key, value) in catalog_properties {

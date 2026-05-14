@@ -560,6 +560,10 @@ abstract class CometNativeExec extends CometExec {
         // Unified RDD creation - CometExecRDD handles all cases
         val subqueries = collectSubqueries(this)
         val hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec])
+
+        val credentialProviderBroadcast: Option[Broadcast[AnyRef]] =
+          CometIcebergCredentialBroadcasts.buildBroadcastForPlan(sparkContext, this)
+
         new CometExecRDD(
           sparkContext,
           inputs.toSeq,
@@ -572,7 +576,8 @@ abstract class CometNativeExec extends CometExec {
           subqueries,
           broadcastedHadoopConfForEncryption,
           encryptedFilePaths,
-          shuffleScanIndices) {
+          shuffleScanIndices,
+          credentialProviderBroadcast) {
           override def compute(
               split: Partition,
               context: TaskContext): Iterator[ColumnarBatch] = {

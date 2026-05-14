@@ -87,6 +87,7 @@ use std::{sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
+use crate::execution::jni_credential_loader::IcebergCredentialFactory;
 use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
 };
@@ -340,6 +341,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
     task_context_obj: JObject,
+    credential_provider_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize Spark configs
@@ -440,6 +442,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                     ENCRYPTION_FACTORY_ID,
                     Arc::new(encryption_factory),
                 );
+            }
+
+            if !credential_provider_obj.is_null() {
+                let provider = Arc::new(jni_new_global_ref!(env, credential_provider_obj)?);
+                let factory = Arc::new(IcebergCredentialFactory::new(provider));
+                session
+                    .state_ref()
+                    .write()
+                    .config_mut()
+                    .set_extension(factory);
             }
 
             let session = Arc::new(session);

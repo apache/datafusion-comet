@@ -1960,12 +1960,14 @@ dependencies = [
 name = "datafusion-comet"
 version = "0.17.0"
 dependencies = [
+ "anyhow",
  "arrow",
  "assertables",
  "async-trait",
  "aws-config",
  "aws-credential-types",
  "bytes",
+ "chrono",
  "criterion",
  "datafusion",
  "datafusion-comet-common",

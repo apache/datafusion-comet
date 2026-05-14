@@ -68,7 +68,8 @@ class CometExecIterator(
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty)
+    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
+    credentialProvider: AnyRef = null)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -130,7 +131,8 @@ class CometExecIterator(
       keyUnwrapper,
       // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
       // TaskContext. See CometUdfBridge.evaluate.
-      TaskContext.get())
+      TaskContext.get(),
+      credentialProvider.asInstanceOf[iceberg.CometCredentialProvider])
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
