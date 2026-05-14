@@ -34,7 +34,6 @@ on:
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/**"
-      - "common/src/test/**"
       - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
       - "spark-integration/**"
   pull_request:
@@ -47,7 +46,6 @@ on:
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/**"
-      - "common/src/test/**"
       - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
       - "spark-integration/**"
   # manual trigger
