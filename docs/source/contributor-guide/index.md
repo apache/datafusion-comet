@@ -49,6 +49,7 @@ Adding a New Expression <adding_a_new_expression>
 Adding a New Spark Version <adding_a_new_spark_version>
 Cloud Credential Providers <cloud-credential-providers>
 Supported Spark Expressions <spark_expressions_support>
+Supported Spark Configurations <spark_configs_support>
 Tracing <tracing>
 Profiling <profiling>
 Comet SQL Tests <sql-file-tests.md>
