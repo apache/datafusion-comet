@@ -83,11 +83,14 @@ You need:
 
 ### `.gitignore`
 
-The generated proto outputs are checked in nowhere:
+The generated proto outputs are checked in nowhere. Add a line to the repo-root
+`.gitignore` mirroring the existing `contrib/example/native/src/generated` entry:
 
-- `contrib/<name>/native/src/generated/` — Rust prost output. The example contrib's
-  `.gitignore` entry is the template.
-- `contrib/<name>/target/` — Maven build output (inherits from the repo-root `.gitignore`).
+```
+contrib/<name>/native/src/generated
+```
+
+`contrib/<name>/target/` is already gitignored by the repo-root pattern.
 
 ### Workspace placement constraint
 
@@ -140,11 +143,12 @@ cargo build --features 'contrib-example contrib-<name>'
 cargo build --no-default-features
 ```
 
-A core test under `#[cfg(not(any(feature = "contrib-example", ...)))]` asserts
+A core test under `#[cfg(not(any(feature = "contrib-example")))]` (today's form;
+the `any(...)` will list every contrib feature once more are added) asserts
 `registered_contrib_kinds()` is empty in the slim build. When you add a new
-`contrib-<name>` feature, **extend that test's `cfg` predicate** (see
+`contrib-<name>` feature, **extend that `cfg` predicate** (see
 `native/core/src/execution/planner/contrib.rs`'s `production_build_has_no_contrib_planners_registered`)
-so the canary still compiles on your contrib's CI row.
+to add `feature = "contrib-<name>"` so the canary still compiles on your contrib's CI row.
 
 The JVM side is **always** conditional: the contrib JAR is its own Maven artifact, and
 Spark only loads it when it's on the classpath. Even with the Cargo feature on, a user
@@ -348,12 +352,19 @@ to `.gitignore`.
 `contrib/example/native/build.rs` is the template:
 
 ```rust
-fn main() -> std::io::Result<()> {
-    let out = std::path::PathBuf::from("src/generated");
-    std::fs::create_dir_all(&out)?;
+use std::{fs, io::Result, path::Path};
+
+fn main() -> Result<()> {
+    // rerun-if-changed so cargo rebuilds when you edit your .proto during dev.
+    println!("cargo:rerun-if-changed=src/proto/");
+
+    let out_dir = "src/generated";
+    if !Path::new(out_dir).is_dir() {
+        fs::create_dir(out_dir)?;
+    }
     prost_build::Config::new()
-        .out_dir(&out)
-        .compile_protos(&["src/proto/example_op.proto"], &["src/proto"])?;
+        .out_dir(out_dir)
+        .compile_protos(&["src/proto/<your_op>.proto"], &["src/proto"])?;
     Ok(())
 }
 ```
@@ -366,20 +377,37 @@ path — convenient for editor tooling. The file is gitignored.
 The contrib's `Cargo.toml` adds `prost-build` to `[build-dependencies]` and `prost`
 to `[dependencies]`.
 
-### Proto, JVM side
+### Proto, JVM side — handling Comet's protobuf shade
 
-Comet's main build shades `com.google.protobuf` under `${comet.shade.packageName}.protobuf`
-(see the root `pom.xml`'s `<comet.shade.packageName>` property). The generated
-`OperatorOuterClass.ContribOp` references the shaded package. Your contrib's
-generated Java proto MUST therefore live under the same shade prefix at runtime, or
-the dispatcher will refuse `setContribOp(...)` because `ByteString` / `Message` types
-won't align.
+This is the single trickiest piece of the JVM build. **Read carefully.**
 
-The simplest path is to add `protoc-jar-maven-plugin` to your contrib `pom.xml`,
-generate Java classes during `generate-sources`, and rely on the parent pom's shading
-plugin to relocate `com.google.protobuf` consistently:
+`comet-spark` shades `com.google.protobuf` under `${comet.shade.packageName}.protobuf`
+(value: `org.apache.comet.shaded.protobuf`). The shading is applied in `spark/pom.xml`'s
+`maven-shade-plugin` execution — it is **NOT inherited** by other modules through
+`pluginManagement`. So when `OperatorOuterClass.ContribOp.Builder` is compiled into
+the published `comet-spark.jar`, its `setPayload(ByteString)` signature references the
+shaded type `org.apache.comet.shaded.protobuf.ByteString`. A contrib JAR that ships
+unshaded `com.google.protobuf.ByteString` references (the default output of
+`protoc-jar-maven-plugin`) will fail at runtime with `NoSuchMethodError` the first time
+it calls `setPayload(myMessage.toByteString())`.
+
+The contrib pom must therefore:
+
+1. Generate Java proto classes via `protoc-jar-maven-plugin`.
+2. Run its own `maven-shade-plugin` execution that relocates the same package the
+   parent declares (`${comet.shade.packageName}.protobuf`), so the contrib's generated
+   `ByteString` / `Message` references match the shaded comet-spark surface at runtime.
 
 ```xml
+<dependencies>
+  <dependency>
+    <groupId>com.google.protobuf</groupId>
+    <artifactId>protobuf-java</artifactId>
+    <version>${protobuf.version}</version>
+    <!-- compile scope: the contrib's shade execution will relocate + include it. -->
+  </dependency>
+</dependencies>
+
 <build>
   <plugins>
     <plugin>
@@ -399,28 +427,43 @@ plugin to relocate `com.google.protobuf` consistently:
         </execution>
       </executions>
     </plugin>
+    <plugin>
+      <groupId>org.apache.maven.plugins</groupId>
+      <artifactId>maven-shade-plugin</artifactId>
+      <executions>
+        <execution>
+          <phase>package</phase>
+          <goals><goal>shade</goal></goals>
+          <configuration>
+            <shadedArtifactAttached>false</shadedArtifactAttached>
+            <createDependencyReducedPom>true</createDependencyReducedPom>
+            <artifactSet>
+              <includes>
+                <include>com.google.protobuf:protobuf-java</include>
+              </includes>
+            </artifactSet>
+            <relocations>
+              <relocation>
+                <pattern>com.google.protobuf</pattern>
+                <shadedPattern>${comet.shade.packageName}.protobuf</shadedPattern>
+              </relocation>
+            </relocations>
+          </configuration>
+        </execution>
+      </executions>
+    </plugin>
   </plugins>
 </build>
 ```
 
-And depend on `protobuf-java` so the generated classes compile:
+The relocation pattern MUST be `${comet.shade.packageName}.protobuf` (matching the
+parent pom's property) — if you hardcode `org.apache.comet.shaded.protobuf` it works
+today but breaks the moment Comet's build renames the shade prefix.
 
-```xml
-<dependency>
-  <groupId>com.google.protobuf</groupId>
-  <artifactId>protobuf-java</artifactId>
-  <version>${protobuf.version}</version>
-  <scope>provided</scope>
-</dependency>
-```
-
-`provided` scope, not `compile` — the user's classpath already has the shaded
-protobuf-java via `comet-spark`.
-
-`contrib/example/` does not exercise this path because its Scala side never builds a
-`ContribOp` (the example's tests only validate dispatch wiring, not payload generation).
-The first real-format contrib in the tree will be the place this section's snippets
-are first exercised against CI.
+`contrib/example/` does NOT exercise this path because its Scala side never builds a
+`ContribOp` — the example only validates dispatch wiring. The first real-format
+contrib in the tree will be where this section's snippets are first exercised
+end-to-end against CI.
 
 ### Building a `ContribOp` envelope
 
@@ -442,10 +485,16 @@ val envelope = ContribOp.newBuilder()
 Some(builder.setContribOp(envelope).build())
 ```
 
-The Rust generated field on the `Operator` enum is called `op_struct` (a `oneof`); the
-Java builder method is `Operator.Builder.setContribOp(ContribOp)`. Both correspond to
-the same wire-format field — the naming difference is purely the language conventions
-of the code generators.
+A note on the proto naming. `operator.proto` declares
+`oneof op_struct { ... ContribOp contrib_op = 117; ... }`. So `op_struct` is the
+*oneof name* and `contrib_op` is the *field name* on that oneof. The two code
+generators surface this differently:
+
+- **Rust (prost):** pattern-matches as `match operator.op_struct { Some(OpStruct::ContribOp(c)) => ... }`.
+- **Java (protoc):** uses the field-name-derived builder method `Operator.Builder.setContribOp(ContribOp)`.
+
+Both manipulate the same wire-format slot — the difference is purely how the code
+generators expose `oneof` membership.
 
 ## Wire-format flow
 
@@ -506,23 +555,28 @@ impl ContribOperatorPlanner for MyFormatScanPlanner {
             .map(|e| ctx.build_physical_expr(e, required_schema.clone()))
             .collect::<Result<Vec<_>, _>>()?;
 
-        // 4. Register the object store. The returned URL is what every PartitionedFile
-        //    in your file_groups must use; the returned Path is the canonical key
-        //    inside that store, usually the per-file path the contrib uses to set
-        //    `partitioned_file.object_meta.location`.
+        // 4. Register the object store for the scheme + host the files live in. The
+        //    returned ObjectStoreUrl is the canonical key every PartitionedFile in your
+        //    file_groups must reference. The returned Path is only relevant if you are
+        //    constructing PartitionedFiles whose location is rooted at the same prefix;
+        //    most file-scan contribs build per-file Paths from the raw URL inside
+        //    `build_partitioned_files` below and can discard this Path entirely.
         let any_file_url = scan.tasks
             .first()
             .map(|t| t.file_path.clone())
             .ok_or_else(|| ContribError::Plan("empty file list".into()))?;
         let object_store_options = scan.object_store_options.clone();
-        let (object_store_url, _path_template) =
+        let (object_store_url, _root_path) =
             ctx.prepare_object_store(any_file_url, &object_store_options)?;
 
-        // 5. Build the file_groups: Vec<Vec<PartitionedFile>> with one inner Vec per
-        //    desired DataFusion partition.
-        let file_groups = build_partitioned_files(&scan.tasks /* contrib's helper */)?;
+        // 5. Build the file_groups: Vec<Vec<PartitionedFile>>, one inner Vec per
+        //    desired DataFusion partition. The contrib owns this -- see the helper
+        //    sketch below.
+        let file_groups = build_partitioned_files(&scan.tasks)?;
 
-        // 6. Hand the bundle to core's tuned ParquetSource.
+        // 6. Hand the bundle to core's tuned ParquetSource. as_str() because
+        //    with_session_timezone takes `impl Into<String>` and `&String` doesn't
+        //    impl that; `&str` does.
         let exec = ctx.build_parquet_datasource_exec(
             ParquetDatasourceParams::new(
                 required_schema.clone(),
@@ -532,7 +586,7 @@ impl ContribOperatorPlanner for MyFormatScanPlanner {
             .with_data_schema(data_schema)
             .with_partition_schema(partition_schema)
             .with_data_filters(data_filters)
-            .with_session_timezone(&scan.session_timezone)
+            .with_session_timezone(scan.session_timezone.as_str())
             .with_case_sensitive(scan.case_sensitive),
         )?;
 
@@ -543,8 +597,51 @@ impl ContribOperatorPlanner for MyFormatScanPlanner {
 }
 ```
 
-The flow above mirrors what a real Delta or Iceberg port does. Pieces a contrib
-typically owns inside itself, NOT exposed through `ContribPlannerContext`:
+### `build_partitioned_files` — contrib-owned helper sketch
+
+`Vec<Vec<PartitionedFile>>` is the format `init_datasource_exec` consumes. Each inner
+`Vec` becomes one DataFusion partition; each `PartitionedFile` carries an
+`ObjectMeta.location` (a path inside the registered object store) plus optional
+partition-column values. Minimal one-file-per-partition implementation:
+
+```rust
+use datafusion::datasource::listing::PartitionedFile;
+use object_store::path::Path;
+use url::Url;
+
+fn build_partitioned_files(
+    tasks: &[crate::proto::FileTask],
+) -> Result<Vec<Vec<PartitionedFile>>, ContribError> {
+    let mut groups = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        let url = Url::parse(&task.file_path)
+            .map_err(|e| ContribError::Plan(format!("invalid file URL: {e}")))?;
+        // Path within the object store -- starts at the bucket root for s3://,
+        // at the filesystem root for file://, etc.
+        let path = Path::from_url_path(url.path())
+            .map_err(|e| ContribError::Plan(format!("path from URL: {e}")))?;
+        let mut pf = PartitionedFile::new(String::new(), task.file_size);
+        pf.object_meta.location = path;
+        // pf.partition_values = vec![/* ScalarValues per partition column */];
+        groups.push(vec![pf]);
+    }
+    Ok(groups)
+}
+```
+
+Real-world contribs typically:
+
+- Combine many small non-partitioned files into a single inner `Vec` (fewer
+  DataFusion partitions) and split very large files across multiple partitions with
+  `PartitionedFile::new_with_range`.
+- Populate `partition_values` from the format's metadata so partition pruning works.
+- Apply format-specific filters (e.g., Delta's pre-materialized deleted-row indexes,
+  Iceberg's equality deletes) as wrappers around the parquet exec, NOT as
+  PartitionedFile mutations.
+
+### Pieces a contrib owns inside itself
+
+Not exposed through `ContribPlannerContext`:
 
 - Reading the format's transaction log / manifest (kernel-rs for Delta, iceberg-rust
   for Iceberg).
@@ -620,6 +717,14 @@ signals to check:
 - ServiceLoader instantiation failures are logged at WARN with `Failed to load a
   CometScanRuleExtension entry; skipping`. Causes: missing no-arg constructor on the
   extension class, exception thrown by the constructor.
+- Duplicate-class collisions across contribs are logged at WARN with
+  `Multiple Comet contrib extensions claim the same exec class ...`. The merged
+  `CometExecRule` dispatch is last-write-wins on collision; if your contrib's serde
+  silently stops working when another contrib JAR is present, this is the line to
+  look for.
+- `register_contrib_planner` is last-write-wins on duplicate `kind`. Registration
+  logs a WARN: `replacing existing planner for kind=...`. Two contribs that both
+  register `kind="delta-scan"` (the second clobbers the first) will surface here.
 - `registered_contrib_kinds()` (Rust) returns the kinds currently registered. If your
   contrib's kind is missing under a build that should include it, the Cargo feature is
   off or the `extern crate` in `native/core/src/lib.rs` is missing.
