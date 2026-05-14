@@ -48,11 +48,21 @@ under the License.
 
   <build>
     <plugins>
-      <!-- scala-maven-plugin handles javac too — the parent pom's
+      <!-- scala-maven-plugin handles javac too: the parent pom's
            maven-compiler-plugin is configured with skipMain=true. -->
       <plugin>
         <groupId>net.alchim31.maven</groupId>
         <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <!-- This module has no Scala sources; skip scalafix so the lint job
+           does not fail with "No files to fix". -->
+      <plugin>
+        <groupId>io.github.evis</groupId>
+        <artifactId>scalafix-maven-plugin_${scala.binary.version}</artifactId>
+        <version>${scalafix-maven-plugin.version}</version>
+        <configuration>
+          <skip>true</skip>
+        </configuration>
       </plugin>
     </plugins>
   </build>
