@@ -112,9 +112,9 @@ jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 
 # Contrib feature flags. Each flag pulls a contrib rlib into core's cdylib so contrib
 # Rust code is linked into the single libcomet at build time; the contrib's #[ctor]
-# registers its operator planners during library init. See
-# docs/contrib-delta-migration-plan.md for the architectural rationale (single cdylib
-# instead of separate cdylib per contrib).
+# registers its operator planners during library init. The single-cdylib architecture
+# (rather than separate cdylib per contrib) is documented in
+# docs/source/contributor-guide/contrib-extensions.md.
 contrib-example = ["dep:comet-contrib-example"]
 
 # exclude optional packages from cargo machete verifications

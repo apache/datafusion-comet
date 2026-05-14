@@ -35,8 +35,9 @@ import org.apache.spark.internal.Logging
  * `META-INF/services/org.apache.comet.spi.CometOperatorSerdeExtension` resource on the Comet
  * classloader. Subsequent calls are no-ops.
  *
- * `CometSparkSessionExtensions.apply` calls `load()` during Comet extension installation (PR1.6)
- * so contrib JARs are picked up automatically when present.
+ * `load()` is invoked lazily from `CometScanRule._apply` and `CometExecRule._apply` the first
+ * time either rule runs against a Comet-enabled session. Spark sessions that never enable Comet
+ * pay zero ServiceLoader cost.
  *
  * Failures to instantiate individual extensions are logged but do NOT fail Comet startup -- a
  * misconfigured contrib JAR shouldn't take down the whole Spark session.

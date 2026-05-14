@@ -84,7 +84,7 @@ impl ContribPlannerContext for CorePlannerContext<'_> {
 
     fn build_parquet_datasource_exec(
         &self,
-        params: ParquetDatasourceParams<'_>,
+        params: ParquetDatasourceParams,
     ) -> Result<Arc<dyn ExecutionPlan>, ContribError> {
         init_datasource_exec(
             params.required_schema,
@@ -95,7 +95,7 @@ impl ContribPlannerContext for CorePlannerContext<'_> {
             params.projection_vector,
             params.data_filters,
             params.default_values,
-            params.session_timezone,
+            &params.session_timezone,
             params.case_sensitive,
             params.return_null_struct_if_all_fields_missing,
             self.planner.session_ctx(),
@@ -115,6 +115,24 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::context::SessionContext;
     use datafusion::execution::object_store::ObjectStoreUrl;
+
+    /// Production-build assertion: when no contrib feature is enabled, the registry
+    /// must be empty. Catches an accidental re-introduction of a contrib into core's
+    /// `default = [...]` feature set. Compiled out under `--features contrib-example`
+    /// (the test binary always links its crate's dependencies, so this assertion would
+    /// be wrong under that flag).
+    #[cfg(not(feature = "contrib-example"))]
+    #[test]
+    fn production_build_has_no_contrib_planners_registered() {
+        // Direct read through the SPI's public API. This test is the canary for
+        // the contributor-guide claim that release builds carry zero contrib surface.
+        let kinds = comet_contrib_spi::registered_contrib_kinds();
+        assert!(
+            kinds.is_empty(),
+            "default cdylib leaked contrib planners: {kinds:?}. \
+             Check native/core/Cargo.toml's `default = [...]` for contrib features."
+        );
+    }
 
     #[test]
     fn core_planner_context_builds_parquet_exec_with_expected_schema() {
@@ -164,5 +182,56 @@ mod tests {
         let ctx = CorePlannerContext { planner: &planner };
         let schema = ctx.convert_spark_schema(&[]);
         assert_eq!(schema.fields().len(), 0);
+    }
+
+    #[test]
+    fn core_planner_context_encryption_flag_reaches_init_datasource_exec() {
+        // Cross-crate positional-arg-swap guard. `init_datasource_exec` takes five `bool`
+        // parameters in a row (case_sensitive, return_null_struct_..., encryption_enabled,
+        // use_field_id, ignore_missing_field_id); a swap of two of them at the call site
+        // in `build_parquet_datasource_exec` would compile fine and break silently. We
+        // exploit the asymmetry that `encryption_enabled=true` triggers an encryption-
+        // factory lookup that fails when no factory is registered, while every other
+        // bool being `true` keeps the call succeeding. So:
+        //   * Default (all bools false) -> Ok
+        //   * Same call with `encryption_enabled=true` -> Err on factory lookup
+        // If a swap accidentally routed e.g. `use_field_id` into the encryption slot, the
+        // "default" variant below would fail (because use_field_id is true here in the
+        // params struct, and the swapped slot would now enable encryption).
+        let session_ctx = Arc::new(SessionContext::new());
+        let planner = PhysicalPlanner::new(Arc::clone(&session_ctx), 0);
+        let ctx = CorePlannerContext { planner: &planner };
+
+        let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            DataType::Int64,
+            false,
+        )]));
+        let url = ObjectStoreUrl::parse("file://").unwrap();
+
+        // Witness #1: all five bools `true` EXCEPT encryption_enabled. Must succeed --
+        // confirms case_sensitive / use_field_id / etc. are NOT routed into the
+        // encryption slot.
+        let no_encryption = ParquetDatasourceParams::new(Arc::clone(&schema), url.clone(), vec![])
+            .with_case_sensitive(true)
+            .with_return_null_struct_if_all_fields_missing(true)
+            .with_use_field_id(true)
+            .with_ignore_missing_field_id(true)
+            .with_encryption_enabled(false);
+        ctx.build_parquet_datasource_exec(no_encryption)
+            .expect("encryption_enabled=false must not trigger factory lookup");
+
+        // Witness #2: only encryption_enabled is true. Must fail with the encryption-factory
+        // not-found error. Confirms encryption_enabled actually reaches the encryption slot.
+        let with_encryption =
+            ParquetDatasourceParams::new(Arc::clone(&schema), url, vec![]).with_encryption_enabled(true);
+        let err = ctx
+            .build_parquet_datasource_exec(with_encryption)
+            .expect_err("encryption_enabled=true should fail without a factory");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("encryption") || msg.contains("Encryption") || msg.contains("factory"),
+            "expected encryption-factory error, got: {msg}"
+        );
     }
 }

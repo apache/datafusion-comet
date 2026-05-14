@@ -83,8 +83,12 @@ pub trait ContribOperatorPlanner: Send + Sync {
 /// `#[non_exhaustive]` so adding fields in future is a minor SemVer bump, not a break.
 /// Contribs construct via [`ParquetDatasourceParams::new`] (required fields only) +
 /// `with_*` builder setters; never by struct-literal syntax.
+///
+/// `session_timezone` is owned (`String`) so contribs can pass a runtime-computed value
+/// (from a session config lookup) without juggling lifetimes. The string is one-time
+/// per plan call, so the allocation is negligible.
 #[non_exhaustive]
-pub struct ParquetDatasourceParams<'a> {
+pub struct ParquetDatasourceParams {
     pub required_schema: SchemaRef,
     pub data_schema: Option<SchemaRef>,
     pub partition_schema: Option<SchemaRef>,
@@ -93,7 +97,7 @@ pub struct ParquetDatasourceParams<'a> {
     pub projection_vector: Option<Vec<usize>>,
     pub data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
     pub default_values: Option<HashMap<Column, ScalarValue>>,
-    pub session_timezone: &'a str,
+    pub session_timezone: String,
     pub case_sensitive: bool,
     pub return_null_struct_if_all_fields_missing: bool,
     pub encryption_enabled: bool,
@@ -101,7 +105,7 @@ pub struct ParquetDatasourceParams<'a> {
     pub ignore_missing_field_id: bool,
 }
 
-impl<'a> ParquetDatasourceParams<'a> {
+impl ParquetDatasourceParams {
     /// Minimal constructor with the parameters every parquet scan needs. All `Option`s
     /// default to `None`, all `bool`s to `false`, and `session_timezone` to `"UTC"`. Use
     /// the `with_*` setters to populate the rest.
@@ -119,7 +123,7 @@ impl<'a> ParquetDatasourceParams<'a> {
             projection_vector: None,
             data_filters: None,
             default_values: None,
-            session_timezone: "UTC",
+            session_timezone: "UTC".to_string(),
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: false,
             encryption_enabled: false,
@@ -148,8 +152,10 @@ impl<'a> ParquetDatasourceParams<'a> {
         self.default_values = Some(values);
         self
     }
-    pub fn with_session_timezone(mut self, tz: &'a str) -> Self {
-        self.session_timezone = tz;
+    /// Accepts anything that can be turned into a `String` -- string literals,
+    /// `&str` borrowed from session config, owned `String`s -- without lifetime games.
+    pub fn with_session_timezone(mut self, tz: impl Into<String>) -> Self {
+        self.session_timezone = tz.into();
         self
     }
     pub fn with_case_sensitive(mut self, b: bool) -> Self {
@@ -223,7 +229,7 @@ pub trait ContribPlannerContext {
     /// goes through here so the contrib doesn't have to rebuild Comet's parquet plumbing.
     fn build_parquet_datasource_exec(
         &self,
-        params: ParquetDatasourceParams<'_>,
+        params: ParquetDatasourceParams,
     ) -> Result<Arc<dyn ExecutionPlan>, ContribError>;
 }
 
@@ -256,10 +262,11 @@ impl std::fmt::Display for ContribError {
             ContribError::WrongChildCount { expected, actual } => {
                 write!(f, "wrong child count: expected {expected}, got {actual}")
             }
-            // Wildcard arm so the match stays exhaustive after future #[non_exhaustive]
-            // additions. Reached only by `_` constructors that don't exist today.
+            // Wildcard for future variants added under #[non_exhaustive]. Use the Debug
+            // repr so the dispatcher's `format!("contrib planner ...: {e}")` carries a
+            // useful message rather than swallowing the variant.
             #[allow(unreachable_patterns)]
-            _ => write!(f, "unknown contrib error"),
+            other => write!(f, "{other:?}"),
         }
     }
 }

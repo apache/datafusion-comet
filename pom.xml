@@ -41,9 +41,9 @@ under the License.
     <!--
       contrib/<name>/ modules. Each is a self-contained extension that ships as a
       separate Maven artifact; when the matching Cargo feature on core is enabled
-      (default-on), the contrib's Rust rlib is linked into libcomet so the native side
-      of the SPI works without a second cdylib. See
-      docs/contrib-delta-migration-plan.md.
+      (off by default; users opt in via -Pcontrib-<name>), the contrib's Rust rlib is
+      linked into libcomet so the native side of the SPI works without a second cdylib.
+      See docs/source/contributor-guide/contrib-extensions.md.
     -->
     <module>contrib/example</module>
   </modules>

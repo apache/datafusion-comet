@@ -554,6 +554,12 @@ case class CometExecRule(session: SparkSession)
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
+    // Lazy contrib discovery. Mirrors the call in CometScanRule._apply -- either rule may
+    // be the first to run depending on which path of the plan tree fires first. load() is
+    // idempotent (AtomicBoolean gate), so the duplicate call is a no-op in steady state
+    // but makes each rule self-contained instead of relying on CometScanRule running first.
+    CometExtensionRegistry.load()
+
     // Comet does not support structured streaming. Fall back to Spark for any plan that
     // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).
     if (ShimCometStreaming.isStreamingPlan(plan)) return plan

@@ -131,27 +131,42 @@ case class CometScanRule(session: SparkSession)
     // contribs' Catalyst wrappers (Delta's DV filter, etc.) are load-bearing and stripping
     // them turns into a correctness bug. Leave the plan tree as Spark wrote it.
     //
-    // Corruption guard: snapshot scan classes before each extension's pass and after; if
-    // a non-matching scan's class identity changed, log a warning naming the extension.
+    // Corruption guard: snapshot every FileSourceScanExec the extension does NOT claim
+    // before the pass, and verify each one is still present (by reference) afterwards.
     // Contribs' `preTransform` MUST only rewrite scans they recognise; this guard catches
-    // the common violation early. Light overhead (one collect per extension); only fires
-    // a warning when the contract is broken.
+    // the most dangerous violation (a contrib stripping or substituting an unrelated
+    // format's scan) regardless of whether the replacement keeps the same SparkPlan
+    // class. Light overhead (one collect per extension + one identity-Set check); only
+    // fires a warning when the contract is broken.
     val prepped =
       if (!CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf)) {
         plan
       } else {
         CometExtensionRegistry.scanExtensions.foldLeft(plan) { (p, ext) =>
-          val before = p.collect { case s: FileSourceScanExec => s }
+          val unclaimedBefore = p.collect {
+            case s: FileSourceScanExec if !ext.matchesV1(s.relation) => s
+          }
           val after = ext.preTransform(p, session)
-          val afterScans = after.collect { case s: FileSourceScanExec => s }
-          if (before.size == afterScans.size) {
-            before.zip(afterScans).foreach { case (b, a) =>
-              if ((b ne a) && b.getClass == a.getClass && !ext.matchesV1(b.relation)) {
+          if (unclaimedBefore.nonEmpty) {
+            // Identity-equality check (reference compare) -- detects removal or
+            // substitution of a scan the extension doesn't own, including replacements
+            // whose SparkPlan class differs from the original. Plan-tree reordering is
+            // tolerated (we don't care WHERE the scan ended up, only that it still
+            // exists in the tree).
+            val survivors = scala.collection.mutable.Set.empty[FileSourceScanExec]
+            after.foreach {
+              case s: FileSourceScanExec => survivors += s
+              case _ =>
+            }
+            unclaimedBefore.foreach { b =>
+              if (!survivors.exists(_ eq b)) {
                 logWarning(
-                  s"CometScanRuleExtension '${ext.name}'.preTransform replaced a " +
-                    s"FileSourceScanExec it does not claim (matchesV1=false). This is a " +
-                    s"contract violation -- preTransform must only rewrite scans the " +
-                    s"extension recognises. See CometScanRuleExtension.preTransform doc.")
+                  s"CometScanRuleExtension '${ext.name}'.preTransform removed or " +
+                    s"replaced a FileSourceScanExec it does not claim " +
+                    s"(matchesV1=false on its relation, ${b.relation.fileFormat}). " +
+                    s"This is a contract violation -- preTransform must only rewrite " +
+                    s"scans the extension recognises. See " +
+                    s"CometScanRuleExtension.preTransform doc.")
               }
             }
           }

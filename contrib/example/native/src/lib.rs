@@ -186,7 +186,7 @@ mod tests {
         }
         fn build_parquet_datasource_exec(
             &self,
-            _params: ParquetDatasourceParams<'_>,
+            _params: ParquetDatasourceParams,
         ) -> Result<Arc<dyn ExecutionPlan>, ContribError> {
             unimplemented!("TestCtx: build_parquet_datasource_exec not used by this test")
         }
