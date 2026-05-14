@@ -66,7 +66,6 @@ SELECT decode(b, 'US-ASCII') FROM test_decode_charset_safe
 query expect_fallback(Comet only supports decoding with 'utf-8'.)
 SELECT decode(b, 'ISO-8859-1') FROM test_decode_utf8
 
--- Oracle-style form: decode(expr, search1, result1, ..., [default])
 
 statement
 CREATE TABLE test_decode_oracle(status string, code int) USING parquet
