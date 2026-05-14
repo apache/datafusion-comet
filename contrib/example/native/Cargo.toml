@@ -42,6 +42,10 @@ crate-type = ["rlib"]
 # depends back on core from a contrib.
 comet-contrib-spi = { path = "../../../native/contrib-spi" }
 datafusion = { workspace = true }
+# Used only in unit tests to construct a TestCtx that implements ContribPlannerContext;
+# kept in [dependencies] (not [dev-dependencies]) because the trait's typed methods take
+# spark_expression / spark_operator proto refs and the impl module is not test-gated.
+datafusion-comet-proto = { workspace = true }
 prost = "0.14.3"
 ctor = "0.4"
 log = "0.4"

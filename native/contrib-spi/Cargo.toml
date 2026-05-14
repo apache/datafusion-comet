@@ -17,7 +17,7 @@
 
 [package]
 name = "comet-contrib-spi"
-description = "Stable SPI surface that contrib crates and Comet's core both depend on. Defines the ContribOperatorPlanner trait, the process-wide registry, and the lightweight error type. Separating this from the core crate breaks what would otherwise be a cyclic dependency (core links contribs via Cargo feature flags; contribs need core types)."
+description = "Stable SPI surface that contrib crates and Comet's core both depend on. Defines the ContribOperatorPlanner trait, ContribPlannerContext, the process-wide registry, and the lightweight error type. Separating this from the core crate breaks what would otherwise be a cyclic dependency (core links contribs via Cargo feature flags; contribs need core types)."
 version = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
@@ -26,5 +26,7 @@ license = { workspace = true }
 edition = { workspace = true }
 
 [dependencies]
+# Public types in the SPI reference these crates. Pinning matches core via workspace.
 datafusion = { workspace = true }
+datafusion-comet-proto = { workspace = true }
 log = "0.4"

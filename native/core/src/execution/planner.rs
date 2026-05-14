@@ -1967,7 +1967,9 @@ impl PhysicalPlanner {
                 // by the time we reach this arm the registry is already warm. Missing
                 // registrations typically mean the JVM JAR is on the classpath but core
                 // was built without the corresponding `contrib-<name>` Cargo feature.
-                use crate::execution::planner::contrib::lookup_contrib_planner_by_kind;
+                use crate::execution::planner::contrib::{
+                    lookup_contrib_planner_by_kind, CorePlannerContext,
+                };
                 let kind = contrib_op.kind.as_str();
                 let planner = lookup_contrib_planner_by_kind(kind).ok_or_else(|| {
                     GeneralError(format!(
@@ -1992,8 +1994,9 @@ impl PhysicalPlanner {
                     native_children.push(child_plan.native_plan.clone());
                 }
 
+                let ctx = CorePlannerContext { planner: self };
                 let exec = planner
-                    .plan(&contrib_op.payload, native_children)
+                    .plan(&ctx, &contrib_op.payload, native_children)
                     .map_err(|e| GeneralError(format!("contrib planner {kind:?}: {e}")))?;
 
                 Ok((

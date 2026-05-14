@@ -44,7 +44,9 @@
 
 use std::sync::Arc;
 
-use comet_contrib_spi::{register_contrib_planner, ContribError, ContribOperatorPlanner};
+use comet_contrib_spi::{
+    register_contrib_planner, ContribError, ContribOperatorPlanner, ContribPlannerContext,
+};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::ExecutionPlan;
@@ -71,6 +73,7 @@ struct NoOpPlanner;
 impl ContribOperatorPlanner for NoOpPlanner {
     fn plan(
         &self,
+        _ctx: &dyn ContribPlannerContext,
         _payload: &[u8],
         _children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, ContribError> {
@@ -89,6 +92,7 @@ struct ConstantScanPlanner;
 impl ContribOperatorPlanner for ConstantScanPlanner {
     fn plan(
         &self,
+        _ctx: &dyn ContribPlannerContext,
         payload: &[u8],
         _children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, ContribError> {
@@ -125,7 +129,57 @@ fn register() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use comet_contrib_spi::lookup_contrib_planner_by_kind;
+    use comet_contrib_spi::{lookup_contrib_planner_by_kind, ParquetDatasourceParams};
+    use datafusion::arrow::datatypes::SchemaRef;
+    use datafusion::execution::context::SessionContext;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion_comet_proto::{spark_expression, spark_operator};
+    use std::collections::HashMap;
+
+    /// Minimal `ContribPlannerContext` for unit-testing contrib planners that don't
+    /// actually need to build a parquet exec. All methods that the tests don't exercise
+    /// panic if invoked.
+    struct TestCtx {
+        ctx: Arc<SessionContext>,
+    }
+    impl ContribPlannerContext for TestCtx {
+        fn session_ctx(&self) -> &Arc<SessionContext> {
+            &self.ctx
+        }
+        fn build_physical_expr(
+            &self,
+            _expr: &spark_expression::Expr,
+            _input_schema: SchemaRef,
+        ) -> Result<Arc<dyn PhysicalExpr>, ContribError> {
+            unimplemented!("TestCtx: build_physical_expr not used by this test")
+        }
+        fn convert_spark_schema(
+            &self,
+            _fields: &[spark_operator::SparkStructField],
+        ) -> SchemaRef {
+            unimplemented!("TestCtx: convert_spark_schema not used by this test")
+        }
+        fn prepare_object_store(
+            &self,
+            _url: String,
+            _configs: &HashMap<String, String>,
+        ) -> Result<ObjectStoreUrl, ContribError> {
+            unimplemented!("TestCtx: prepare_object_store not used by this test")
+        }
+        fn build_parquet_datasource_exec(
+            &self,
+            _params: ParquetDatasourceParams<'_>,
+        ) -> Result<Arc<dyn ExecutionPlan>, ContribError> {
+            unimplemented!("TestCtx: build_parquet_datasource_exec not used by this test")
+        }
+    }
+
+    fn test_ctx() -> TestCtx {
+        TestCtx {
+            ctx: Arc::new(SessionContext::new()),
+        }
+    }
 
     #[test]
     fn ctor_registers_both_planners() {
@@ -138,19 +192,21 @@ mod tests {
     fn constant_scan_decodes_payload_and_builds() {
         let payload = proto::ExampleConstantScan { row_count: 42 }.encode_to_vec();
         let planner = ConstantScanPlanner;
-        let plan = planner.plan(&payload, vec![]).expect("decode + build");
-        // We don't care about the concrete exec type beyond "it built something";
-        // confirms the decode path works end-to-end.
+        let ctx = test_ctx();
+        let plan = planner.plan(&ctx, &payload, vec![]).expect("decode + build");
         assert!(plan.schema().fields().is_empty());
     }
 
     #[test]
     fn constant_scan_surfaces_bad_payload() {
         let planner = ConstantScanPlanner;
+        let ctx = test_ctx();
         let bad = b"not a valid proto";
-        let err = planner.plan(bad, vec![]).expect_err("garbage should fail decode");
+        let err = planner
+            .plan(&ctx, bad, vec![])
+            .expect_err("garbage should fail decode");
         match err {
-            ContribError::BadPayload(_) => {} // expected
+            ContribError::BadPayload(_) => {}
             other => panic!("expected BadPayload, got {other:?}"),
         }
     }

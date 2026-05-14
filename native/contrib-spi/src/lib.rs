@@ -18,28 +18,45 @@
 //! Thin SPI crate shared between Comet's core and every contrib crate.
 //!
 //! Both core (`datafusion-comet`) and individual contribs (`comet-contrib-example`,
-//! eventually `comet-contrib-delta`) depend on THIS crate, NOT on each other. This avoids
-//! a cyclic dependency: core wires contribs in via Cargo feature flags, and contribs need
+//! `comet-contrib-delta`, ...) depend on THIS crate, NOT on each other. This avoids a
+//! cyclic dependency: core wires contribs in via Cargo feature flags, and contribs need
 //! the SPI types to implement the trait. With the SPI in a third crate, the dependency
 //! graph is a DAG.
 //!
 //! Surface:
-//!   * [`ContribOperatorPlanner`] — the trait contribs implement.
-//!   * [`register_contrib_planner`] / [`lookup_contrib_planner_by_kind`] —
-//!     process-wide registry, expected to be populated from a contrib's `#[ctor]`.
-//!   * [`registered_contrib_kinds`] — diagnostics.
+//!   * [`ContribOperatorPlanner`]   -- the trait contribs implement.
+//!   * [`ContribPlannerContext`]    -- the trait core implements; gives contribs access
+//!                                     to the parquet exec builder, expression planner,
+//!                                     object-store registration, and session context.
+//!   * [`ParquetDatasourceParams`]  -- argument bundle for the parquet exec builder.
+//!   * [`register_contrib_planner`] / [`lookup_contrib_planner_by_kind`] --
+//!                                     process-wide registry, expected to be populated
+//!                                     from a contrib's `#[ctor]`.
+//!   * [`registered_contrib_kinds`] -- diagnostics.
 
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock, RwLock},
 };
 
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::{
+    arrow::datatypes::SchemaRef,
+    common::ScalarValue,
+    datasource::listing::PartitionedFile,
+    execution::{context::SessionContext, object_store::ObjectStoreUrl},
+    physical_expr::PhysicalExpr,
+    physical_plan::{expressions::Column, ExecutionPlan},
+};
+use datafusion_comet_proto::{spark_expression, spark_operator};
 
 /// Implemented by each contrib. Called from core's planner when an `OpStruct::ContribOp`
 /// with the contrib's `kind` is encountered.
 ///
 /// The contract is intentionally minimal:
+///   * `ctx` is a handle to core-side planner services (parquet exec builder,
+///     expression planner, object-store registration, session context). Contribs reach
+///     into core through this trait rather than depending on core directly, which keeps
+///     the dependency graph acyclic.
 ///   * `payload` is the raw bytes from `ContribOp.payload`. The contrib decodes it into
 ///     whatever proto / serde format it uses internally; core never inspects.
 ///   * `children` is the list of already-built native children (in spark-plan child
@@ -48,19 +65,96 @@ use datafusion::physical_plan::ExecutionPlan;
 ///   * The returned `Arc<dyn ExecutionPlan>` is the contrib's operator. Core wraps it
 ///     into a `SparkPlan` and threads it through the rest of the plan tree.
 ///
-/// Implementations MUST be `Send + Sync` and idempotent — the same `(payload, children)`
+/// Implementations MUST be `Send + Sync` and idempotent -- the same `(payload, children)`
 /// must always produce a functionally equivalent plan, so core can cache or re-plan.
 pub trait ContribOperatorPlanner: Send + Sync {
     fn plan(
         &self,
+        ctx: &dyn ContribPlannerContext,
         payload: &[u8],
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, ContribError>;
 }
 
-/// Error type returned by [`ContribOperatorPlanner::plan`]. Kept distinct from core's
-/// `ExecutionError` so this crate stays free of core's dependency tree. Core converts
-/// `ContribError` into its own `ExecutionError` at the dispatch site.
+/// Argument bundle for [`ContribPlannerContext::build_parquet_datasource_exec`]. Mirrors
+/// core's internal `init_datasource_exec` signature one-to-one, so the trait method is a
+/// thin forward.
+///
+/// Held by value rather than `&self`/builder pattern because contribs build it once per
+/// plan call -- the verbose layout is easier to read at the call site than a builder
+/// would be.
+pub struct ParquetDatasourceParams<'a> {
+    pub required_schema: SchemaRef,
+    pub data_schema: Option<SchemaRef>,
+    pub partition_schema: Option<SchemaRef>,
+    pub object_store_url: ObjectStoreUrl,
+    pub file_groups: Vec<Vec<PartitionedFile>>,
+    pub projection_vector: Option<Vec<usize>>,
+    pub data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
+    pub default_values: Option<HashMap<Column, ScalarValue>>,
+    pub session_timezone: &'a str,
+    pub case_sensitive: bool,
+    pub return_null_struct_if_all_fields_missing: bool,
+    pub encryption_enabled: bool,
+    pub use_field_id: bool,
+    pub ignore_missing_field_id: bool,
+}
+
+/// Planner services exposed by core to contribs. Core implements this trait against its
+/// `PhysicalPlanner` + `SessionContext`; contribs receive a `&dyn ContribPlannerContext`
+/// in their [`ContribOperatorPlanner::plan`] call and reach into core through it.
+///
+/// All trait methods are infallible at the trait-bound level but return `ContribError`
+/// for runtime failures, so contribs can propagate without converting between error
+/// types.
+// Note: no `Send + Sync` bound -- `&dyn ContribPlannerContext` is only held for the
+// duration of a synchronous `plan()` call, so it doesn't need to cross threads. The
+// natural core-side impl borrows the `PhysicalPlanner` (which carries JNI handles that
+// aren't `Send`), and adding the bound here would force an awkward `Arc<Mutex<...>>`
+// dance for no gain.
+pub trait ContribPlannerContext {
+    /// The session context the plan is being built under. Contribs need this to register
+    /// object stores on `runtime_env()` and to read session-level configs (timezone,
+    /// case sensitivity, etc) that aren't already on `ParquetDatasourceParams`.
+    fn session_ctx(&self) -> &Arc<SessionContext>;
+
+    /// Convert a Catalyst-side Spark expression proto into a DataFusion `PhysicalExpr`
+    /// against the given input schema. Used by file-scan contribs to convert data
+    /// filters from their proto-side `Expr` form into the typed `PhysicalExpr`s that
+    /// `ParquetSource` consumes.
+    fn build_physical_expr(
+        &self,
+        expr: &spark_expression::Expr,
+        input_schema: SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ContribError>;
+
+    /// Convert a slice of Spark struct fields (the proto representation of a Spark
+    /// schema) into an Arrow `SchemaRef`. This is a pure proto-to-arrow conversion --
+    /// no side effects, no session state.
+    fn convert_spark_schema(&self, fields: &[spark_operator::SparkStructField]) -> SchemaRef;
+
+    /// Register an object store on the runtime env for the given URL's scheme + bucket,
+    /// using `object_store_configs` for credentials / endpoint overrides. Returns the
+    /// canonical `ObjectStoreUrl` that the contrib should attach to its `PartitionedFile`s.
+    fn prepare_object_store(
+        &self,
+        any_file_url: String,
+        object_store_configs: &HashMap<String, String>,
+    ) -> Result<ObjectStoreUrl, ContribError>;
+
+    /// Build a `DataSourceExec` over Comet's tuned `ParquetSource`. This is the single
+    /// most important method on the trait -- every file-scan contrib (Delta, Iceberg)
+    /// goes through here so the contrib doesn't have to rebuild Comet's parquet plumbing.
+    fn build_parquet_datasource_exec(
+        &self,
+        params: ParquetDatasourceParams<'_>,
+    ) -> Result<Arc<dyn ExecutionPlan>, ContribError>;
+}
+
+/// Error type returned by [`ContribOperatorPlanner::plan`] and the trait methods on
+/// [`ContribPlannerContext`]. Kept distinct from core's `ExecutionError` so this crate
+/// stays free of core's dependency tree. Core converts `ContribError` into its own
+/// `ExecutionError` at the dispatch site.
 #[derive(Debug)]
 pub enum ContribError {
     /// Generic failure. Use this for cases that don't fit the more specific variants.
@@ -139,6 +233,7 @@ pub fn registered_contrib_kinds() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::empty::EmptyExec;
     use std::sync::Arc;
 
@@ -146,12 +241,11 @@ mod tests {
     impl ContribOperatorPlanner for AlwaysEmpty {
         fn plan(
             &self,
+            _ctx: &dyn ContribPlannerContext,
             _payload: &[u8],
             _children: Vec<Arc<dyn ExecutionPlan>>,
         ) -> Result<Arc<dyn ExecutionPlan>, ContribError> {
-            Ok(Arc::new(EmptyExec::new(Arc::new(
-                datafusion::arrow::datatypes::Schema::empty(),
-            ))))
+            Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
         }
     }
 
