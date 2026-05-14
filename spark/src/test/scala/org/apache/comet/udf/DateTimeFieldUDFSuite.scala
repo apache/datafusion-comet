@@ -117,4 +117,22 @@ class DateTimeFieldUDFSuite extends AnyFunSuite {
     val out = udf.evaluate(Array(ts, tz), 1).asInstanceOf[IntVector]
     assert(out.get(0) == 34)
   }
+
+  test("SecondUDF on TimestampType in UTC") {
+    val micros = 1718454896000000L // 2024-06-15 12:34:56 UTC
+    val ts = tsTzVector("UTC", Array[java.lang.Long](micros))
+    val tz = tzVector("UTC")
+    val udf = new SecondUDF
+    val out = udf.evaluate(Array(ts, tz), 1).asInstanceOf[IntVector]
+    assert(out.get(0) == 56)
+  }
+
+  test("SecondUDF on TimestampNTZType") {
+    val micros = 1718454896000000L // 2024-06-15 12:34:56 NTZ
+    val ts = tsNtzVector(Array[java.lang.Long](micros))
+    val tz = tzVector("UTC")
+    val udf = new SecondUDF
+    val out = udf.evaluate(Array(ts, tz), 1).asInstanceOf[IntVector]
+    assert(out.get(0) == 56)
+  }
 }
