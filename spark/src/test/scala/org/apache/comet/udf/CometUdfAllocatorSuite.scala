@@ -78,11 +78,11 @@ class CometUdfAllocatorSuite extends AnyFunSuite with BeforeAndAfterAll {
 
     assert(
       taskMemDuring.value > taskMemBefore.value,
-      s"task memory should grow while UDF allocator holds buffers; " +
+      "task memory should grow while UDF allocator holds buffers; " +
         s"before=${taskMemBefore.value} during=${taskMemDuring.value}")
     assert(
       taskMemAfter.value == taskMemBefore.value,
-      s"task memory should be released after the allocation closes; " +
+      "task memory should be released after the allocation closes; " +
         s"before=${taskMemBefore.value} after=${taskMemAfter.value}")
   }
 
