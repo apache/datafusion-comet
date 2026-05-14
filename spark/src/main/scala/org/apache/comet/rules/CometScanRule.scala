@@ -140,7 +140,8 @@ case class CometScanRule(session: SparkSession)
     // exists in the tree, not where.
     //
     // Cost: O(K * (P + S)) where K = scanExtensions.size, P = plan node count,
-    // S = unclaimed-scan count. For typical K=1..3 and S small, this is negligible.
+    // S = scan count. IdentityHashMap gives O(1) survivor lookup; the dominant term
+    // is the tree traversals. For typical K=1..3 this is negligible.
     //
     // V2 scope: V2 BatchScanExecs are NOT inspected. preTransform is documented V1-only
     // (see CometScanRuleExtension.preTransform); V2 wrapper-stripping happens per-scan
@@ -159,15 +160,16 @@ case class CometScanRule(session: SparkSession)
             // FileSourceScanExec) compare equal when their fields match, so a self-join
             // with two reads against the same table after AQE deduplication can produce
             // two value-equal-but-reference-distinct scans. A standard mutable.Set would
-            // collapse them and we'd emit a false-positive warning. Use a Vector +
-            // `_ eq b` scan instead -- the survivor list is small in practice.
-            val survivors = scala.collection.mutable.ArrayBuffer.empty[FileSourceScanExec]
+            // collapse them and we'd emit a false-positive warning. IdentityHashMap
+            // gives us O(1) lookup with reference-equality semantics.
+            val survivors =
+              new java.util.IdentityHashMap[FileSourceScanExec, java.lang.Boolean]()
             after.foreach {
-              case s: FileSourceScanExec => survivors += s
+              case s: FileSourceScanExec => survivors.put(s, java.lang.Boolean.TRUE)
               case _ =>
             }
             unclaimedBefore.foreach { b =>
-              if (!survivors.exists(_ eq b)) {
+              if (!survivors.containsKey(b)) {
                 logWarning(
                   s"CometScanRuleExtension '${ext.name}'.preTransform removed or " +
                     s"replaced a FileSourceScanExec it does not claim " +

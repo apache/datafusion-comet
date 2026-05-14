@@ -59,6 +59,11 @@ object CometExtensionRegistry extends Logging {
     // observe `loaded=true` and read `Seq.empty` while thread A was still mid-loadOne.
     // CometScanRule._apply and CometExecRule._apply both call this on first invocation,
     // and AQE can run them concurrently across sub-queries, so the race is reachable.
+    //
+    // Contribs MUST NOT call `load()` from a `#[ctor]`-equivalent (JVM-side: a class's
+    // static initializer or trait's `object` init) -- Scala monitors are reentrant so
+    // re-entry won't deadlock, but the inner call would observe the partially-built
+    // state and re-trigger `loadOne`, shadowing the in-flight publication.
     if (loaded.get()) return
     val newScanExts = loadOne[CometScanRuleExtension]("CometScanRuleExtension")
     val newSerdeExts = loadOne[CometOperatorSerdeExtension]("CometOperatorSerdeExtension")
@@ -77,9 +82,9 @@ object CometExtensionRegistry extends Logging {
           s"serde=[${newSerdeExts.map(_.name).mkString(", ")}]")
       detectDuplicateSerdeClasses(newSerdeExts)
     } else {
-      // Positive signal that discovery ran. Some Spark deploy modes (Ivy `--packages`,
-      // isolated UDF classloaders) put Comet on a classloader that the TCCL fallback
-      // doesn't see; absent extensions go silent without this line.
+      // Positive signal that discovery ran. Without this line a user with a misconfigured
+      // contrib JAR (missing META-INF/services, or the JAR not on any classloader Comet
+      // can see) gets no diagnostic and silently loses contrib functionality.
       logInfo(
         "Comet contrib extensions: none discovered on classpath " +
           "(no META-INF/services entries for CometScanRuleExtension or " +
@@ -145,7 +150,10 @@ object CometExtensionRegistry extends Logging {
    * must still be able to reset between tests. The method's name carries the "test-only"
    * contract by convention.
    */
-  def resetForTesting(): Unit = {
+  def resetForTesting(): Unit = synchronized {
+    // synchronized so concurrent `load()` callers don't observe torn state -- e.g.
+    // `loaded=false` with `scanExts` still populated, which would let a subsequent
+    // `load()` short-circuit on the AtomicBoolean and never re-discover.
     loaded.set(false)
     scanExts = Seq.empty
     serdeExts = Seq.empty

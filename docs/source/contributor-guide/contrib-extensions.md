@@ -280,6 +280,17 @@ Lookups happen once per `ContribOp` plan call; writes happen only during library
 The implementation may switch to a lock-free primitive (`ArcSwap`) in a future release
 if profiling shows the read path matters; the public API stays unchanged either way.
 
+## Payload size cap
+
+The native dispatcher enforces a hard ceiling of **16 MiB** on `ContribOp.payload`. A
+malformed JVM-side serde (or one that accidentally accumulates state across plan calls)
+producing a larger payload is rejected with a clear error message before the contrib's
+`plan()` runs. The cap is intentionally above any plausible file-scan payload (Delta
+with ~100k tasks weighs in around 3–4 MiB) and well below "heap pressure" territory;
+the value is hardcoded in `native/core/src/execution/planner.rs`. If your contrib has
+a legitimate need for a larger payload, file an issue with the size you need and the
+use case -- the cap is a guardrail, not a feature.
+
 ## Testing
 
 `contrib/example/`'s test suite demonstrates the recommended pattern:

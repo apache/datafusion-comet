@@ -76,6 +76,9 @@ message ContribOp {
   string kind = 1;
   // Contrib-private payload bytes. Format defined by the contrib's own proto schema.
   bytes payload = 2;
+  // Reserve tags for future additive evolution (e.g. payload_format_version, compression,
+  // contrib_version) without risking accidental tag reuse by an evolving contrib.
+  reserved 3 to 9;
 }
 
 message SparkPartitionedFile {

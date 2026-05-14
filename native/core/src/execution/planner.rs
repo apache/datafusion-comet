@@ -1971,12 +1971,12 @@ impl PhysicalPlanner {
                     lookup_contrib_planner_by_kind, CorePlannerContext,
                 };
                 let kind = contrib_op.kind.as_str();
-                if kind.is_empty() {
-                    return Err(GeneralError(
-                        "ContribOp.kind is empty -- the JVM-side serde produced a malformed \
-                         envelope (every contrib must set a stable kind string)"
-                            .into(),
-                    ));
+                if kind.trim().is_empty() {
+                    return Err(GeneralError(format!(
+                        "ContribOp.kind={kind:?} is empty or whitespace -- the JVM-side \
+                         serde produced a malformed envelope (every contrib must set a \
+                         stable kind string)"
+                    )));
                 }
 
                 // Look up the planner first so a bogus kind produces the "not registered"
