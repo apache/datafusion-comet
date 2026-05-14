@@ -218,7 +218,10 @@ object CometHour extends CometExpressionSerde[Hour] {
 
   override def getSupportLevel(expr: Hour): SupportLevel = {
     if (CometConf.COMET_DATETIME_ENGINE.get() == CometConf.DATETIME_ENGINE_JAVA) {
-      Compatible(None)
+      expr.child.dataType match {
+        case TimestampType | TimestampNTZType => Compatible()
+        case other => Unsupported(Some(s"engine=java does not support input type: $other"))
+      }
     } else if (expr.child.dataType == TimestampNTZType) {
       Incompatible(Some(incompatReason))
     } else {
@@ -277,7 +280,10 @@ object CometMinute extends CometExpressionSerde[Minute] {
 
   override def getSupportLevel(expr: Minute): SupportLevel = {
     if (CometConf.COMET_DATETIME_ENGINE.get() == CometConf.DATETIME_ENGINE_JAVA) {
-      Compatible(None)
+      expr.child.dataType match {
+        case TimestampType | TimestampNTZType => Compatible()
+        case other => Unsupported(Some(s"engine=java does not support input type: $other"))
+      }
     } else if (expr.child.dataType == TimestampNTZType) {
       Incompatible(Some(incompatReason))
     } else {
@@ -336,7 +342,10 @@ object CometSecond extends CometExpressionSerde[Second] {
 
   override def getSupportLevel(expr: Second): SupportLevel = {
     if (CometConf.COMET_DATETIME_ENGINE.get() == CometConf.DATETIME_ENGINE_JAVA) {
-      Compatible(None)
+      expr.child.dataType match {
+        case TimestampType | TimestampNTZType => Compatible()
+        case other => Unsupported(Some(s"engine=java does not support input type: $other"))
+      }
     } else if (expr.child.dataType == TimestampNTZType) {
       Incompatible(Some(incompatReason))
     } else {
