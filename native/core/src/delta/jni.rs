@@ -73,7 +73,51 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_planDeltaScan(
             DeltaStorageConfig::default()
         } else {
             let jmap: JMap<'_> = env.cast_local::<JMap>(storage_options)?;
-            extract_storage_config(env, &jmap)?
+            let mut cfg = extract_storage_config(env, &jmap)?;
+            // P1: when explicit static keys aren't on the map, walk the same Hadoop
+            // credential-provider chain that `s3.rs::create_store` uses for data-file reads.
+            // This lets log replay authenticate under SimpleAWSCredentialsProvider /
+            // TemporaryAWSCredentialsProvider / AssumedRoleCredentialProvider /
+            // IAMInstanceCredentialsProvider just like the data path, instead of failing
+            // outright with non-static creds.
+            //
+            // SNAPSHOT resolution: we resolve once at planning time and store the resulting
+            // access/secret/token strings on DeltaStorageConfig. Log replay completes in
+            // seconds typically, well within any reasonable credential TTL.
+            if cfg.aws_access_key.is_none() || cfg.aws_secret_key.is_none() {
+                if let Ok(parsed_url) = url::Url::parse(&url_str) {
+                    let scheme = parsed_url.scheme();
+                    if scheme == "s3" || scheme == "s3a" {
+                        if let Some(bucket) = parsed_url.host_str() {
+                            let raw_options = jmap_to_hashmap(env, &jmap)?;
+                            match crate::parquet::objectstore::s3::resolve_static_credentials(
+                                &raw_options,
+                                bucket,
+                            ) {
+                                Ok(Some((ak, sk, token))) => {
+                                    cfg.aws_access_key = Some(ak);
+                                    cfg.aws_secret_key = Some(sk);
+                                    if token.is_some() {
+                                        cfg.aws_session_token = token;
+                                    }
+                                }
+                                Ok(None) => {
+                                    // Anonymous credential provider was configured -- leave
+                                    // the static fields empty so engine.rs builds an anonymous
+                                    // S3 client.
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Delta log-replay credential resolution failed for bucket {bucket}: {e}; \
+                                         falling back to static-only DeltaStorageConfig (will fail if no static keys present)"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            cfg
         };
 
         // Phase 2: read column names for BoundReference resolution.
@@ -290,6 +334,36 @@ fn read_string_array(env: &mut Env, arr: &jni::objects::JObjectArray) -> CometRe
         result.push(jstr.try_to_string(env)?);
     }
     Ok(result)
+}
+
+/// Iterate a `java.util.Map<String, String>` into a Rust `HashMap`. Used when we need to
+/// pass the full Hadoop config map to a downstream consumer (e.g.,
+/// `s3::resolve_static_credentials`) that walks its own provider chain.
+///
+/// Uses `env.cast_local::<JString>(...)` to safely downcast each key/value entry rather
+/// than the `unsafe { JString::from_raw(..., into_raw()) }` shortcut used elsewhere in
+/// this file -- the runtime cast performs the same JNI-side type check the JLS implies
+/// for `Map<String, String>` but without the unchecked transmute.
+fn jmap_to_hashmap(
+    env: &mut Env,
+    jmap: &JMap<'_>,
+) -> CometResult<std::collections::HashMap<String, String>> {
+    let mut out = std::collections::HashMap::new();
+    jmap.iter(env).and_then(|mut iter| {
+        while let Some(entry) = iter.next(env)? {
+            let k = entry.key(env)?;
+            let v = entry.value(env)?;
+            let kstr: JString = env.cast_local::<JString>(k)?;
+            let key = kstr.try_to_string(env)?;
+            if !v.is_null() {
+                let vstr: JString = env.cast_local::<JString>(v)?;
+                let value = vstr.try_to_string(env)?;
+                out.insert(key, value);
+            }
+        }
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 /// `map.get(key)` for a `java.util.Map<String, String>` surfaced as a

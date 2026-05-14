@@ -30,7 +30,7 @@ pub mod read;
 pub mod schema_adapter;
 
 mod cast_column;
-mod objectstore;
+pub(crate) mod objectstore;
 
 use std::collections::HashMap;
 use std::task::Poll;
