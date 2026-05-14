@@ -477,6 +477,98 @@ under the License.
 the <a class="reference internal" href="../../expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
 <p>Compatibility notes are grouped by expression category:</p>
 <div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="aggregate.html">Aggregate Expressions</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="aggregate.html#average">Average</a></li>
+<li class="toctree-l2"><a class="reference internal" href="aggregate.html#collectset">CollectSet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="aggregate.html#first">First</a></li>
+<li class="toctree-l2"><a class="reference internal" href="aggregate.html#last">Last</a></li>
+<li class="toctree-l2"><a class="reference internal" href="aggregate.html#sum">Sum</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="array.html">Array Expressions</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="array.html#arrayexcept">ArrayExcept</a></li>
+<li class="toctree-l2"><a class="reference internal" href="array.html#arrayfilter">ArrayFilter</a></li>
+<li class="toctree-l2"><a class="reference internal" href="array.html#arrayintersect">ArrayIntersect</a></li>
+<li class="toctree-l2"><a class="reference internal" href="array.html#arrayjoin">ArrayJoin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="array.html#arrayszip">ArraysZip</a></li>
+<li class="toctree-l2"><a class="reference internal" href="array.html#elementat">ElementAt</a></li>
+<li class="toctree-l2"><a class="reference internal" href="array.html#size">Size</a></li>
+<li class="toctree-l2"><a class="reference internal" href="array.html#sortarray">SortArray</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="datetime.html">Date/Time Expressions</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html#date-and-time-functions">Date and Time Functions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html#dateformatclass">DateFormatClass</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html#fromunixtime">FromUnixTime</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html#hour">Hour</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html#minute">Minute</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html#second">Second</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html#truncdate">TruncDate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html#trunctimestamp">TruncTimestamp</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html#unixtimestamp">UnixTimestamp</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="map.html">Map Expressions</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="map.html#mapsort-spark-4-0">MapSort (Spark 4.0+)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="map.html#mapfromentries">MapFromEntries</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="math.html">Math Expressions</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="math.html#abs">Abs</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="misc.html">Miscellaneous Expressions</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="misc.html#checkoverflow">CheckOverflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc.html#knownfloatingpointnormalized">KnownFloatingPointNormalized</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc.html#literal">Literal</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc.html#makedecimal">MakeDecimal</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc.html#sortorder">SortOrder</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="string.html">String Expressions</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="string.html#concat">Concat</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#getjsonobject">GetJsonObject</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#initcap">InitCap</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#left">Left</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#length">Length</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#lower">Lower</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#rlike">RLike</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#regexpreplace">RegExpReplace</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#reverse">Reverse</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#right">Right</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#stringlpad">StringLPad</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#stringrpad">StringRPad</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#stringrepeat">StringRepeat</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#stringsplit">StringSplit</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html#upper">Upper</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="struct.html">Struct Expressions</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="struct.html#jsontostructs">JsonToStructs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="struct.html#structstocsv">StructsToCsv</a></li>
+<li class="toctree-l2"><a class="reference internal" href="struct.html#structstojson">StructsToJson</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="cast.html">Cast</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#ansi-mode-fallback">ANSI Mode Fallback</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#string-to-decimal">String to Decimal</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#string-to-date">String to Date</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#date-to-timestamp">Date to Timestamp</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#date-to-timestampntz">Date to TimestampNTZ</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#date-to-numeric-types">Date to Numeric Types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#string-to-timestamp">String to Timestamp</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#string-to-timestampntz">String to TimestampNTZ</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#timestampntz-casts">TimestampNTZ Casts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#date-to-string">Date to String</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#id1">String to TimestampNTZ</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#decimal-with-negative-scale-to-string">Decimal with Negative Scale to String</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#legacy-mode">Legacy Mode</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#try-mode">Try Mode</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html#ansi-mode">ANSI Mode</a></li>
+</ul>
+</li>
+</ul>
 </div>
 </section>
 
