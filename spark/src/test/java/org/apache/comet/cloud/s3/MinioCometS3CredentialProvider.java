@@ -17,28 +17,23 @@
  * under the License.
  */
 
-package org.apache.comet.cloud;
+package org.apache.comet.cloud.s3;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Test-only {@link CometCloudCredentialProvider} that returns credentials previously installed by
- * {@link #installCredentials} and counts every invocation. Registered via {@code
- * META-INF/services/org.apache.comet.cloud.CometCloudCredentialProvider} on the test classpath.
- *
- * <p>State is held in static fields because {@link CometCloudCredentialDispatcher} caches a single
- * provider instance for the JVM lifetime; tests interact with that instance via these statics
- * rather than constructing their own.
+ * Test-only {@link CometS3CredentialProvider} registered via {@code META-INF/services}. Returns
+ * Minio's static credentials once {@link #installCredentials} has been called and counts every
+ * invocation so suites can assert the bridge was actually used.
  */
-public final class MinioCometCredentialProvider implements CometCloudCredentialProvider {
+public final class MinioCometS3CredentialProvider implements CometS3CredentialProvider {
 
   private static final AtomicReference<Credentials> CREDS = new AtomicReference<>();
   private static final AtomicInteger CALL_COUNT = new AtomicInteger(0);
   private static final AtomicReference<String> LAST_BUCKET = new AtomicReference<>();
   private static final AtomicReference<String> LAST_PATH = new AtomicReference<>();
 
-  /** Install the credentials this provider should return. Called from test {@code beforeAll}. */
   public static void installCredentials(String accessKeyId, String secretAccessKey) {
     CREDS.set(new Credentials(accessKeyId, secretAccessKey));
   }
@@ -55,7 +50,6 @@ public final class MinioCometCredentialProvider implements CometCloudCredentialP
     return LAST_PATH.get();
   }
 
-  /** Reset call tracking. Tests use this to take a clean snapshot before a query. */
   public static void resetCounters() {
     CALL_COUNT.set(0);
     LAST_BUCKET.set(null);
@@ -63,16 +57,17 @@ public final class MinioCometCredentialProvider implements CometCloudCredentialP
   }
 
   @Override
-  public CometCredentials getCredentialsForPath(String bucket, String path, CometAccessMode mode) {
+  public CometS3Credentials getCredentialsForPath(
+      String bucket, String path, CometS3AccessMode mode) {
     CALL_COUNT.incrementAndGet();
     LAST_BUCKET.set(bucket);
     LAST_PATH.set(path);
     Credentials c = CREDS.get();
     if (c == null) {
       throw new IllegalStateException(
-          "MinioCometCredentialProvider used before installCredentials() was called");
+          "MinioCometS3CredentialProvider used before installCredentials() was called");
     }
-    return new CometCredentials(c.accessKeyId, c.secretAccessKey, null, null, 0L);
+    return new CometS3Credentials(c.accessKeyId, c.secretAccessKey, null, 0L);
   }
 
   private static final class Credentials {

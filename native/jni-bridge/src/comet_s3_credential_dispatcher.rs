@@ -23,12 +23,12 @@ use jni::{
     Env,
 };
 
-/// JNI handles for the JVM `org.apache.comet.cloud.CometCloudCredentialDispatcher` SPI plus the
-/// `CometCredentials` POJO whose fields the native bridge reads back. Cached at JVM-init time
-/// so the underlying `JClass` references stay alive for the executor lifetime - acquiring them
-/// inside a per-call local frame would let them be freed on frame pop.
-pub struct CometCloudCredentialDispatcher<'a> {
+/// JNI handles for the JVM `CometS3CredentialDispatcher` SPI plus the `CometS3Credentials` POJO
+/// whose fields the native bridge reads back.
+pub struct CometS3CredentialDispatcher<'a> {
     pub class: JClass<'a>,
+    /// Retained so the cached POJO `JFieldID`s stay alive for the executor lifetime.
+    #[allow(dead_code)]
     pub credentials_class: JClass<'a>,
     pub method_is_provider_registered: JStaticMethodID,
     pub method_is_provider_registered_ret: ReturnType,
@@ -40,15 +40,15 @@ pub struct CometCloudCredentialDispatcher<'a> {
     pub field_expiration_epoch_millis: JFieldID,
 }
 
-impl<'a> CometCloudCredentialDispatcher<'a> {
-    pub const JVM_CLASS: &'static str = "org/apache/comet/cloud/CometCloudCredentialDispatcher";
-    pub const CREDENTIALS_CLASS: &'static str = "org/apache/comet/cloud/CometCredentials";
+impl<'a> CometS3CredentialDispatcher<'a> {
+    pub const JVM_CLASS: &'static str = "org/apache/comet/cloud/s3/CometS3CredentialDispatcher";
+    pub const CREDENTIALS_CLASS: &'static str = "org/apache/comet/cloud/s3/CometS3Credentials";
 
-    pub fn new(env: &mut Env<'a>) -> JniResult<CometCloudCredentialDispatcher<'a>> {
+    pub fn new(env: &mut Env<'a>) -> JniResult<CometS3CredentialDispatcher<'a>> {
         let class = env.find_class(JNIString::new(Self::JVM_CLASS))?;
         let credentials_class = env.find_class(JNIString::new(Self::CREDENTIALS_CLASS))?;
 
-        Ok(CometCloudCredentialDispatcher {
+        Ok(CometS3CredentialDispatcher {
             method_is_provider_registered: env.get_static_method_id(
                 JNIString::new(Self::JVM_CLASS),
                 jni::jni_str!("isProviderRegistered"),
@@ -59,7 +59,7 @@ impl<'a> CometCloudCredentialDispatcher<'a> {
                 JNIString::new(Self::JVM_CLASS),
                 jni::jni_str!("getCredentialsForPath"),
                 jni::jni_sig!(
-                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lorg/apache/comet/cloud/CometCredentials;"
+                    "(Ljava/lang/String;Ljava/lang/String;I)Lorg/apache/comet/cloud/s3/CometS3Credentials;"
                 ),
             )?,
             method_get_credentials_for_path_ret: ReturnType::Object,

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.cloud
+package org.apache.comet.cloud.s3
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.SaveMode
@@ -29,17 +29,11 @@ import org.apache.spark.sql.functions.{col, sum}
 import org.apache.comet.{CometConf, CometS3TestBase}
 
 /**
- * End-to-end test that exercises [[CometCloudCredentialDispatcher]] and the Rust JNI bridge
- * against a real S3 server (Minio). The test [[MinioCometCredentialProvider]] is registered via
- * `META-INF/services` and returns the harness's Minio credentials; success here proves Comet's
- * native scan paths actually invoked the SPI rather than falling back to the default AWS chain.
- *
- * Note: because [[CometCloudCredentialDispatcher.PROVIDER]] is a `static final` initialized once
- * per JVM, registering this test SPI affects every test in the same JVM. Other Minio suites (e.g.
- * ParquetReadFromS3Suite, IcebergReadFromS3Suite) continue to pass because the test provider
- * returns the same Minio credentials they would have used through the default chain.
+ * End-to-end test that exercises [[CometS3CredentialDispatcher]] and the Rust JNI bridge against
+ * a real S3 server (Minio). Asserts the test SPI was actually invoked rather than the default AWS
+ * credential chain.
  */
-class CometCloudCredentialBridgeS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
+class CometS3CredentialBridgeSuite extends CometS3TestBase with AdaptiveSparkPlanHelper {
 
   override protected val testBucketName = "bridge-test-bucket"
 
@@ -55,7 +49,7 @@ class CometCloudCredentialBridgeS3Suite extends CometS3TestBase with AdaptiveSpa
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    MinioCometCredentialProvider.installCredentials(userName, password)
+    MinioCometS3CredentialProvider.installCredentials(userName, password)
   }
 
   private def assertHasCometParquetScan(plan: SparkPlan): Unit = {
@@ -71,26 +65,26 @@ class CometCloudCredentialBridgeS3Suite extends CometS3TestBase with AdaptiveSpa
     assert(scans.nonEmpty, s"Expected at least one CometIcebergNativeScanExec in plan:\n$plan")
   }
 
-  test("Parquet read on S3 routes credentials through CometCloudCredentialProvider") {
+  test("Parquet read on S3 routes credentials through CometS3CredentialProvider") {
     val testFilePath = s"s3a://$testBucketName/data/bridge-parquet.parquet"
     val rowCount = 1000L
     spark.range(0, rowCount).write.format("parquet").mode(SaveMode.Overwrite).save(testFilePath)
     val expectedSum = (0L until rowCount).sum
 
-    MinioCometCredentialProvider.resetCounters()
+    MinioCometS3CredentialProvider.resetCounters()
     val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
     assertHasCometParquetScan(df.queryExecution.executedPlan)
     assert(df.first().getLong(0) == expectedSum)
 
     assert(
-      MinioCometCredentialProvider.callCount() > 0,
+      MinioCometS3CredentialProvider.callCount() > 0,
       "Bridge was not invoked during Comet Parquet read")
     assert(
-      MinioCometCredentialProvider.lastBucket() == testBucketName,
-      s"Bridge received unexpected bucket: ${MinioCometCredentialProvider.lastBucket()}")
+      MinioCometS3CredentialProvider.lastBucket() == testBucketName,
+      s"Bridge received unexpected bucket: ${MinioCometS3CredentialProvider.lastBucket()}")
   }
 
-  test("Iceberg read on S3 routes credentials through CometCloudCredentialProvider") {
+  test("Iceberg read on S3 routes credentials through CometS3CredentialProvider") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     spark.sql("""
@@ -105,13 +99,13 @@ class CometCloudCredentialBridgeS3Suite extends CometS3TestBase with AdaptiveSpa
       VALUES (1, 'a'), (2, 'b'), (3, 'c')
     """)
 
-    MinioCometCredentialProvider.resetCounters()
+    MinioCometS3CredentialProvider.resetCounters()
     val df = spark.sql("SELECT * FROM s3_catalog.db.bridge_iceberg ORDER BY id")
     assertHasCometIcebergScan(df.queryExecution.executedPlan)
     assert(df.count() == 3)
 
     assert(
-      MinioCometCredentialProvider.callCount() > 0,
+      MinioCometS3CredentialProvider.callCount() > 0,
       "Bridge was not invoked during Comet Iceberg read")
 
     spark.sql("DROP TABLE s3_catalog.db.bridge_iceberg")

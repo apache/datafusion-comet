@@ -29,7 +29,7 @@ import org.testcontainers.utility.DockerImageName
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 
-import org.apache.comet.cloud.MinioCometCredentialProvider
+import org.apache.comet.cloud.s3.MinioCometS3CredentialProvider
 
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
 import software.amazon.awssdk.services.s3.S3Client
@@ -50,11 +50,9 @@ trait CometS3TestBase extends CometTestBase {
     minioContainer.start()
     createBucketIfNotExists(testBucketName)
 
-    // The test SPI registered via META-INF/services routes Comet's native S3 credential
-    // requests through MinioCometCredentialProvider for every S3 suite in this JVM. Install
-    // Minio's static credentials here so all subclasses (not just CometCloudCredentialBridge
-    // S3Suite) work end-to-end.
-    MinioCometCredentialProvider.installCredentials(userName, password)
+    // Install Minio's credentials into the test SPI so every S3 suite sharing this JVM routes
+    // through the bridge cleanly.
+    MinioCometS3CredentialProvider.installCredentials(userName, password)
 
     super.beforeAll()
   }
@@ -85,9 +83,8 @@ trait CometS3TestBase extends CometTestBase {
 
   /**
    * Apply the S3 properties Comet's native Iceberg reader requires on the given catalog.
-   * iceberg-rust + opendal stops auto-detecting region when a custom credential loader is wired
-   * in (which is always, when the bridge SPI is registered), so the region/endpoint/ path-style
-   * triple has to be set explicitly. See the contributor guide on CometCloudCredentialProvider.
+   * iceberg-rust / opendal disables region auto-detection when a custom credential loader is
+   * wired in, so the region/endpoint/path-style triple has to be set explicitly.
    */
   protected def applyS3CatalogProps(conf: SparkConf, catalogName: String): Unit = {
     conf.set(s"spark.sql.catalog.$catalogName.s3.endpoint", minioContainer.getS3URL)

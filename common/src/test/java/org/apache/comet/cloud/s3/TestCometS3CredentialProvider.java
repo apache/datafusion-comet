@@ -17,24 +17,23 @@
  * under the License.
  */
 
-package org.apache.comet.cloud;
+package org.apache.comet.cloud.s3;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Test-only provider registered via {@code META-INF/services} in the test classpath. State is
- * static because {@link CometCloudCredentialDispatcher} caches a single instance in a {@code static
- * final} field for the JVM lifetime; tests reset state via {@link #reset()}.
+ * Test-only provider registered via {@code META-INF/services}. State is static because the
+ * dispatcher caches a single provider instance for the JVM lifetime.
  */
-public class TestCometCloudCredentialProvider implements CometCloudCredentialProvider {
+public class TestCometS3CredentialProvider implements CometS3CredentialProvider {
 
   static final AtomicInteger callCount = new AtomicInteger(0);
   static volatile String lastBucket;
   static volatile String lastPath;
-  static volatile CometAccessMode lastMode;
+  static volatile CometS3AccessMode lastMode;
   static volatile RuntimeException throwOnNext;
-  static volatile CometCredentials nextResult =
-      new CometCredentials("AKIATEST", "secret", "session-tok", "us-east-1", 0L);
+  static volatile CometS3Credentials nextResult =
+      new CometS3Credentials("AKIATEST", "secret", "session-tok", 0L);
 
   static void reset() {
     callCount.set(0);
@@ -42,11 +41,12 @@ public class TestCometCloudCredentialProvider implements CometCloudCredentialPro
     lastPath = null;
     lastMode = null;
     throwOnNext = null;
-    nextResult = new CometCredentials("AKIATEST", "secret", "session-tok", "us-east-1", 0L);
+    nextResult = new CometS3Credentials("AKIATEST", "secret", "session-tok", 0L);
   }
 
   @Override
-  public CometCredentials getCredentialsForPath(String bucket, String path, CometAccessMode mode) {
+  public CometS3Credentials getCredentialsForPath(
+      String bucket, String path, CometS3AccessMode mode) {
     callCount.incrementAndGet();
     lastBucket = bucket;
     lastPath = path;

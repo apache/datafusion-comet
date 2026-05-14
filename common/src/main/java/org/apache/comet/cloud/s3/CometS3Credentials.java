@@ -17,38 +17,30 @@
  * under the License.
  */
 
-package org.apache.comet.cloud;
+package org.apache.comet.cloud.s3;
 
 import java.util.Objects;
 
 /**
- * Credentials returned by a {@link CometCloudCredentialProvider}, consumed by Comet's native code
- * via JNI field accessors.
+ * Credentials returned by a {@link CometS3CredentialProvider}. Fields are read back over JNI by
+ * name, so the field names are part of the cross-language contract.
  *
- * <p>{@code sessionToken} is null for non-STS credentials; {@code region} is null when the provider
- * has no opinion (the native side falls back to its configured region). {@code
- * expirationEpochMillis} is {@code 0} when the provider does not track expiration; in that case
- * Comet will not pre-emptively refresh and relies on the provider to return fresh credentials on
- * each call.
+ * <p>{@code sessionToken} is null for non-STS credentials. {@code expirationEpochMillis} of {@code
+ * 0} means "unknown"; the Iceberg path then caps opendal's cache at a short fallback to avoid
+ * serving stale credentials for the executor lifetime.
  */
-public final class CometCredentials {
+public final class CometS3Credentials {
 
   private final String accessKeyId;
   private final String secretAccessKey;
   private final String sessionToken;
-  private final String region;
   private final long expirationEpochMillis;
 
-  public CometCredentials(
-      String accessKeyId,
-      String secretAccessKey,
-      String sessionToken,
-      String region,
-      long expirationEpochMillis) {
+  public CometS3Credentials(
+      String accessKeyId, String secretAccessKey, String sessionToken, long expirationEpochMillis) {
     this.accessKeyId = Objects.requireNonNull(accessKeyId, "accessKeyId");
     this.secretAccessKey = Objects.requireNonNull(secretAccessKey, "secretAccessKey");
     this.sessionToken = sessionToken;
-    this.region = region;
     this.expirationEpochMillis = expirationEpochMillis;
   }
 
@@ -62,10 +54,6 @@ public final class CometCredentials {
 
   public String getSessionToken() {
     return sessionToken;
-  }
-
-  public String getRegion() {
-    return region;
   }
 
   public long getExpirationEpochMillis() {

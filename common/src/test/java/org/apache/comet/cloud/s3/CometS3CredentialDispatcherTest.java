@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.cloud;
+package org.apache.comet.cloud.s3;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -29,80 +29,80 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
-public class CometCloudCredentialDispatcherTest {
+public class CometS3CredentialDispatcherTest {
+
+  private static final int READ = CometS3AccessMode.READ.ordinal();
+  private static final int WRITE = CometS3AccessMode.WRITE.ordinal();
 
   @Before
   public void resetTestProvider() {
-    TestCometCloudCredentialProvider.reset();
+    TestCometS3CredentialProvider.reset();
   }
 
   @Test
   public void providerIsRegisteredFromTestClasspath() {
-    assertTrue(CometCloudCredentialDispatcher.isProviderRegistered());
+    assertTrue(CometS3CredentialDispatcher.isProviderRegistered());
   }
 
   @Test
   public void getCredentialsRoundTripsThroughProvider() throws Exception {
-    CometCredentials creds =
-        CometCloudCredentialDispatcher.getCredentialsForPath("my-bucket", "path/to/object", "READ");
+    CometS3Credentials creds =
+        CometS3CredentialDispatcher.getCredentialsForPath("my-bucket", "path/to/object", READ);
 
     assertNotNull(creds);
     assertEquals("AKIATEST", creds.getAccessKeyId());
     assertEquals("secret", creds.getSecretAccessKey());
     assertEquals("session-tok", creds.getSessionToken());
-    assertEquals("us-east-1", creds.getRegion());
     assertEquals(0L, creds.getExpirationEpochMillis());
 
-    assertEquals(1, TestCometCloudCredentialProvider.callCount.get());
-    assertEquals("my-bucket", TestCometCloudCredentialProvider.lastBucket);
-    assertEquals("path/to/object", TestCometCloudCredentialProvider.lastPath);
-    assertEquals(CometAccessMode.READ, TestCometCloudCredentialProvider.lastMode);
+    assertEquals(1, TestCometS3CredentialProvider.callCount.get());
+    assertEquals("my-bucket", TestCometS3CredentialProvider.lastBucket);
+    assertEquals("path/to/object", TestCometS3CredentialProvider.lastPath);
+    assertEquals(CometS3AccessMode.READ, TestCometS3CredentialProvider.lastMode);
   }
 
   @Test
   public void writeModeIsForwarded() throws Exception {
-    CometCloudCredentialDispatcher.getCredentialsForPath("b", "k", "WRITE");
-    assertEquals(CometAccessMode.WRITE, TestCometCloudCredentialProvider.lastMode);
+    CometS3CredentialDispatcher.getCredentialsForPath("b", "k", WRITE);
+    assertEquals(CometS3AccessMode.WRITE, TestCometS3CredentialProvider.lastMode);
   }
 
   @Test
   public void unknownModeRejected() {
     assertThrows(
         IllegalArgumentException.class,
-        () -> CometCloudCredentialDispatcher.getCredentialsForPath("b", "k", "BOGUS"));
+        () -> CometS3CredentialDispatcher.getCredentialsForPath("b", "k", 99));
   }
 
   @Test
   public void providerExceptionsPropagate() {
     IllegalStateException boom = new IllegalStateException("simulated STS failure");
-    TestCometCloudCredentialProvider.throwOnNext = boom;
+    TestCometS3CredentialProvider.throwOnNext = boom;
 
     Exception thrown =
         assertThrows(
             Exception.class,
-            () -> CometCloudCredentialDispatcher.getCredentialsForPath("b", "k", "READ"));
+            () -> CometS3CredentialDispatcher.getCredentialsForPath("b", "k", READ));
     assertSame(boom, thrown);
   }
 
   @Test
-  public void nullSessionTokenAndRegionAreAllowed() throws Exception {
-    TestCometCloudCredentialProvider.nextResult =
-        new CometCredentials("AKIA", "sec", null, null, 0L);
+  public void nullSessionTokenAllowed() throws Exception {
+    TestCometS3CredentialProvider.nextResult = new CometS3Credentials("AKIA", "sec", null, 0L);
 
-    CometCredentials creds = CometCloudCredentialDispatcher.getCredentialsForPath("b", "k", "READ");
+    CometS3Credentials creds = CometS3CredentialDispatcher.getCredentialsForPath("b", "k", READ);
 
     assertNull(creds.getSessionToken());
-    assertNull(creds.getRegion());
   }
 
   @Test
   public void providerReceivesEachCallSeparately() throws Exception {
-    CometCloudCredentialDispatcher.getCredentialsForPath("b1", "k1", "READ");
-    CometCloudCredentialDispatcher.getCredentialsForPath("b2", "k2", "READ");
-    CometCloudCredentialDispatcher.getCredentialsForPath("b3", "k3", "READ");
+    CometS3CredentialDispatcher.getCredentialsForPath("b1", "k1", READ);
+    CometS3CredentialDispatcher.getCredentialsForPath("b2", "k2", READ);
+    CometS3CredentialDispatcher.getCredentialsForPath("b3", "k3", READ);
 
-    assertEquals(3, TestCometCloudCredentialProvider.callCount.get());
-    assertEquals("b3", TestCometCloudCredentialProvider.lastBucket);
-    assertEquals("k3", TestCometCloudCredentialProvider.lastPath);
+    assertEquals(3, TestCometS3CredentialProvider.callCount.get());
+    assertEquals("b3", TestCometS3CredentialProvider.lastBucket);
+    assertEquals("k3", TestCometS3CredentialProvider.lastPath);
   }
 }

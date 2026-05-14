@@ -44,7 +44,9 @@ use iceberg_storage_opendal::CustomAwsCredentialLoader;
 use iceberg_storage_opendal::OpenDalStorageFactory;
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::objectstore::comet_credential_bridge::{self, CometCredentialBridge};
+use crate::parquet::objectstore::comet_s3_credential_bridge::{
+    AccessMode, CometS3CredentialBridge,
+};
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
@@ -241,18 +243,8 @@ impl IcebergScanExec {
 /// Wires the registered Comet credential provider into opendal's S3 service for this scan, or
 /// returns `None` so opendal falls back to its default credential chain.
 fn build_s3_credential_loader(metadata_location: &str) -> Option<CustomAwsCredentialLoader> {
-    if !comet_credential_bridge::is_provider_registered() {
-        return None;
-    }
     let url = url::Url::parse(metadata_location).ok()?;
-    let bucket = url.host_str()?.to_string();
-    // Pass the URL path component (matches `s3.rs::create_store`); SPI vendors expect the
-    // (bucket, path) pair to compose into a single URI without re-parsing a scheme out.
-    let bridge = CometCredentialBridge::new(
-        bucket,
-        url.path().to_string(),
-        comet_credential_bridge::AccessMode::Read,
-    );
+    let bridge = CometS3CredentialBridge::for_url(&url, AccessMode::Read)?;
     Some(CustomAwsCredentialLoader::new(bridge))
 }
 
@@ -420,7 +412,7 @@ fn adapt_batch_with_expressions(
         return Ok(batch);
     }
 
-    // Zero-column projection (e.g. SELECT count(*)) — preserve row count
+    // Zero-column projection (e.g. SELECT count(*)), preserve row count
     if projection_exprs.is_empty() {
         return Ok(RecordBatch::try_new_with_options(
             Arc::clone(target_schema),

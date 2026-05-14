@@ -17,20 +17,12 @@
  * under the License.
  */
 
-package org.apache.comet.cloud;
+package org.apache.comet.cloud.s3;
 
-/**
- * Access intent for a credential request issued by Comet's native code, passed to {@link
- * CometCloudCredentialProvider#getCredentialsForPath}.
- *
- * <p>Granularity is intentionally binary. Vendors that issue WRITE-scoped credentials are expected
- * to include READ permissions when their workflows require it (multipart-completion HEAD, Iceberg
- * manifest reads on the write path, etc.) — the SPI does not promise that a WRITE credential is
- * also read-capable; the vendor's IAM policy does.
- */
-public enum CometAccessMode {
-  /** GET / HEAD / LIST and equivalent. All Comet native scan paths request this today. */
+/** Access intent passed to {@link CometS3CredentialProvider#getCredentialsForPath}. */
+public enum CometS3AccessMode {
+  /** GET / HEAD / LIST. All Comet native scan paths request this today. */
   READ,
-  /** PUT / POST / DELETE / multipart and equivalent. Reserved for future native write paths. */
+  /** PUT / POST / DELETE / multipart. Reserved for future native write paths. */
   WRITE
 }
