@@ -99,4 +99,22 @@ class DateTimeFieldUDFSuite extends AnyFunSuite {
     assert(out.get(1) == 12)
     assert(out.isNull(2))
   }
+
+  test("MinuteUDF on TimestampType in UTC") {
+    val micros = 1718454896000000L // 2024-06-15 12:34:56 UTC
+    val ts = tsTzVector("UTC", Array[java.lang.Long](micros))
+    val tz = tzVector("UTC")
+    val udf = new MinuteUDF
+    val out = udf.evaluate(Array(ts, tz), 1).asInstanceOf[IntVector]
+    assert(out.get(0) == 34)
+  }
+
+  test("MinuteUDF on TimestampNTZType") {
+    val micros = 1718454896000000L // 2024-06-15 12:34:56 NTZ
+    val ts = tsNtzVector(Array[java.lang.Long](micros))
+    val tz = tzVector("UTC")
+    val udf = new MinuteUDF
+    val out = udf.evaluate(Array(ts, tz), 1).asInstanceOf[IntVector]
+    assert(out.get(0) == 34)
+  }
 }
