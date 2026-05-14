@@ -155,7 +155,7 @@ trait CometExprShim extends CommonStringExprs {
               inputs,
               binding)
           case (Literal(parser: ToTimeParser, _), "parse", args)
-              if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty =>
+              if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty && args.size == 1 =>
             val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
             val optExpr =
               scalarFunctionExprToProtoWithReturnType("to_time", i.dataType, true, childExprs: _*)
@@ -167,7 +167,7 @@ trait CometExprShim extends CommonStringExprs {
       case TryEval(i: Invoke) =>
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(parser: ToTimeParser, _), "parse", args)
-              if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty =>
+              if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty && args.size == 1 =>
             val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
             val optExpr = scalarFunctionExprToProtoWithReturnType(
               "to_time",
