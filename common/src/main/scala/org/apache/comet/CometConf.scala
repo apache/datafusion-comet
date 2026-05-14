@@ -337,6 +337,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_EXEC_SHUFFLE_REQUIRED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.required")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether Comet requires `spark.shuffle.manager` to be set to " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. " +
+          "When true (the default), Comet will disable itself if the Comet shuffle manager " +
+          "is not registered, because shuffle typically dominates query runtime and Comet " +
+          "provides limited benefit without it. Set to false to keep Comet enabled when " +
+          "running with Spark's default shuffle manager (for example, when measuring scan " +
+          "performance in isolation).")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_DIRECT_READ_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.directRead.enabled")
       .category(CATEGORY_SHUFFLE)
