@@ -19,6 +19,7 @@
 
 package org.apache.comet.udf
 
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ValueVector
 
 /**
@@ -28,6 +29,9 @@ import org.apache.arrow.vector.ValueVector
  *   - Vector arguments arrive at the row count of the current batch.
  *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
  *   - The returned vector's length must match `numRows`.
+ *   - `allocator` is the per-task Arrow allocator backed by Spark's task memory accounting (see
+ *     `CometUdfAllocator`). Implementations must allocate any returned vector or temporary
+ *     buffers from this allocator so off-heap usage is charged to the executing Spark task.
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
  * UDFs that always have at least one batch-length input can derive length from the inputs and
@@ -38,5 +42,5 @@ import org.apache.arrow.vector.ValueVector
  * per class is cached and shared across native worker threads for the lifetime of the JVM.
  */
 trait CometUDF {
-  def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector
+  def evaluate(allocator: BufferAllocator, inputs: Array[ValueVector], numRows: Int): ValueVector
 }
