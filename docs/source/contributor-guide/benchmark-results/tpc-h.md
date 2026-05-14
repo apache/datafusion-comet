@@ -19,31 +19,61 @@ under the License.
 
 # Apache DataFusion Comet: Benchmarks Derived From TPC-H
 
-The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and
-data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments
-and we encourage you to run these benchmarks in your own environments.
+The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instances with EBS storage) with data stored in S3.
 
-The operating system is Ubuntu 22.04.5 LTS.
+## Benchmark Results
 
-The tracking issue for improving TPC-H performance is [#391](https://github.com/apache/datafusion-comet/issues/391).
+Total time to run all queries (lower is better).
 
-![](../../_static/images/benchmark-results/0.11.0/tpch_allqueries.png)
+![](../../_static/images/benchmark-results/0.16.0/tpch_allqueries_with_tuned.png)
 
-Here is a breakdown showing relative performance of Spark and Comet for each query.
+The following charts are based on the tuned run using hash join.
 
-![](../../_static/images/benchmark-results/0.11.0/tpch_queries_compare.png)
+Per-query breakdown showing the relative performance of Spark and Comet.
 
-The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_compare.png)
 
-![](../../_static/images/benchmark-results/0.11.0/tpch_queries_speedup_rel.png)
+How much Comet accelerates each query in relative terms.
 
-The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_rel.png)
 
-![](../../_static/images/benchmark-results/0.11.0/tpch_queries_speedup_abs.png)
+How much Comet accelerates each query in absolute terms.
 
-The raw results of these benchmarks in JSON format is available here:
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_abs.png)
 
-- [Spark](spark-3.5.3-tpch.json)
-- [Comet](comet-0.11.0-tpch.json)
+## Configuration
 
-The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/benchmarks/tpc).
+Common:
+
+```properties
+spark.executor.instances=32
+spark.executor.cores=16
+spark.memory.fraction=0.6
+spark.memory.storageFraction=0.2
+# Kubernetes CPU constraints
+spark.kubernetes.executor.request.cores=8
+spark.kubernetes.executor.limit.cores=8
+```
+
+Spark:
+
+```properties
+spark.executor.memory=64G
+spark.executor.memoryOverhead=10G
+```
+
+Comet:
+
+```properties
+spark.executor.memory=32G
+spark.executor.memoryOverhead=10G
+spark.memory.offHeap.enabled=true
+spark.memory.offHeap.size=32G
+```
+
+### Comet (Tuned)
+
+```properties
+spark.comet.exec.replaceSortMergeJoin=true
+spark.comet.memoryPool.fraction=0.8
+```

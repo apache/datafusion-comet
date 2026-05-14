@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 -- Setup
 statement
 CREATE TABLE test(col1 int, col2 int) USING parquet

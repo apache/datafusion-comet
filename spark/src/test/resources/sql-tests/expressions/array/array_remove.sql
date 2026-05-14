@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.ArrayRemove.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_array_remove(arr array<int>, val int) USING parquet

@@ -142,9 +142,12 @@ async fn delta_end_to_end_read_unpartitioned() {
         None, // data_filters: none
         None, // default_values: none
         "UTC",
-        true, // case_sensitive
+        true,  // case_sensitive
+        false, // return_null_struct_if_all_fields_missing
         &session_ctx,
         false, // encryption_enabled
+        false, // use_field_id
+        false, // ignore_missing_field_id
         false, // ignore_missing_files
     )
     .expect("init_datasource_exec should succeed for a simple Delta-like read");

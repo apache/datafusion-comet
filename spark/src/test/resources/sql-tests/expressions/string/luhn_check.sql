@@ -16,7 +16,6 @@
 -- under the License.
 
 -- MinSparkVersion: 3.5
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_luhn(s string) USING parquet

@@ -25,8 +25,9 @@ use async_trait::async_trait;
 use aws_config::{
     ecs::EcsCredentialsProvider, environment::EnvironmentVariableCredentialsProvider,
     imds::credentials::ImdsCredentialsProvider, meta::credentials::CredentialsProviderChain,
-    provider_config::ProviderConfig, sts::AssumeRoleProvider,
-    web_identity_token::WebIdentityTokenCredentialsProvider, BehaviorVersion,
+    profile::ProfileFileCredentialsProvider, provider_config::ProviderConfig,
+    sts::AssumeRoleProvider, web_identity_token::WebIdentityTokenCredentialsProvider,
+    BehaviorVersion,
 };
 use aws_credential_types::{
     provider::{error::CredentialsError, ProvideCredentials},
@@ -356,6 +357,8 @@ const AWS_ENVIRONMENT_V1: &str = "com.amazonaws.auth.EnvironmentVariableCredenti
 const AWS_WEB_IDENTITY: &str =
     "software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider";
 const AWS_WEB_IDENTITY_V1: &str = "com.amazonaws.auth.WebIdentityTokenCredentialsProvider";
+const AWS_PROFILE: &str = "software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider";
+const AWS_PROFILE_V1: &str = "com.amazonaws.auth.profile.ProfileCredentialsProvider";
 const AWS_ANONYMOUS: &str = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider";
 const AWS_ANONYMOUS_V1: &str = "com.amazonaws.auth.AnonymousAWSCredentials";
 
@@ -479,6 +482,7 @@ fn build_aws_credential_provider_metadata(
         }
         HADOOP_ASSUMED_ROLE => build_assume_role_credential_provider_metadata(configs, bucket),
         AWS_WEB_IDENTITY_V1 | AWS_WEB_IDENTITY => Ok(CredentialProviderMetadata::WebIdentity),
+        AWS_PROFILE_V1 | AWS_PROFILE => Ok(CredentialProviderMetadata::Profile),
         _ => Err(object_store::Error::Generic {
             store: "S3",
             source: format!("Unsupported credential provider: {credential_provider_name}").into(),
@@ -709,6 +713,7 @@ enum CredentialProviderMetadata {
     Imds,
     Environment,
     WebIdentity,
+    Profile,
     Static {
         is_valid: bool,
         access_key: String,
@@ -731,6 +736,7 @@ impl CredentialProviderMetadata {
             CredentialProviderMetadata::Imds => "Imds",
             CredentialProviderMetadata::Environment => "Environment",
             CredentialProviderMetadata::WebIdentity => "WebIdentity",
+            CredentialProviderMetadata::Profile => "Profile",
             CredentialProviderMetadata::Static { .. } => "Static",
             CredentialProviderMetadata::AssumeRole { .. } => "AssumeRole",
             CredentialProviderMetadata::Chain(..) => "Chain",
@@ -746,6 +752,7 @@ impl CredentialProviderMetadata {
             CredentialProviderMetadata::Imds => "Imds".to_string(),
             CredentialProviderMetadata::Environment => "Environment".to_string(),
             CredentialProviderMetadata::WebIdentity => "WebIdentity".to_string(),
+            CredentialProviderMetadata::Profile => "Profile".to_string(),
             CredentialProviderMetadata::Static { is_valid, .. } => {
                 format!("Static(valid: {is_valid})")
             }
@@ -804,6 +811,12 @@ impl CredentialProviderMetadata {
             }
             CredentialProviderMetadata::WebIdentity => {
                 let credential_provider = WebIdentityTokenCredentialsProvider::builder()
+                    .configure(&ProviderConfig::with_default_region().await)
+                    .build();
+                Ok(Arc::new(credential_provider))
+            }
+            CredentialProviderMetadata::Profile => {
+                let credential_provider = ProfileFileCredentialsProvider::builder()
                     .configure(&ProviderConfig::with_default_region().await)
                     .build();
                 Ok(Arc::new(credential_provider))
@@ -1484,6 +1497,25 @@ mod tests {
 
             let test_provider = result.unwrap().metadata();
             assert_eq!(test_provider, CredentialProviderMetadata::WebIdentity);
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
+    async fn test_profile_credential_provider() {
+        for provider_name in [AWS_PROFILE, AWS_PROFILE_V1] {
+            let configs = TestConfigBuilder::new()
+                .with_credential_provider(provider_name)
+                .build();
+
+            let result =
+                build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
+                    .await
+                    .unwrap();
+            assert!(result.is_some(), "Should return a credential provider");
+
+            let test_provider = result.unwrap().metadata();
+            assert_eq!(test_provider, CredentialProviderMetadata::Profile);
         }
     }
 

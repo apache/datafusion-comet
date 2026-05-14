@@ -127,13 +127,22 @@ class CometExecIterator(
       memoryConfig.memoryLimitPerTask,
       taskAttemptId,
       taskCPUs,
-      keyUnwrapper)
+      keyUnwrapper,
+      // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
+      // TaskContext. See CometUdfBridge.evaluate.
+      TaskContext.get())
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
   private var prevBatch: ColumnarBatch = null
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
+
+  // Register a task completion listener to ensure native resources are released
+  // when the task is done.
+  TaskContext.get().addTaskCompletionListener[Unit] { _ =>
+    this.close()
+  }
 
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
@@ -174,9 +183,11 @@ class CometExecIterator(
           case parquetError() =>
             // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
             // See org.apache.parquet.hadoop.ParquetFileReader for error message.
+            // _LEGACY_ERROR_TEMP_2254 has no message placeholders; Spark 4 strict-checks
+            // parameters and raises INTERNAL_ERROR if any are passed.
             throw new SparkException(
               errorClass = "_LEGACY_ERROR_TEMP_2254",
-              messageParameters = Map("message" -> e.getMessage),
+              messageParameters = Map.empty,
               cause = new SparkException("File is not a Parquet file.", e))
           case _ =>
             throw e

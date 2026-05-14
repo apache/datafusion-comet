@@ -38,7 +38,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1544,22 +1544,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("unhex") {
     val table = "unhex_table"
-    withTable(table) {
-      sql(s"create table $table(col string) using parquet")
+    Seq(false, true).foreach { dictionaryEnabled =>
+      withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
+        withTable(table) {
+          sql(s"create table $table(col string) using parquet")
 
-      sql(s"""INSERT INTO $table VALUES
-        |('537061726B2053514C'),
-        |('737472696E67'),
-        |('\\0'),
-        |(''),
-        |('###'),
-        |('G123'),
-        |('hello'),
-        |('A1B'),
-        |('0A1B')""".stripMargin)
+          sql(s"""INSERT INTO $table VALUES
+            |('537061726B2053514C'),
+            |('537061726B2053514C'),
+            |('737472696E67'),
+            |('737472696E67'),
+            |('\\0'),
+            |(''),
+            |('###'),
+            |('G123'),
+            |('hello'),
+            |('A1B'),
+            |('0A1B')""".stripMargin)
 
-      checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
+          checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
+        }
+      }
     }
+
+    Seq(false, true).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        withParquetTable(path.toString, table) {
+          checkSparkAnswerAndOperator(s"SELECT unhex(_8) FROM $table")
+        }
+      }
+    }
+
   }
 
   test("EqualNullSafe should preserve comet filter") {
@@ -1973,13 +1990,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
 
     def verifyResult(query: String): Unit = {
-      val expectedDivideByZeroError =
-        "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
+      // Spark 4.1 introduced REMAINDER_BY_ZERO; older versions raise DIVIDE_BY_ZERO for `%`.
+      // Comet always raises REMAINDER_BY_ZERO natively but the JVM shim maps it to
+      // DIVIDE_BY_ZERO on Spark < 4.1 (where that error class does not exist).
+      val expectedError =
+        if (isSpark41Plus)
+          "[REMAINDER_BY_ZERO] Remainder by zero. Use `try_mod` to tolerate divisor being 0 and return NULL instead."
+        else
+          "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
 
       checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkException), Some(cometException)) =>
-          assert(sparkException.getMessage.contains(expectedDivideByZeroError))
-          assert(cometException.getMessage.contains(expectedDivideByZeroError))
+          assert(sparkException.getMessage.contains(expectedError))
+          assert(cometException.getMessage.contains(expectedError))
         case (None, None) => checkSparkAnswerAndOperator(sql(query))
         case (None, Some(ex)) =>
           fail("Comet threw an exception but Spark did not. Comet exception: " + ex.getMessage)
@@ -2118,6 +2141,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("unary negative integer overflow test") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
@@ -2271,8 +2295,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable(
@@ -2298,8 +2320,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json escaping of field names and string values") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       val gen = new DataGenerator(new Random(42))
       val chars = "\\'\"abc\t\r\n\f\b"
@@ -2329,8 +2349,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json unicode") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable(
@@ -2401,8 +2419,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - select primitive fields") {
-    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2420,8 +2436,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - select subset of struct") {
-    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2449,8 +2463,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - read entire struct") {
-    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2724,6 +2736,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for add") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2744,6 +2757,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for subtract") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val data = Seq((Integer.MIN_VALUE, 1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2763,6 +2777,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for multiply") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
     val data = Seq((Integer.MAX_VALUE, 10))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2887,25 +2902,38 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test integral divide overflow for decimal") {
-    if (isSpark40Plus) {
-      Seq(true, false)
-    } else
-      {
-        // ansi mode only supported in Spark 4.0+
-        Seq(false)
-      }.foreach { ansiMode =>
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
-          withTable("t1") {
-            sql("create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
-            sql(
-              "insert into t1 values(-62672277069777110394022909049981876593,-0.40)," +
-                " (-68299431870253176399167726913574455270,-0.22), (-77532633078952291817347741106477071062,0.36)," +
-                " (-79918484954351746825313746420585672848,0.44), (54400354300704342908577384819323710194,0.18)," +
-                " (78585488402645143056239590008272527352,-0.51)")
+    // All inserted values produce a quotient > Decimal(38,0).max (~1e38), so they overflow
+    // the intermediate decimal result type.  In legacy/try mode both Spark and Comet return
+    // null; in ANSI mode both must throw NUMERIC_VALUE_OUT_OF_RANGE.
+    Seq(true, false).foreach { ansiMode =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
+        withTable("t1") {
+          sql("create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
+          sql(
+            "insert into t1 values(-62672277069777110394022909049981876593,-0.40)," +
+              " (-68299431870253176399167726913574455270,-0.22), (-77532633078952291817347741106477071062,0.36)," +
+              " (-79918484954351746825313746420585672848,0.44), (54400354300704342908577384819323710194,0.18)," +
+              " (78585488402645143056239590008272527352,-0.51)")
+          if (ansiMode) {
+            // In ANSI mode the overflow must surface as an exception in both Spark and Comet.
+            checkSparkAnswerMaybeThrows(sql("select a div b from t1")) match {
+              case (Some(_), Some(_)) => // expected: both throw
+              case (None, None) =>
+                fail(
+                  "Expected both Spark and Comet to throw for decimal integral divide overflow " +
+                    "in ANSI mode, but neither threw")
+              case (Some(sparkExc), None) =>
+                fail("Spark threw but Comet did not. Spark exception: " + sparkExc.getMessage)
+              case (None, Some(cometExc)) =>
+                fail("Comet threw but Spark did not. Comet exception: " + cometExc.getMessage)
+            }
+          } else {
+            // In legacy mode overflow produces null; results must match Spark exactly.
             checkSparkAnswerAndOperator("select a div b from t1")
           }
         }
       }
+    }
   }
 
   private def testOnShuffledRangeWithRandomParameters(testLogic: DataFrame => Unit): Unit = {
@@ -2988,7 +3016,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
         SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
-        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString) {
+        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString,
+        // SPARK-53535 (Spark 4.1+) flipped the default to "false", which preserves the parent
+        // struct's nullness so non-null parents materialise as Row(Row(null, null)). This test
+        // asserts the legacy "all missing fields => null struct" answer, so pin the conf to
+        // "true" to keep the expectation valid on both 3.x/4.0 and 4.1+. The non-legacy
+        // behaviour is covered separately by `issue #4136` in CometNativeReaderSuite.
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> "true") {
         val data = Seq(Tuple1((1, "a")), Tuple1((2, null)), Tuple1(null))
 
         val readSchema = new StructType().add(

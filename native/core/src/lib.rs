@@ -70,6 +70,9 @@ pub mod common;
 pub mod delta;
 pub mod execution;
 pub mod parquet;
+// this module is for non release only. Intended for debugging/profiling purposes
+#[cfg(debug_assertions)]
+pub mod debug;
 
 #[cfg(all(
     not(target_env = "msvc"),

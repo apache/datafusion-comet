@@ -29,28 +29,30 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions._
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
-import org.apache.comet.shims.CometExprShim
+import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 /**
  * An utility object for query plan and expression serialization.
  */
-object QueryPlanSerde extends Logging with CometExprShim {
+object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
-  private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
     classOf[ArrayCompact] -> CometArrayCompact,
     classOf[ArrayContains] -> CometArrayContains,
-    classOf[ArrayDistinct] -> CometArrayDistinct,
+    classOf[ArrayDistinct] -> CometScalarFunction("array_distinct"),
     classOf[ArrayExcept] -> CometArrayExcept,
     classOf[ArrayFilter] -> CometArrayFilter,
     classOf[ArrayInsert] -> CometArrayInsert,
@@ -58,15 +60,18 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArrayJoin] -> CometArrayJoin,
     classOf[ArrayMax] -> CometArrayMax,
     classOf[ArrayMin] -> CometArrayMin,
+    classOf[ArrayPosition] -> CometArrayPosition,
     classOf[ArrayRemove] -> CometArrayRemove,
     classOf[ArrayRepeat] -> CometArrayRepeat,
+    classOf[SortArray] -> CometSortArray,
     classOf[ArraysOverlap] -> CometArraysOverlap,
     classOf[ArrayUnion] -> CometArrayUnion,
     classOf[CreateArray] -> CometCreateArray,
     classOf[ElementAt] -> CometElementAt,
     classOf[Flatten] -> CometFlatten,
     classOf[GetArrayItem] -> CometGetArrayItem,
-    classOf[Size] -> CometSize)
+    classOf[Size] -> CometSize,
+    classOf[ArraysZip] -> CometArraysZip)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -86,12 +91,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Not] -> CometNot,
     classOf[Or] -> CometOr)
 
-  private val mathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val mathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Acos] -> CometScalarFunction("acos"),
+    classOf[Acosh] -> CometScalarFunction("acosh"),
     classOf[Add] -> CometAdd,
     classOf[Asin] -> CometScalarFunction("asin"),
+    classOf[Asinh] -> CometScalarFunction("asinh"),
     classOf[Atan] -> CometScalarFunction("atan"),
+    classOf[Atanh] -> CometScalarFunction("atanh"),
     classOf[Atan2] -> CometAtan2,
+    classOf[Cbrt] -> CometScalarFunction("cbrt"),
     classOf[Ceil] -> CometCeil,
     classOf[Cos] -> CometScalarFunction("cos"),
     classOf[Cosh] -> CometScalarFunction("cosh"),
@@ -99,14 +108,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Exp] -> CometScalarFunction("exp"),
     classOf[Expm1] -> CometScalarFunction("expm1"),
     classOf[Floor] -> CometFloor,
+    classOf[Greatest] -> CometScalarFunction("greatest"),
     classOf[Hex] -> CometHex,
     classOf[IntegralDivide] -> CometIntegralDivide,
     classOf[IsNaN] -> CometIsNaN,
+    classOf[Least] -> CometScalarFunction("least"),
     classOf[Log] -> CometLog,
     classOf[Log2] -> CometLog2,
     classOf[Log10] -> CometLog10,
     classOf[Logarithm] -> CometLogarithm,
     classOf[Multiply] -> CometMultiply,
+    classOf[Pi] -> CometScalarFunction("pi"),
     classOf[Pow] -> CometScalarFunction("pow"),
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
@@ -119,27 +131,32 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Subtract] -> CometSubtract,
     classOf[Tan] -> CometScalarFunction("tan"),
     classOf[Tanh] -> CometScalarFunction("tanh"),
+    classOf[ToDegrees] -> CometScalarFunction("degrees"),
+    classOf[ToRadians] -> CometScalarFunction("radians"),
     classOf[Cot] -> CometScalarFunction("cot"),
     classOf[UnaryMinus] -> CometUnaryMinus,
     classOf[Unhex] -> CometUnhex,
-    classOf[Abs] -> CometAbs)
+    classOf[Abs] -> CometAbs,
+    classOf[Bin] -> CometScalarFunction("bin"))
 
-  private val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[GetMapValue] -> CometMapExtract,
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapEntries] -> CometMapEntries,
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[MapContainsKey] -> CometMapContainsKey,
-    classOf[MapFromEntries] -> CometMapFromEntries)
+    classOf[MapFromEntries] -> CometMapFromEntries,
+    classOf[StringToMap] -> CometStrToMap)
 
-  private val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[CreateNamedStruct] -> CometCreateNamedStruct,
-    classOf[GetArrayStructFields] -> CometGetArrayStructFields,
-    classOf[GetStructField] -> CometGetStructField,
-    classOf[JsonToStructs] -> CometJsonToStructs,
-    classOf[StructsToJson] -> CometStructsToJson,
-    classOf[StructsToCsv] -> CometStructsToCsv)
+  private[comet] val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map(
+      classOf[CreateNamedStruct] -> CometCreateNamedStruct,
+      classOf[GetArrayStructFields] -> CometGetArrayStructFields,
+      classOf[GetStructField] -> CometGetStructField,
+      classOf[JsonToStructs] -> CometJsonToStructs,
+      classOf[StructsToJson] -> CometStructsToJson,
+      classOf[StructsToCsv] -> CometStructsToCsv)
 
   private val hashExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Crc32] -> CometScalarFunction("crc32"),
@@ -149,40 +166,42 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[XxHash64] -> CometXxHash64,
     classOf[Sha1] -> CometSha1)
 
-  private val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[Ascii] -> CometScalarFunction("ascii"),
-    classOf[BitLength] -> CometScalarFunction("bit_length"),
-    classOf[Chr] -> CometScalarFunction("char"),
-    classOf[ConcatWs] -> CometConcatWs,
-    classOf[Concat] -> CometConcat,
-    classOf[Contains] -> CometScalarFunction("contains"),
-    classOf[EndsWith] -> CometScalarFunction("ends_with"),
-    classOf[GetJsonObject] -> CometGetJsonObject,
-    classOf[InitCap] -> CometInitCap,
-    classOf[Length] -> CometLength,
-    classOf[Like] -> CometLike,
-    classOf[Lower] -> CometLower,
-    classOf[OctetLength] -> CometScalarFunction("octet_length"),
-    classOf[RegExpReplace] -> CometRegExpReplace,
-    classOf[Reverse] -> CometReverse,
-    classOf[RLike] -> CometRLike,
-    classOf[StartsWith] -> CometScalarFunction("starts_with"),
-    classOf[StringInstr] -> CometScalarFunction("instr"),
-    classOf[StringRepeat] -> CometStringRepeat,
-    classOf[StringReplace] -> CometScalarFunction("replace"),
-    classOf[StringRPad] -> CometStringRPad,
-    classOf[StringLPad] -> CometStringLPad,
-    classOf[StringSpace] -> CometScalarFunction("space"),
-    classOf[StringSplit] -> CometStringSplit,
-    classOf[StringTranslate] -> CometScalarFunction("translate"),
-    classOf[StringTrim] -> CometScalarFunction("trim"),
-    classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
-    classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
-    classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
-    classOf[Left] -> CometLeft,
-    classOf[Right] -> CometRight,
-    classOf[Substring] -> CometSubstring,
-    classOf[Upper] -> CometUpper)
+  private[comet] val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map(
+      classOf[Ascii] -> CometScalarFunction("ascii"),
+      classOf[BitLength] -> CometScalarFunction("bit_length"),
+      classOf[Chr] -> CometScalarFunction("char"),
+      classOf[ConcatWs] -> CometConcatWs,
+      classOf[Concat] -> CometConcat,
+      classOf[Contains] -> CometScalarFunction("contains"),
+      classOf[EndsWith] -> CometScalarFunction("ends_with"),
+      classOf[GetJsonObject] -> CometGetJsonObject,
+      classOf[InitCap] -> CometInitCap,
+      classOf[Length] -> CometLength,
+      classOf[Like] -> CometLike,
+      classOf[Lower] -> CometLower,
+      classOf[OctetLength] -> CometScalarFunction("octet_length"),
+      classOf[RegExpReplace] -> CometRegExpReplace,
+      classOf[Reverse] -> CometReverse,
+      classOf[RLike] -> CometRLike,
+      classOf[StartsWith] -> CometScalarFunction("starts_with"),
+      classOf[StringInstr] -> CometScalarFunction("instr"),
+      classOf[StringRepeat] -> CometStringRepeat,
+      classOf[StringReplace] -> CometScalarFunction("replace"),
+      classOf[StringRPad] -> CometStringRPad,
+      classOf[StringLPad] -> CometStringLPad,
+      classOf[StringSpace] -> CometScalarFunction("space"),
+      classOf[StringSplit] -> CometStringSplit,
+      classOf[StringTranslate] -> CometScalarFunction("translate"),
+      classOf[StringTrim] -> CometScalarFunction("trim"),
+      classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
+      classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
+      classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
+      classOf[Left] -> CometLeft,
+      classOf[Right] -> CometRight,
+      classOf[Substring] -> CometSubstring,
+      classOf[SubstringIndex] -> CometSubstringIndex,
+      classOf[Upper] -> CometUpper)
 
   private val bitwiseExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[BitwiseAnd] -> CometBitwiseAnd,
@@ -194,37 +213,40 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ShiftLeft] -> CometShiftLeft,
     classOf[ShiftRight] -> CometShiftRight)
 
-  private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[DateAdd] -> CometDateAdd,
-    classOf[DateDiff] -> CometDateDiff,
-    classOf[DateFormatClass] -> CometDateFormat,
-    classOf[Days] -> CometDays,
-    classOf[Hours] -> CometHours,
-    classOf[DateSub] -> CometDateSub,
-    classOf[UnixDate] -> CometUnixDate,
-    classOf[FromUnixTime] -> CometFromUnixTime,
-    classOf[LastDay] -> CometLastDay,
-    classOf[Hour] -> CometHour,
-    classOf[MakeDate] -> CometMakeDate,
-    classOf[Minute] -> CometMinute,
-    classOf[NextDay] -> CometNextDay,
-    classOf[Second] -> CometSecond,
-    classOf[TruncDate] -> CometTruncDate,
-    classOf[TruncTimestamp] -> CometTruncTimestamp,
-    classOf[UnixTimestamp] -> CometUnixTimestamp,
-    classOf[Year] -> CometYear,
-    classOf[Month] -> CometMonth,
-    classOf[DayOfMonth] -> CometDayOfMonth,
-    classOf[DayOfWeek] -> CometDayOfWeek,
-    classOf[WeekDay] -> CometWeekDay,
-    classOf[DayOfYear] -> CometDayOfYear,
-    classOf[WeekOfYear] -> CometWeekOfYear,
-    classOf[Quarter] -> CometQuarter)
+  private[comet] val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map(
+      classOf[DateAdd] -> CometDateAdd,
+      classOf[DateDiff] -> CometDateDiff,
+      classOf[DateFormatClass] -> CometDateFormat,
+      classOf[DateFromUnixDate] -> CometDateFromUnixDate,
+      classOf[Days] -> CometDays,
+      classOf[Hours] -> CometHours,
+      classOf[DateSub] -> CometDateSub,
+      classOf[UnixDate] -> CometUnixDate,
+      classOf[FromUnixTime] -> CometFromUnixTime,
+      classOf[LastDay] -> CometLastDay,
+      classOf[Hour] -> CometHour,
+      classOf[MakeDate] -> CometMakeDate,
+      classOf[Minute] -> CometMinute,
+      classOf[NextDay] -> CometNextDay,
+      classOf[Second] -> CometSecond,
+      classOf[SecondsToTimestamp] -> CometSecondsToTimestamp,
+      classOf[TruncDate] -> CometTruncDate,
+      classOf[TruncTimestamp] -> CometTruncTimestamp,
+      classOf[UnixTimestamp] -> CometUnixTimestamp,
+      classOf[Year] -> CometYear,
+      classOf[Month] -> CometMonth,
+      classOf[DayOfMonth] -> CometDayOfMonth,
+      classOf[DayOfWeek] -> CometDayOfWeek,
+      classOf[WeekDay] -> CometWeekDay,
+      classOf[DayOfYear] -> CometDayOfYear,
+      classOf[WeekOfYear] -> CometWeekOfYear,
+      classOf[Quarter] -> CometQuarter)
 
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)
 
-  private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
@@ -259,6 +281,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[BitOrAgg] -> CometBitOrAgg,
     classOf[BitXorAgg] -> CometBitXOrAgg,
     classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
+    classOf[CollectSet] -> CometCollectSet,
     classOf[Corr] -> CometCorr,
     classOf[Count] -> CometCount,
     classOf[CovPopulation] -> CometCovPopulation,
@@ -443,6 +466,21 @@ object QueryPlanSerde extends Logging with CometExprShim {
         struct.addAllFieldDatatypes(fieldDatatypes.map(_.get).asJava)
         struct.addAllFieldNullable(fieldNullable)
 
+        val fieldIds = s.fields.map { f =>
+          if (ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f)) else None
+        }
+        if (fieldIds.exists(_.isDefined)) {
+          // Emit one FieldMetadata entry per nested field, parallel to field_names. Entries
+          // for fields without an ID are empty so the slot index stays aligned.
+          fieldIds.foreach { idOpt =>
+            val metaBuilder = Types.DataType.FieldMetadata.newBuilder()
+            idOpt.foreach { id =>
+              metaBuilder.putMetadata(CometParquetUtils.PARQUET_FIELD_ID_META_KEY, id.toString)
+            }
+            struct.addFieldMetadata(metaBuilder.build())
+          }
+        }
+
         info.setStruct(struct)
         builder.setTypeInfo(info.build()).build()
       case _ => builder.build()
@@ -457,15 +495,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
       binding: Boolean,
       conf: SQLConf): Option[AggExpr] = {
 
-    // Support Count(distinct single_value)
-    // COUNT(DISTINCT x) - supported
-    // COUNT(DISTINCT x, x) - supported through transition to COUNT(DISTINCT x)
-    // COUNT(DISTINCT x, y) - not supported
+    // Distinct aggregates with a single column are supported (e.g., COUNT(DISTINCT x),
+    // SUM(DISTINCT x), AVG(DISTINCT x)). The multi-stage plan generated by Spark
+    // guarantees distinct semantics through grouping — the native side does not need
+    // to handle deduplication.
+    // Multi-column distinct is only supported for COUNT (e.g., COUNT(DISTINCT x, y)).
     if (aggExpr.isDistinct
-      &&
-      !(aggExpr.aggregateFunction.prettyName == "count" &&
-        aggExpr.aggregateFunction.children.length == 1)) {
-      withInfo(aggExpr, s"Distinct aggregate not supported for: $aggExpr")
+      && aggExpr.aggregateFunction.children.length > 1
+      && aggExpr.aggregateFunction.prettyName != "count") {
+      withInfo(aggExpr, s"Multi-column distinct aggregate not supported for: $aggExpr")
       return None
     }
 
@@ -574,9 +612,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] = {
 
-    val conf = SQLConf.get
-    val newExpr =
-      DecimalPrecision.promote(conf.decimalOperationsAllowPrecisionLoss, expr, !conf.ansiEnabled)
+    val newExpr = DecimalPrecision.promote(expr, !SQLConf.get.ansiEnabled)
     exprToProtoInternal(newExpr, inputs, binding)
   }
 
@@ -794,30 +830,25 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * TODO: Include SparkSQL's [[YearMonthIntervalType]] and [[DayTimeIntervalType]]
    */
   // scalastyle:on
-  def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
-    def canRank(dt: DataType): Boolean = {
-      dt match {
-        case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: DecimalType =>
-          true
-        case _: DateType | _: TimestampType | _: TimestampNTZType =>
-          true
-        case _: BooleanType | _: BinaryType | _: StringType => true
-        case _ => false
-      }
+  def supportedScalarSortElementType(dt: DataType): Boolean = {
+    dt match {
+      // Collated strings require collation-aware ordering; Comet only compares raw bytes.
+      case st: StringType if isStringCollationType(st) => false
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+          _: DoubleType | _: DecimalType | _: DateType | _: TimestampType | _: TimestampNTZType |
+          _: BooleanType | _: BinaryType | _: StringType =>
+        true
+      case _ =>
+        false
     }
+  }
 
+  def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
     if (sortOrder.length == 1) {
       val canSort = sortOrder.head.dataType match {
-        case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: DecimalType =>
-          true
-        case _: DateType | _: TimestampType | _: TimestampNTZType =>
-          true
-        case _: BooleanType | _: BinaryType | _: StringType => true
-        case ArrayType(elementType, _) => canRank(elementType)
-        case MapType(_, valueType, _) => canRank(valueType)
-        case _ => false
+        case ArrayType(elementType, _) => supportedScalarSortElementType(elementType)
+        case MapType(_, valueType, _) => supportedScalarSortElementType(valueType)
+        case _ => supportedScalarSortElementType(sortOrder.head.dataType)
       }
       if (!canSort) {
         withInfo(op, s"Sort on single column of type ${sortOrder.head.dataType} is not supported")
