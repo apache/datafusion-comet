@@ -40,6 +40,11 @@ under the License.
 
   <dependencies>
     <dependency>
+      <groupId>org.apache.datafusion</groupId>
+      <artifactId>comet-common-spark${spark.version.short}_${scala.binary.version}</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-sql_${scala.binary.version}</artifactId>
     </dependency>
@@ -422,6 +427,8 @@ under the License.
               <createDependencyReducedPom>true</createDependencyReducedPom>
               <artifactSet>
                 <includes>
+                  <!-- Bundle comet-common so the shaded uber-jar is self-contained -->
+                  <include>org.apache.datafusion:comet-common-spark${spark.version.short}_${scala.binary.version}</include>
                   <!-- Shade & relocate Arrow to prevent conflicts with Spark's own Arrow -->
                   <include>org.apache.arrow:*</include>
                   <!-- Relocate Protobuf since Spark uses 2.5.0 while Comet uses 3.x -->

@@ -718,13 +718,14 @@ mod tests {
         init();
 
         INIT.call_once(|| {
-            // Add spark module classes to the classpath so that we can find CometException
-            let mut spark_classes = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            spark_classes.push("../../spark/target/classes");
-            let mut class_path = spark_classes
+            // Add comet-common classes to the classpath so we can find the Comet exception
+            // classes (CometNativeException, CometQueryExecutionException, etc.).
+            let mut common_classes = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            common_classes.push("../../common/target/classes");
+            let mut class_path = common_classes
                 .as_path()
                 .to_str()
-                .expect("spark classes as an str")
+                .expect("common classes as an str")
                 .to_string();
             class_path.insert_str(0, "-Djava.class.path=");
 

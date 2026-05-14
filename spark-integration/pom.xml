@@ -45,6 +45,11 @@ under the License.
             <artifactId>comet-spark-spark${spark.version.short}_${scala.binary.version}</artifactId>
             <version>${project.version}</version>
             <exclusions>
+                <!-- comet-common is bundled into the shaded comet-spark jar -->
+                <exclusion>
+                    <groupId>org.apache.datafusion</groupId>
+                    <artifactId>comet-common-spark${spark.version.short}_${scala.binary.version}</artifactId>
+                </exclusion>
                 <!-- Arrow classes are shaded into the comet-spark jar (relocated to
                      org.apache.comet.shaded.arrow.*); a small set of JNI classes intentionally
                      keep their original org.apache.arrow.* package paths. Pulling Arrow

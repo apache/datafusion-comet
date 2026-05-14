@@ -30,7 +30,7 @@ core:
 	cd native && cargo build $(FEATURES_ARG)
 test-rust:
 	# We need to compile CometException so that the cargo test can pass
-	./mvnw compile -DskipTests $(PROFILES)
+	./mvnw compile -pl common -DskipTests $(PROFILES)
 	cd native && cargo build $(FEATURES_ARG) && \
 	RUST_BACKTRACE=1 cargo test $(FEATURES_ARG)
 jvm:

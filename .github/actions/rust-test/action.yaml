@@ -51,10 +51,11 @@ runs:
         restore-keys: |
           ${{ runner.os }}-rust-maven-
 
-    - name: Build JVM modules (pre-requisite for Rust tests)
+    - name: Build common module (pre-requisite for Rust tests)
       shell: bash
       run: |
-        ./mvnw -B clean compile -DskipTests
+        cd common
+        ../mvnw -B clean compile -DskipTests
 
     - name: Install nextest
       shell: bash

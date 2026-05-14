@@ -35,6 +35,7 @@ under the License.
   <name>Comet Project Parent POM</name>
 
   <modules>
+    <module>common</module>
     <module>spark</module>
     <module>spark-integration</module>
   </modules>
