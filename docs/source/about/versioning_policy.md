@@ -66,8 +66,8 @@ match Apache Spark. Result differences in `Compatible` items are tracked as bugs
 subsequent releases.
 
 Items whose support level is `Incompatible` or `Unsupported` have no result-compatibility
-guarantees. `Incompatible` items require `spark.comet.expr.allowIncompatible=true` (or a similar
-opt-in) to be used.
+guarantees. `Incompatible` items require an explicit per-expression or per-operator opt-in
+(for example, `spark.comet.expr.<Name>.allowIncompatible=true`).
 
 For details on per-expression and per-operator support levels, see the
 [compatibility guide](../user-guide/latest/compatibility/index.md).
