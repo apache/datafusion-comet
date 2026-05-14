@@ -136,8 +136,15 @@ case class CometScanRule(session: SparkSession)
     // Contribs' `preTransform` MUST only rewrite scans they recognise; this guard catches
     // the most dangerous violation (a contrib stripping or substituting an unrelated
     // format's scan) regardless of whether the replacement keeps the same SparkPlan
-    // class. Light overhead (one collect per extension + one identity-Set check); only
-    // fires a warning when the contract is broken.
+    // class. Plan-tree reordering is tolerated -- we only care that the scan still
+    // exists in the tree, not where.
+    //
+    // Cost: O(K * (P + S)) where K = scanExtensions.size, P = plan node count,
+    // S = unclaimed-scan count. For typical K=1..3 and S small, this is negligible.
+    //
+    // V2 scope: V2 BatchScanExecs are NOT inspected. preTransform is documented V1-only
+    // (see CometScanRuleExtension.preTransform); V2 wrapper-stripping happens per-scan
+    // inside `transformV2` and doesn't have the same tree-level corruption surface.
     val prepped =
       if (!CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf)) {
         plan
@@ -148,12 +155,13 @@ case class CometScanRule(session: SparkSession)
           }
           val after = ext.preTransform(p, session)
           if (unclaimedBefore.nonEmpty) {
-            // Identity-equality check (reference compare) -- detects removal or
-            // substitution of a scan the extension doesn't own, including replacements
-            // whose SparkPlan class differs from the original. Plan-tree reordering is
-            // tolerated (we don't care WHERE the scan ended up, only that it still
-            // exists in the tree).
-            val survivors = scala.collection.mutable.Set.empty[FileSourceScanExec]
+            // IDENTITY semantics, NOT value-equality: Spark case classes (including
+            // FileSourceScanExec) compare equal when their fields match, so a self-join
+            // with two reads against the same table after AQE deduplication can produce
+            // two value-equal-but-reference-distinct scans. A standard mutable.Set would
+            // collapse them and we'd emit a false-positive warning. Use a Vector +
+            // `_ eq b` scan instead -- the survivor list is small in practice.
+            val survivors = scala.collection.mutable.ArrayBuffer.empty[FileSourceScanExec]
             after.foreach {
               case s: FileSourceScanExec => survivors += s
               case _ =>

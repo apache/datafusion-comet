@@ -118,10 +118,14 @@ mod tests {
 
     /// Production-build assertion: when no contrib feature is enabled, the registry
     /// must be empty. Catches an accidental re-introduction of a contrib into core's
-    /// `default = [...]` feature set. Compiled out under `--features contrib-example`
-    /// (the test binary always links its crate's dependencies, so this assertion would
-    /// be wrong under that flag).
-    #[cfg(not(feature = "contrib-example"))]
+    /// `default = [...]` feature set. Compiled out under any active contrib feature
+    /// (the test binary always links its crate's dependencies, so the assertion would
+    /// be wrong under those flags).
+    ///
+    /// MAINTENANCE: when adding a new `contrib-<name>` feature to `native/core/Cargo.toml`,
+    /// extend the `not(any(...))` predicate below with the new feature name so the
+    /// canary still compiles under that contrib's standalone CI matrix entry.
+    #[cfg(not(any(feature = "contrib-example")))]
     #[test]
     fn production_build_has_no_contrib_planners_registered() {
         // Direct read through the SPI's public API. This test is the canary for
@@ -198,6 +202,14 @@ mod tests {
         // If a swap accidentally routed e.g. `use_field_id` into the encryption slot, the
         // "default" variant below would fail (because use_field_id is true here in the
         // params struct, and the swapped slot would now enable encryption).
+        //
+        // SCOPE: this test catches swaps that involve the `encryption_enabled` slot.
+        // Swaps among the other four bools (case_sensitive / return_null_... /
+        // use_field_id / ignore_missing_field_id) are NOT caught -- the two witnesses
+        // below either set all four to true (witness #1) or all four to false
+        // (witness #2), so a permutation among them is invisible. Adding a new bool to
+        // ParquetDatasourceParams / init_datasource_exec should be accompanied by a new
+        // asymmetry witness that exercises THAT new flag.
         let session_ctx = Arc::new(SessionContext::new());
         let planner = PhysicalPlanner::new(Arc::clone(&session_ctx), 0);
         let ctx = CorePlannerContext { planner: &planner };

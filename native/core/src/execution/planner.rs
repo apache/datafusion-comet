@@ -1971,6 +1971,13 @@ impl PhysicalPlanner {
                     lookup_contrib_planner_by_kind, CorePlannerContext,
                 };
                 let kind = contrib_op.kind.as_str();
+                if kind.is_empty() {
+                    return Err(GeneralError(
+                        "ContribOp.kind is empty -- the JVM-side serde produced a malformed \
+                         envelope (every contrib must set a stable kind string)"
+                            .into(),
+                    ));
+                }
 
                 // Look up the planner first so a bogus kind produces the "not registered"
                 // error rather than a misleading "payload too big" one (in case the kind
@@ -1983,11 +1990,16 @@ impl PhysicalPlanner {
                     ))
                 })?;
 
-                // Payload-size guard. A malformed Spark-side serde could produce a
-                // multi-GB payload that the planner would happily allocate during proto
-                // decode. 16 MiB is comfortably above any plausible file-scan payload
-                // (Delta with 100k tasks weighs in around 3-4 MiB) and well below "we
-                // should be worried about heap pressure".
+                // Payload-size guard. By the time we get here prost has already decoded
+                // `contrib_op.payload` into a heap-allocated Vec<u8>, so this guard does
+                // NOT fence the proto-decode allocation itself. What it does fence: the
+                // contrib's plan() body from being invoked with an absurd payload, which
+                // typically does its own prost decode against contrib-private types --
+                // potentially several more allocations. 16 MiB is comfortably above any
+                // plausible file-scan payload (Delta with 100k tasks weighs in around
+                // 3-4 MiB) and well below "we should be worried about heap pressure".
+                // Moving the check pre-decode would require a streaming Operator parser;
+                // not worth the complexity given typical payloads are <1 MiB.
                 const MAX_CONTRIB_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
                 if contrib_op.payload.len() > MAX_CONTRIB_PAYLOAD_BYTES {
                     return Err(GeneralError(format!(

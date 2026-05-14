@@ -262,9 +262,14 @@ impl std::fmt::Display for ContribError {
             ContribError::WrongChildCount { expected, actual } => {
                 write!(f, "wrong child count: expected {expected}, got {actual}")
             }
-            // Wildcard for future variants added under #[non_exhaustive]. Use the Debug
-            // repr so the dispatcher's `format!("contrib planner ...: {e}")` carries a
-            // useful message rather than swallowing the variant.
+            // Defense for external callers reading `Display` after a future variant is
+            // added under #[non_exhaustive]: their `match` is non-exhaustive even with
+            // a wildcard, but our `Display` impl always falls through to the Debug repr
+            // so the dispatcher's `format!("contrib planner ...: {e}")` still produces
+            // something useful. (Note: inside this crate the wildcard is unreachable
+            // because #[non_exhaustive] is only enforced across crate boundaries --
+            // adding a variant here will require an explicit arm anyway. The wildcard
+            // exists to keep downstream `Display`-as-source consumers working.)
             #[allow(unreachable_patterns)]
             other => write!(f, "{other:?}"),
         }

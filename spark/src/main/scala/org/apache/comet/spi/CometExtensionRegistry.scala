@@ -52,28 +52,38 @@ object CometExtensionRegistry extends Logging {
    * Discover contrib extensions on the classpath. Idempotent. Safe to call from multiple threads
    * (only the first call performs discovery).
    */
-  def load(): Unit = {
-    if (loaded.compareAndSet(false, true)) {
-      scanExts = loadOne[CometScanRuleExtension]("CometScanRuleExtension")
-      serdeExts = loadOne[CometOperatorSerdeExtension]("CometOperatorSerdeExtension")
-      if (scanExts.nonEmpty || serdeExts.nonEmpty) {
-        logInfo(
-          s"Comet contrib extensions loaded: " +
-            s"scan=[${scanExts.map(_.name).mkString(", ")}], " +
-            s"serde=[${serdeExts.map(_.name).mkString(", ")}]")
-        detectDuplicateSerdeClasses(serdeExts)
-      } else {
-        // Positive signal that discovery ran. Some Spark deploy modes (Ivy `--packages`,
-        // isolated UDF classloaders) put Comet on a classloader that the TCCL fallback
-        // doesn't see; absent extensions go silent without this line.
-        logInfo(
-          "Comet contrib extensions: none discovered on classpath " +
-            "(no META-INF/services entries for CometScanRuleExtension or " +
-            "CometOperatorSerdeExtension)")
-      }
-      // Build the merged exec map once at load time. CometExecRule reads it on every
-      // operator transform; rebuilding per-call would be wasteful.
-      mergedSerdesCache = serdeExts.flatMap(_.serdes).toMap
+  def load(): Unit = synchronized {
+    // `synchronized` (not just compareAndSet) so that concurrent callers wait for the
+    // first thread's writes to `scanExts` / `serdeExts` / `mergedSerdesCache` to publish
+    // before they return. The previous AtomicBoolean-only gate allowed thread B to
+    // observe `loaded=true` and read `Seq.empty` while thread A was still mid-loadOne.
+    // CometScanRule._apply and CometExecRule._apply both call this on first invocation,
+    // and AQE can run them concurrently across sub-queries, so the race is reachable.
+    if (loaded.get()) return
+    val newScanExts = loadOne[CometScanRuleExtension]("CometScanRuleExtension")
+    val newSerdeExts = loadOne[CometOperatorSerdeExtension]("CometOperatorSerdeExtension")
+    val newMerged = newSerdeExts.flatMap(_.serdes).toMap
+    // Publish the @volatile fields BEFORE flipping `loaded` so other threads either see
+    // the empty defaults (and may re-enter -- benign, blocked by the monitor) or the
+    // fully-populated state (and may skip -- also benign).
+    scanExts = newScanExts
+    serdeExts = newSerdeExts
+    mergedSerdesCache = newMerged
+    loaded.set(true)
+    if (newScanExts.nonEmpty || newSerdeExts.nonEmpty) {
+      logInfo(
+        s"Comet contrib extensions loaded: " +
+          s"scan=[${newScanExts.map(_.name).mkString(", ")}], " +
+          s"serde=[${newSerdeExts.map(_.name).mkString(", ")}]")
+      detectDuplicateSerdeClasses(newSerdeExts)
+    } else {
+      // Positive signal that discovery ran. Some Spark deploy modes (Ivy `--packages`,
+      // isolated UDF classloaders) put Comet on a classloader that the TCCL fallback
+      // doesn't see; absent extensions go silent without this line.
+      logInfo(
+        "Comet contrib extensions: none discovered on classpath " +
+          "(no META-INF/services entries for CometScanRuleExtension or " +
+          "CometOperatorSerdeExtension)")
     }
   }
 
@@ -129,8 +139,13 @@ object CometExtensionRegistry extends Logging {
   /**
    * Test-only: reset the registry to the empty state. Lets unit tests re-run discovery with a
    * different classpath / overridden services. Not for production use.
+   *
+   * Visibility is `public` (rather than `private[comet]`) because contribs are not required to
+   * be packaged under `org.apache.comet.*`; a contrib living under e.g. `io.delta.comet.contrib`
+   * must still be able to reset between tests. The method's name carries the "test-only"
+   * contract by convention.
    */
-  private[comet] def resetForTesting(): Unit = {
+  def resetForTesting(): Unit = {
     loaded.set(false)
     scanExts = Seq.empty
     serdeExts = Seq.empty
