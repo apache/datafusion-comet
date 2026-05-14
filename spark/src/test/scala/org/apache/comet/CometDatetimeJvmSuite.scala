@@ -76,4 +76,35 @@ class CometDatetimeJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         s"Expected CometProjectExec (native execution via JVM UDF) in:\n$plan")
     }
   }
+
+  test("minute: TimestampNTZ produces Spark-compatible results in all session timezones") {
+    withTable("t") {
+      sql("CREATE TABLE t (ts_ntz TIMESTAMP_NTZ) USING parquet")
+      sql("""INSERT INTO t VALUES
+          | TIMESTAMP_NTZ'2024-06-15 12:34:56',
+          | TIMESTAMP_NTZ'2024-01-01 00:00:00',
+          | TIMESTAMP_NTZ'2024-12-31 23:59:59',
+          | (NULL)""".stripMargin)
+      for (tz <- crossTimezones) {
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+          checkSparkAnswerAndOperator("SELECT minute(ts_ntz) FROM t ORDER BY ts_ntz")
+        }
+      }
+    }
+  }
+
+  test("minute: TimestampType produces Spark-compatible results in all session timezones") {
+    withTable("t") {
+      sql("CREATE TABLE t (ts TIMESTAMP) USING parquet")
+      sql("""INSERT INTO t VALUES
+          | TIMESTAMP'2024-06-15 12:34:56 UTC',
+          | (NULL)""".stripMargin)
+      for (tz <- crossTimezones) {
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+          checkSparkAnswerAndOperator("SELECT minute(ts) FROM t ORDER BY ts")
+        }
+      }
+    }
+  }
+
 }

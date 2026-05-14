@@ -270,22 +270,39 @@ object CometHour extends CometExpressionSerde[Hour] {
 
 object CometMinute extends CometExpressionSerde[Minute] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
-      " (https://github.com/apache/datafusion-comet/issues/3180)")
+  val incompatReason: String = "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+    " (https://github.com/apache/datafusion-comet/issues/3180)"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
   override def getSupportLevel(expr: Minute): SupportLevel = {
-    if (expr.child.dataType == TimestampNTZType) {
-      Incompatible(
-        Some(
-          "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
-            " (https://github.com/apache/datafusion-comet/issues/3180)"))
+    if (CometConf.COMET_DATETIME_ENGINE.get() == CometConf.DATETIME_ENGINE_JAVA) {
+      Compatible(None)
+    } else if (expr.child.dataType == TimestampNTZType) {
+      Incompatible(Some(incompatReason))
     } else {
       Compatible()
     }
   }
 
   override def convert(
+      expr: Minute,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (CometConf.COMET_DATETIME_ENGINE.get() == CometConf.DATETIME_ENGINE_JAVA) {
+      DateTimeFieldUdfHelper.buildProto(
+        expr.child,
+        expr.timeZoneId,
+        expr.nullable,
+        "org.apache.comet.udf.MinuteUDF",
+        inputs,
+        binding)
+    } else {
+      convertViaNative(expr, inputs, binding)
+    }
+  }
+
+  private def convertViaNative(
       expr: Minute,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
