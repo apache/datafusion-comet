@@ -183,8 +183,11 @@ pub struct PhysicalPlanner {
     partition: i32,
     session_ctx: Arc<SessionContext>,
     query_context_registry: Arc<datafusion_comet_spark_expr::QueryContextMap>,
-    /// Captured at `createPlan` time on `ExecutionContext`; see that struct for the
-    /// propagation rationale. `None` when no driving Spark task is available.
+    /// Spark `TaskContext` captured on the driving Spark task thread and stashed on the
+    /// [`ExecutionContext`] at `createPlan` time. Threaded into every [`JvmScalarUdfExpr`] the
+    /// planner builds so the JNI bridge can install it as the thread-local `TaskContext` on
+    /// the Tokio worker that drives the UDF. `None` when no driving Spark task is available
+    /// (unit tests, direct native driver runs).
     task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 
@@ -205,20 +208,27 @@ impl PhysicalPlanner {
         }
     }
 
-    pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
-        self.exec_context_id = exec_context_id;
-        self
+    pub fn with_exec_id(self, exec_context_id: i64) -> Self {
+        Self {
+            exec_context_id,
+            partition: self.partition,
+            session_ctx: Arc::clone(&self.session_ctx),
+            query_context_registry: Arc::clone(&self.query_context_registry),
+            task_context: self.task_context,
+        }
     }
 
-    /// Attach the Spark `TaskContext` global reference captured at `createPlan` time. Cloned
-    /// into every `JvmScalarUdfExpr` the planner builds so the JNI bridge can install it as
-    /// the thread-local on the Tokio worker driving the UDF.
-    pub fn with_task_context(
-        mut self,
-        task_context: Option<Arc<Global<JObject<'static>>>>,
-    ) -> Self {
-        self.task_context = task_context;
-        self
+    /// Attach a propagated Spark `TaskContext` global reference. Called by the JNI `executePlan`
+    /// entry with whatever was captured at `createPlan` time. The planner clones this `Option`
+    /// into every `JvmScalarUdfExpr` it builds.
+    pub fn with_task_context(self, task_context: Option<Arc<Global<JObject<'static>>>>) -> Self {
+        Self {
+            exec_context_id: self.exec_context_id,
+            partition: self.partition,
+            session_ctx: self.session_ctx,
+            query_context_registry: self.query_context_registry,
+            task_context,
+        }
     }
 
     /// Return session context of this planner.

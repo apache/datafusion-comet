@@ -128,8 +128,10 @@ class CometExecIterator(
       taskAttemptId,
       taskCPUs,
       keyUnwrapper,
-      // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
-      // TaskContext. See CometUdfBridge.evaluate.
+      // Capture the Spark task thread's TaskContext at `createPlan` time. Stashed native-side
+      // in the ExecutionContext and passed through the JVM UDF bridge so that Tokio workers
+      // running JVM UDFs see the real `TaskContext` via their thread-local. See
+      // `CometUdfBridge.evaluate` and `CometTaskContextShim` for the receive side.
       TaskContext.get())
   }
 
