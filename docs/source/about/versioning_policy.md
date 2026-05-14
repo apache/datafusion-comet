@@ -109,7 +109,8 @@ incompatibilities.
 When `1.0.0` ships:
 
 - Strict semantic versioning will apply to the public Scala and Java API: breaking changes will
-  only be made in a future major release.
+  only be made in a future major release. APIs annotated with `@Unstable` remain exempt and may
+  change in any minor release.
 - The stability commitments for configuration keys and the protobuf plan format will be
   re-evaluated and documented as part of the `1.0.0` release.
 
