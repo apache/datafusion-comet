@@ -136,4 +136,19 @@ class CometDatetimeJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("hour/minute/second: DST fall-back boundary in America/Los_Angeles") {
+    withTable("t") {
+      sql("CREATE TABLE t (ts TIMESTAMP) USING parquet")
+      // 2024-11-03 09:30:00 UTC is in the middle of the LA fall-back
+      // (clocks moved 02:00 -> 01:00 local at 09:00 UTC).
+      sql("""INSERT INTO t VALUES
+          | TIMESTAMP'2024-11-03 08:30:00 UTC',
+          | TIMESTAMP'2024-11-03 09:30:00 UTC',
+          | TIMESTAMP'2024-11-03 10:30:00 UTC'""".stripMargin)
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
+        checkSparkAnswerAndOperator("SELECT hour(ts), minute(ts), second(ts) FROM t ORDER BY ts")
+      }
+    }
+  }
 }
