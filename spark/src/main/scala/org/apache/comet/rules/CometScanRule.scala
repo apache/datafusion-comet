@@ -50,6 +50,7 @@ import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncrypti
 import org.apache.comet.parquet.Native
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
+import org.apache.comet.spi.CometExtensionRegistry
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
@@ -161,6 +162,26 @@ case class CometScanRule(session: SparkSession)
       return withInfo(scanExec, "AQE Dynamic Partition Pruning requires Spark 3.5+")
     }
 
+    // Contrib SPI dispatch: offer the scan to every registered CometScanRuleExtension
+    // before core's built-in file-format logic. The first extension whose `matchesV1`
+    // returns true gets `transformV1` called -- if that returns Some, the result replaces
+    // the scan branch entirely. Returning None means "I matched but ultimately can't
+    // accelerate this one", and core's existing logic handles it. Iterating in
+    // registration order makes contrib selection deterministic.
+    scanExec.relation match {
+      case r: HadoopFsRelation =>
+        val matched = CometExtensionRegistry.scanExtensions.find(_.matchesV1(r))
+        matched match {
+          case Some(ext) =>
+            ext.transformV1(plan, scanExec, session) match {
+              case Some(replacement) => return replacement
+              case None => // extension matched but declined; fall through
+            }
+          case None => // no extension matched; fall through
+        }
+      case _ => // SPI only operates on HadoopFsRelation V1 scans
+    }
+
     scanExec.relation match {
       case r: HadoopFsRelation =>
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
@@ -258,6 +279,18 @@ case class CometScanRule(session: SparkSession)
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
+
+    // Contrib SPI dispatch (V2): same shape as transformV1Scan above. First matching
+    // extension wins; None return falls through to core's logic.
+    val matched = CometExtensionRegistry.scanExtensions.find(_.matchesV2(scanExec))
+    matched match {
+      case Some(ext) =>
+        ext.transformV2(scanExec, session) match {
+          case Some(replacement) => return replacement
+          case None => // extension matched but declined; fall through
+        }
+      case None => // no extension matched; fall through
+    }
 
     scanExec.scan match {
       case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>

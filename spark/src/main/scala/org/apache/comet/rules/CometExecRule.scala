@@ -54,6 +54,7 @@ import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
+import org.apache.comet.spi.CometExtensionRegistry
 
 object CometExecRule {
 
@@ -349,7 +350,15 @@ case class CometExecRule(session: SparkSession)
         // if all children are native (or if this is a leaf node) then see if there is a
         // registered handler for creating a fully native plan
         if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-          val handler = allExecs
+          // Contrib SPI: each registered CometOperatorSerdeExtension contributes a
+          // SparkPlan-class -> CometOperatorSerde map. We merge those over `allExecs`
+          // here so contrib operators (e.g. a future CometDeltaNativeScanExec from a
+          // delta contrib) get dispatched the same way built-in operators do. Contribs
+          // own classes that aren't in `allExecs`, so this merge never overrides a core
+          // mapping in practice.
+          val contribSerdes =
+            CometExtensionRegistry.serdeExtensions.flatMap(_.serdes).toMap
+          val handler = (allExecs ++ contribSerdes)
             .get(op.getClass)
             .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
           handler match {
