@@ -240,7 +240,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     // which is what drives ArrayInsert's "unsupported arguments" branch. With the dispatcher
     // enabled, ScalaUDF routes through codegen and the whole plan runs native.
     withSQLConf(
-      CometConf.COMET_CODEGEN_DISPATCH_MODE.key -> CometConf.CODEGEN_DISPATCH_DISABLED,
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
       CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")

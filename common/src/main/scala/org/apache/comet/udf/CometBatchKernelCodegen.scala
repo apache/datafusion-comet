@@ -22,23 +22,22 @@ package org.apache.comet.udf
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, RegExpReplace, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeAndComment, CodeFormatter, CodegenContext, CodeGenerator, CodegenFallback, ExprCode, GeneratedClass}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, StringType}
+import org.apache.spark.sql.types.DataType
 
 import org.apache.comet.shims.CometExprTraitShim
 
 /**
- * Compiles a bound [[Expression]] plus an input schema into a specialized [[CometBatchKernel]]
- * that fuses Arrow input reads, expression evaluation, and Arrow output writes into one
- * Janino-compiled method per (expression, schema) pair.
+ * Compiles a bound [[Expression]] plus an input schema into a [[CometBatchKernel]] that fuses
+ * Arrow input reads, expression evaluation, and Arrow output writes into one Janino-compiled
+ * method per (expression, schema) pair.
  *
  * Input- and output-side emission live in [[CometBatchKernelCodegenInput]] and
  * [[CometBatchKernelCodegenOutput]]. This file is the orchestrator: the [[ArrowColumnSpec]]
  * vocabulary, [[canHandle]] / [[allocateOutput]] / [[compile]] / [[generateSource]] entry points,
- * and the cross-cutting kernel-shape decisions (null-intolerant short-circuit, CSE variant,
- * per-expression specialized emitters).
+ * and the cross-cutting kernel-shape decisions (null-intolerant short-circuit, CSE variant).
  *
  * The generated kernel '''is''' the `InternalRow` that Spark's `BoundReference.genCode` reads
  * from. `ctx.INPUT_ROW = "row"` plus `InternalRow row = this;` inside `process` routes every
@@ -47,8 +46,8 @@ import org.apache.comet.shims.CometExprTraitShim
  * `splitExpressions` uses INPUT_ROW as a helper-method parameter name and `this` is a reserved
  * Java keyword.
  *
- * For the full feature list (type surface, optimizations, cache layers, specialized emitters,
- * open work items), see `docs/source/contributor-guide/jvm_udf_dispatch.md`.
+ * For the full feature list (type surface, optimizations, cache layers, open work items), see
+ * `docs/source/contributor-guide/jvm_udf_dispatch.md`.
  */
 object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
@@ -292,7 +291,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   /**
    * Generate the Java source for a kernel without compiling it. Factored out of [[compile]] so
    * tests can assert on the emitted source (null short-circuit present, non-nullable `isNullAt`
-   * returns literal `false`, specialized emitter engaged, etc.) without paying for Janino.
+   * returns literal `false`, etc.) without paying for Janino.
    */
   def generateSource(
       boundExpr: Expression,
@@ -313,39 +312,34 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     val valueVectorClass = classOf[ValueVector].getName
     val fieldVectorClass = classOf[FieldVector].getName
 
-    // Pick the per-row body. Specialized emitters get priority; the default reuses
-    // Spark's doGenCode.
+    // Build the per-row body via Spark's doGenCode.
     //
     // `outputSetup` holds once-per-batch declarations (typed child-vector casts for complex
     // output) that `emitOutputWriter` factors out of the per-row body so they do not repeat on
-    // every row. Scalar outputs return an empty string here. Specialized emitters (like
-    // RegExpReplace) do not need setup because they write directly to the root `output`.
+    // every row. Scalar outputs return an empty string here.
     //
     // TODO(method-size): perRowBody is inlined inside process's for-loop and not split.
     // Sufficiently deep trees can exceed Janino's 64KB method size; wrap in
     // ctx.splitExpressionsWithCurrentInputs when hit. See
     // docs/source/contributor-guide/jvm_udf_dispatch.md#open-items.
-    val (concreteOutClass, outputSetup, perRowBody) = boundExpr match {
-      case rr: RegExpReplace if canSpecializeRegExpReplace(rr) =>
-        (classOf[VarCharVector].getName, "", specializedRegExpReplaceBody(ctx, rr, inputSchema))
-      case _ =>
-        // Class-field CSE. `generateExpressions` runs `subexpressionElimination` under the
-        // hood, which populates `ctx.subexprFunctions` with per-row helper calls that write
-        // common subexpression results into `addMutableState`-allocated fields; the returned
-        // `ExprCode` then references those fields. `subexprFunctionsCode` is the concatenated
-        // helper invocation block, spliced into the per-row body by `defaultBody` (inside the
-        // NullIntolerant else-branch when that short-circuit fires, otherwise before
-        // `ev.code`). See the "Subexpression elimination" section of the object-level
-        // Scaladoc for why we use this variant rather than the WSCG one.
-        val ev = if (SQLConf.get.subexpressionEliminationEnabled) {
-          ctx.generateExpressions(Seq(boundExpr), doSubexpressionElimination = true).head
-        } else {
-          boundExpr.genCode(ctx)
-        }
-        val subExprsCode = ctx.subexprFunctionsCode
-        val (cls, setup, snippet) =
-          CometBatchKernelCodegenOutput.emitOutputWriter(boundExpr.dataType, ev.value, ctx)
-        (cls, setup, defaultBody(boundExpr, ev, snippet, subExprsCode))
+    val (concreteOutClass, outputSetup, perRowBody) = {
+      // Class-field CSE. `generateExpressions` runs `subexpressionElimination` under the
+      // hood, which populates `ctx.subexprFunctions` with per-row helper calls that write
+      // common subexpression results into `addMutableState`-allocated fields; the returned
+      // `ExprCode` then references those fields. `subexprFunctionsCode` is the concatenated
+      // helper invocation block, spliced into the per-row body by `defaultBody` (inside the
+      // NullIntolerant else-branch when that short-circuit fires, otherwise before
+      // `ev.code`). See the "Subexpression elimination" section of the object-level
+      // Scaladoc for why we use this variant rather than the WSCG one.
+      val ev = if (SQLConf.get.subexpressionEliminationEnabled) {
+        ctx.generateExpressions(Seq(boundExpr), doSubexpressionElimination = true).head
+      } else {
+        boundExpr.genCode(ctx)
+      }
+      val subExprsCode = ctx.subexprFunctionsCode
+      val (cls, setup, snippet) =
+        CometBatchKernelCodegenOutput.emitOutputWriter(boundExpr.dataType, ev.value, ctx)
+      (cls, setup, defaultBody(boundExpr, ev, snippet, subExprsCode))
     }
 
     val typedFieldDecls = CometBatchKernelCodegenInput.emitInputFieldDecls(inputSchema)
@@ -431,14 +425,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       }
     // One log per unique (expr, schema) compile; the caller caches the result so subsequent
     // batches with the same shape reuse this compile.
-    val specialized = boundExpr match {
-      case _: RegExpReplace
-          if canSpecializeRegExpReplace(boundExpr.asInstanceOf[RegExpReplace]) =>
-        " [specialized]"
-      case _ => ""
-    }
     logInfo(
-      s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName}$specialized " +
+      s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
         s"-> ${boundExpr.dataType}  inputs=" +
         inputSchema
           .map(s => s"${s.vectorClass.getSimpleName}${if (s.nullable) "?" else ""}")
@@ -453,106 +441,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
-   * Can this `RegExpReplace` instance be handled by the specialized emitter? Requires a direct
-   * column reference as subject, non-null foldable pattern and replacement, and offset of 1.
-   * Other shapes fall back to the default `doGenCode` path.
-   */
-  private def canSpecializeRegExpReplace(rr: RegExpReplace): Boolean = {
-    val subjectIsBound =
-      rr.subject.isInstanceOf[BoundReference] && rr.subject.dataType == StringType
-    val patternOk =
-      rr.regexp.foldable && rr.regexp.dataType == StringType && rr.regexp.eval() != null
-    val replOk = rr.rep.foldable && rr.rep.dataType == StringType && rr.rep.eval() != null
-    val posIsOne = rr.pos match {
-      case Literal(v: Int, _) => v == 1
-      case _ => false
-    }
-    subjectIsBound && patternOk && replOk && posIsOne
-  }
-
-  /**
-   * Emit the per-row body for `RegExpReplace`. Per-row shape: read Arrow subject bytes, decode to
-   * Java `String`, run `Matcher.replaceAll` with a cached `Pattern` and the replacement String,
-   * re-encode to bytes, write to Arrow.
-   *
-   * ==Why this specialization exists==
-   *
-   * The default path runs `boundExpr.genCode(ctx)` and wraps it with kernel-side getter reads and
-   * a `UTF8String -> bytes -> Arrow` write. For `RegExpReplace` specifically, Spark's generated
-   * code does not stay in `UTF8String` space: `java.util.regex.Matcher` requires a
-   * `CharSequence`, so the generated code materializes a Java `String` from the input
-   * `UTF8String` (a UTF-8 decode, allocating a `char[]`), runs the matcher, then wraps the result
-   * String back into a `UTF8String` (a UTF-8 encode, allocating a `byte[]`). The per-row shape
-   * is:
-   *
-   * {{{
-   *   default:  Arrow bytes -> UTF8String -> String -> Matcher ->
-   *              String -> UTF8String -> bytes -> Arrow
-   * }}}
-   *
-   * On a wide-match workload (every character of the row gets replaced, so the output is the full
-   * row length), the round trip added ~44% per-row cost versus a tight byte-oriented loop with
-   * shape:
-   *
-   * {{{
-   *   specialized:  Arrow bytes -> String -> Matcher -> String -> bytes -> Arrow
-   * }}}
-   *
-   * This specialization emits the byte-oriented shape directly. No `UTF8String` appears in the
-   * generated per-row loop. The expression remains a first-class citizen of the dispatcher
-   * (plan-time serde, schema-keyed caching, zero-config for the caller).
-   *
-   * ==When to add a specialization==
-   *
-   * The general rule: specialize when an expression's `doGenCode` output shape forces conversions
-   * that an Arrow-aware byte-oriented implementation does not pay. The common case is expressions
-   * whose implementation requires a Java `String` (anything using `java.util.regex` and some
-   * `DateTimeFormatter` expressions), because Spark's `UTF8String <-> String` round-trip is not
-   * free for wide outputs. Keep specializations minimal so comparisons stay honest. Avoid
-   * layering speculative optimizations; let the default-path optimization menu handle the common
-   * cases.
-   */
-  private def specializedRegExpReplaceBody(
-      ctx: CodegenContext,
-      rr: RegExpReplace,
-      inputSchema: Seq[ArrowColumnSpec]): String = {
-    val subjectOrd = rr.subject.asInstanceOf[BoundReference].ordinal
-    val subjectClass = inputSchema(subjectOrd).vectorClass
-    require(
-      subjectClass == classOf[VarCharVector],
-      "specializedRegExpReplaceBody expects VarCharVector at ordinal " +
-        s"$subjectOrd, got ${subjectClass.getSimpleName}")
-
-    val patternStr = rr.regexp.eval().toString
-    val replStr = rr.rep.eval().toString
-    val compiledPattern = java.util.regex.Pattern.compile(patternStr)
-
-    // addReferenceObj adds a class-level field initialized from references[] in the constructor,
-    // so the Pattern and replacement String are resolved once, not per row.
-    val patternRef =
-      ctx.addReferenceObj("pattern", compiledPattern, "java.util.regex.Pattern")
-    val replRef = ctx.addReferenceObj("replacement", replStr, "java.lang.String")
-
-    val sb = ctx.freshName("sb")
-    val s = ctx.freshName("s")
-    val r = ctx.freshName("r")
-    val rb = ctx.freshName("rb")
-
-    s"""
-       |if (this.col$subjectOrd.isNull(i)) {
-       |  output.setNull(i);
-       |} else {
-       |  byte[] $sb = this.col$subjectOrd.get(i);
-       |  String $s = new String($sb, java.nio.charset.StandardCharsets.UTF_8);
-       |  String $r = $patternRef.matcher($s).replaceAll($replRef);
-       |  byte[] $rb = $r.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-       |  output.setSafe(i, $rb, 0, $rb.length);
-       |}
-     """.stripMargin
-  }
-
-  /**
-   * Per-row body for the default (non-specialized) path.
+   * Per-row body for the default path.
    *
    * For expressions that implement the `NullIntolerant` marker trait (null in any input -> null
    * output), emits a short-circuit that skips expression evaluation entirely when any input

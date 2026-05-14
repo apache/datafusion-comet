@@ -162,7 +162,7 @@ object CometScalaUDFCompositionBenchmark extends CometBenchmarkBase {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_CODEGEN_DISPATCH_MODE.key -> CometConf.CODEGEN_DISPATCH_DISABLED) {
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
         spark.sql(udfQuery).noop()
       }
     }
@@ -173,7 +173,7 @@ object CometScalaUDFCompositionBenchmark extends CometBenchmarkBase {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_CODEGEN_DISPATCH_MODE.key -> CometConf.CODEGEN_DISPATCH_FORCE) {
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
         spark.sql(udfQuery).noop()
       }
     }

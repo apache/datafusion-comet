@@ -41,16 +41,13 @@ pub struct JvmScalarUdfExpr {
     args: Vec<Arc<dyn PhysicalExpr>>,
     return_type: DataType,
     return_nullable: bool,
-    /// Spark `TaskContext` captured on the driving Spark task thread, stashed in the
-    /// [`ExecutionContext`] at `createPlan` time, and threaded here by the planner. Passed
-    /// through the JNI bridge so [`CometUdfBridge.evaluate`] can install it as the
-    /// thread-local `TaskContext` on the Tokio worker that drives the UDF call. Without this,
-    /// partition-sensitive built-ins inside a user UDF tree (`Rand`, `Uuid`,
-    /// `MonotonicallyIncreasingID`, custom UDF code that reads
-    /// `TaskContext.get().partitionId()`) see a null `TaskContext` and seed / branch
-    /// incorrectly. `None` means the surrounding driver had no `TaskContext` to propagate
-    /// (unit tests, direct native driver runs); the bridge then leaves whatever
-    /// `TaskContext.get()` already returns in place.
+    /// Captured at `createPlan` time and threaded here by the planner. Passed through the
+    /// JNI bridge so `CometUdfBridge.evaluate` can install it as the Tokio worker's
+    /// thread-local `TaskContext`. Without this, partition-sensitive built-ins inside a UDF
+    /// tree (`Rand`, `Uuid`, `MonotonicallyIncreasingID`, user code reading
+    /// `TaskContext.get()`) see `null` and seed / branch incorrectly. `None` when no driving
+    /// Spark task is available; the bridge then leaves whatever `TaskContext.get()` already
+    /// returns in place.
     task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 
@@ -183,7 +180,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 CometError::from(ExecutionError::GeneralError(
                     "JVM UDF bridge unavailable: org.apache.comet.udf.CometUdfBridge \
                      class was not found on the JVM classpath. Set \
-                     spark.comet.exec.regexp.engine=rust to disable this path."
+                     spark.comet.exec.scalaUDF.codegen.enabled=false to disable this path."
                         .to_string(),
                 ))
             })?;

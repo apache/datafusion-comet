@@ -21,134 +21,15 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.SparkEnv
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
+import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
-import org.apache.comet.udf.{CometBatchKernelCodegen, CometCodegenDispatchUDF}
-
-/**
- * Helpers for wiring expressions through the [[CometCodegenDispatchUDF]] proto. The codegen
- * dispatcher identifies the expression to evaluate by carrying serialized `Expression` bytes as
- * its first argument, replacing the earlier driver-side-registry + UUID approach so the path
- * works in cluster mode without executor-side state.
- */
-private[serde] object CodegenDispatchSerdeHelpers {
-
-  /**
-   * Serialize a bound `Expression` via Spark's closure serializer and wrap the bytes as a
-   * `Literal(bytes, BinaryType)` proto arg. The closure serializer respects the task context
-   * classloader (so user UDF jars are visible) and matches the machinery Spark uses to ship
-   * closures across the wire.
-   *
-   * Gated by [[CometBatchKernelCodegen.canHandle]]: if the bound expression has an unsupported
-   * input or output type, we log via `withInfo` and return `None` so the caller falls back.
-   * Prevents unsupported shapes from reaching the Janino compiler at execute time.
-   */
-  def serializedExpressionArg(
-      original: Expression,
-      boundExpr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    CometBatchKernelCodegen.canHandle(boundExpr) match {
-      case Some(reason) =>
-        withInfo(original, reason)
-        return None
-      case None =>
-    }
-    val serializer = SparkEnv.get.closureSerializer.newInstance()
-    val buffer = serializer.serialize(boundExpr)
-    val bytes = new Array[Byte](buffer.remaining())
-    buffer.get(bytes)
-    exprToProtoInternal(Literal(bytes, BinaryType), inputs, binding)
-  }
-
-  /**
-   * Build the [[ExprOuterClass.Expr]] proto routing `expr` through [[CometCodegenDispatchUDF]].
-   * Shared scaffold: collect the bound tree's `AttributeReference`s, bind, serialize the bound
-   * tree as arg 0, emit each attribute as a data arg, set the declared return type, wrap. All
-   * regex-family serdes and [[CometScalaUDF]] land here.
-   */
-  def buildJvmUdfExpr(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      returnType: DataType): Option[Expr] = {
-    val attrs = expr.collect { case a: AttributeReference => a }.distinct
-    val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
-
-    val exprArg = serializedExpressionArg(expr, boundExpr, inputs, binding)
-      .getOrElse(return None)
-    val dataArgs =
-      attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
-
-    val returnTypeProto = serializeDataType(returnType).getOrElse(return None)
-    val udfBuilder = ExprOuterClass.JvmScalarUdf
-      .newBuilder()
-      .setClassName(classOf[CometCodegenDispatchUDF].getName)
-      .addArgs(exprArg)
-    dataArgs.foreach(udfBuilder.addArgs)
-    udfBuilder
-      .setReturnType(returnTypeProto)
-      .setReturnNullable(expr.nullable)
-    Some(
-      ExprOuterClass.Expr
-        .newBuilder()
-        .setJvmScalarUdf(udfBuilder.build())
-        .build())
-  }
-
-  /**
-   * Validate a regex-literal value: non-null and syntactically compilable by
-   * `java.util.regex.Pattern`. Returns `Some(reason)` for the caller to pass to `withInfo` when
-   * the literal forces a Spark fallback, `None` when it is usable.
-   */
-  def validateRegexLiteral(value: Any): Option[String] = {
-    if (value == null) {
-      return Some("Null literal pattern is handled by Spark fallback")
-    }
-    try {
-      java.util.regex.Pattern.compile(value.toString)
-      None
-    } catch {
-      case e: java.util.regex.PatternSyntaxException =>
-        Some(s"Invalid regex pattern: ${e.getDescription}")
-    }
-  }
-
-  /**
-   * Chain-of-responsibility picker for expressions that have a codegen dispatcher path plus an
-   * optional non-codegen fallback (native DataFusion, Spark, etc.). Mode semantics:
-   *
-   *   - `force`: try codegen first, fall back to `viaNonCodegen` if codegen rejects the
-   *     expression.
-   *   - `disabled`: never try codegen.
-   *   - `auto`: try codegen first when `preferCodegenInAuto` is true, otherwise skip it.
-   *
-   * The picker returns `None` if every attempted path returns `None` (the serde should then emit
-   * `withInfo` + fallback higher up). `viaCodegen` already bakes in the `canHandle` check.
-   */
-  def pickWithMode(
-      viaCodegen: () => Option[Expr],
-      viaNonCodegen: () => Option[Expr],
-      preferCodegenInAuto: Boolean): Option[Expr] = {
-    CometConf.COMET_CODEGEN_DISPATCH_MODE.get() match {
-      case CometConf.CODEGEN_DISPATCH_FORCE =>
-        viaCodegen().orElse(viaNonCodegen())
-      case CometConf.CODEGEN_DISPATCH_DISABLED =>
-        viaNonCodegen()
-      case _ =>
-        // auto: serde-declared preference within this mode.
-        if (preferCodegenInAuto) viaCodegen().orElse(viaNonCodegen()) else viaNonCodegen()
-    }
-  }
-}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -399,36 +280,9 @@ object CometLike extends CometExpressionSerde[Like] {
 object CometRLike extends CometExpressionSerde[RLike] {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
-    s"When ${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_RUST}: " +
-      "Uses Rust regexp engine, which has different behavior to Java regexp engine")
-
-  override def getSupportLevel(expr: RLike): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
-      expr.right match {
-        case _: Literal => Compatible(None)
-        case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
-      }
-    } else {
-      super.getSupportLevel(expr)
-    }
-  }
+    "Uses Rust regexp engine, which has different behavior to Java regexp engine")
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    val javaEngine = CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA
-    // Rust engine always uses the native DataFusion path regardless of codegen mode. Java
-    // engine uses the codegen dispatcher; `disabled` falls through to Spark by returning None.
-    CodegenDispatchSerdeHelpers.pickWithMode(
-      viaCodegen = () => convertViaJvmUdfGenericCodegen(expr, inputs, binding),
-      viaNonCodegen = () =>
-        if (javaEngine) None
-        else convertViaNativeRegex(expr, inputs, binding),
-      preferCodegenInAuto = javaEngine)
-  }
-
-  private def convertViaNativeRegex(
-      expr: RLike,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
     expr.right match {
       case Literal(pattern, DataTypes.StringType) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
@@ -450,204 +304,6 @@ object CometRLike extends CometExpressionSerde[RLike] {
         }
       case _ =>
         withInfo(expr, "Only scalar regexp patterns are supported")
-        None
-    }
-  }
-
-  private def convertViaJvmUdfGenericCodegen(
-      expr: RLike,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr.right match {
-      case Literal(value, DataTypes.StringType) =>
-        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
-          case Some(reason) => withInfo(expr, reason); None
-          case None =>
-            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
-              expr,
-              inputs,
-              binding,
-              DataTypes.BooleanType)
-        }
-      case _ =>
-        withInfo(expr, "Only scalar regexp patterns are supported")
-        None
-    }
-  }
-}
-
-object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
-
-  override def getSupportLevel(expr: RegExpExtract): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
-      (expr.regexp, expr.idx) match {
-        case (_: Literal, _: Literal) => Compatible(None)
-        case (_: Literal, _) =>
-          Unsupported(Some("Only scalar group index is supported"))
-        case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
-      }
-    } else {
-      Unsupported(
-        Some(
-          s"regexp_extract requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-            s"${CometConf.REGEXP_ENGINE_JAVA}"))
-    }
-  }
-
-  override def convert(
-      expr: RegExpExtract,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() != CometConf.REGEXP_ENGINE_JAVA) {
-      withInfo(
-        expr,
-        s"regexp_extract requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-          s"${CometConf.REGEXP_ENGINE_JAVA}")
-      return None
-    }
-    // No native path exists for regexp_extract; the codegen dispatcher is the only Comet path.
-    // `disabled` mode falls through to Spark by returning None.
-    CodegenDispatchSerdeHelpers.pickWithMode(
-      viaCodegen = () => convertViaJvmUdfGenericCodegen(expr, inputs, binding),
-      viaNonCodegen = () => None,
-      preferCodegenInAuto = true)
-  }
-
-  private def convertViaJvmUdfGenericCodegen(
-      expr: RegExpExtract,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    (expr.regexp, expr.idx) match {
-      case (Literal(value, DataTypes.StringType), Literal(_, _: IntegerType)) =>
-        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
-          case Some(reason) => withInfo(expr, reason); None
-          case None =>
-            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
-              expr,
-              inputs,
-              binding,
-              DataTypes.StringType)
-        }
-      case _ =>
-        withInfo(expr, "Only scalar regexp patterns and group index are supported")
-        None
-    }
-  }
-}
-
-object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
-
-  override def getSupportLevel(expr: RegExpExtractAll): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
-      (expr.regexp, expr.idx) match {
-        case (_: Literal, _: Literal) => Compatible(None)
-        case (_: Literal, _) =>
-          Unsupported(Some("Only scalar group index is supported"))
-        case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
-      }
-    } else {
-      Unsupported(
-        Some(
-          s"regexp_extract_all requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-            s"${CometConf.REGEXP_ENGINE_JAVA}"))
-    }
-  }
-
-  override def convert(
-      expr: RegExpExtractAll,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() != CometConf.REGEXP_ENGINE_JAVA) {
-      withInfo(
-        expr,
-        s"regexp_extract_all requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-          s"${CometConf.REGEXP_ENGINE_JAVA}")
-      return None
-    }
-    // No native path exists for regexp_extract_all; the codegen dispatcher is the only Comet
-    // path. `disabled` mode falls through to Spark by returning None.
-    CodegenDispatchSerdeHelpers.pickWithMode(
-      viaCodegen = () => convertViaJvmUdfGenericCodegen(expr, inputs, binding),
-      viaNonCodegen = () => None,
-      preferCodegenInAuto = true)
-  }
-
-  private def convertViaJvmUdfGenericCodegen(
-      expr: RegExpExtractAll,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    (expr.regexp, expr.idx) match {
-      case (Literal(value, DataTypes.StringType), Literal(_, _: IntegerType)) =>
-        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
-          case Some(reason) => withInfo(expr, reason); None
-          case None =>
-            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
-              expr,
-              inputs,
-              binding,
-              ArrayType(StringType, containsNull = true))
-        }
-      case _ =>
-        withInfo(expr, "Only scalar regexp patterns and group index are supported")
-        None
-    }
-  }
-}
-
-object CometRegExpInStr extends CometExpressionSerde[RegExpInStr] {
-
-  override def getSupportLevel(expr: RegExpInStr): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
-      (expr.regexp, expr.idx) match {
-        case (_: Literal, _: Literal) => Compatible(None)
-        case (_: Literal, _) =>
-          Unsupported(Some("Only scalar group index is supported"))
-        case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
-      }
-    } else {
-      Unsupported(
-        Some(
-          s"regexp_instr requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-            s"${CometConf.REGEXP_ENGINE_JAVA}"))
-    }
-  }
-
-  override def convert(
-      expr: RegExpInStr,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() != CometConf.REGEXP_ENGINE_JAVA) {
-      withInfo(
-        expr,
-        s"regexp_instr requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-          s"${CometConf.REGEXP_ENGINE_JAVA}")
-      return None
-    }
-    // No native path exists for regexp_instr; the codegen dispatcher is the only Comet path.
-    // `disabled` mode falls through to Spark by returning None.
-    CodegenDispatchSerdeHelpers.pickWithMode(
-      viaCodegen = () => convertViaJvmUdfGenericCodegen(expr, inputs, binding),
-      viaNonCodegen = () => None,
-      preferCodegenInAuto = true)
-  }
-
-  private def convertViaJvmUdfGenericCodegen(
-      expr: RegExpInStr,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    (expr.regexp, expr.idx) match {
-      case (Literal(value, DataTypes.StringType), Literal(_, _: IntegerType)) =>
-        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
-          case Some(reason) => withInfo(expr, reason); None
-          case None =>
-            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
-              expr,
-              inputs,
-              binding,
-              DataTypes.IntegerType)
-        }
-      case _ =>
-        withInfo(expr, "Only scalar regexp patterns and group index are supported")
         None
     }
   }
@@ -712,28 +368,23 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 
 object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
   override def getIncompatibleReasons(): Seq[String] = Seq(
-    s"When ${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_RUST}: " +
-      "Regexp pattern may not be compatible with Spark")
+    "Regexp pattern may not be compatible with Spark")
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Only supports `regexp_replace` with an offset of 1 (no offset)")
 
   override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
+    if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
+      !CometConf.isExprAllowIncompat("regexp")) {
+      withInfo(
+        expr,
+        s"Regexp pattern ${expr.regexp} is not compatible with Spark. " +
+          s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
+          "to allow it anyway.")
+      return Incompatible()
+    }
     expr.pos match {
-      case Literal(value, DataTypes.IntegerType) if value == 1 =>
-        if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
-          expr.regexp match {
-            case _: Literal => Compatible(None)
-            case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
-          }
-        } else {
-          if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
-            !CometConf.isExprAllowIncompat("regexp")) {
-            Incompatible()
-          } else {
-            Compatible()
-          }
-        }
+      case Literal(value, DataTypes.IntegerType) if value == 1 => Compatible()
       case _ =>
         Unsupported(Some("Comet only supports regexp_replace with an offset of 1 (no offset)."))
     }
@@ -743,30 +394,6 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       expr: RegExpReplace,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val javaEngine = CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA
-    // Rust engine always uses the native DataFusion path regardless of codegen mode. Java
-    // engine uses the codegen dispatcher; `disabled` falls through to Spark by returning None.
-    CodegenDispatchSerdeHelpers.pickWithMode(
-      viaCodegen = () => convertViaJvmUdfGenericCodegen(expr, inputs, binding),
-      viaNonCodegen = () =>
-        if (javaEngine) None
-        else convertViaNativeRegex(expr, inputs, binding),
-      preferCodegenInAuto = javaEngine)
-  }
-
-  private def convertViaNativeRegex(
-      expr: RegExpReplace,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
-      !CometConf.isExprAllowIncompat("regexp")) {
-      withInfo(
-        expr,
-        s"Regexp pattern ${expr.regexp} is not compatible with Spark. " +
-          s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
-          "to allow it anyway.")
-      return None
-    }
     val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
     val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
     val replacementExpr = exprToProtoInternal(expr.rep, inputs, binding)
@@ -781,27 +408,6 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       flagsExpr)
     optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
   }
-
-  private def convertViaJvmUdfGenericCodegen(
-      expr: RegExpReplace,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr.regexp match {
-      case Literal(value, DataTypes.StringType) =>
-        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
-          case Some(reason) => withInfo(expr, reason); None
-          case None =>
-            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
-              expr,
-              inputs,
-              binding,
-              DataTypes.StringType)
-        }
-      case _ =>
-        withInfo(expr, "Only scalar regexp patterns are supported")
-        None
-    }
-  }
 }
 
 /**
@@ -812,36 +418,12 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
 object CometStringSplit extends CometExpressionSerde[StringSplit] {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
-    s"When ${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_RUST}: " +
-      "Regex engine differences between Java and Rust")
+    "Regex engine differences between Java and Rust")
 
-  override def getSupportLevel(expr: StringSplit): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
-      expr.regex match {
-        case _: Literal => Compatible(None)
-        case _ => Unsupported(Some("Only scalar regex patterns are supported"))
-      }
-    } else {
-      Incompatible(Some("Regex engine differences between Java and Rust"))
-    }
-  }
+  override def getSupportLevel(expr: StringSplit): SupportLevel =
+    Incompatible(Some("Regex engine differences between Java and Rust"))
 
   override def convert(
-      expr: StringSplit,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    val javaEngine = CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA
-    // Rust engine always uses the native DataFusion path regardless of codegen mode. Java
-    // engine uses the codegen dispatcher; `disabled` falls through to Spark by returning None.
-    CodegenDispatchSerdeHelpers.pickWithMode(
-      viaCodegen = () => convertViaJvmUdfGenericCodegen(expr, inputs, binding),
-      viaNonCodegen = () =>
-        if (javaEngine) None
-        else convertViaNativeRegex(expr, inputs, binding),
-      preferCodegenInAuto = javaEngine)
-  }
-
-  private def convertViaNativeRegex(
       expr: StringSplit,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
@@ -856,27 +438,6 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
       regexExpr,
       limitExpr)
     optExprWithInfo(optExpr, expr, expr.str, expr.regex, expr.limit)
-  }
-
-  private def convertViaJvmUdfGenericCodegen(
-      expr: StringSplit,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr.regex match {
-      case Literal(value, DataTypes.StringType) =>
-        CodegenDispatchSerdeHelpers.validateRegexLiteral(value) match {
-          case Some(reason) => withInfo(expr, reason); None
-          case None =>
-            CodegenDispatchSerdeHelpers.buildJvmUdfExpr(
-              expr,
-              inputs,
-              binding,
-              ArrayType(StringType, containsNull = false))
-        }
-      case _ =>
-        withInfo(expr, "Only scalar regex patterns are supported")
-        None
-    }
   }
 }
 

@@ -22,7 +22,7 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateMap, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, RegExpReplace, RLike, Size, StringSplit, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateArray, CreateMap, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, Size, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructField, StructType}
 
@@ -45,7 +45,6 @@ import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColum
  *     dispatcher rewrites the `BoundReference`, Spark's `doGenCode` stops emitting its own
  *     `row.isNullAt(ord)` probe.
  *   - Zero-copy string reads route through `UTF8String.fromAddress`.
- *   - The specialized `RegExpReplace` emitter engages for the shape its guard accepts.
  *
  * These are the smallest durable tests that the claimed optimizations actually reach the
  * generated Java, and they document the shapes future contributors should preserve.
@@ -101,11 +100,10 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("NullIntolerant expression emits input-null short-circuit before ev.code") {
-    // RLike is NullIntolerant (a null subject returns null, not "did not match"). Expect the
-    // default body to prepend `if (this.col0.isNull(i)) { setNull; } else { ... }` so null rows
-    // skip the whole regex eval, not just the setNull write.
-    val expr =
-      RLike(BoundReference(0, StringType, nullable = true), Literal.create("\\d+", StringType))
+    // Upper is NullIntolerant (null in -> null out). Expect the default body to prepend
+    // `if (this.col0.isNull(i)) { setNull; } else { ... }` so null rows skip the whole
+    // expression eval, not just the setNull write.
+    val expr = Upper(BoundReference(0, StringType, nullable = true))
     val src = gen(expr, nullableString)
     assert(
       src.contains("this.col0.isNull(i)"),
@@ -115,48 +113,11 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       s"expected setNull emission for short-circuited null rows; got:\n$src")
   }
 
-  test("specialized RegExpReplace emitter engages for BoundReference subject") {
-    val expr = RegExpReplace(
-      subject = BoundReference(0, StringType, nullable = true),
-      regexp = Literal.create("\\d+", StringType),
-      rep = Literal.create("N", StringType),
-      pos = Literal(1, IntegerType))
-    val src = gen(expr, nullableString)
-    // The specialized path reads bytes directly and runs `Pattern.matcher(...).replaceAll(...)`
-    // without detouring through `UTF8String`. Key marker: no `UTF8String` on the subject read
-    // inside the loop; instead `inputs` or the typed column field with `.get(i)`.
-    assert(
-      src.contains(".matcher(") && src.contains(".replaceAll("),
-      s"expected specialized Matcher.replaceAll shape; got:\n$src")
-    assert(
-      src.contains("this.col0.get(i)"),
-      s"expected specialized path to read bytes directly from the typed column; got:\n$src")
-  }
-
-  test("specialized RegExpReplace declines when subject is not a BoundReference") {
-    // Upper breaks the specialization guard; fall through to the default `doGenCode` path.
-    val expr = RegExpReplace(
-      subject = Upper(BoundReference(0, StringType, nullable = true)),
-      regexp = Literal.create("\\d+", StringType),
-      rep = Literal.create("N", StringType),
-      pos = Literal(1, IntegerType))
-    val src = gen(expr, nullableString)
-    // The default path routes the subject read through the kernel's getters. Marker of the
-    // default path: the Upper child emits `row.getUTF8String(0)` / `row.isNullAt(0)` because
-    // `ctx.INPUT_ROW = "row"`.
-    assert(
-      src.contains("row.getUTF8String(0)") || src.contains("this.getUTF8String(0)"),
-      s"expected default path with row/kernel getter invocation; got:\n$src")
-  }
-
   test("NullIntolerant short-circuit emitted when every node is NullIntolerant") {
-    // RLike(Upper(BoundReference), Literal): RLike is NullIntolerant, Upper is NullIntolerant,
-    // BoundReference and Literal are leaves. Every path from a leaf to the root propagates
-    // nulls, so the short-circuit heuristic ("any input null -> output null") holds.
-    val expr =
-      RLike(
-        Upper(BoundReference(0, StringType, nullable = true)),
-        Literal.create("x", StringType))
+    // Length(Upper(BoundReference)): Length is NullIntolerant, Upper is NullIntolerant,
+    // BoundReference is a leaf. Every path from a leaf to the root propagates nulls, so the
+    // short-circuit heuristic ("any input null -> output null") holds.
+    val expr = Length(Upper(BoundReference(0, StringType, nullable = true)))
     val src = gen(expr, nullableString)
     assert(
       src.contains("if (this.col0.isNull(i))"),
@@ -171,12 +132,11 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     // own `ev.code` handle nulls correctly.
     val nullable1 = ArrowColumnSpec(varCharVectorClass, nullable = true)
     val nullable2 = ArrowColumnSpec(varCharVectorClass, nullable = true)
-    val expr = RLike(
+    val expr = Length(
       Concat(
         Seq(
           BoundReference(0, StringType, nullable = true),
-          BoundReference(1, StringType, nullable = true))),
-      Literal.create("x", StringType))
+          BoundReference(1, StringType, nullable = true))))
     val src = gen(expr, nullable1, nullable2)
     assert(
       !src.contains("this.col0.isNull(i) || this.col1.isNull(i)"),
@@ -412,20 +372,18 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("ArrayType(StringType) output emits ListVector startNewValue/endValue recursion") {
-    // StringSplit produces ArrayType(StringType). emitWrite's ArrayType case should emit:
+    // CreateArray over a BoundReference(StringType) produces ArrayType(StringType). emitWrite's
+    // ArrayType case should emit:
     //   - ListVector cast of output
     //   - child VarCharVector extraction via getDataVector
     //   - startNewValue + per-element loop + endValue
     //   - the per-element write recursing into the StringType case (which uses the UTF8 on-heap
     //     shortcut marker `instanceof byte[]`)
-    // Not asserting exact expression-specific text since Spark's StringSplit.doGenCode may drift
-    // across versions. Focus markers: ListVector cast, VarCharVector child cast, startNewValue,
-    // endValue, and the inner UTF8 shortcut branch.
+    // Focus markers: ListVector cast, VarCharVector child cast, startNewValue, endValue, and
+    // the inner UTF8 shortcut branch.
     val expr =
-      StringSplit(
-        BoundReference(0, StringType, nullable = true),
-        Literal.create(",", StringType),
-        Literal(-1, IntegerType))
+      CreateArray(
+        Seq(BoundReference(0, StringType, nullable = true), Literal.create("x", StringType)))
     val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(nullableString))
     val src = result.body
     val formatted = CodeFormatter.format(result.code)

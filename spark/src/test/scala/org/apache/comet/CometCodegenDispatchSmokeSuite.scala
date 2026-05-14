@@ -25,22 +25,18 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType, TimestampType}
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.udf.CometCodegenDispatchUDF
 
 /**
- * Smoke tests for the Arrow-direct codegen dispatcher. Runs rlike and regexp_replace queries and
- * asserts results match Spark. Widens to more expression shapes as the productionization plan
- * lands supporting types and plan-time dispatchability.
+ * Smoke tests for the Arrow-direct codegen dispatcher. Runs ScalaUDF queries across the scalar
+ * and complex type surface, composed UDF trees, subquery reuse, `TaskContext` propagation, and
+ * per-task cache isolation, asserting results match Spark.
  */
 class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def sparkConf: SparkConf =
     super.sparkConf
-      .set(CometConf.COMET_REGEXP_ENGINE.key, CometConf.REGEXP_ENGINE_JAVA)
-      // `auto` would also route rlike/regexp_replace to codegen when engine=java, but `force`
-      // guarantees it and exercises the codegen path regardless of future auto-mode tuning.
-      .set(CometConf.COMET_CODEGEN_DISPATCH_MODE.key, CometConf.CODEGEN_DISPATCH_FORCE)
+      .set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
 
   private def withSubjects(values: String*)(f: => Unit): Unit = {
     withTable("t") {
@@ -50,54 +46,6 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
         .mkString(", ")
       sql(s"INSERT INTO t VALUES $rows")
       f
-    }
-  }
-
-  test("rlike projection with null handling") {
-    withSubjects("abc123", "no digits", null, "mixed_42_data") {
-      checkSparkAnswerAndOperator(sql("SELECT s, s rlike '\\\\d+' AS m FROM t"))
-    }
-  }
-
-  test("rlike predicate") {
-    withSubjects("abc123", "no digits", null, "mixed_42_data") {
-      checkSparkAnswerAndOperator(sql("SELECT s FROM t WHERE s rlike '\\\\d+'"))
-    }
-  }
-
-  test("rlike with backreference (Java-only)") {
-    withSubjects("aa", "ab", "xyzzy", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, s rlike '^(\\\\w)\\\\1$' FROM t"))
-    }
-  }
-
-  test("rlike on all-null column") {
-    withSubjects(null, null, null) {
-      checkSparkAnswerAndOperator(sql("SELECT s rlike '\\\\d+' FROM t"))
-    }
-  }
-
-  test("rlike empty pattern matches every non-null row") {
-    withSubjects("a", "", null, "bc") {
-      checkSparkAnswerAndOperator(sql("SELECT s, s rlike '' FROM t"))
-    }
-  }
-
-  test("regexp_replace digits with a token") {
-    withSubjects("abc123", "no digits", null, "mixed_42_data") {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_replace(s, '\\\\d+', 'N') FROM t"))
-    }
-  }
-
-  test("regexp_replace with empty replacement") {
-    withSubjects("abc123def", "no digits", null, "") {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_replace(s, '\\\\d+', '') FROM t"))
-    }
-  }
-
-  test("regexp_replace no-match preserves input") {
-    withSubjects("abc", "xyz", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_replace(s, '\\\\d+', 'N') FROM t"))
     }
   }
 
@@ -175,81 +123,6 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
         s"cache had ${sigs.map { case (c, d) => (c.map(_.getSimpleName), d) }}")
   }
 
-  test("compose upper(s) rlike pattern") {
-    // The serde binds the whole tree, including the Upper, and ships it to the codegen
-    // dispatcher. Inside the kernel, Upper.doGenCode emits `this.getUTF8String(0).toUpperCase()`
-    // which feeds directly into the Matcher check. No second JNI hop for Upper.
-    withSubjects("Abc123", "NO DIGITS", null, "mixed_42") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT s, upper(s) rlike '[A-Z0-9]+' FROM t"))
-      }
-    }
-  }
-
-  test("compose regexp_replace(upper(s), pattern, replacement)") {
-    // Upper as the subject of RegExpReplace defeats the specialized emitter (its fast path
-    // requires a direct BoundReference subject). Falls to the default path, which still compiles
-    // cleanly as one fused method because Spark's doGenCode for Upper -> RegExpReplace is
-    // self-contained.
-    withSubjects("Abc123", "no digits", null, "Mix42") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(
-          sql("SELECT s, regexp_replace(upper(s), '[0-9]+', '#') FROM t"))
-      }
-    }
-  }
-
-  test("compose upper(regexp_replace(s, pattern, replacement))") {
-    // Flip the nesting: RegExpReplace is inside, Upper is outside. Still one compile per
-    // (tree, schema) pair; the outer Upper's doGenCode consumes the RegExpReplace result as a
-    // UTF8String in the same generated method. Case conversion is enabled because the inputs
-    // are ASCII-only (the conf guards against locale-specific divergence, which does not apply
-    // here).
-    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
-      withSubjects("Abc123", "no digits", null, "Mix42") {
-        assertCodegenDidWork {
-          checkSparkAnswerAndOperator(
-            sql("SELECT s, upper(regexp_replace(s, '[0-9]+', 'n')) FROM t"))
-        }
-      }
-    }
-  }
-
-  test("compose substring(upper(s), 1, 3)") {
-    // Three levels: BoundReference, Upper, Substring. Substring takes two literal ints; its
-    // subject is the Upper result. Exercises multiple intermediate UTF8String operations in the
-    // generated fused method.
-    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
-      withSubjects("abcdef", null, "X", "hello world") {
-        assertCodegenDidWork {
-          checkSparkAnswerAndOperator(
-            sql("SELECT s, substring(upper(s), 1, 3) rlike '^[A-Z]+$' FROM t"))
-        }
-      }
-    }
-  }
-
-  test("regexp_extract (StringType output) routes through dispatcher") {
-    // regexp_extract has no native path in Comet, so the mode knob decides codegen vs
-    // hand-coded. Under the suite's `force` default, codegen runs.
-    withSubjects("abc123", "no digits", null, "mix42data") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(
-          sql("SELECT s, regexp_extract(s, '([a-z]+)([0-9]+)', 2) FROM t"))
-      }
-    }
-  }
-
-  test("regexp_instr (IntegerType output) routes through dispatcher") {
-    // regexp_instr exercises the IntegerType output writer end to end for the first time since
-    // Phase 2b added the allocator/writer; no prior end-to-end serde produced int output.
-    withSubjects("abc123", "no digits", null, "mix42data") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '[0-9]+', 0) FROM t"))
-      }
-    }
-  }
-
   /**
    * Multi-column smoke tests. The dispatcher compiles the whole bound expression tree, including
    * composed sub-expressions that reference multiple columns. Verify end-to-end correctness
@@ -270,92 +143,54 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("concat(c1, c2) rlike 'pat' compiles over two columns") {
-    // Concat is not NullIntolerant. The dispatcher's short-circuit guard should skip the
-    // whole-tree short-circuit and let Spark's Concat codegen handle nulls correctly.
+  test("ScalaUDF over concat(c1, c2) suppresses the null short-circuit") {
+    // Concat is not NullIntolerant. The dispatcher's short-circuit guard inspects every node in
+    // the bound tree and must skip the whole-tree null short-circuit because one child is
+    // non-NullIntolerant. The kernel therefore delegates null handling to Spark's generated
+    // code (which handles Concat(null, x) = x correctly) rather than returning null for any
+    // null input. Without the guard, null inputs would produce null outputs even where Spark
+    // produces a non-null concatenation.
+    spark.udf.register("tag", (s: String) => if (s == null) "N" else s"[${s}]")
     withTwoStringCols(("abc", "123"), ("abc", null), (null, "123"), (null, null), ("zz", "zz")) {
       assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT concat(c1, c2) rlike '[a-z]+[0-9]+' FROM t"))
-      }
-    }
-  }
-
-  test("concat(upper(c1), c2) rlike 'pat' nests Upper inside Concat") {
-    // Upper is NullIntolerant; Concat is not. The tree still has a non-NullIntolerant node so
-    // the short-circuit must not apply. Exercises mixed-trait composition.
-    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
-      withTwoStringCols(("abc", "123"), ("abc", null), (null, "zz"), (null, null)) {
-        assertCodegenDidWork {
-          checkSparkAnswerAndOperator(sql("SELECT concat(upper(c1), c2) rlike '[A-Z]+' FROM t"))
-        }
-      }
-    }
-  }
-
-  test("regexp_replace(c1, literal, c2-ignored-literal) two columns in tree") {
-    // Verifies that a second column reference outside the subject (here as a literal
-    // replacement) still routes through. Note: regexp_replace requires literal regex and
-    // replacement, so this is the only realistic two-column shape for that serde.
-    withTwoStringCols(("abc123", "Z"), ("xyz", null), (null, "foo")) {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(
-          sql("SELECT regexp_replace(concat(c1, c2), '[0-9]+', 'N') FROM t"))
+        checkSparkAnswerAndOperator(sql("SELECT tag(concat(c1, c2)) FROM t"))
       }
     }
   }
 
   test("disabled mode bypasses the dispatcher") {
-    // In `disabled`, the rlike serde returns None and the expression falls back to Spark. The
-    // dispatcher's counters should not move. We check the result against Spark's answer but do
-    // not assert the operator is Comet for this query, because rlike itself runs on the JVM
-    // Spark path when the java-engine dispatcher is disabled.
-    val pattern = "disabled_mode_marker_[0-9]+"
+    // When the per-feature config is off, `CometScalaUDF.convert` returns None and the enclosing
+    // operator falls back to Spark. The dispatcher's counters must not move. We do not assert
+    // `checkSparkAnswerAndOperator` here because ScalaUDF has no Comet-native path, so the
+    // project runs on the JVM Spark path under this configuration.
+    spark.udf.register("noopStr", (s: String) => s)
     CometCodegenDispatchUDF.resetStats()
-    withSQLConf(
-      CometConf.COMET_CODEGEN_DISPATCH_MODE.key -> CometConf.CODEGEN_DISPATCH_DISABLED) {
-      withSubjects("disabled_mode_marker_1", null) {
-        checkSparkAnswer(sql(s"SELECT s rlike '$pattern' FROM t"))
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withSubjects("disabled_1", null) {
+        checkSparkAnswer(sql("SELECT noopStr(s) FROM t"))
       }
     }
     val after = CometCodegenDispatchUDF.stats()
     assert(
       after.compileCount == 0 && after.cacheHitCount == 0,
-      s"expected no dispatcher activity under disabled mode, got $after")
-  }
-
-  test("auto mode prefers dispatcher when regex engine is java") {
-    // `auto` with engine=java should resolve to codegen (the serde's documented preference). Use
-    // a pattern unique to this test to guarantee a fresh compile.
-    val pattern = "auto_mode_marker_[0-9]+"
-    CometCodegenDispatchUDF.resetStats()
-    withSQLConf(
-      CometConf.COMET_CODEGEN_DISPATCH_MODE.key -> CometConf.CODEGEN_DISPATCH_AUTO,
-      CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_JAVA) {
-      withSubjects("auto_mode_marker_7", null) {
-        checkSparkAnswerAndOperator(sql(s"SELECT s rlike '$pattern' FROM t"))
-      }
-    }
-    val after = CometCodegenDispatchUDF.stats()
-    assert(
-      after.compileCount + after.cacheHitCount >= 1,
-      s"expected dispatcher activity under auto mode with java engine, got $after")
+      s"expected no dispatcher activity under disabled config, got $after")
   }
 
   test("per-batch nullability produces distinct compiles for null-present vs null-absent") {
-    // Same expression + same Arrow vector class + different observed nullability should hit
+    // Same ScalaUDF + same Arrow vector class + different observed nullability should hit
     // different cache keys, because `ArrowColumnSpec.nullable` flips when the batch has no
     // nulls. We don't assert on per-run deltas because Spark's partitioning can split the
     // subject table so the first query alone sees both nullability variants across different
     // partitions. Instead, assert the total invariant: across both queries we see at least two
     // compiles, proving the cache key discriminated on nullability.
-    val pattern = "nullability_marker_[0-9]+"
+    spark.udf.register("nullabilityMarker", (s: String) => if (s == null) null else s + "!")
     CometCodegenDispatchUDF.resetStats()
 
     withSubjects("nullability_marker_1", null, "nullability_marker_2") {
-      checkSparkAnswerAndOperator(sql(s"SELECT s rlike '$pattern' FROM t"))
+      checkSparkAnswerAndOperator(sql("SELECT nullabilityMarker(s) FROM t"))
     }
     withSubjects("nullability_marker_3", "nullability_marker_4") {
-      checkSparkAnswerAndOperator(sql(s"SELECT s rlike '$pattern' FROM t"))
+      checkSparkAnswerAndOperator(sql("SELECT nullabilityMarker(s) FROM t"))
     }
     val after = CometCodegenDispatchUDF.stats()
 
@@ -365,76 +200,48 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
         s"nullable=true/false variant); got $after")
   }
 
-  test("dispatcher stats increment on compile and hit") {
-    // Use a pattern no other test in this suite compiles, so the first run is guaranteed to be a
-    // cache miss regardless of test order.
-    val pattern = "stats_only_marker_[0-9]+"
+  test("dispatcher caches the compiled kernel across batches of one query") {
+    // Within a single query, the dispatcher compiles a kernel for the (expression, schema) pair
+    // once and reuses it across every subsequent batch of the same shape. Force multiple batches
+    // by lowering the Comet batch size with a row count well above it, then assert at least one
+    // cache hit happened during the query.
+    //
+    // We deliberately do not assert cross-query cache reuse: Spark's analyzer produces a fresh
+    // `ScalaUDF` instance per query resolution, and the encoders embedded in that instance
+    // contain `AttributeReference`s with fresh `ExprId`s that our `BindReferences.bindReference`
+    // does not recurse into. The closure-serialized cache key bytes therefore drift across
+    // queries even when the registered function and schema are identical, so each new query of a
+    // ScalaUDF pays one compile up front and amortizes within itself. This is an acceptable
+    // amortization story (a few tens of milliseconds per query), not a behavior we can or do
+    // promise across queries.
+    spark.udf.register("kernelCacheMarker", (s: String) => if (s == null) null else s + "_kc")
+    val rows = (0 until 256).map(i => s"row_$i")
     CometCodegenDispatchUDF.resetStats()
-    withSubjects("stats_only_marker_42", "nope", null) {
-      checkSparkAnswerAndOperator(sql(s"SELECT s rlike '$pattern' FROM t"))
-    }
-    val firstRun = CometCodegenDispatchUDF.stats()
-    assert(
-      firstRun.compileCount >= 1,
-      s"expected compile count >= 1 after first query, got $firstRun")
-    assert(firstRun.cacheSize >= 1, s"expected cache size >= 1 after first query, got $firstRun")
-
-    // Re-run the same expression against the same schema; should reuse the compiled kernel.
-    val compileBefore = firstRun.compileCount
-    withSubjects("stats_only_marker_9", null) {
-      checkSparkAnswerAndOperator(sql(s"SELECT s rlike '$pattern' FROM t"))
-    }
-    val secondRun = CometCodegenDispatchUDF.stats()
-    assert(
-      secondRun.cacheHitCount >= 1,
-      s"expected cache hits >= 1 after second query, got $secondRun")
-    assert(
-      secondRun.compileCount == compileBefore,
-      s"expected no additional compile on second query, got $secondRun vs $firstRun")
-  }
-
-  /**
-   * Collation smoke test. Spark 4.x associates a collation id with each `StringType` instance.
-   * The codegen dispatcher's argument for handling collation is "Spark's own `doGenCode` for
-   * regex-on-string uses `CollationFactory` / `CollationSupport`, so we inherit the right
-   * semantics by reusing it". This test proves that end to end for the most common shape: `rlike`
-   * on a UTF8_LCASE-cast subject. The collation lives on the expression (`COLLATE` cast in SQL)
-   * rather than the column, so the parquet scan reads a default-collation column and stays
-   * native; only the Project carries the collated regex evaluation.
-   *
-   * Limits worth knowing about (separate work, not codegen-dispatch issues):
-   *   - `regexp_replace` with a collated subject: Spark's analyzer wraps the regex literal in
-   *     `Collate(Literal, ...)`. Our `RegExpReplace` serde's `getSupportLevel` requires a bare
-   *     `Literal` for the pattern, so it rejects before the dispatcher is invoked. Widening the
-   *     serde to unwrap `Collate(Literal, ...)` would unblock this; it's a serde-side change, not
-   *     a codegen-side gap.
-   *   - `rlike` on an ICU collation (UNICODE_CI etc.): Spark itself rejects with a type mismatch
-   *     ("requires STRING, got STRING COLLATE UNICODE_CI"). RLike contracts on UTF8_BINARY
-   *     semantics; binary collations like UTF8_LCASE work, ICU ones don't.
-   */
-  test("rlike on UTF8_LCASE-cast column matches case-insensitively") {
-    assume(isSpark40Plus, "non-default collations require Spark 4.0+")
-    withSubjects("Abc", "abc", "ABC", "xyz", null) {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT s, (s COLLATE UTF8_LCASE) rlike 'abc' FROM t"))
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "32") {
+      withSubjects(rows: _*) {
+        checkSparkAnswerAndOperator(sql("SELECT kernelCacheMarker(s) FROM t"))
       }
     }
+    val stats = CometCodegenDispatchUDF.stats()
+    assert(stats.compileCount >= 1, s"expected at least one compile during the query, got $stats")
+    assert(
+      stats.cacheHitCount >= 1,
+      s"expected at least one cache hit across batches of the same query, got $stats")
   }
 
   test("per-partition kernel preserves Nondeterministic state across batches") {
-    // Compose `monotonically_increasing_id()` with rlike so the dispatcher routes the
-    // composed tree (the inner expression by itself wouldn't have a serde). The expression
-    // also references `s` so the proto carries at least one data column, giving the bridge a
-    // row count signal. Per-partition kernel caching means the id counter advances across
-    // batches in one partition; without it, every batch would restart at 0 and we'd disagree
-    // with Spark on the right side of the rlike. The rlike pattern is permissive on purpose;
-    // we're testing state correctness, not regex matching.
+    // Wrap `monotonically_increasing_id()` as the argument of a ScalaUDF so the whole tree
+    // (including the stateful MonotonicallyIncreasingID child) routes through the dispatcher.
+    // Per-partition kernel caching means the id counter advances across batches within a
+    // partition; without it, every batch would restart at 0 and the UDF output would disagree
+    // with Spark's. The UDF body is a trivial identity; we're testing state correctness of the
+    // Nondeterministic child across batches, not the UDF logic.
+    spark.udf.register("idPassthrough", (id: Long) => id)
     val rows = (0 until 4096).map(i => s"row_$i")
     withSubjects(rows: _*) {
       assertCodegenDidWork {
         checkSparkAnswerAndOperator(
-          sql("SELECT concat(s, cast(monotonically_increasing_id() as string)) rlike " +
-            "'^row_[0-9]+[0-9]+$' FROM t"))
+          sql("SELECT s, idPassthrough(monotonically_increasing_id()) FROM t"))
       }
     }
   }
@@ -487,13 +294,15 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("ScalaUDF composed with an rlike subject") {
-    // Outer rlike binds the whole tree, including the ScalaUDF inside its subject. One
-    // compiled kernel handles rlike + user-code + Arrow reads in a single fused method.
+  test("ScalaUDF as a child of a native Spark expression") {
+    // The ScalaUDF routes through the dispatcher as a sub-expression; the surrounding `length`
+    // runs through Comet's native scalar function path. This exercises the cross-boundary
+    // composition where a dispatcher-compiled kernel returns a UTF8String that a native Comet
+    // expression then consumes.
     spark.udf.register("wrap", (s: String) => if (s == null) null else s"|$s|")
     withSubjects("abc", "def", null) {
       assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT wrap(s) rlike '^\\\\|[a-z]+\\\\|$' FROM t"))
+        checkSparkAnswerAndOperator(sql("SELECT length(wrap(s)) FROM t"))
       }
     }
   }
@@ -744,8 +553,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
 
   test("ScalaUDF returning a different type than its input") {
     // String -> Int transition forces the output writer to switch from VarChar to Int. Exercises
-    // the `IntegerType` output path end to end from a user UDF (previously only regexp_instr
-    // covered it).
+    // the `IntegerType` output path end to end from a user UDF.
     spark.udf.register("codePoint", (s: String) => if (s == null) 0 else s.codePointAt(0))
     withSubjects("abc", "A", null, "!") {
       assertCodegenDidWork {
