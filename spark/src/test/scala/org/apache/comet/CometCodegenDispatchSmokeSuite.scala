@@ -439,6 +439,26 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
+  test("per-task cache isolates UDF state across sequential task runs in one session") {
+    // Regression guard for the cache-scoping invariant on CometUdfBridge: instances live for
+    // exactly one Spark task and are dropped on task completion, so a stateful kernel sees a
+    // fresh instance per task. Running the same `monotonically_increasing_id()`-carrying query
+    // twice in one session must produce identical results each run. Under a cache that outlived
+    // a task and got reused by the next one, the counter would continue from the previous run's
+    // final value and the second run's IDs would diverge. Under a cache that was keyed by Tokio
+    // worker thread rather than task attempt ID, worker reuse across tasks would cause the same
+    // leak whenever the second task happened to be polled by the same worker.
+    val rows = (0 until 2048).map(i => s"row_$i")
+    withSubjects(rows: _*) {
+      val q = "SELECT s, monotonically_increasing_id() AS mid FROM t"
+      val first = sql(q).collect().map(r => (r.getString(0), r.getLong(1))).toSeq
+      val second = sql(q).collect().map(r => (r.getString(0), r.getLong(1))).toSeq
+      assert(
+        first == second,
+        s"per-task cache leaked state across runs: first=${first.take(5)} second=${second.take(5)}")
+    }
+  }
+
   /**
    * Scalar ScalaUDF smoke tests. These prove that user-registered UDFs route through the codegen
    * dispatcher rather than forcing a whole-plan Spark fallback. Spark's `ScalaUDF.doGenCode`

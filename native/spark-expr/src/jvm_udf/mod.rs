@@ -62,6 +62,10 @@ impl JvmScalarUdfExpr {
         return_nullable: bool,
         task_context: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
+        debug_assert!(
+            !class_name.is_empty(),
+            "JvmScalarUdfExpr requires a non-empty class name"
+        );
         Self {
             class_name,
             args,
@@ -158,6 +162,13 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             .iter()
             .map(|b| b.as_ref() as *const FFI_ArrowSchema as i64)
             .collect();
+
+        debug_assert!(!self.class_name.is_empty(), "class_name must not be empty");
+        debug_assert_eq!(
+            in_arr_ptrs.len(),
+            in_sch_ptrs.len(),
+            "input array and schema pointer counts must match"
+        );
 
         let mut out_array = Box::new(FFI_ArrowArray::empty());
         let mut out_schema = Box::new(FFI_ArrowSchema::empty());
