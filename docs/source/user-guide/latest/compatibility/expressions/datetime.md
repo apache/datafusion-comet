@@ -26,6 +26,24 @@ under the License.
   timezone is UTC. TimestampNTZ inputs are handled correctly (timezone-independent truncation).
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)
 
+## Engine Selection (experimental)
+
+Comet supports two engines for evaluating date/time field-extraction expressions
+(`hour`, `minute`, `second`). The choice is governed by
+`spark.comet.exec.datetime.engine`:
+
+- `rust` (default): native DataFusion implementations. Fastest, but applies timezone
+  conversion to `TimestampNTZ` inputs, which differs from Spark's semantics
+  ([#3180](https://github.com/apache/datafusion-comet/issues/3180)). Comet falls back
+  to Spark for incompatible cases by default.
+- `java` (experimental): routes the affected expressions through a JVM-side UDF that
+  uses `java.time` directly, producing bit-exact Spark results for all input types.
+  Incurs a JNI round-trip per native batch.
+
+This is a prototype scoped to `hour`, `minute`, and `second`. The model is expected
+to extend to other date/time expressions in follow-up work
+([#4311](https://github.com/apache/datafusion-comet/issues/4311)).
+
 ## Date and Time Functions
 
 Comet's native implementation of date and time functions may produce different results than Spark for dates
