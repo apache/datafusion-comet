@@ -370,10 +370,13 @@ private object UTCTimestampSerde {
       " `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also" +
       " accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like" +
       " `PST`; queries using those forms will throw a native parse error at" +
-      " execution time."
+      " execution time. See https://github.com/apache/datafusion-comet/issues/2013."
 }
 
 object CometFromUTCTimestamp extends CometExpressionSerde[FromUTCTimestamp] {
+
+  override def getSupportLevel(expr: FromUTCTimestamp): SupportLevel =
+    Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(UTCTimestampSerde.tzParseIncompatReason)
@@ -389,6 +392,9 @@ object CometFromUTCTimestamp extends CometExpressionSerde[FromUTCTimestamp] {
 }
 
 object CometToUTCTimestamp extends CometExpressionSerde[ToUTCTimestamp] {
+
+  override def getSupportLevel(expr: ToUTCTimestamp): SupportLevel =
+    Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(UTCTimestampSerde.tzParseIncompatReason)

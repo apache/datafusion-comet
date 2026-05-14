@@ -20,6 +20,11 @@
 -- representative session zones.
 -- ConfigMatrix: spark.sql.session.timeZone=UTC,America/Los_Angeles
 
+-- CometToUTCTimestamp is marked Incompatible because Comet's native timezone
+-- parser does not accept Spark's legacy timezone forms; enable allowIncompatible
+-- to force the native path for the timezones covered here.
+-- Config: spark.comet.expression.ToUTCTimestamp.allowIncompatible=true
+
 statement
 CREATE TABLE test_to_utc_timestamp(ts timestamp, tz string) USING parquet
 
