@@ -802,6 +802,23 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val DATETIME_ENGINE_RUST = "rust"
+  val DATETIME_ENGINE_JAVA = "java"
+
+  val COMET_DATETIME_ENGINE: ConfigEntry[String] =
+    conf("spark.comet.exec.datetime.engine")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Selects the engine used to evaluate supported date/time expressions. " +
+          s"`$DATETIME_ENGINE_RUST` uses native DataFusion implementations. " +
+          s"`$DATETIME_ENGINE_JAVA` is experimental and routes through a JVM-side " +
+          "UDF for bit-exact Spark semantics, at the cost of JNI roundtrips per " +
+          "batch. Expressions routed when set to java: hour, minute, second.")
+      .stringConf
+      .transform(_.toLowerCase(Locale.ROOT))
+      .checkValues(Set(DATETIME_ENGINE_RUST, DATETIME_ENGINE_JAVA))
+      .createWithDefault(DATETIME_ENGINE_RUST)
+
   val COMET_METRICS_UPDATE_INTERVAL: ConfigEntry[Long] =
     conf("spark.comet.metrics.updateInterval")
       .category(CATEGORY_EXEC)
