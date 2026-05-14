@@ -107,6 +107,7 @@ shaping the future of Comet. Check out our
 
 User Guide <user-guide/index>
 Contributor Guide <contributor-guide/index>
+Changelog <changelog/index>
 Comparison with Gluten <about/gluten_comparison>
 ASF Links <asf/index>
 ```
