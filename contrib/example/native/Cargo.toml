@@ -1,0 +1,46 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "comet-contrib-example"
+description = "Worked reference implementation of a Comet contrib extension. Registers a no-op ContribOperatorPlanner under kind=\"example-no-op\" so the SPI dispatch path can be exercised end-to-end in tests."
+# Contrib crates live OUTSIDE the workspace root directory (`native/`) but are listed as
+# workspace members in `native/Cargo.toml`. Cargo's auto-discovery walks up the directory
+# tree, so without the explicit pointer it can't find `native/Cargo.toml` from
+# `contrib/example/native/`.
+workspace = "../../../native"
+version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+
+[lib]
+# rlib (not cdylib): linked INTO core's cdylib via the `contrib-example` Cargo feature
+# flag on the core crate. There is exactly one libcomet.{so,dylib,dll} at runtime; the
+# contrib's #[ctor] runs during that single library's init.
+crate-type = ["rlib"]
+
+[dependencies]
+# Depend on the thin SPI crate, NOT on core. This is what breaks the cycle: core
+# depends on contribs (Cargo feature → rlib link); both depend on contrib-spi; nothing
+# depends back on core from a contrib.
+comet-contrib-spi = { path = "../../../native/contrib-spi" }
+datafusion = { workspace = true }
+ctor = "0.4"
+log = "0.4"

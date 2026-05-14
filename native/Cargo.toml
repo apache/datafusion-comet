@@ -16,8 +16,14 @@
 # under the License.
 
 [workspace]
-default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs"]
+default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "contrib-spi"]
+# `contrib-spi` is the thin SPI surface that BOTH core and contribs depend on -- breaking
+# what would otherwise be a cyclic dep between core (links contribs via Cargo features)
+# and contribs (need core types). Contrib crates themselves live under
+# `../contrib/<name>/native` and are workspace members so workspace lockfile + workspace
+# dependencies apply; they're NOT default-members because they're consumed via core's
+# optional Cargo feature flags rather than built standalone.
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs", "contrib-spi", "../contrib/example/native"]
 resolver = "2"
 
 [workspace.package]

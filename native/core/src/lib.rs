@@ -29,6 +29,13 @@ extern crate core;
 #[macro_use]
 extern crate datafusion_comet_jni_bridge;
 
+// Pull in contrib crates so their #[ctor] registration runs when libcomet is loaded.
+// Each is gated by a Cargo feature flag (see `[features]` in core's Cargo.toml). With the
+// feature off the `extern crate` line is removed by cfg and zero bytes of the contrib end
+// up in the built cdylib.
+#[cfg(feature = "contrib-example")]
+extern crate comet_contrib_example;
+
 use jni::{
     objects::{JClass, JString},
     EnvUnowned,

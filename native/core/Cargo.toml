@@ -73,6 +73,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 object_store_opendal = { version = "0.56.0", optional = true }
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { version = "0.56.0", optional = true, features = ["services-hdfs"] }
+# Contrib rlibs. Each is gated by a matching `contrib-<name>` Cargo feature defined
+# below in [features]. When the feature is on, the contrib's rlib is linked into core's
+# cdylib and its #[ctor] runs at library load.
+comet-contrib-spi = { path = "../contrib-spi" }
+comet-contrib-example = { path = "../../contrib/example/native", optional = true }
 iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
 serde_json = "1.0"
@@ -95,10 +100,20 @@ datafusion-functions-nested = { version = "53.1.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
-default = ["hdfs-opendal"]
+# `contrib-example` is on by default so released builds ship the example contrib's
+# planner registered, and the worked-reference test in contrib/example exercises it.
+# `cargo build --no-default-features` produces a cdylib with zero contrib code.
+default = ["hdfs-opendal", "contrib-example"]
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
+
+# Contrib feature flags. Each flag pulls a contrib rlib into core's cdylib so contrib
+# Rust code is linked into the single libcomet at build time; the contrib's #[ctor]
+# registers its operator planners during library init. See
+# docs/contrib-delta-migration-plan.md for the architectural rationale (single cdylib
+# instead of separate cdylib per contrib).
+contrib-example = ["dep:comet-contrib-example"]
 
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]

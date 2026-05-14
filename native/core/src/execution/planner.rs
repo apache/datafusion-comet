@@ -1964,10 +1964,9 @@ impl PhysicalPlanner {
                 // Dispatch the ContribOp envelope to a contrib-registered planner keyed
                 // by `kind`. The contrib's #[ctor] in its rlib (linked into core's cdylib
                 // via a Cargo feature flag) populates the registry at lib-init time, so
-                // by the time we reach this arm the registry is already warm. If no
-                // planner is registered for this kind, surface a clear error -- typically
-                // means the contrib's JVM JAR is on the classpath but core was built
-                // without the corresponding `contrib-<name>` Cargo feature.
+                // by the time we reach this arm the registry is already warm. Missing
+                // registrations typically mean the JVM JAR is on the classpath but core
+                // was built without the corresponding `contrib-<name>` Cargo feature.
                 use crate::execution::planner::contrib::lookup_contrib_planner_by_kind;
                 let kind = contrib_op.kind.as_str();
                 let planner = lookup_contrib_planner_by_kind(kind).ok_or_else(|| {
@@ -1977,7 +1976,31 @@ impl PhysicalPlanner {
                          Cargo feature (or its workspace equivalent)?"
                     ))
                 })?;
-                planner.build(spark_plan, inputs, partition_count, self)
+
+                // Recursively build native children. The contrib gets them as
+                // `Arc<dyn ExecutionPlan>` rather than the richer `SparkPlan` because the
+                // SPI is intentionally minimal — contribs only need the DataFusion-level
+                // plan surface.
+                let mut child_scans: Vec<ScanExec> = Vec::new();
+                let mut child_shuffle_scans: Vec<ShuffleScanExec> = Vec::new();
+                let mut native_children: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
+                for child in &spark_plan.children {
+                    let (mut s, mut ss, child_plan) =
+                        self.create_plan(child, inputs, partition_count)?;
+                    child_scans.append(&mut s);
+                    child_shuffle_scans.append(&mut ss);
+                    native_children.push(child_plan.native_plan.clone());
+                }
+
+                let exec = planner
+                    .plan(&contrib_op.payload, native_children)
+                    .map_err(|e| GeneralError(format!("contrib planner {kind:?}: {e}")))?;
+
+                Ok((
+                    child_scans,
+                    child_shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, exec, vec![])),
+                ))
             }
             _ => Err(GeneralError(format!(
                 "Unsupported or unregistered operator type: {:?}",
