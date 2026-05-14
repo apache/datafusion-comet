@@ -351,15 +351,15 @@ case class CometExecRule(session: SparkSession)
         // registered handler for creating a fully native plan
         if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
           // Contrib SPI: each registered CometOperatorSerdeExtension contributes a
-          // SparkPlan-class -> CometOperatorSerde map. We merge those over `allExecs`
-          // here so contrib operators (e.g. a future CometDeltaNativeScanExec from a
-          // delta contrib) get dispatched the same way built-in operators do. Contribs
-          // own classes that aren't in `allExecs`, so this merge never overrides a core
-          // mapping in practice.
-          val contribSerdes =
-            CometExtensionRegistry.serdeExtensions.flatMap(_.serdes).toMap
-          val handler = (allExecs ++ contribSerdes)
+          // SparkPlan-class -> CometOperatorSerde map. The merged map is pre-computed
+          // once at registry load time (CometExtensionRegistry.mergedSerdes) so we
+          // don't rebuild a HashMap on every operator transform. Contribs own classes
+          // that aren't in `allExecs`, so this merge never overrides a core mapping in
+          // practice; duplicate-class detection at load() time logs a warning if it
+          // does happen.
+          val handler = allExecs
             .get(op.getClass)
+            .orElse(CometExtensionRegistry.mergedSerdes.get(op.getClass))
             .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
           handler match {
             case Some(handler) =>

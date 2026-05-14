@@ -77,9 +77,8 @@ impl ContribPlannerContext for CorePlannerContext<'_> {
         &self,
         url: String,
         configs: &HashMap<String, String>,
-    ) -> Result<ObjectStoreUrl, ContribError> {
+    ) -> Result<(ObjectStoreUrl, object_store::path::Path), ContribError> {
         prepare_object_store_with_configs(self.planner.session_ctx().runtime_env(), url, configs)
-            .map(|(url, _path)| url)
             .map_err(|e| ContribError::Plan(format!("prepare_object_store_with_configs: {e}")))
     }
 
@@ -106,5 +105,64 @@ impl ContribPlannerContext for CorePlannerContext<'_> {
         )
         .map(|e| e as Arc<dyn ExecutionPlan>)
         .map_err(|e| ContribError::Plan(format!("init_datasource_exec: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution::planner::PhysicalPlanner;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::context::SessionContext;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+
+    #[test]
+    fn core_planner_context_builds_parquet_exec_with_expected_schema() {
+        // Smoke test for the adapter: build a minimal DataSourceExec through the SPI
+        // trait method and verify the schema flowed through. Catches a coarse class of
+        // bugs where init_datasource_exec call-site args go out of order -- a swap that
+        // sent `required_schema` into the `data_schema` slot would produce a different
+        // output schema.
+        let session_ctx = Arc::new(SessionContext::new());
+        let planner = PhysicalPlanner::new(Arc::clone(&session_ctx), 0);
+        let ctx = CorePlannerContext { planner: &planner };
+
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let url = ObjectStoreUrl::parse("file://").unwrap();
+        let params = ParquetDatasourceParams::new(Arc::clone(&schema), url, vec![])
+            .with_session_timezone("UTC")
+            .with_case_sensitive(true);
+
+        let exec = ctx
+            .build_parquet_datasource_exec(params)
+            .expect("adapter should build a DataSourceExec");
+
+        // The exec's reported schema must equal the required_schema we passed in.
+        let out_schema = exec.schema();
+        assert_eq!(out_schema.fields().len(), 2);
+        assert_eq!(out_schema.field(0).name(), "id");
+        assert_eq!(out_schema.field(1).name(), "name");
+    }
+
+    #[test]
+    fn core_planner_context_session_ctx_round_trip() {
+        let session_ctx = Arc::new(SessionContext::new());
+        let planner = PhysicalPlanner::new(Arc::clone(&session_ctx), 0);
+        let ctx = CorePlannerContext { planner: &planner };
+        // Arc identity check -- the contrib gets back the same SessionContext core was
+        // built with, not a copy.
+        assert!(Arc::ptr_eq(ctx.session_ctx(), &session_ctx));
+    }
+
+    #[test]
+    fn core_planner_context_converts_empty_schema() {
+        let session_ctx = Arc::new(SessionContext::new());
+        let planner = PhysicalPlanner::new(Arc::clone(&session_ctx), 0);
+        let ctx = CorePlannerContext { planner: &planner };
+        let schema = ctx.convert_spark_schema(&[]);
+        assert_eq!(schema.fields().len(), 0);
     }
 }

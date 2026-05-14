@@ -159,3 +159,26 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::ContribOp(_) => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion_comet_proto::spark_operator::{operator::OpStruct, ContribOp, Operator};
+
+    #[test]
+    fn contrib_op_is_not_handled_by_in_tree_registry() {
+        // Guard against a future refactor that wires ContribOp into the in-tree
+        // operator registry by accident (which would double-dispatch contribs).
+        let op = Operator {
+            op_struct: Some(OpStruct::ContribOp(ContribOp {
+                kind: "anything".into(),
+                payload: vec![],
+            })),
+            ..Default::default()
+        };
+        assert!(
+            get_operator_type(&op).is_none(),
+            "ContribOp must not be mapped to an in-tree OperatorType"
+        );
+    }
+}

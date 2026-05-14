@@ -29,4 +29,13 @@ edition = { workspace = true }
 # Public types in the SPI reference these crates. Pinning matches core via workspace.
 datafusion = { workspace = true }
 datafusion-comet-proto = { workspace = true }
+# Surface the `Path` type on the SPI's prepare_object_store return value.
+object_store = { workspace = true }
 log = "0.4"
+
+[features]
+# Off by default. When enabled, the crate exposes `ScopedContribPlannerRegistration` and
+# `_clear_for_test` for downstream test code that needs to register planners without
+# polluting the process-wide registry. The same surfaces are unconditionally available
+# under `#[cfg(test)]` for the SPI's own unit tests.
+test-utils = []

@@ -87,10 +87,9 @@ class CometSparkSessionExtensions
     with Logging
     with ShimCometSparkSessionExtensions {
   override def apply(extensions: SparkSessionExtensions): Unit = {
-    // Discover contrib extensions on the classpath BEFORE registering our rules so that
-    // CometScanRule / CometExecRule see the contribs the first time they run. Idempotent
-    // and safe to call multiple times across SparkSession instances within the same JVM.
-    org.apache.comet.spi.CometExtensionRegistry.load()
+    // Note: contrib extension discovery happens lazily inside CometScanRule /
+    // CometExecRule (the first time either runs against a Comet-enabled session).
+    // Sessions that never enable Comet pay zero ServiceLoader cost.
 
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }

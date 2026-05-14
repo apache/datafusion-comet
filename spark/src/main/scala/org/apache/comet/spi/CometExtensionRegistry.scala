@@ -60,7 +60,19 @@ object CometExtensionRegistry extends Logging {
           s"Comet contrib extensions loaded: " +
             s"scan=[${scanExts.map(_.name).mkString(", ")}], " +
             s"serde=[${serdeExts.map(_.name).mkString(", ")}]")
+        detectDuplicateSerdeClasses(serdeExts)
+      } else {
+        // Positive signal that discovery ran. Some Spark deploy modes (Ivy `--packages`,
+        // isolated UDF classloaders) put Comet on a classloader that the TCCL fallback
+        // doesn't see; absent extensions go silent without this line.
+        logInfo(
+          "Comet contrib extensions: none discovered on classpath " +
+            "(no META-INF/services entries for CometScanRuleExtension or " +
+            "CometOperatorSerdeExtension)")
       }
+      // Build the merged exec map once at load time. CometExecRule reads it on every
+      // operator transform; rebuilding per-call would be wasteful.
+      mergedSerdesCache = serdeExts.flatMap(_.serdes).toMap
     }
   }
 
@@ -71,6 +83,49 @@ object CometExtensionRegistry extends Logging {
   def serdeExtensions: Seq[CometOperatorSerdeExtension] = serdeExts
 
   /**
+   * Pre-merged serde map across all registered extensions, keyed by the `Class[_ <: SparkPlan]`
+   * the contrib uses for class-keyed dispatch in `CometExecRule`. Computed once at `load()` time;
+   * an empty map until `load()` has run.
+   */
+  def mergedSerdes: Map[Class[_ <: org.apache.spark.sql.execution.SparkPlan],
+    org.apache.comet.serde.CometOperatorSerde[_]] = mergedSerdesCache
+
+  @volatile private var mergedSerdesCache
+    : Map[Class[_ <: org.apache.spark.sql.execution.SparkPlan],
+      org.apache.comet.serde.CometOperatorSerde[_]] = Map.empty
+
+  /**
+   * Log a warning when two registered contribs claim the same `Class[_ <: SparkPlan]` for serde
+   * dispatch. The convention documented in `contrib-extensions.md` is that each contrib defines
+   * its own exec class and registers a serde keyed on that class; a collision usually means a
+   * contrib subclassed a core exec by mistake.
+   *
+   * Detection only -- the last-write-wins toMap behavior stands. We log so the user has a chance
+   * to notice; preventing the override would be a harder migration path (silent drop of one
+   * contrib's exec).
+   */
+  private def detectDuplicateSerdeClasses(exts: Seq[CometOperatorSerdeExtension]): Unit = {
+    val perClassOwners = scala.collection.mutable.Map
+      .empty[Class[_ <: org.apache.spark.sql.execution.SparkPlan], scala.collection.mutable.ArrayBuffer[String]]
+    exts.foreach { ext =>
+      ext.serdes.keys.foreach { cls =>
+        perClassOwners
+          .getOrElseUpdate(cls, scala.collection.mutable.ArrayBuffer.empty)
+          .+=(ext.name)
+      }
+    }
+    perClassOwners.foreach { case (cls, owners) =>
+      if (owners.size > 1) {
+        logWarning(
+          s"Multiple Comet contrib extensions claim the same exec class " +
+            s"${cls.getName}: [${owners.mkString(", ")}]. Last-write-wins; " +
+            s"this usually indicates a contrib has subclassed a core or " +
+            s"another contrib's exec instead of defining its own.")
+      }
+    }
+  }
+
+  /**
    * Test-only: reset the registry to the empty state. Lets unit tests re-run discovery with a
    * different classpath / overridden services. Not for production use.
    */
@@ -78,6 +133,7 @@ object CometExtensionRegistry extends Logging {
     loaded.set(false)
     scanExts = Seq.empty
     serdeExts = Seq.empty
+    mergedSerdesCache = Map.empty
   }
 
   private def loadOne[T](label: String)(implicit ct: scala.reflect.ClassTag[T]): Seq[T] = {

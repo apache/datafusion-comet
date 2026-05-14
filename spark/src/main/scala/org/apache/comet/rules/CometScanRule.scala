@@ -76,6 +76,11 @@ case class CometScanRule(session: SparkSession)
   private def _apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf)) return plan
 
+    // Lazy contrib discovery: by the time we get here Comet is enabled. load() is
+    // idempotent so subsequent invocations across plans / sessions are free. Sessions
+    // that never reach this point pay zero ServiceLoader cost.
+    CometExtensionRegistry.load()
+
     // Comet does not support structured streaming. The parallel guard in
     // CometExecRule only stops operator wrapping, so without this check we
     // would still rewrite scans to CometScanExec in a streaming plan.
@@ -121,8 +126,38 @@ case class CometScanRule(session: SparkSession)
     // `PreprocessTableWithDVs` is the canonical case). Fold in registration order so
     // contribs see each other's outputs deterministically. Extensions that don't override
     // `preTransform` inherit the trait's identity default -- zero overhead.
-    val prepped = CometExtensionRegistry.scanExtensions
-      .foldLeft(plan)((p, ext) => ext.preTransform(p, session))
+    //
+    // Gated on COMET_NATIVE_SCAN_ENABLED: if the user has disabled Comet scan, the
+    // contribs' Catalyst wrappers (Delta's DV filter, etc.) are load-bearing and stripping
+    // them turns into a correctness bug. Leave the plan tree as Spark wrote it.
+    //
+    // Corruption guard: snapshot scan classes before each extension's pass and after; if
+    // a non-matching scan's class identity changed, log a warning naming the extension.
+    // Contribs' `preTransform` MUST only rewrite scans they recognise; this guard catches
+    // the common violation early. Light overhead (one collect per extension); only fires
+    // a warning when the contract is broken.
+    val prepped =
+      if (!CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf)) {
+        plan
+      } else {
+        CometExtensionRegistry.scanExtensions.foldLeft(plan) { (p, ext) =>
+          val before = p.collect { case s: FileSourceScanExec => s }
+          val after = ext.preTransform(p, session)
+          val afterScans = after.collect { case s: FileSourceScanExec => s }
+          if (before.size == afterScans.size) {
+            before.zip(afterScans).foreach { case (b, a) =>
+              if ((b ne a) && b.getClass == a.getClass && !ext.matchesV1(b.relation)) {
+                logWarning(
+                  s"CometScanRuleExtension '${ext.name}'.preTransform replaced a " +
+                    s"FileSourceScanExec it does not claim (matchesV1=false). This is a " +
+                    s"contract violation -- preTransform must only rewrite scans the " +
+                    s"extension recognises. See CometScanRuleExtension.preTransform doc.")
+              }
+            }
+          }
+          after
+        }
+      }
 
     val fullPlan = prepped
 
@@ -172,21 +207,22 @@ case class CometScanRule(session: SparkSession)
     }
 
     // Contrib SPI dispatch: offer the scan to every registered CometScanRuleExtension
-    // before core's built-in file-format logic. The first extension whose `matchesV1`
-    // returns true gets `transformV1` called -- if that returns Some, the result replaces
-    // the scan branch entirely. Returning None means "I matched but ultimately can't
-    // accelerate this one", and core's existing logic handles it. Iterating in
-    // registration order makes contrib selection deterministic.
+    // before core's built-in file-format logic. Loop in registration order; the FIRST
+    // extension whose `matchesV1` returns true AND whose `transformV1` returns Some(_)
+    // wins -- its replacement plan is returned. An extension that returns None from
+    // `transformV1` means "I match this scan shape but decline to accelerate this
+    // specific instance"; the loop continues to the next extension before falling back
+    // to core's built-in file-format logic. This lets multiple contribs coexist (e.g.
+    // Iceberg + Delta both loaded) without one's decline silently masking another.
     scanExec.relation match {
       case r: HadoopFsRelation =>
-        val matched = CometExtensionRegistry.scanExtensions.find(_.matchesV1(r))
-        matched match {
-          case Some(ext) =>
-            ext.transformV1(plan, scanExec, session) match {
-              case Some(replacement) => return replacement
-              case None => // extension matched but declined; fall through
-            }
-          case None => // no extension matched; fall through
+        val replacement = CometExtensionRegistry.scanExtensions.iterator
+          .filter(_.matchesV1(r))
+          .flatMap(ext => ext.transformV1(plan, scanExec, session))
+          .nextOption()
+        replacement match {
+          case Some(plan) => return plan
+          case None => // no extension produced a replacement; fall through
         }
       case _ => // SPI only operates on HadoopFsRelation V1 scans
     }
@@ -289,16 +325,16 @@ case class CometScanRule(session: SparkSession)
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
 
-    // Contrib SPI dispatch (V2): same shape as transformV1Scan above. First matching
-    // extension wins; None return falls through to core's logic.
-    val matched = CometExtensionRegistry.scanExtensions.find(_.matchesV2(scanExec))
-    matched match {
-      case Some(ext) =>
-        ext.transformV2(scanExec, session) match {
-          case Some(replacement) => return replacement
-          case None => // extension matched but declined; fall through
-        }
-      case None => // no extension matched; fall through
+    // Contrib SPI dispatch (V2): mirrors transformV1Scan. Loop in registration order;
+    // first matching extension whose transformV2 returns Some wins. Decline = continue
+    // to next extension.
+    val replacement = CometExtensionRegistry.scanExtensions.iterator
+      .filter(_.matchesV2(scanExec))
+      .flatMap(ext => ext.transformV2(scanExec, session))
+      .nextOption()
+    replacement match {
+      case Some(plan) => return plan
+      case None => // no extension produced a replacement; fall through
     }
 
     scanExec.scan match {

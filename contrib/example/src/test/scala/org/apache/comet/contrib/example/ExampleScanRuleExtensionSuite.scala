@@ -54,31 +54,31 @@ class ExampleScanRuleExtensionSuite extends AnyFunSuite {
 
     // We construct a minimal HadoopFsRelation just enough to call matchesV1. The trait
     // method only reads `relation.options` so we don't need a real file format/schema.
+    //
+    // Use getOrCreate so the test reuses any already-running singleton SparkSession
+    // (e.g., from another suite). Critically, DO NOT call `stop()` in a finally block:
+    // stop() tears down the JVM-wide singleton and breaks every other test sharing it.
     val sparkSession = org.apache.spark.sql.SparkSession
       .builder()
       .master("local[1]")
       .appName("ExampleScanRuleExtensionSuite")
       .getOrCreate()
-    try {
-      val relationWithoutMarker = new org.apache.spark.sql.execution.datasources.HadoopFsRelation(
-        location = new org.apache.spark.sql.execution.datasources.InMemoryFileIndex(
-          sparkSession,
-          Seq.empty,
-          Map.empty,
-          None),
-        partitionSchema = new org.apache.spark.sql.types.StructType(),
-        dataSchema = new org.apache.spark.sql.types.StructType(),
-        bucketSpec = None,
-        fileFormat = new org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat(),
-        options = Map.empty)(sparkSession)
-      assert(!ext.matchesV1(relationWithoutMarker), "no marker -> no match")
+    val relationWithoutMarker = new org.apache.spark.sql.execution.datasources.HadoopFsRelation(
+      location = new org.apache.spark.sql.execution.datasources.InMemoryFileIndex(
+        sparkSession,
+        Seq.empty,
+        Map.empty,
+        None),
+      partitionSchema = new org.apache.spark.sql.types.StructType(),
+      dataSchema = new org.apache.spark.sql.types.StructType(),
+      bucketSpec = None,
+      fileFormat = new org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat(),
+      options = Map.empty)(sparkSession)
+    assert(!ext.matchesV1(relationWithoutMarker), "no marker -> no match")
 
-      val relationWithMarker = relationWithoutMarker.copy(options = Map(
-        ExampleScanRuleExtension.MarkerOptionKey ->
-          ExampleScanRuleExtension.MarkerOptionValue))(sparkSession)
-      assert(ext.matchesV1(relationWithMarker), "marker present -> match")
-    } finally {
-      sparkSession.stop()
-    }
+    val relationWithMarker = relationWithoutMarker.copy(options = Map(
+      ExampleScanRuleExtension.MarkerOptionKey ->
+        ExampleScanRuleExtension.MarkerOptionValue))(sparkSession)
+    assert(ext.matchesV1(relationWithMarker), "marker present -> match")
   }
 }

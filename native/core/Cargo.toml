@@ -100,10 +100,12 @@ datafusion-functions-nested = { version = "53.1.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
-# `contrib-example` is on by default so released builds ship the example contrib's
-# planner registered, and the worked-reference test in contrib/example exercises it.
-# `cargo build --no-default-features` produces a cdylib with zero contrib code.
-default = ["hdfs-opendal", "contrib-example"]
+# Released cdylib ships with hdfs-opendal only -- no contrib surface. This keeps
+# `registered_contrib_kinds()` empty in production so users see only the contribs they
+# explicitly opted into (Delta, Iceberg, ...). CI / dev builds turn on `contrib-example`
+# (and the example's unit tests run under its own crate's test profile, which always
+# links the example regardless of this list).
+default = ["hdfs-opendal"]
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]

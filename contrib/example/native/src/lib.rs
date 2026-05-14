@@ -101,7 +101,7 @@ impl ContribOperatorPlanner for ConstantScanPlanner {
                 "ExampleConstantScan: decode failed: {e}"
             ))
         })?;
-        log::info!(
+        log::debug!(
             "comet-contrib-example: ConstantScanPlanner produces {} synthetic rows",
             msg.row_count
         );
@@ -113,17 +113,34 @@ impl ContribOperatorPlanner for ConstantScanPlanner {
 }
 
 /// Registers all of the example contrib's planners against the contrib registry at
-/// library-init time. `#[ctor::ctor]` runs this constructor before
-/// `main`/`JNI_OnLoad`. Comet's `libcomet` cdylib is the single library the JVM loads;
-/// this constructor runs during that one library's init.
+/// library-init time. `#[ctor::ctor]` runs this constructor before `main`/`JNI_OnLoad`.
+/// Comet's `libcomet` cdylib is the single library the JVM loads; this constructor runs
+/// during that one library's init.
+///
+/// # Panic safety
+///
+/// The body is wrapped in `catch_unwind` and writes to stderr on failure. A panic inside
+/// `#[ctor]` aborts the entire JVM process before `JNI_OnLoad` runs and produces no
+/// diagnostic on macOS/Linux without this wrapper. Every contrib's `#[ctor]` should
+/// follow the same pattern; see `docs/source/contributor-guide/contrib-extensions.md`.
+///
+/// # Logging
+///
+/// `log::*!` macros inside `#[ctor]` are no-ops because Comet's logger is initialised
+/// later, in `Java_org_apache_comet_NativeBase_init`. Use `eprintln!` (or nothing) for
+/// any ctor diagnostics that must be visible.
 #[ctor::ctor]
 fn register() {
-    log::info!(
-        "comet-contrib-example: registering ContribOperatorPlanners \
-         (no-op={EXAMPLE_NO_OP_KIND:?}, constant-scan={EXAMPLE_CONSTANT_SCAN_KIND:?})"
-    );
-    register_contrib_planner(EXAMPLE_NO_OP_KIND, Arc::new(NoOpPlanner));
-    register_contrib_planner(EXAMPLE_CONSTANT_SCAN_KIND, Arc::new(ConstantScanPlanner));
+    let _ = std::panic::catch_unwind(|| {
+        register_contrib_planner(EXAMPLE_NO_OP_KIND, Arc::new(NoOpPlanner));
+        register_contrib_planner(EXAMPLE_CONSTANT_SCAN_KIND, Arc::new(ConstantScanPlanner));
+    })
+    .map_err(|panic| {
+        eprintln!(
+            "comet-contrib-example: #[ctor] panicked during planner registration; \
+             contrib will not be available. panic={panic:?}"
+        );
+    });
 }
 
 #[cfg(test)]
@@ -164,7 +181,7 @@ mod tests {
             &self,
             _url: String,
             _configs: &HashMap<String, String>,
-        ) -> Result<ObjectStoreUrl, ContribError> {
+        ) -> Result<(ObjectStoreUrl, datafusion::object_store::path::Path), ContribError> {
             unimplemented!("TestCtx: prepare_object_store not used by this test")
         }
         fn build_parquet_datasource_exec(
@@ -191,6 +208,16 @@ mod tests {
     #[test]
     fn constant_scan_decodes_payload_and_builds() {
         let payload = proto::ExampleConstantScan { row_count: 42 }.encode_to_vec();
+        let planner = ConstantScanPlanner;
+        let ctx = test_ctx();
+        let plan = planner.plan(&ctx, &payload, vec![]).expect("decode + build");
+        assert!(plan.schema().fields().is_empty());
+    }
+
+    #[test]
+    fn constant_scan_handles_zero_rows() {
+        // Worked-example coverage: row_count = 0 must not be a special case.
+        let payload = proto::ExampleConstantScan { row_count: 0 }.encode_to_vec();
         let planner = ConstantScanPlanner;
         let ctx = test_ctx();
         let plan = planner.plan(&ctx, &payload, vec![]).expect("decode + build");

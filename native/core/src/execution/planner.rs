@@ -1971,6 +1971,23 @@ impl PhysicalPlanner {
                     lookup_contrib_planner_by_kind, CorePlannerContext,
                 };
                 let kind = contrib_op.kind.as_str();
+
+                // Payload-size guard. A malformed Spark-side serde could produce a
+                // multi-GB payload that the planner would happily allocate during
+                // proto decode. 16 MiB is comfortably above any plausible
+                // file-scan payload (Delta with 100k tasks weighs in around 3-4 MiB)
+                // and well below "we should be worried about heap pressure".
+                const MAX_CONTRIB_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+                if contrib_op.payload.len() > MAX_CONTRIB_PAYLOAD_BYTES {
+                    return Err(GeneralError(format!(
+                        "ContribOp.kind={kind:?} payload size {} bytes exceeds limit \
+                         of {} bytes -- inspect the contrib's serde for accidental \
+                         data accumulation",
+                        contrib_op.payload.len(),
+                        MAX_CONTRIB_PAYLOAD_BYTES,
+                    )));
+                }
+
                 let planner = lookup_contrib_planner_by_kind(kind).ok_or_else(|| {
                     GeneralError(format!(
                         "No contrib planner registered for ContribOp.kind={kind:?}; \

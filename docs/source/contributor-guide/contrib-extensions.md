@@ -29,6 +29,15 @@ context.
 This document covers how the SPI is shaped, which integration points are available, and
 the concrete files a new contrib has to ship.
 
+## SPI stability
+
+The contrib SPI surface is currently **alpha** — minor versions may carry breaking
+changes during the early-adopter period. Public types in `comet-contrib-spi` and the
+Scala SPI traits are marked `#[non_exhaustive]` (or open for inheritance) so additive
+changes are minor bumps. Removals and renames will be called out in release notes. Lock
+your contrib to a specific Comet patch version until the SPI is declared stable in a
+later release.
+
 ## Architecture at a glance
 
 Each contrib has two halves that ship as separate artifacts but are wired together at
@@ -54,9 +63,26 @@ writes into the proto.
 
 | Trait / Object | Purpose |
 |---|---|
-| `CometScanRuleExtension` | Intercept scan-tree transformation. Override `preTransform` for tree-level rewrites (e.g., undoing your format's own Catalyst strategy); `matchesV1` / `transformV1` for V1 `FileSourceScanExec`; `matchesV2` / `transformV2` for V2 `BatchScanExec`. The first matching extension wins, returning `None` falls back to core's existing file-format dispatch. |
-| `CometOperatorSerdeExtension` | Contribute additional `SparkPlan` class → `CometOperatorSerde` mappings to `CometExecRule`. Used when the contrib has its own physical operator (e.g. a contrib-specific scan exec) that needs native serialization. |
-| `CometExtensionRegistry` | Process-wide singleton. `load()` is called once during `CometSparkSessionExtensions.apply`; subsequent calls are no-ops. Test-only `resetForTesting()` for unit tests that need a clean registry. |
+| `CometScanRuleExtension` | Intercept scan-tree transformation. Override `preTransform` for tree-level rewrites (V1 only — see below); `matchesV1` / `transformV1` for V1 `FileSourceScanExec`; `matchesV2` / `transformV2` for V2 `BatchScanExec`. Dispatch iterates registered extensions in order; the first one whose `match*` returns `true` AND `transform*` returns `Some` wins. `None` means "decline this instance" and dispatch continues to the next matching extension before falling back to core. |
+| `CometOperatorSerdeExtension` | Contribute additional `SparkPlan` class → `CometOperatorSerde` mappings to `CometExecRule`. The merged map is computed once at registry load time. Used when the contrib has its own physical operator (e.g., a contrib-specific scan exec) that needs native serialization. Duplicate class keys across contribs are logged as a warning at load. |
+| `CometExtensionRegistry` | Process-wide singleton. `load()` is invoked lazily from `CometScanRule._apply` / `CometExecRule.apply` the first time Comet runs against a Comet-enabled session — so Spark sessions that never enable Comet pay zero ServiceLoader cost. Subsequent calls are no-ops. Test-only `resetForTesting()` exists for unit tests that need a clean registry. |
+
+### `preTransform` is V1-only and disabled when scan is off
+
+`CometScanRule` folds every registered extension's `preTransform` over the plan tree
+once, before per-scan dispatch begins. The rewritten subtree is what `transformV1`
+receives. `transformV2` does **not** receive a plan reference — V2 contribs that need
+wrapper-stripping must do that work inside `transformV2` against `scanExec.scan` and
+`scanExec.children` directly.
+
+The fold is skipped entirely when `spark.comet.scan.enabled=false`. A contrib's own
+Catalyst wrappers (Delta's DV filter, etc.) become load-bearing when Comet's scan is
+disabled; stripping them turns into a correctness bug.
+
+`CometScanRule` also logs a warning when a `FileSourceScanExec` is replaced by an
+extension whose `matchesV1` returns false against the original scan's relation — a
+contrib that trips this warning is rewriting scans it doesn't recognise and may corrupt
+other formats' plans. Narrow your pattern match.
 
 ### Convention: define your own SparkPlan subclass for serde dispatch
 
@@ -85,14 +111,46 @@ changes to support.
 
 | Item | Purpose |
 |---|---|
-| `trait ContribOperatorPlanner` | Implemented by the contrib's native crate. The `plan(payload, children) -> Arc<dyn ExecutionPlan>` method receives the contrib-private payload bytes from the ContribOp envelope and the already-built native children. |
+| `trait ContribOperatorPlanner` | Implemented by the contrib's native crate. The `plan(ctx, payload, children) -> Arc<dyn ExecutionPlan>` method receives a `&dyn ContribPlannerContext` (handle to core's planner services), the contrib-private payload bytes from the `ContribOp` envelope, and the already-built native children. |
+| `trait ContribPlannerContext` | Implemented by core. Exposes the parquet exec builder (`build_parquet_datasource_exec`), expression planner (`build_physical_expr`), schema conversion (`convert_spark_schema`), object-store registration (`prepare_object_store`), and the `SessionContext` itself. Contribs reach into core through this trait rather than depending on `datafusion-comet` directly. |
+| `struct ParquetDatasourceParams` | `#[non_exhaustive]` argument bundle for the parquet exec builder. Construct via `ParquetDatasourceParams::new(required_schema, object_store_url, file_groups)` and chain `with_*` setters. Adding fields in future is a minor SemVer bump. |
 | `register_contrib_planner(kind, planner)` | Process-wide registry. Called from the contrib's `#[ctor::ctor]` at library load. |
 | `lookup_contrib_planner_by_kind(kind)` | Used by core's planner; contribs rarely call directly. |
-| `ContribError` | Minimal error type. Core converts to its own `ExecutionError` at the dispatch site. |
+| `ContribError` | `#[non_exhaustive]` minimal error type. Core converts to its own `ExecutionError` at the dispatch site. Variants: `Plan(String)`, `BadPayload(String)`, `WrongChildCount { expected: String, actual: usize }`. Pattern matches MUST include a wildcard arm so future variants don't break consumers. |
+| `ScopedContribPlannerRegistration` | `#[cfg(any(test, feature = "test-utils"))]` RAII guard for tests that register a planner without polluting the global registry. Drop restores the previous planner. Pair with `#[serial_test::serial]` if your test asserts on `registered_contrib_kinds()`. |
 
-The SPI crate is intentionally a thin leaf: it has no dependencies on core. This is what
-breaks the would-be cyclic dependency (core links contribs via Cargo feature flags;
-contribs need the SPI types — both depend on a third leaf crate instead of each other).
+The SPI crate is intentionally a thin leaf: it depends only on `datafusion`,
+`datafusion-comet-proto`, and `object_store`. This is what breaks the would-be cyclic
+dependency (core links contribs via Cargo feature flags; contribs need the SPI types —
+both depend on a third leaf crate instead of each other). No core-typed values cross
+the trait boundary.
+
+### Why `ContribOperatorPlanner` is `Send + Sync` but `ContribPlannerContext` isn't
+
+The planner trait is stored in an `Arc` inside a process-wide registry shared across
+threads, so `Send + Sync` is load-bearing. The context is short-lived: a `&dyn`
+reference passed for the duration of one synchronous `plan()` call, so the bound would
+only restrict implementations without adding safety. Notably, core's `PhysicalPlanner`
+carries JNI handles that aren't `Send`; requiring `Send` on the context would force an
+awkward `Arc<Mutex<...>>` dance for no gain.
+
+Contribs that want to spawn async work during `plan()` must capture only the
+`Arc<SessionContext>` (which **is** `Send + Sync`) before crossing a thread boundary —
+not the `&dyn ContribPlannerContext` itself.
+
+### Why `payload: &[u8]` instead of `Bytes`
+
+The dispatcher already owns the decoded `ContribOp` proto; passing `&[u8]` is zero-copy
+and avoids forcing every contrib to depend on the `bytes` crate. `prost::Message::decode`
+accepts `&[u8]` directly. Contribs that want `Bytes` for downstream zero-copy work can
+convert with `bytes::Bytes::copy_from_slice(payload)` — a single allocation, at most
+once per plan call.
+
+### `ContribError::WrongChildCount` convention
+
+`expected` is a free-form human description; conventionally a phrase like `"exactly 1"`
+or `"0 or 1"` so the displayed error reads:
+`wrong child count: expected exactly 1, got 2`.
 
 ## Required files (mirror `contrib/example/` exactly)
 
@@ -150,22 +208,77 @@ Plus three edits to existing files:
    `Arc<dyn ExecutionPlan>`.
 7. Core wraps the result in a `SparkPlan` and continues planning.
 
+## `#[ctor]` registration: panic safety + logging
+
+The contrib's native crate registers its planners during library init via
+`#[ctor::ctor]`. Two important quirks to get right:
+
+**Panics in `#[ctor]` abort the JVM process** before `JNI_OnLoad` runs, with no
+diagnostic on macOS/Linux. Wrap every ctor body in `std::panic::catch_unwind` and emit
+a stderr message on failure:
+
+```rust
+#[ctor::ctor]
+fn register() {
+    let _ = std::panic::catch_unwind(|| {
+        register_contrib_planner(MY_KIND, Arc::new(MyPlanner));
+    })
+    .map_err(|panic| {
+        eprintln!("comet-contrib-myname: #[ctor] panicked: {panic:?}");
+    });
+}
+```
+
+**`log::*!` macros inside `#[ctor]` are no-ops.** Comet's logger is initialised later,
+in `Java_org_apache_comet_NativeBase_init`. Any diagnostic you need from the ctor body
+must go through `eprintln!`. The example contrib follows both patterns.
+
+**Cross-platform caveats.** `#[ctor::ctor]` works on Linux / macOS / Windows MSVC, but
+the order of ctor execution across rlibs is link-order dependent and not guaranteed
+across compiler versions. Your contrib's ctor **MUST NOT** depend on another contrib
+already being registered.
+
 ## Cargo feature gate
 
 Each contrib's native rlib is wired into core via a feature flag. Build core with:
 
 ```bash
-# Default release build: all in-tree contribs enabled (contrib-example, future ones too)
+# Default release build: zero contrib surface. registered_contrib_kinds() is empty.
 cargo build
 
-# Slim build: zero contrib code in libcomet
+# Enable a specific contrib explicitly:
+cargo build --features contrib-example
+# or
+cargo build --features contrib-example,contrib-delta
+
+# Verify the slim build path:
 cargo build --no-default-features
 ```
 
+`registered_contrib_kinds()` in a default release build is empty — production
+deployments only see the contribs they explicitly opted into. CI matrix should include
+a `--no-default-features` row to catch any accidental contrib leakage into core.
+
 The JVM side is **always** conditional: the contrib JAR is its own artifact, and Spark
-only picks it up when it's on the classpath. So even with the Cargo feature on, a user
+only picks it up when it's on the classpath. Even with the Cargo feature on, a user
 who doesn't add the contrib JAR sees no behaviour change — the contrib's native planner
 sits dormant in the registry, waiting for a JVM serde that never calls it.
+
+## Maven JAR packaging
+
+The example contrib ships a thin JAR (no shading). Real contribs SHOULD prefer thin
+JARs too. If your contrib must include a third-party library that conflicts with core's
+classpath (e.g., a different protobuf-java version), shade the conflicting classes
+under your contrib's package prefix (`org.apache.comet.contrib.<name>.shaded.*`) so
+classloader collisions stay local. Do not shade `comet-spark` or its transitive
+dependencies — those are `provided` scope and the user supplies them.
+
+## Registry implementation note
+
+The native contrib planner registry is currently a `RwLock<HashMap<String, Arc<...>>>`.
+Lookups happen once per `ContribOp` plan call; writes happen only during library init.
+The implementation may switch to a lock-free primitive (`ArcSwap`) in a future release
+if profiling shows the read path matters; the public API stays unchanged either way.
 
 ## Testing
 
@@ -189,8 +302,6 @@ test fixture, so PR1's CI doubles as smoke coverage for any future contribs.
 
 ## See also
 
-- [`docs/contrib-delta-migration-plan.md`](../../../contrib-delta-migration-plan.md) —
-  the architectural rationale + the two-PR plan that introduced the SPI.
 - [`contrib/example/`](https://github.com/apache/datafusion-comet/tree/main/contrib/example) —
   the worked reference.
 - [`native/contrib-spi/`](https://github.com/apache/datafusion-comet/tree/main/native/contrib-spi) —

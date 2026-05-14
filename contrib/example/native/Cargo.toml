@@ -17,7 +17,7 @@
 
 [package]
 name = "comet-contrib-example"
-description = "Worked reference implementation of a Comet contrib extension. Registers a no-op ContribOperatorPlanner under kind=\"example-no-op\" so the SPI dispatch path can be exercised end-to-end in tests."
+description = "Worked reference implementation of a Comet contrib extension. Not published; bundled as a SPI dispatch test fixture."
 # Contrib crates live OUTSIDE the workspace root directory (`native/`) but are listed as
 # workspace members in `native/Cargo.toml`. Cargo's auto-discovery walks up the directory
 # tree, so without the explicit pointer it can't find `native/Cargo.toml` from

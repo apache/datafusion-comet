@@ -31,9 +31,12 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
  *
  * `CometScanRule` discovers implementations via `CometExtensionRegistry.scanExtensions`
  * (ServiceLoader-backed) and offers each candidate scan to every registered extension in
- * registration order. The first extension whose [[matches]] returns `true` wins -- its
- * [[transformV1]] / [[transformV2]] is called and the returned plan replaces the scan branch. If
- * no extension matches, the core's existing file-format dispatch handles the scan as before.
+ * registration order. The first extension whose [[matchesV1]] (or [[matchesV2]]) returns true
+ * AND whose [[transformV1]] (or [[transformV2]]) returns `Some(_)` wins -- its returned plan
+ * replaces the scan subtree. An extension whose `matches` is true but whose `transform` returns
+ * `None` is treated as "declined this instance"; dispatch continues to the next matching
+ * extension. After every matching extension has declined, core's built-in file-format dispatch
+ * handles the scan as before.
  *
  * Contribs are discovered via the standard Java ServiceLoader. Each contrib JAR ships a
  * `META-INF/services/org.apache.comet.spi.CometScanRuleExtension` resource listing its extension
@@ -60,14 +63,28 @@ trait CometScanRuleExtension {
    * produced and the downstream `Filter` silently drops every row. The Delta contrib's
    * `preTransform` strips the wrapper so the clean scan reaches per-scan dispatch.
    *
-   * Implementations MUST NOT modify scans they don't recognise. Multiple registered
+   * '''V1-only.''' `preTransform` runs once for the whole plan and the rewritten tree is
+   * what later `transformV1` calls see via their `plan` argument. `transformV2` does NOT
+   * receive a plan-tree reference -- only the matched `BatchScanExec`. V2 contribs that need
+   * wrapper-stripping must do that work inside `transformV2` against `scanExec.scan` /
+   * `scanExec.children` directly.
+   *
+   * '''Disabled when scan conversion is off.''' `CometScanRule` skips the entire preTransform
+   * fold when `spark.comet.scan.enabled=false`. A contrib's own wrappers (Delta's DV filter,
+   * etc.) are load-bearing in that case; stripping them turns into a correctness bug.
+   *
+   * '''MUST NOT modify scans the extension does not recognise.''' Multiple registered
    * extensions are folded over the plan in registration order; an extension that rewrites
    * scans outside its format's domain will silently corrupt other formats' plans.
+   * `CometScanRule` logs a warning when a `FileSourceScanExec` is replaced by an extension
+   * whose `matchesV1` returns false against the original scan's relation -- contribs that
+   * trip this warning should narrow their pattern match.
    *
-   * Shared state between this pre-pass and later `transformV1` / `transformV2` calls is the
-   * contrib's problem. The recommended pattern is to attach a Spark `TreeNodeTag` to nodes
-   * during `preTransform` and read it during `transformV1`. Spark's tag mechanism is
-   * tree-immutable-safe and survives plan transformations.
+   * '''State sharing.''' Shared state between this pre-pass and later `transformV1` calls
+   * is the contrib's problem. The recommended pattern is to attach a Spark `TreeNodeTag`
+   * to nodes during `preTransform` and read it during `transformV1`. Spark's tag mechanism
+   * is tree-immutable-safe and survives plan transformations -- preferred over external
+   * mutable state which leaks across plans.
    */
   def preTransform(plan: SparkPlan, session: SparkSession): SparkPlan = plan
 
@@ -83,8 +100,11 @@ trait CometScanRuleExtension {
   /**
    * Transform the matched V1 scan. Called only when `matchesV1` returned true.
    *
-   * Returning `None` means "I matched but ultimately can't accelerate this one" -- the core falls
-   * back to its existing file-format dispatch. Returning `Some(plan)` replaces the scan subtree.
+   * Returning `None` means "I matched the scan shape but ultimately can't accelerate this
+   * specific instance" -- `CometScanRule` then continues to the NEXT registered extension
+   * whose `matchesV1` is true, falling back to core's built-in file-format dispatch only
+   * after every matching extension has declined. Returning `Some(plan)` ends dispatch and
+   * replaces the scan subtree with `plan`.
    */
   def transformV1(
       plan: SparkPlan,
@@ -100,6 +120,12 @@ trait CometScanRuleExtension {
 
   /**
    * Transform the matched V2 scan. Called only when `matchesV2` returned true.
+   *
+   * Same semantics as `transformV1`: `None` falls through to the next matching extension;
+   * `Some(plan)` ends dispatch. Note that unlike `transformV1`, this method does NOT
+   * receive a plan-tree reference -- `preTransform` rewrites are not visible here. V2
+   * contribs that need wrapper-stripping must operate on `scanExec.scan` /
+   * `scanExec.children` directly.
    */
   def transformV2(scanExec: BatchScanExec, session: SparkSession): Option[SparkPlan] = None
 }
