@@ -104,11 +104,7 @@ two artifacts must come from the **same Comet release**. Mixing a JVM jar from o
 with a native library from another is unsupported and may fail at runtime due to protobuf or FFI
 incompatibilities.
 
-## Road to 1.0 and Long-Term Support
-
-The `1.0.0` release will be Comet's first long-term-support (LTS) release. The current plan is for
-`1.0.0` to receive patch releases (bug fixes and security fixes) for at least six months after its
-initial release.
+## Road to 1.0
 
 When `1.0.0` ships:
 
