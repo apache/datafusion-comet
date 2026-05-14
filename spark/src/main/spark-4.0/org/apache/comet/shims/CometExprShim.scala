@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType}
@@ -143,6 +144,8 @@ trait CometExprShim extends CommonStringExprs {
               StructsToJson(evaluator.options, child, evaluator.timeZoneId),
               inputs,
               binding)
+          case (Literal(evaluator: ParseUrlEvaluator, _), "evaluate", args) =>
+            exprToProtoInternal(ParseUrl(args, evaluator.failOnError), inputs, binding)
           case _ => None
         }
 
