@@ -24,10 +24,10 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateArray, CreateMap, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, Size, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
-import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructField, StructType}
+import org.apache.spark.sql.types._
 
-import org.apache.comet.udf.CometBatchKernelCodegen
-import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
+import org.apache.comet.codegen.CometBatchKernelCodegen
+import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 
 // Resolve Arrow vector classes through the codegen object so tests see the same `Class` objects
 // the shaded `common` module sees. A direct `classOf[org.apache.arrow.vector.VarCharVector]` here
@@ -73,7 +73,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   test("non-nullable BoundReference elides Spark's own isNullAt probe in the expression body") {
     // When the BoundReference carries `nullable=false`, Spark's `doGenCode` skips the
     // `row.isNullAt(ord)` branch at source level. This is the payoff of the tree-rewrite in
-    // `CometCodegenDispatchUDF.lookupOrCompile`: subsequent expressions over the same column
+    // `CometScalaUDFCodegen.lookupOrCompile`: subsequent expressions over the same column
     // compile to tighter source rather than relying on JIT to constant-fold `isNullAt`.
     val expr = Length(BoundReference(0, StringType, nullable = false))
     val src = gen(expr, nonNullableString)
@@ -154,7 +154,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("canHandle accepts Nondeterministic expressions (per-partition kernel handles state)") {
-    // Per-partition kernel instance caching in `CometCodegenDispatchUDF.ensureKernel` advances
+    // Per-partition kernel instance caching in `CometScalaUDFCodegen.ensureKernel` advances
     // mutable state across batches in one partition, so Rand/Uuid/etc. produce the expected
     // sequences. The previous canHandle rejection was conservative; with that caching in
     // place, accepting Nondeterministic is correct.
@@ -718,23 +718,32 @@ private case class FakeCodegenFallback(child: Expression)
     extends Expression
     with CodegenFallback {
   override def children: Seq[Expression] = Seq(child)
+
   override def nullable: Boolean = true
+
   override def dataType: DataType = StringType
+
   override def eval(input: InternalRow): Any = null
+
   override protected def withNewChildrenInternal(
       newChildren: IndexedSeq[Expression]): Expression = copy(child = newChildren.head)
 }
 
 private case class FakeNondeterministic() extends LeafExpression with Nondeterministic {
   override def nullable: Boolean = true
+
   override def dataType: DataType = IntegerType
+
   override protected def initializeInternal(partitionIndex: Int): Unit = {}
+
   override protected def evalInternal(input: InternalRow): Any = 0
+
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     throw new UnsupportedOperationException("test fake; never reaches codegen")
 }
 
 private case class FakeUnevaluable() extends LeafExpression with Unevaluable {
   override def nullable: Boolean = true
+
   override def dataType: DataType = IntegerType
 }

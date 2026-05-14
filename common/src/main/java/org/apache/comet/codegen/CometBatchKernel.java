@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.udf;
+package org.apache.comet.codegen;
 
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;

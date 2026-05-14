@@ -17,20 +17,22 @@
  * under the License.
  */
 
-package org.apache.comet.udf
+package org.apache.comet.udf.codegen
 
 import java.nio.ByteBuffer
 import java.util.{Collections, LinkedHashMap}
 import java.util.concurrent.atomic.AtomicLong
 
-import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{BinaryType, DataType, StringType}
 
-import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
+import org.apache.comet.codegen.{CometBatchKernel, CometBatchKernelCodegen}
+import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
+import org.apache.comet.udf.CometUDF
 
 /**
  * Arrow-direct codegen dispatcher. For each (bound Spark `Expression`, input Arrow schema) pair,
@@ -48,17 +50,34 @@ import org.apache.comet.udf.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColum
  * by [[ensureKernel]]. See `docs/source/contributor-guide/jvm_udf_dispatch.md` for the rationale
  * and why none of the layers can be collapsed.
  */
-class CometCodegenDispatchUDF extends CometUDF {
+class CometScalaUDFCodegen extends CometUDF {
+
+  /**
+   * Per-partition kernel instance cache. The dispatcher's compile cache (on the companion object)
+   * is JVM-wide and stores the compiled `GeneratedClass`. The kernel '''instance''', however,
+   * holds per-row mutable state for non-deterministic and stateful expressions (`Rand`'s
+   * `XORShiftRandom`, `MonotonicallyIncreasingID`'s counter, etc.). That state must advance
+   * across batches in one partition and reset across partitions. Allocating per batch (the prior
+   * model) reset state every batch and was wrong; allocating per partition is right.
+   *
+   * `CometScalaUDFCodegen` is per-thread via `CometUdfBridge.INSTANCES`, and Spark tasks are
+   * single-threaded on a partition, so plain instance fields are safe without synchronisation. A
+   * different partition or a different cached expression flowing through the same thread triggers
+   * a fresh allocation; same partition + same expression reuses the kernel.
+   */
+  private var activeKernel: CometBatchKernel = _
+  private var activeKey: CometScalaUDFCodegen.CacheKey = _
+  private var activePartition: Int = -1
 
   override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
     require(
       inputs.length >= 1,
-      "CometCodegenDispatchUDF requires at least 1 input (serialized expression), " +
+      "CometScalaUDFCodegen requires at least 1 input (serialized expression), " +
         s"got ${inputs.length}")
     val exprVec = inputs(0).asInstanceOf[VarBinaryVector]
     require(
       exprVec.getValueCount >= 1 && !exprVec.isNull(0),
-      "CometCodegenDispatchUDF requires non-null serialized expression bytes at arg 0")
+      "CometScalaUDFCodegen requires non-null serialized expression bytes at arg 0")
     val bytes = exprVec.get(0)
 
     // TODO(dict-encoded): kernels assume materialized inputs; dict-encoded vectors would fail the
@@ -77,10 +96,10 @@ class CometCodegenDispatchUDF extends CometUDF {
     val n = numRows
     val specsSeq = specs.toIndexedSeq
 
-    val key = CometCodegenDispatchUDF.CacheKey(ByteBuffer.wrap(bytes), specsSeq)
-    val entry = CometCodegenDispatchUDF.lookupOrCompile(key, bytes, specsSeq)
+    val key = CometScalaUDFCodegen.CacheKey(ByteBuffer.wrap(bytes), specsSeq)
+    val entry = CometScalaUDFCodegen.lookupOrCompile(key, bytes, specsSeq)
 
-    val partitionId = CometCodegenDispatchUDF.currentPartitionIndex()
+    val partitionId = CometScalaUDFCodegen.currentPartitionIndex()
     val kernel = ensureKernel(entry.compiled, key, partitionId)
 
     val out = CometBatchKernelCodegen.allocateOutput(
@@ -95,31 +114,16 @@ class CometCodegenDispatchUDF extends CometUDF {
     } catch {
       case t: Throwable =>
         try out.close()
-        catch { case _: Throwable => () }
+        catch {
+          case _: Throwable => ()
+        }
         throw t
     }
   }
 
-  /**
-   * Per-partition kernel instance cache. The dispatcher's compile cache (on the companion object)
-   * is JVM-wide and stores the compiled `GeneratedClass`. The kernel '''instance''', however,
-   * holds per-row mutable state for non-deterministic and stateful expressions (`Rand`'s
-   * `XORShiftRandom`, `MonotonicallyIncreasingID`'s counter, etc.). That state must advance
-   * across batches in one partition and reset across partitions. Allocating per batch (the prior
-   * model) reset state every batch and was wrong; allocating per partition is right.
-   *
-   * `CometCodegenDispatchUDF` is per-thread via `CometUdfBridge.INSTANCES`, and Spark tasks are
-   * single-threaded on a partition, so plain instance fields are safe without synchronisation. A
-   * different partition or a different cached expression flowing through the same thread triggers
-   * a fresh allocation; same partition + same expression reuses the kernel.
-   */
-  private var activeKernel: CometBatchKernel = _
-  private var activeKey: CometCodegenDispatchUDF.CacheKey = _
-  private var activePartition: Int = -1
-
   private def ensureKernel(
       compiled: CometBatchKernelCodegen.CompiledKernel,
-      key: CometCodegenDispatchUDF.CacheKey,
+      key: CometScalaUDFCodegen.CacheKey,
       partitionId: Int): CometBatchKernel = {
     if (activeKernel == null || activePartition != partitionId || activeKey != key) {
       activeKernel = compiled.newInstance()
@@ -184,7 +188,7 @@ class CometCodegenDispatchUDF extends CometUDF {
       ScalarColumnSpec(v.getClass.asInstanceOf[Class[_ <: ValueVector]], nullable(v))
     case other =>
       throw new UnsupportedOperationException(
-        s"CometCodegenDispatchUDF: unsupported Arrow vector ${other.getClass.getSimpleName}")
+        s"CometScalaUDFCodegen: unsupported Arrow vector ${other.getClass.getSimpleName}")
   }
 
   /**
@@ -212,24 +216,9 @@ class CometCodegenDispatchUDF extends CometUDF {
   }
 }
 
-object CometCodegenDispatchUDF {
+object CometScalaUDFCodegen {
 
   private val CacheCapacity: Int = 128
-
-  /**
-   * Cache key: serialized expression bytes plus per-column compile-time invariants.
-   *
-   * `hashCode` walks `bytesKey` per lookup, so for large ScalaUDF closures it scales with closure
-   * size. TODO(perf-cache-key): see
-   * `docs/source/contributor-guide/jvm_udf_dispatch.md#open-items` for possible optimizations if
-   * a workload makes this hot.
-   */
-  final case class CacheKey(bytesKey: ByteBuffer, specs: IndexedSeq[ArrowColumnSpec])
-
-  private case class CacheEntry(
-      compiled: CometBatchKernelCodegen.CompiledKernel,
-      outputType: DataType)
-
   private val kernelCache: java.util.Map[CacheKey, CacheEntry] =
     Collections.synchronizedMap(
       new LinkedHashMap[CacheKey, CacheEntry](CacheCapacity, 0.75f, true) {
@@ -237,25 +226,11 @@ object CometCodegenDispatchUDF {
             eldest: java.util.Map.Entry[CacheKey, CacheEntry]): Boolean =
           size() > CacheCapacity
       })
-
   // Observability counters. Incremented under the `kernelCache.synchronized` block in
   // `lookupOrCompile` so counter increments and cache mutations cannot interleave. Read via
   // [[stats]]; reset via [[resetStats]] for tests.
   private val compileCount = new AtomicLong(0)
   private val cacheHitCount = new AtomicLong(0)
-
-  /**
-   * Snapshot of dispatcher cache counters and current size. Intended for tests, logging, and
-   * future integration with Spark SQL metrics. Not thread-synchronized across the three fields
-   * (each read is atomic, but they are not read atomically together); snapshots taken during
-   * concurrent activity may show a consistent individual-field view but a slightly inconsistent
-   * combined view. Fine for reporting, not for assertions that require cross-field invariants.
-   */
-  final case class DispatcherStats(compileCount: Long, cacheHitCount: Long, cacheSize: Int) {
-    def totalLookups: Long = compileCount + cacheHitCount
-    def hitRate: Double =
-      if (totalLookups == 0) 0.0 else cacheHitCount.toDouble / totalLookups.toDouble
-  }
 
   /** Returns a snapshot of cache counters and current size. Cheap; safe to call anytime. */
   def stats(): DispatcherStats =
@@ -355,4 +330,32 @@ object CometCodegenDispatchUDF {
    */
   private def currentPartitionIndex(): Int =
     Option(TaskContext.get()).map(_.partitionId()).getOrElse(0)
+
+  /**
+   * Cache key: serialized expression bytes plus per-column compile-time invariants.
+   *
+   * `hashCode` walks `bytesKey` per lookup, so for large ScalaUDF closures it scales with closure
+   * size. TODO(perf-cache-key): see
+   * `docs/source/contributor-guide/jvm_udf_dispatch.md#open-items` for possible optimizations if
+   * a workload makes this hot.
+   */
+  final case class CacheKey(bytesKey: ByteBuffer, specs: IndexedSeq[ArrowColumnSpec])
+
+  /**
+   * Snapshot of dispatcher cache counters and current size. Intended for tests, logging, and
+   * future integration with Spark SQL metrics. Not thread-synchronized across the three fields
+   * (each read is atomic, but they are not read atomically together); snapshots taken during
+   * concurrent activity may show a consistent individual-field view but a slightly inconsistent
+   * combined view. Fine for reporting, not for assertions that require cross-field invariants.
+   */
+  final case class DispatcherStats(compileCount: Long, cacheHitCount: Long, cacheSize: Int) {
+    def hitRate: Double =
+      if (totalLookups == 0) 0.0 else cacheHitCount.toDouble / totalLookups.toDouble
+
+    def totalLookups: Long = compileCount + cacheHitCount
+  }
+
+  private case class CacheEntry(
+      compiled: CometBatchKernelCodegen.CompiledKernel,
+      outputType: DataType)
 }

@@ -17,13 +17,13 @@
  * under the License.
  */
 
-package org.apache.comet.udf
+package org.apache.comet.codegen
 
-import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
-import org.apache.spark.sql.catalyst.expressions.codegen.{CodeAndComment, CodeFormatter, CodegenContext, CodeGenerator, CodegenFallback, ExprCode, GeneratedClass}
+import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DataType
 
@@ -33,6 +33,17 @@ import org.apache.comet.shims.CometExprTraitShim
  * Compiles a bound [[Expression]] plus an input schema into a [[CometBatchKernel]] that fuses
  * Arrow input reads, expression evaluation, and Arrow output writes into one Janino-compiled
  * method per (expression, schema) pair.
+ *
+ * The kernel is generic over Catalyst expressions. It does not know or assume that the bound tree
+ * came from a `ScalaUDF`; any bound `Expression` whose input and output types are in the
+ * supported surface compiles. Today the only consumer is the JVM UDF dispatcher in
+ * [[org.apache.comet.udf.codegen.CometScalaUDFCodegen]], but a future consumer (e.g. Spark
+ * `WholeStageCodegenExec` integration, a non-UDF batch evaluator) can drive this class directly.
+ *
+ * Constraints today:
+ *   - Single output vector per kernel; whole projections would need a multi-output extension.
+ *   - Per-row scalar evaluation; aggregation, window, and generator expressions are out of scope
+ *     and rejected by [[canHandle]].
  *
  * Input- and output-side emission live in [[CometBatchKernelCodegenInput]] and
  * [[CometBatchKernelCodegenOutput]]. This file is the orchestrator: the [[ArrowColumnSpec]]
@@ -45,101 +56,8 @@ import org.apache.comet.shims.CometExprTraitShim
  * devirtualizes and folds the switch). `row` rather than `this` because Spark's
  * `splitExpressions` uses INPUT_ROW as a helper-method parameter name and `this` is a reserved
  * Java keyword.
- *
- * For the full feature list (type surface, optimizations, cache layers, open work items), see
- * `docs/source/contributor-guide/jvm_udf_dispatch.md`.
  */
 object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
-
-  /**
-   * Per-column compile-time invariants. The concrete Arrow vector class and whether the column is
-   * nullable are baked into the generated kernel's typed fields and branches. Part of the cache
-   * key: different vector classes or nullability produce different kernels.
-   *
-   * Sealed hierarchy so that complex types (array/map/struct) can carry their nested element
-   * shape recursively. Today scalar, array, and struct specs exist; map cases will land as an
-   * additional subclass when the emitter covers them. A companion `apply` / `unapply` preserves
-   * the original scalar-only construction and extractor shape so existing callers don't need to
-   * change.
-   */
-  sealed trait ArrowColumnSpec {
-    def vectorClass: Class[_ <: ValueVector]
-    def nullable: Boolean
-  }
-
-  object ArrowColumnSpec {
-
-    /** Convenience constructor producing a [[ScalarColumnSpec]]. */
-    def apply(vectorClass: Class[_ <: ValueVector], nullable: Boolean): ArrowColumnSpec =
-      ScalarColumnSpec(vectorClass, nullable)
-
-    /**
-     * Backward-compatible extractor for the common scalar case. Callers that want array / struct
-     * / future map specs should pattern match on the subclass directly.
-     */
-    def unapply(spec: ArrowColumnSpec): Option[(Class[_ <: ValueVector], Boolean)] = spec match {
-      case ScalarColumnSpec(c, n) => Some((c, n))
-      case _ => None
-    }
-  }
-
-  /** Scalar column: one Arrow vector class per row slot, no nested structure. */
-  final case class ScalarColumnSpec(vectorClass: Class[_ <: ValueVector], nullable: Boolean)
-      extends ArrowColumnSpec
-
-  /**
-   * Array column: an Arrow `ListVector` wrapping a child spec. `elementSparkType` is the Spark
-   * `DataType` of the element so the nested-class getter emitter can choose the right template
-   * (e.g. `getUTF8String` for `StringType`, `getInt` for `IntegerType`). The child spec carries
-   * the Arrow child vector class. Nested arrays (`Array<Array<...>>`) work by the child being
-   * itself an `ArrayColumnSpec`.
-   */
-  final case class ArrayColumnSpec(
-      nullable: Boolean,
-      elementSparkType: DataType,
-      element: ArrowColumnSpec)
-      extends ArrowColumnSpec {
-    override def vectorClass: Class[_ <: ValueVector] = classOf[ListVector]
-  }
-
-  /**
-   * Struct column: an Arrow `StructVector` wrapping N typed child specs. Each entry carries the
-   * Spark field name (for schema identification in the cache key), the Spark `DataType` of the
-   * field (so per-field emitters pick the right read/write template), the child `ArrowColumnSpec`
-   * (so nested shapes like `Struct<Array<...>>` compose by trait-level recursion), and the
-   * field's `nullable` bit (so non-nullable fields elide their per-row null check at source
-   * level). Nested structs (`Struct<Struct<...>>`) work by the child being itself a
-   * `StructColumnSpec`.
-   */
-  final case class StructColumnSpec(nullable: Boolean, fields: Seq[StructFieldSpec])
-      extends ArrowColumnSpec {
-    override def vectorClass: Class[_ <: ValueVector] = classOf[StructVector]
-  }
-
-  /** One field entry on a [[StructColumnSpec]]. */
-  final case class StructFieldSpec(
-      name: String,
-      sparkType: DataType,
-      nullable: Boolean,
-      child: ArrowColumnSpec)
-
-  /**
-   * Map column: an Arrow `MapVector` (subclass of `ListVector`) whose data vector is a
-   * `StructVector` with a key field at ordinal 0 and a value field at ordinal 1. `key` and
-   * `value` are themselves `ArrowColumnSpec` so nested shapes (`Map<Struct<...>, Array<X>>`,
-   * `Map<Map<...>, ...>`) compose by trait-level recursion. Nullable map entries are controlled
-   * per-column by the outer map's validity; nullable keys and values are carried in the child
-   * specs' `nullable` bit.
-   */
-  final case class MapColumnSpec(
-      nullable: Boolean,
-      keySparkType: DataType,
-      valueSparkType: DataType,
-      key: ArrowColumnSpec,
-      value: ArrowColumnSpec)
-      extends ArrowColumnSpec {
-    override def vectorClass: Class[_ <: ValueVector] = classOf[MapVector]
-  }
 
   /**
    * Resolve an Arrow vector class by its simple name, using the same classloader the codegen uses
@@ -163,28 +81,6 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case "VarCharVector" => classOf[VarCharVector]
     case "VarBinaryVector" => classOf[VarBinaryVector]
     case other => throw new IllegalArgumentException(s"unknown Arrow vector class: $other")
-  }
-
-  /**
-   * Result of compiling a bound [[Expression]] into a Janino kernel. The `factory` is the Spark
-   * [[GeneratedClass]] produced by Janino and is safe to share across threads and partitions: it
-   * holds no mutable state. The `freshReferences` closure regenerates the references array each
-   * time a new kernel instance is allocated.
-   *
-   * Why not cache a single `references` array: some expressions (notably [[ScalaUDF]]) embed
-   * stateful Spark `ExpressionEncoder` serializers into `references` via `ctx.addReferenceObj`.
-   * Those serializers reuse an internal `UnsafeRow` / `byte[]` buffer per `.apply(...)` call and
-   * are not thread-safe. If two kernels on different partitions shared one serializer instance,
-   * they would race on that buffer and produce garbage. Re-running `genCode` per kernel
-   * allocation costs microseconds; Janino compile costs milliseconds. Cache the expensive piece,
-   * refresh the cheap one, stay correct.
-   *
-   * Mirrors Spark `WholeStageCodegenExec`: compile once per plan, instantiate per partition, call
-   * `init(partitionIndex)` once, iterate.
-   */
-  final case class CompiledKernel(factory: GeneratedClass, freshReferences: () => Array[Any]) {
-    def newInstance(): CometBatchKernel =
-      factory.generate(freshReferences()).asInstanceOf[CometBatchKernel]
   }
 
   /**
@@ -220,7 +116,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     //     lives in `Collate.collation` as a type marker; `Collate.genCode` delegates to its child).
     //
     // Nondeterministic and stateful expressions are accepted: the dispatcher allocates one
-    // kernel instance per partition (per `CometCodegenDispatchUDF.ensureKernel`) and calls
+    // kernel instance per partition (per `CometScalaUDFCodegen.ensureKernel`) and calls
     // `init(partitionIndex)` once on partition entry, so per-row state on `Rand`,
     // `MonotonicallyIncreasingID`, etc. advances correctly across batches in the same
     // partition and resets across partitions.
@@ -234,9 +130,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     //      mutable field on the case class. `@volatile` affects cross-thread visibility but
     //      not serializability: Java/Kryo serializers include it.
     //   3. `SparkEnv.closureSerializer` captures the populated `result` value in the bytes
-    //      that travel through `CometCodegenDispatchUDF`'s arg-0 transport.
+    //      that travel through `CometScalaUDFCodegen`'s arg-0 transport.
     //   4. The dispatcher's cache key is those exact bytes (see
-    //      `CometCodegenDispatchUDF.CacheKey`). Different `result` values produce different
+    //      `CometScalaUDFCodegen.CacheKey`). Different `result` values produce different
     //      bytes, hence different cache entries, hence a fresh compile per distinct subquery
     //      value. No cross-query staleness.
     //
@@ -269,7 +165,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   /**
    * Allocate an Arrow output vector matching the expression's `dataType`. Thin forwarder to
    * [[CometBatchKernelCodegenOutput.allocateOutput]]. Kept on this object as part of the public
-   * API so external callers (`CometCodegenDispatchUDF`) do not have to know about the internal
+   * API so external callers (`CometScalaUDFCodegen`) do not have to know about the internal
    * split.
    */
   def allocateOutput(
@@ -279,14 +175,35 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       estimatedBytes: Int = -1): FieldVector =
     CometBatchKernelCodegenOutput.allocateOutput(dataType, name, numRows, estimatedBytes)
 
-  /**
-   * Output of [[generateSource]]. `body` is the raw Java source Janino will compile; `code` is
-   * the post-`stripOverlappingComments` wrapper Janino actually takes as input; `references` are
-   * the runtime objects the generated constructor pulls from via `ctx.addReferenceObj` (cached
-   * patterns, replacement strings, etc.). Tests inspect `body` to assert the shape of the
-   * generated source. See `CometCodegenSourceSuite` for examples.
-   */
-  final case class GeneratedSource(body: String, code: CodeAndComment, references: Array[Any])
+  def compile(boundExpr: Expression, inputSchema: Seq[ArrowColumnSpec]): CompiledKernel = {
+    val src = generateSource(boundExpr, inputSchema)
+    val (clazz, _) =
+      try {
+        CodeGenerator.compile(src.code)
+      } catch {
+        case t: Throwable =>
+          logError(
+            s"CometBatchKernelCodegen: compile failed for ${boundExpr.getClass.getSimpleName}. " +
+              s"Generated source follows:\n${src.body}",
+            t)
+          throw t
+      }
+    // One log per unique (expr, schema) compile; the caller caches the result so subsequent
+    // batches with the same shape reuse this compile.
+    logInfo(
+      s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
+        s"-> ${boundExpr.dataType}  inputs=" +
+        inputSchema
+          .map(s => s"${s.vectorClass.getSimpleName}${if (s.nullable) "?" else ""}")
+          .mkString(","))
+    // Freshen references per kernel allocation. See the `CompiledKernel` scaladoc for why.
+    // `generateSource` is pure with respect to its inputs (no hidden state) and produces a
+    // layout-compatible references array each time because the expression and schema are
+    // fixed.
+    val freshReferences: () => Array[Any] = () =>
+      generateSource(boundExpr, inputSchema).references
+    CompiledKernel(clazz, freshReferences)
+  }
 
   /**
    * Generate the Java source for a kernel without compiling it. Factored out of [[compile]] so
@@ -410,36 +327,6 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     GeneratedSource(code.body, code, ctx.references.toArray)
   }
 
-  def compile(boundExpr: Expression, inputSchema: Seq[ArrowColumnSpec]): CompiledKernel = {
-    val src = generateSource(boundExpr, inputSchema)
-    val (clazz, _) =
-      try {
-        CodeGenerator.compile(src.code)
-      } catch {
-        case t: Throwable =>
-          logError(
-            s"CometBatchKernelCodegen: compile failed for ${boundExpr.getClass.getSimpleName}. " +
-              s"Generated source follows:\n${src.body}",
-            t)
-          throw t
-      }
-    // One log per unique (expr, schema) compile; the caller caches the result so subsequent
-    // batches with the same shape reuse this compile.
-    logInfo(
-      s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
-        s"-> ${boundExpr.dataType}  inputs=" +
-        inputSchema
-          .map(s => s"${s.vectorClass.getSimpleName}${if (s.nullable) "?" else ""}")
-          .mkString(","))
-    // Freshen references per kernel allocation. See the `CompiledKernel` scaladoc for why.
-    // `generateSource` is pure with respect to its inputs (no hidden state) and produces a
-    // layout-compatible references array each time because the expression and schema are
-    // fixed.
-    val freshReferences: () => Array[Any] = () =>
-      generateSource(boundExpr, inputSchema).references
-    CompiledKernel(clazz, freshReferences)
-  }
-
   /**
    * Per-row body for the default path.
    *
@@ -528,4 +415,126 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       case _: BoundReference | _: Literal => false
       case other => !isNullIntolerant(other)
     }
+
+  /**
+   * Per-column compile-time invariants. The concrete Arrow vector class and whether the column is
+   * nullable are baked into the generated kernel's typed fields and branches. Part of the cache
+   * key: different vector classes or nullability produce different kernels.
+   *
+   * Sealed hierarchy so that complex types (array/map/struct) can carry their nested element
+   * shape recursively. Today scalar, array, and struct specs exist; map cases will land as an
+   * additional subclass when the emitter covers them. A companion `apply` / `unapply` preserves
+   * the original scalar-only construction and extractor shape so existing callers don't need to
+   * change.
+   */
+  sealed trait ArrowColumnSpec {
+    def vectorClass: Class[_ <: ValueVector]
+
+    def nullable: Boolean
+  }
+
+  /** Scalar column: one Arrow vector class per row slot, no nested structure. */
+  final case class ScalarColumnSpec(vectorClass: Class[_ <: ValueVector], nullable: Boolean)
+      extends ArrowColumnSpec
+
+  /**
+   * Array column: an Arrow `ListVector` wrapping a child spec. `elementSparkType` is the Spark
+   * `DataType` of the element so the nested-class getter emitter can choose the right template
+   * (e.g. `getUTF8String` for `StringType`, `getInt` for `IntegerType`). The child spec carries
+   * the Arrow child vector class. Nested arrays (`Array<Array<...>>`) work by the child being
+   * itself an `ArrayColumnSpec`.
+   */
+  final case class ArrayColumnSpec(
+      nullable: Boolean,
+      elementSparkType: DataType,
+      element: ArrowColumnSpec)
+      extends ArrowColumnSpec {
+    override def vectorClass: Class[_ <: ValueVector] = classOf[ListVector]
+  }
+
+  /**
+   * Struct column: an Arrow `StructVector` wrapping N typed child specs. Each entry carries the
+   * Spark field name (for schema identification in the cache key), the Spark `DataType` of the
+   * field (so per-field emitters pick the right read/write template), the child `ArrowColumnSpec`
+   * (so nested shapes like `Struct<Array<...>>` compose by trait-level recursion), and the
+   * field's `nullable` bit (so non-nullable fields elide their per-row null check at source
+   * level). Nested structs (`Struct<Struct<...>>`) work by the child being itself a
+   * `StructColumnSpec`.
+   */
+  final case class StructColumnSpec(nullable: Boolean, fields: Seq[StructFieldSpec])
+      extends ArrowColumnSpec {
+    override def vectorClass: Class[_ <: ValueVector] = classOf[StructVector]
+  }
+
+  /** One field entry on a [[StructColumnSpec]]. */
+  final case class StructFieldSpec(
+      name: String,
+      sparkType: DataType,
+      nullable: Boolean,
+      child: ArrowColumnSpec)
+
+  /**
+   * Map column: an Arrow `MapVector` (subclass of `ListVector`) whose data vector is a
+   * `StructVector` with a key field at ordinal 0 and a value field at ordinal 1. `key` and
+   * `value` are themselves `ArrowColumnSpec` so nested shapes (`Map<Struct<...>, Array<X>>`,
+   * `Map<Map<...>, ...>`) compose by trait-level recursion. Nullable map entries are controlled
+   * per-column by the outer map's validity; nullable keys and values are carried in the child
+   * specs' `nullable` bit.
+   */
+  final case class MapColumnSpec(
+      nullable: Boolean,
+      keySparkType: DataType,
+      valueSparkType: DataType,
+      key: ArrowColumnSpec,
+      value: ArrowColumnSpec)
+      extends ArrowColumnSpec {
+    override def vectorClass: Class[_ <: ValueVector] = classOf[MapVector]
+  }
+
+  /**
+   * Result of compiling a bound [[Expression]] into a Janino kernel. The `factory` is the Spark
+   * [[GeneratedClass]] produced by Janino and is safe to share across threads and partitions: it
+   * holds no mutable state. The `freshReferences` closure regenerates the references array each
+   * time a new kernel instance is allocated.
+   *
+   * Why not cache a single `references` array: some expressions (notably [[ScalaUDF]]) embed
+   * stateful Spark `ExpressionEncoder` serializers into `references` via `ctx.addReferenceObj`.
+   * Those serializers reuse an internal `UnsafeRow` / `byte[]` buffer per `.apply(...)` call and
+   * are not thread-safe. If two kernels on different partitions shared one serializer instance,
+   * they would race on that buffer and produce garbage. Re-running `genCode` per kernel
+   * allocation costs microseconds; Janino compile costs milliseconds. Cache the expensive piece,
+   * refresh the cheap one, stay correct.
+   *
+   * Mirrors Spark `WholeStageCodegenExec`: compile once per plan, instantiate per partition, call
+   * `init(partitionIndex)` once, iterate.
+   */
+  final case class CompiledKernel(factory: GeneratedClass, freshReferences: () => Array[Any]) {
+    def newInstance(): CometBatchKernel =
+      factory.generate(freshReferences()).asInstanceOf[CometBatchKernel]
+  }
+
+  /**
+   * Output of [[generateSource]]. `body` is the raw Java source Janino will compile; `code` is
+   * the post-`stripOverlappingComments` wrapper Janino actually takes as input; `references` are
+   * the runtime objects the generated constructor pulls from via `ctx.addReferenceObj` (cached
+   * patterns, replacement strings, etc.). Tests inspect `body` to assert the shape of the
+   * generated source. See `CometCodegenSourceSuite` for examples.
+   */
+  final case class GeneratedSource(body: String, code: CodeAndComment, references: Array[Any])
+
+  object ArrowColumnSpec {
+
+    /** Convenience constructor producing a [[ScalarColumnSpec]]. */
+    def apply(vectorClass: Class[_ <: ValueVector], nullable: Boolean): ArrowColumnSpec =
+      ScalarColumnSpec(vectorClass, nullable)
+
+    /**
+     * Backward-compatible extractor for the common scalar case. Callers that want array / struct
+     * / future map specs should pattern match on the subclass directly.
+     */
+    def unapply(spec: ArrowColumnSpec): Option[(Class[_ <: ValueVector], Boolean)] = spec match {
+      case ScalarColumnSpec(c, n) => Some((c, n))
+      case _ => None
+    }
+  }
 }

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.udf
+package org.apache.comet.codegen
 
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
 
@@ -32,19 +32,24 @@ import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
  */
 abstract class CometMapData extends MapData {
 
-  override def numElements(): Int = unsupported("numElements")
   override def keyArray(): ArrayData = unsupported("keyArray")
-  override def valueArray(): ArrayData = unsupported("valueArray")
-  override def copy(): MapData = unsupported("copy")
 
-  override def toString(): String = {
-    val n =
-      try numElements().toString
-      catch { case _: Throwable => "?" }
-    s"${getClass.getSimpleName}(numElements=$n)"
-  }
+  override def valueArray(): ArrayData = unsupported("valueArray")
+
+  override def copy(): MapData = unsupported("copy")
 
   protected def unsupported(method: String): Nothing =
     throw new UnsupportedOperationException(
       s"${getClass.getSimpleName}: $method not implemented for this map shape")
+
+  override def toString(): String = {
+    val n =
+      try numElements().toString
+      catch {
+        case _: Throwable => "?"
+      }
+    s"${getClass.getSimpleName}(numElements=$n)"
+  }
+
+  override def numElements(): Int = unsupported("numElements")
 }

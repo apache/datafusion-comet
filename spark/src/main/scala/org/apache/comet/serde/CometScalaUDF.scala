@@ -25,9 +25,10 @@ import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
-import org.apache.comet.udf.{CometBatchKernelCodegen, CometCodegenDispatchUDF}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Routes scalar `ScalaUDF` expressions (user-registered Scala and Java UDFs) through the
@@ -92,7 +93,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
     val udfBuilder = ExprOuterClass.JvmScalarUdf
       .newBuilder()
-      .setClassName(classOf[CometCodegenDispatchUDF].getName)
+      .setClassName(classOf[CometScalaUDFCodegen].getName)
       .addArgs(exprArg)
     dataArgs.foreach(udfBuilder.addArgs)
     udfBuilder

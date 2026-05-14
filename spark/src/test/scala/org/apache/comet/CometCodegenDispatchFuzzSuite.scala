@@ -25,7 +25,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.udf.CometCodegenDispatchUDF
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Randomized tests for the Arrow-direct codegen dispatcher. Generates inputs at varying null
@@ -34,11 +34,14 @@ import org.apache.comet.udf.CometCodegenDispatchUDF
  */
 class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
+  private val RowCount: Int = 512
+  private val nullDensities: Seq[Double] = Seq(0.0, 0.1, 0.5, 1.0)
+  // (precision, scale) pairs spanning both sides of the MAX_LONG_DIGITS=18 boundary.
+  private val decimalShapes: Seq[(Int, Int)] = Seq((9, 2), (18, 0), (18, 9), (19, 0), (38, 10))
+
   override protected def sparkConf: SparkConf =
     super.sparkConf
       .set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
-
-  private val RowCount: Int = 512
 
   /**
    * Resets dispatcher stats, runs `f`, then asserts the codegen path actually ran for at least
@@ -46,15 +49,13 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
    * both Spark and whatever-Comet-ran-instead agree with Spark.
    */
   private def assertCodegenRan(f: => Unit): Unit = {
-    CometCodegenDispatchUDF.resetStats()
+    CometScalaUDFCodegen.resetStats()
     f
-    val after = CometCodegenDispatchUDF.stats()
+    val after = CometScalaUDFCodegen.stats()
     assert(
       after.compileCount + after.cacheHitCount >= 1,
       s"expected at least one codegen dispatcher invocation during this query, got $after")
   }
-
-  private val nullDensities: Seq[Double] = Seq(0.0, 0.1, 0.5, 1.0)
 
   /**
    * Randomized decimal identity UDF. Spans both sides of the `Decimal.MAX_LONG_DIGITS` (18)
@@ -99,9 +100,6 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
       f
     }
   }
-
-  // (precision, scale) pairs spanning both sides of the MAX_LONG_DIGITS=18 boundary.
-  private val decimalShapes: Seq[(Int, Int)] = Seq((9, 2), (18, 0), (18, 9), (19, 0), (38, 10))
 
   for {
     density <- nullDensities

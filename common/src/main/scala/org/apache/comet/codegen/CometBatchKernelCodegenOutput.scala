@@ -17,13 +17,13 @@
  * under the License.
  */
 
-package org.apache.comet.udf
+package org.apache.comet.codegen
 
-import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometArrowAllocator
 
@@ -35,7 +35,7 @@ import org.apache.comet.CometArrowAllocator
  *
  * Paired with [[CometBatchKernelCodegenInput]], which handles the symmetric input side.
  */
-private[udf] object CometBatchKernelCodegenOutput {
+private[codegen] object CometBatchKernelCodegenOutput {
 
   /**
    * Output types [[allocateOutput]] and [[emitOutputWriter]] can materialize. Recursive: complex
@@ -90,17 +90,12 @@ private[udf] object CometBatchKernelCodegenOutput {
     } catch {
       case t: Throwable =>
         try vec.close()
-        catch { case _: Throwable => () }
+        catch {
+          case _: Throwable => ()
+        }
         throw t
     }
   }
-
-  /**
-   * Split output for a complex-type write: `setup` holds once-per-batch declarations (typed
-   * child-vector casts) and lives outside the per-row for-loop; `perRow` holds the statements
-   * executed for each row. Scalar writes have empty setup.
-   */
-  private case class OutputEmit(setup: String, perRow: String)
 
   /**
    * Returns `(concreteVectorClassName, batchSetup, perRowSnippet)` for the expression's output
@@ -367,4 +362,11 @@ private[udf] object CometBatchKernelCodegenOutput {
         throw new UnsupportedOperationException(
           s"CometBatchKernelCodegen.emitSpecializedGetterExpr: unsupported type $other")
     }
+
+  /**
+   * Split output for a complex-type write: `setup` holds once-per-batch declarations (typed
+   * child-vector casts) and lives outside the per-row for-loop; `perRow` holds the statements
+   * executed for each row. Scalar writes have empty setup.
+   */
+  private case class OutputEmit(setup: String, perRow: String)
 }

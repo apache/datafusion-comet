@@ -19,13 +19,13 @@
 
 package org.apache.comet
 
-import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarCharVector}
+import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types._
 
-import org.apache.comet.udf.CometCodegenDispatchUDF
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Smoke tests for the Arrow-direct codegen dispatcher. Runs ScalaUDF queries across the scalar
@@ -56,9 +56,9 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
    * falling back to Spark.
    */
   private def assertCodegenDidWork(f: => Unit): Unit = {
-    CometCodegenDispatchUDF.resetStats()
+    CometScalaUDFCodegen.resetStats()
     f
-    val after = CometCodegenDispatchUDF.stats()
+    val after = CometScalaUDFCodegen.stats()
     assert(
       after.compileCount + after.cacheHitCount >= 1,
       s"expected codegen dispatcher activity, got $after")
@@ -79,10 +79,10 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
    * vacuously.
    */
   private def assertOneKernelForSubtree(f: => Unit): Unit = {
-    CometCodegenDispatchUDF.resetStats()
-    val sizeBefore = CometCodegenDispatchUDF.stats().cacheSize
+    CometScalaUDFCodegen.resetStats()
+    val sizeBefore = CometScalaUDFCodegen.stats().cacheSize
     f
-    val after = CometCodegenDispatchUDF.stats()
+    val after = CometScalaUDFCodegen.stats()
     assert(after.compileCount <= 1, s"expected <= 1 compile for the composed subtree, got $after")
     val grew = after.cacheSize - sizeBefore
     assert(grew <= 1, s"expected cache to grow by <= 1 entry, grew by $grew; stats=$after")
@@ -112,7 +112,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   private def assertKernelSignaturePresent(
       inputs: Seq[Class[_ <: ValueVector]],
       output: DataType): Unit = {
-    val sigs = CometCodegenDispatchUDF.snapshotCompiledSignatures()
+    val sigs = CometScalaUDFCodegen.snapshotCompiledSignatures()
     val expectedNames = inputs.map(_.getSimpleName).toIndexedSeq
     val present = sigs.exists { case (cached, dt) =>
       dt == output && cached.map(_.getSimpleName) == expectedNames
@@ -164,13 +164,13 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     // `checkSparkAnswerAndOperator` here because ScalaUDF has no Comet-native path, so the
     // project runs on the JVM Spark path under this configuration.
     spark.udf.register("noopStr", (s: String) => s)
-    CometCodegenDispatchUDF.resetStats()
+    CometScalaUDFCodegen.resetStats()
     withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
       withSubjects("disabled_1", null) {
         checkSparkAnswer(sql("SELECT noopStr(s) FROM t"))
       }
     }
-    val after = CometCodegenDispatchUDF.stats()
+    val after = CometScalaUDFCodegen.stats()
     assert(
       after.compileCount == 0 && after.cacheHitCount == 0,
       s"expected no dispatcher activity under disabled config, got $after")
@@ -184,7 +184,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     // partitions. Instead, assert the total invariant: across both queries we see at least two
     // compiles, proving the cache key discriminated on nullability.
     spark.udf.register("nullabilityMarker", (s: String) => if (s == null) null else s + "!")
-    CometCodegenDispatchUDF.resetStats()
+    CometScalaUDFCodegen.resetStats()
 
     withSubjects("nullability_marker_1", null, "nullability_marker_2") {
       checkSparkAnswerAndOperator(sql("SELECT nullabilityMarker(s) FROM t"))
@@ -192,7 +192,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     withSubjects("nullability_marker_3", "nullability_marker_4") {
       checkSparkAnswerAndOperator(sql("SELECT nullabilityMarker(s) FROM t"))
     }
-    val after = CometCodegenDispatchUDF.stats()
+    val after = CometScalaUDFCodegen.stats()
 
     assert(
       after.compileCount >= 2,
@@ -216,13 +216,13 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     // promise across queries.
     spark.udf.register("kernelCacheMarker", (s: String) => if (s == null) null else s + "_kc")
     val rows = (0 until 256).map(i => s"row_$i")
-    CometCodegenDispatchUDF.resetStats()
+    CometScalaUDFCodegen.resetStats()
     withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "32") {
       withSubjects(rows: _*) {
         checkSparkAnswerAndOperator(sql("SELECT kernelCacheMarker(s) FROM t"))
       }
     }
-    val stats = CometCodegenDispatchUDF.stats()
+    val stats = CometScalaUDFCodegen.stats()
     assert(stats.compileCount >= 1, s"expected at least one compile during the query, got $stats")
     assert(
       stats.cacheHitCount >= 1,
