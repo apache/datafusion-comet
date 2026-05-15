@@ -2870,7 +2870,7 @@ index 3072657a095..599d169cf8a 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index c530dc0d3df..3eac4aff201 100644
+index c530dc0d3df..cf073150fd1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
@@ -2900,7 +2900,7 @@ index c530dc0d3df..3eac4aff201 100644
  
 -  test("SPARK-34212 Parquet should read decimals correctly") {
 +  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4343")) {
      def readParquet(schema: String, path: File): DataFrame = {
        spark.read.schema(schema).parquet(path.toString)
      }
@@ -3054,7 +3054,7 @@ index 56076175d60..5872d9962cc 100644
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..5cd856ff7b6 100644
+index 09ed6955a51..6b5be93cffd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 @@ -24,7 +24,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter
@@ -3102,7 +3102,7 @@ index 09ed6955a51..5cd856ff7b6 100644
    }
 -  test(s"unsupported parquet conversion $fromType -> $toType") {
 +  test(s"unsupported parquet conversion $fromType -> $toType",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4297")) {
      checkAllParquetReaders(values, fromType, toType, expectError = true)
    }
  
@@ -3112,7 +3112,7 @@ index 09ed6955a51..5cd856ff7b6 100644
    }
 -  test(s"unsupported parquet conversion $fromType -> $toType") {
 +  test(s"unsupported parquet conversion $fromType -> $toType",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4344")) {
      checkAllParquetReaders(values, fromType, toType,
        expectError =
        // parquet-mr allows reading decimals into a smaller precision decimal type without
@@ -3122,7 +3122,7 @@ index 09ed6955a51..5cd856ff7b6 100644
    }
 -  test(s"unsupported parquet timestamp conversion $fromType ($outputTimestampType) -> $toType") {
 +  test(s"unsupported parquet timestamp conversion $fromType ($outputTimestampType) -> $toType",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4297")) {
      withSQLConf(
        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> LegacyBehaviorPolicy.CORRECTED.toString
@@ -3132,7 +3132,7 @@ index 09ed6955a51..5cd856ff7b6 100644
    test(
 -    s"parquet decimal precision change Decimal($fromPrecision, 2) -> Decimal($toPrecision, 2)") {
 +    s"parquet decimal precision change Decimal($fromPrecision, 2) -> Decimal($toPrecision, 2)",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4343")) {
      checkAllParquetReaders(
        values = Seq("1.23", "10.34"),
        fromType = DecimalType(fromPrecision, 2),
@@ -3142,7 +3142,7 @@ index 09ed6955a51..5cd856ff7b6 100644
    test(s"parquet decimal precision and scale change Decimal($fromPrecision, $fromScale) -> " +
 -    s"Decimal($toPrecision, $toScale)"
 +    s"Decimal($toPrecision, $toScale)",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4343")
    ) {
      checkAllParquetReaders(
        values = Seq("1.23", "10.34"),

@@ -91,10 +91,19 @@ without falling back to Spark:
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's behavior.
   See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
 
-- Unsupported Parquet type conversions. Spark raises schema incompatibility errors for certain conversions
-  (e.g., reading INT32 as BIGINT, reading BINARY as TIMESTAMP, unsupported decimal precision changes).
-  The `native_datafusion` scan may not detect these mismatches and could return unexpected values instead
-  of raising an error. See [#3720](https://github.com/apache/datafusion-comet/issues/3720).
+- Unsupported Parquet type conversions. Spark's vectorized reader rejects several classes of read-schema
+  type promotion that the `native_datafusion` scan currently accepts. In each case Comet returns
+  truncated, overflowed, or otherwise wrong values instead of raising
+  `SchemaColumnConvertNotSupportedException`:
+  - **Primitive numeric and date/timestamp narrowing.** Long → Int, Double → Float, Float → Long,
+    Long → Double, Int → Float, Int → Timestamp[NTZ], Date → Timestamp, Timestamp[NTZ] → Date.
+    See [#4297](https://github.com/apache/datafusion-comet/issues/4297).
+  - **Decimal-to-decimal precision/scale narrowing.** Reading e.g. `DECIMAL(18, 2)` as
+    `DECIMAL(3, 0)` (or any other case where the requested decimal cannot represent the file's
+    values). See [#4343](https://github.com/apache/datafusion-comet/issues/4343).
+  - **Integer-to-decimal narrowing.** Reading `Byte` / `Short` / `Int` / `Long` as a `DECIMAL(p, s)`
+    whose precision cannot hold the integer's range.
+    See [#4344](https://github.com/apache/datafusion-comet/issues/4344).
 
 ## `native_iceberg_compat` Limitations
 
