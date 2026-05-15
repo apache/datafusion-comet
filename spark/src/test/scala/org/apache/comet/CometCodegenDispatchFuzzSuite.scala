@@ -36,13 +36,11 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGener
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Randomized tests for the Arrow-direct codegen dispatcher. Schema-driven coverage of every input
- * vector class via random parquet files, plus a decimal precision-scale sweep across the
- * `Decimal.MAX_LONG_DIGITS=18` boundary at varying null densities.
- *
- * Extends [[CometTestBase]] (not [[CometFuzzTestBase]]) and inlines the random parquet setup so
- * tests run once. The base's three-way cross-product (`shuffle` x `nativeC2R`) does not change
- * the codegen path for projection-only queries, so it would be runtime cost without coverage.
+ * Randomized tests for the Arrow-direct codegen dispatcher: schema-driven coverage of every input
+ * vector class, plus a decimal precision-scale sweep across the `Decimal.MAX_LONG_DIGITS=18`
+ * boundary at varying null densities. Extends [[CometTestBase]] (not [[CometFuzzTestBase]])
+ * because the base's `shuffle` x `nativeC2R` cross-product `test()` override is irrelevant for
+ * projection-only queries.
  */
 class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -102,6 +100,9 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
         1000,
         dataGenOptions)
     }
+
+    spark.read.parquet(mixedTypesFilename).createOrReplaceTempView("t1")
+    spark.read.parquet(nestedTypesFilename).createOrReplaceTempView("t2")
   }
 
   protected override def afterAll(): Unit = {
@@ -112,7 +113,8 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
 
   private val RowCount: Int = 512
   private val nullDensities: Seq[Double] = Seq(0.0, 0.1, 0.5, 1.0)
-  // (precision, scale) pairs spanning both sides of the MAX_LONG_DIGITS=18 boundary.
+  // (precision, scale) shapes spanning both sides of `Decimal.MAX_LONG_DIGITS=18`: small short,
+  // boundary short with varying scale, just-past-boundary long, and max decimal128.
   private val decimalShapes: Seq[(Int, Int)] = Seq((9, 2), (18, 0), (18, 9), (19, 0), (38, 10))
 
   override protected def sparkConf: SparkConf =
@@ -165,16 +167,12 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
    * Identity-Int UDF for the cardinality-based complex probe. One UDF covers every Array and Map
    * column, regardless of element type.
    *
-   * Avoiding `Seq[T]` / `Map[K, V]` materialization is deliberate: Spark's
-   * `org.apache.spark.sql.catalyst.expressions.objects.MapObjects` codegen reads each element via
-   * `getLong`/`getFloat`/etc. unconditionally and only checks `isNullAt` afterward to decide
-   * whether to wrap the value in `Option` or null. On null positions of a dictionary-encoded
-   * primitive Arrow vector the underlying ID buffer holds uninitialized bytes, and
-   * `decodeToLong/decodeToFloat` against those garbage IDs throws
-   * `ArrayIndexOutOfBoundsException`. The buggy code is in Spark; the failure reproduces in pure
-   * Spark execution (no Comet on the trace), so `checkSparkAnswerAndOperator` cannot compute the
-   * baseline answer. `cardinality(col)` exercises the kernel's `getArray`/`getMap` length read
-   * while bypassing the element deserializer entirely.
+   * Avoids `Seq[T]` / `Map[K, V]` UDF arg materialization: Spark's `MapObjects.doGenCode` reads
+   * each element unconditionally and null-checks afterward, so on null positions of a
+   * dictionary-encoded primitive Arrow vector the garbage ID buffer feeds
+   * `dictionary.decodeToLong/decodeToFloat` and throws `ArrayIndexOutOfBoundsException`. Bug
+   * reproduces in pure Spark; `cardinality(col)` exercises `getArray`/`getMap` without entering
+   * the element deserializer.
    */
   private lazy val cardinalityProbeUdf: String = {
     val name = "sz_complex"
@@ -183,9 +181,8 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
   }
 
   test("identity ScalaUDF over every primitive column") {
-    val df = spark.read.parquet(mixedTypesFilename)
-    df.createOrReplaceTempView("t1")
-    val primitiveFields = df.schema.fields.filterNot(f => isComplexType(f.dataType))
+    val primitiveFields =
+      spark.table("t1").schema.fields.filterNot(f => isComplexType(f.dataType))
     assert(primitiveFields.nonEmpty, "expected at least one primitive column in random schema")
     for (field <- primitiveFields) {
       val udfName = s"id_${field.name}"
@@ -203,9 +200,7 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
   }
 
   test("complex-probe ScalaUDF on every complex column") {
-    val df = spark.read.parquet(mixedTypesFilename)
-    df.createOrReplaceTempView("t1")
-    val complexFields = df.schema.fields.filter(f => isComplexType(f.dataType))
+    val complexFields = spark.table("t1").schema.fields.filter(f => isComplexType(f.dataType))
     assert(complexFields.nonEmpty, "expected at least one complex column in random schema")
     for (field <- complexFields) {
       probeComplexColumn(field, viewName = "t1")
@@ -213,26 +208,18 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
   }
 
   test("complex-probe ScalaUDF on top-level columns of deeply nested schema") {
-    val df = spark.read.parquet(nestedTypesFilename)
-    df.createOrReplaceTempView("t2")
-    for (field <- df.schema.fields) {
+    for (field <- spark.table("t2").schema.fields) {
       probeComplexColumn(field, viewName = "t2")
     }
   }
 
   /**
-   * Element-level fuzz for nested array reads. For every `Array<primitive>` column in the random
-   * schema, runs `id_X(array_max(col))` so Spark's `ArrayMax.doGenCode` walks every element of
-   * every row and calls the kernel's nested element getter
-   * (`getInt`/`getLong`/`getDecimal`/etc.). The cardinality probe deliberately avoids element
-   * materialization, so without this test no fuzz coverage exists on the element-getter paths the
-   * unsafe-access optimization would touch. `array_max` is comparison-only on every primitive
-   * Spark supports, so one expression covers all 14 element types.
+   * Element-level fuzz for nested array reads: `ArrayMax.doGenCode` walks every element of every
+   * row, calling the kernel's nested element getter — the path the unsafe-getter optimization
+   * touches and which the cardinality probe deliberately skips.
    */
   test("array_max element fuzz: every Array<primitive> column") {
-    val df = spark.read.parquet(mixedTypesFilename)
-    df.createOrReplaceTempView("t1")
-    val arrayPrimitiveFields = df.schema.fields.filter {
+    val arrayPrimitiveFields = spark.table("t1").schema.fields.filter {
       case StructField(_, ArrayType(elemDt, _), _, _) if !isComplexType(elemDt) => true
       case _ => false
     }
@@ -256,17 +243,12 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
   }
 
   /**
-   * Element-level fuzz for map key and value reads. `map_keys(col)` / `map_values(col)` produce
-   * arrays the kernel walks via Spark's `ArrayMax`, exercising the map's child key/value getter.
-   * The leaf primitive read is structurally the same as in the array element fuzz, but the parent
-   * offset chain (MapVector -> entries StructVector -> child) differs, so a buggy unsafe getter
-   * that mishandled the map's per-row offset would slip past the array test alone. Filters to
-   * top-level `Map<primitive, primitive>` columns from the random nested schema.
+   * Map variant of the array element fuzz: `map_keys` / `map_values` produce arrays the kernel
+   * walks via `ArrayMax`, exercising the map's per-row offset chain (MapVector -> entries
+   * StructVector -> child) that the array test alone wouldn't catch.
    */
   test("array_max element fuzz: map_keys / map_values on Map<primitive, primitive> columns") {
-    val df = spark.read.parquet(nestedTypesFilename)
-    df.createOrReplaceTempView("t2")
-    val mapPrimitiveFields = df.schema.fields.filter {
+    val mapPrimitiveFields = spark.table("t2").schema.fields.filter {
       case StructField(_, MapType(kDt, vDt, _), _, _)
           if !isComplexType(kDt) && !isComplexType(vDt) =>
         true
@@ -288,64 +270,44 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
     }
   }
 
+  private def probeCardinality(accessor: String, viewName: String): Unit = {
+    assertCodegenRan {
+      checkSparkAnswerAndOperator(
+        s"SELECT $cardinalityProbeUdf(cardinality($accessor)) FROM $viewName")
+    }
+  }
+
   /**
-   * Probes one complex top-level column. ArrayType / MapType go through `cardinality(col)` fed to
-   * the identity-Int probe UDF (see [[cardinalityProbeUdf]] for the rationale). StructType drills
-   * into each scalar child via `GetStructField` and runs the identity UDF on it; complex children
-   * are recursed via the same dot-path (depth bounded by the schema generator).
+   * Top-level Array / Map → cardinality probe. Struct → drill into each scalar child via
+   * `GetStructField`; nested Array / Map sub-fields also get the cardinality probe (depth bound:
+   * deeper struct-of-struct nesting is skipped to keep the sweep finite).
    */
   private def probeComplexColumn(field: StructField, viewName: String): Unit = {
     field.dataType match {
       case _: ArrayType | _: MapType =>
-        assertCodegenRan {
-          checkSparkAnswerAndOperator(
-            s"SELECT $cardinalityProbeUdf(cardinality(${field.name})) FROM $viewName")
-        }
+        probeCardinality(field.name, viewName)
 
       case st: StructType =>
         for (subField <- st.fields) {
           val accessor = s"${field.name}.${subField.name}"
-          if (isComplexType(subField.dataType)) {
-            probeComplexAccessor(subField, accessor, viewName)
-          } else {
-            val udfName = s"id_${field.name}_${subField.name}"
-            registerIdentityUdfFor(subField.dataType, udfName).foreach { _ =>
-              assertCodegenRan {
-                checkSparkAnswerAndOperator(s"SELECT $udfName($accessor) FROM $viewName")
+          subField.dataType match {
+            case _: ArrayType | _: MapType => probeCardinality(accessor, viewName)
+            case dt if !isComplexType(dt) =>
+              val udfName = s"id_${field.name}_${subField.name}"
+              registerIdentityUdfFor(dt, udfName).foreach { _ =>
+                assertCodegenRan {
+                  checkSparkAnswerAndOperator(s"SELECT $udfName($accessor) FROM $viewName")
+                }
               }
-            }
+            case _ => // deeper struct nesting skipped
           }
         }
 
-      case _ => // not complex; caller filtered
+      case _ =>
     }
   }
 
-  /**
-   * Probes a complex sub-field reached via dot access (e.g. `s.items` for an inner array). The
-   * dispatcher's bound tree carries `Cardinality(GetStructField(...))` around the kernel's
-   * complex column read.
-   */
-  private def probeComplexAccessor(
-      field: StructField,
-      accessor: String,
-      viewName: String): Unit = {
-    field.dataType match {
-      case _: ArrayType | _: MapType =>
-        assertCodegenRan {
-          checkSparkAnswerAndOperator(
-            s"SELECT $cardinalityProbeUdf(cardinality($accessor)) FROM $viewName")
-        }
-      case _ => // deeper struct nesting skipped to keep the sweep bounded
-    }
-  }
-
-  /**
-   * Randomized decimal identity UDF. Spans both sides of the `Decimal.MAX_LONG_DIGITS` (18)
-   * boundary so each test hits one of the two specialized branches in the generated `getDecimal`
-   * getter. Precisions are chosen to exercise: small short-precision, boundary short-precision
-   * with varying scale, just-past-boundary long precision, and the max decimal128 precision.
-   */
+  /** Random `BigDecimal` values fitting `(precision, scale)`, with `nullDensity` of them null. */
   private def generateDecimals(
       seed: Long,
       precision: Int,
@@ -389,11 +351,6 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
     (precision, scale) <- decimalShapes
   } {
     test(s"decimal identity precision=$precision scale=$scale nullDensity=$density") {
-      // Reuse one registered UDF name across iterations; Spark replaces by name. The Scala-side
-      // signature uses `BigDecimal`, which Spark encodes as DecimalType(38, 18); an implicit Cast
-      // from the column's DecimalType to the UDF's parameter type runs inside Spark's generated
-      // code, but the column read still goes through our kernel's `getDecimal` which is the path
-      // we're fuzzing.
       spark.udf.register("dec_id_fuzz", (d: java.math.BigDecimal) => d)
       val seed = ((precision * 31L) + scale) * 31L + density.hashCode
       val values = generateDecimals(seed, precision, scale, density)
