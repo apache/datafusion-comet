@@ -133,9 +133,9 @@ trait CometExprShim extends CommonStringExprs {
         val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
         optExprWithInfo(optExpr, wb, wb.children: _*)
 
-      // In Spark 4.0, StructsToJson is a RuntimeReplaceable whose replacement is
-      // Invoke(Literal(StructsToJsonEvaluator), "evaluate", ...). Reconstruct the
-      // original StructsToJson and recurse so support-level checks apply.
+      // In Spark 4.x, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
+      // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression
+      // and recurse so support-level checks apply.
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
