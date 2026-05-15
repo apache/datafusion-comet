@@ -108,6 +108,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Divide] -> CometDivide,
     classOf[Exp] -> CometScalarFunction("exp"),
     classOf[Expm1] -> CometScalarFunction("expm1"),
+    classOf[Factorial] -> CometScalarFunction("factorial"),
     classOf[Floor] -> CometFloor,
     classOf[Greatest] -> CometScalarFunction("greatest"),
     classOf[Hex] -> CometHex,

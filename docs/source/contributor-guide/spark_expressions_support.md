@@ -377,7 +377,10 @@
 - [ ] e
 - [x] exp
 - [x] expm1
-- [ ] factorial
+- [x] factorial
+  - 3.4.3 (audited 2026-05-15): identical to v3.5.8.
+  - 3.5.8 (audited 2026-05-15): canonical reference; `extends UnaryExpression with ImplicitCastInputTypes with NullIntolerant`. Returns NULL for NULL input or values outside `[0, 20]`.
+  - 4.0.1 (audited 2026-05-15): `NullIntolerant` trait replaced by `nullIntolerant: Boolean` method override; behavior unchanged.
 - [x] floor
 - [x] greatest
 - [x] hex

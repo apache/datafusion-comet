@@ -154,6 +154,7 @@ of expressions that be disabled.
 | Divide         | `/`            |
 | Exp            | `exp`          |
 | Expm1          | `expm1`        |
+| Factorial      | `factorial`    |
 | Floor          | `floor`        |
 | Hex            | `hex`          |
 | IntegralDivide | `div`          |
