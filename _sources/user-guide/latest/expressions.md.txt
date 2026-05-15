@@ -63,6 +63,7 @@ of expressions that be disabled.
 | Concat          |
 | ConcatWs        |
 | Contains        |
+| Decode          |
 | EndsWith        |
 | InitCap         |
 | Left            |
