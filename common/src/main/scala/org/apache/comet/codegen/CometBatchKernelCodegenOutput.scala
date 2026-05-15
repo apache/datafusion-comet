@@ -50,6 +50,18 @@ private[codegen] object CometBatchKernelCodegenOutput {
    * `ListVector` / `StructVector` / `MapVector`, the parent's `allocateNew` reallocates child
    * buffers at default size, so a leaf hint would be lost.
    *
+   * TODO(nested-varwidth-sizing): thread the byte estimate into nested var-width children via the
+   * Arrow `Field` tree so a `Map<String, Array<String>>` UDF return doesn't realloc its key /
+   * value data buffers per row. Arrow Java's child-vector hints are allocator-level rather than
+   * per-child, so this needs a small loop or a heuristic that overshoots root size into
+   * known-leaf children.
+   *
+   * TODO(cached-write-buffer-addrs): mirror the input emitter's `_valueAddr` / `_offsetAddr`
+   * caching on the write side. Cache the data and offset buffer addresses once at the start of
+   * `process` and emit `Platform.putByte` / `Platform.copyMemory` writes for VarChar / VarBinary
+   * / Decimal scalar outputs, bypassing `setSafe`'s realloc check. Requires pre-allocated buffers
+   * (the existing `estimatedBytes` plus the nested-sizing TODO above).
+   *
    * Closes the vector on any failure between construction and return so a partially-initialized
    * tree does not leak buffers back to the allocator.
    */
@@ -173,6 +185,13 @@ private[codegen] object CometBatchKernelCodegenOutput {
       // existing byte[] directly to `VarCharVector.setSafe(int, byte[], int, int)` via the
       // encoded offset and skip the redundant `getBytes()` allocation. Off-heap passthrough
       // (rare on output side) falls back to `getBytes()`.
+      //
+      // TODO(utf8-unsafe-write): the output-side equivalent of the input emitter's
+      // `UTF8String.fromAddress` zero-copy read would cache the data buffer address once per
+      // batch and write via `Platform.copyMemory` + manual offset/validity buffer updates,
+      // bypassing `setSafe`'s realloc check. Coupled with `cached-write-buffer-addrs` and a
+      // pre-allocated buffer (root-only `estimatedBytes` today). Not done because perf payoff
+      // is unmeasured against this PR's workloads.
       val bBase = ctx.freshName("utfBase")
       val bLen = ctx.freshName("utfLen")
       val bArr = ctx.freshName("utfArr")
@@ -192,7 +211,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case BinaryType =>
       // Spark's BinaryType value is already a `byte[]`.
       OutputEmit("", s"$targetVec.setSafe($idx, $source, 0, $source.length);")
-    case ArrayType(elementType, _) =>
+    case ArrayType(elementType, containsNull) =>
       // Complex-type output: recursive per-row write.
       // Spark's `doGenCode` for ArrayType-returning expressions produces an `ArrayData` value
       // (usually `GenericArrayData` / `UnsafeArrayData`). We iterate its elements, write each
@@ -202,6 +221,10 @@ private[codegen] object CometBatchKernelCodegenOutput {
       // Array, Array of Struct) work by the same recursion. `targetVec` is a `ListVector` at
       // the call site (either `output` at root or a hoisted child cast); we only need to cast
       // its data vector, and that cast goes into setup.
+      //
+      // Optimization: NullableElementElision. When `containsNull == false`, the element
+      // `isNullAt` guard is dead by Spark's own type-system contract, so we drop it at source
+      // level rather than relying on JIT folding.
       val childVar = ctx.freshName("outListChild")
       val childClass = outputVectorClass(elementType)
       val arrVar = ctx.freshName("arr")
@@ -213,16 +236,21 @@ private[codegen] object CometBatchKernelCodegenOutput {
       val setup =
         (s"$childClass $childVar = ($childClass) $targetVec.getDataVector();" +:
           Seq(inner.setup).filter(_.nonEmpty)).mkString("\n")
+      val elementWrite = if (containsNull) {
+        s"""if ($arrVar.isNullAt($jVar)) {
+           |    $childVar.setNull($childIdx + $jVar);
+           |  } else {
+           |    ${inner.perRow}
+           |  }""".stripMargin
+      } else {
+        inner.perRow
+      }
       val perRow =
         s"""org.apache.spark.sql.catalyst.util.ArrayData $arrVar = $source;
            |int $nVar = $arrVar.numElements();
            |int $childIdx = $targetVec.startNewValue($idx);
            |for (int $jVar = 0; $jVar < $nVar; $jVar++) {
-           |  if ($arrVar.isNullAt($jVar)) {
-           |    $childVar.setNull($childIdx + $jVar);
-           |  } else {
-           |    ${inner.perRow}
-           |  }
+           |  $elementWrite
            |}
            |$targetVec.endValue($idx, $nVar);""".stripMargin
       OutputEmit(setup, perRow)
@@ -304,6 +332,15 @@ private[codegen] object CometBatchKernelCodegenOutput {
           s"$keyClass $keyVar = ($keyClass) $entriesVar.getChildByOrdinal(0);",
           s"$valClass $valVar = ($valClass) $entriesVar.getChildByOrdinal(1);") ++
           Seq(keyEmit.setup, valEmit.setup).filter(_.nonEmpty)).mkString("\n")
+      val valueWrite = if (mt.valueContainsNull) {
+        s"""if ($valArr.isNullAt($jVar)) {
+           |    $valVar.setNull($childIdx + $jVar);
+           |  } else {
+           |    ${valEmit.perRow}
+           |  }""".stripMargin
+      } else {
+        valEmit.perRow
+      }
       val perRow =
         s"""org.apache.spark.sql.catalyst.util.MapData $mapSrc = $source;
            |org.apache.spark.sql.catalyst.util.ArrayData $keyArr = $mapSrc.keyArray();
@@ -313,11 +350,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
            |for (int $jVar = 0; $jVar < $nVar; $jVar++) {
            |  $entriesVar.setIndexDefined($childIdx + $jVar);
            |  ${keyEmit.perRow}
-           |  if ($valArr.isNullAt($jVar)) {
-           |    $valVar.setNull($childIdx + $jVar);
-           |  } else {
-           |    ${valEmit.perRow}
-           |  }
+           |  $valueWrite
            |}
            |$targetVec.endValue($idx, $nVar);""".stripMargin
       OutputEmit(setup, perRow)
