@@ -100,6 +100,7 @@ of expressions that be disabled.
 
 | Expression       | SQL                          |
 | ---------------- | ---------------------------- |
+| CurrentTimeZone  | `current_timezone`           |
 | DateAdd          | `date_add`                   |
 | DateDiff         | `datediff`                   |
 | DateFormat       | `date_format`                |
