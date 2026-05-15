@@ -199,9 +199,6 @@ public class CometUdfBridge {
       }
 
       result = udf.evaluate(inputs, numRows);
-      assert result instanceof FieldVector
-          : "CometUDF implementations must return FieldVector; got "
-              + (result == null ? "null" : result.getClass().getName());
       if (!(result instanceof FieldVector)) {
         throw new RuntimeException(
             "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());

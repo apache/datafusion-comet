@@ -95,23 +95,6 @@ private[codegen] object CometBatchKernelCodegenInput {
   private val cometPlainVectorName: String = classOf[CometPlainVector].getName
 
   /**
-   * Input types the kernel has a typed getter for. Recursive: `ArrayType(inner)` supported when
-   * `inner` is supported; `StructType` when every field is; `MapType` when key and value types
-   * are both supported.
-   */
-  def isSupportedInputType(dt: DataType): Boolean = dt match {
-    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
-    case FloatType | DoubleType => true
-    case _: DecimalType => true
-    case _: StringType | _: BinaryType => true
-    case DateType | TimestampType | TimestampNTZType => true
-    case ArrayType(inner, _) => isSupportedInputType(inner)
-    case st: StructType => st.fields.forall(f => isSupportedInputType(f.dataType))
-    case mt: MapType => isSupportedInputType(mt.keyType) && isSupportedInputType(mt.valueType)
-    case _ => false
-  }
-
-  /**
    * Emit the kernel's typed vector-field declarations for every level of every input column's
    * spec tree. Top-level complex columns additionally get an instance-field declaration for the
    * pre-allocated nested class. Instance fields for nested-class children one level down live
@@ -215,10 +198,10 @@ private[codegen] object CometBatchKernelCodegenInput {
         val fastPath = emitDecimalFastBodyUnsafe(valueAddr, "this.rowIdx", "        ")
         val slowPath = emitDecimalSlowBody(slowField, "this.rowIdx", "        ")
         val body = known match {
-          case Some(dt) if dt.precision <= 18 => fastPath
+          case Some(dt) if dt.precision <= Decimal.MAX_LONG_DIGITS => fastPath
           case Some(_) => slowPath
           case None =>
-            s"""        if (precision <= 18) {
+            s"""        if (precision <= ${Decimal.MAX_LONG_DIGITS}) {
                |$fastPath
                |        } else {
                |$slowPath
@@ -608,7 +591,7 @@ private[codegen] object CometBatchKernelCodegenInput {
         collectNestedClasses(s"${path}_f$fi", f.child, out)
       }
     case mp: MapColumnSpec =>
-      out += emitMapClass(path, mp)
+      out += emitMapClass(path)
       // Emit InputArray_${path}_k and InputArray_${path}_v - the ArrayData views returned by
       // `MapData.keyArray()` / `valueArray()`. They follow the standard array-element
       // convention: each reads from `${classPath}_e` which maps to the key / value vector
@@ -754,7 +737,7 @@ private[codegen] object CometBatchKernelCodegenInput {
            |      }""".stripMargin
       case dt: DecimalType =>
         val body =
-          if (dt.precision <= 18) {
+          if (dt.precision <= Decimal.MAX_LONG_DIGITS) {
             emitDecimalFastBodyUnsafe(s"${childField}_valueAddr", "startIndex + i", "        ")
           } else {
             emitDecimalSlowBody(childField, "startIndex + i", "        ")
@@ -947,7 +930,7 @@ private[codegen] object CometBatchKernelCodegenInput {
         val dt = f.sparkType.asInstanceOf[DecimalType]
         val field = s"${path}_f$fi"
         val body =
-          if (dt.precision <= 18) {
+          if (dt.precision <= Decimal.MAX_LONG_DIGITS) {
             emitDecimalFastBodyUnsafe(s"${field}_valueAddr", "this.rowIdx", "          ")
           } else {
             emitDecimalSlowBody(field, "this.rowIdx", "          ")
@@ -1024,8 +1007,7 @@ private[codegen] object CometBatchKernelCodegenInput {
    * `keyArray()` / `valueArray()` through pre-allocated `InputArray_${path}_k` /
    * `InputArray_${path}_v` instances (emitted by [[collectNestedClasses]]).
    */
-  private def emitMapClass(path: String, spec: MapColumnSpec): String = {
-    val _ = spec // key/value arrays declared via path convention below
+  private def emitMapClass(path: String): String = {
     val baseClassName = classOf[CometMapData].getName
     val keyPath = s"${path}_k"
     val valPath = s"${path}_v"

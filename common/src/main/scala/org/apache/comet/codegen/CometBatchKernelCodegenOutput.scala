@@ -21,6 +21,7 @@ package org.apache.comet.codegen
 
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
+import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
@@ -36,23 +37,6 @@ import org.apache.comet.CometArrowAllocator
  * Paired with [[CometBatchKernelCodegenInput]], which handles the symmetric input side.
  */
 private[codegen] object CometBatchKernelCodegenOutput {
-
-  /**
-   * Output types [[allocateOutput]] and [[emitOutputWriter]] can materialize. Recursive: complex
-   * types are supported when their children are.
-   */
-  def isSupportedOutputType(dt: DataType): Boolean = dt match {
-    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
-    case FloatType | DoubleType => true
-    case _: DecimalType => true
-    case _: StringType | _: BinaryType => true
-    case DateType | TimestampType | TimestampNTZType => true
-    case ArrayType(inner, _) => isSupportedOutputType(inner)
-    case st: StructType => st.fields.forall(f => isSupportedOutputType(f.dataType))
-    case mt: MapType =>
-      isSupportedOutputType(mt.keyType) && isSupportedOutputType(mt.valueType)
-    case _ => false
-  }
 
   /**
    * Allocate an Arrow output vector matching `dataType`. Delegates field and vector construction
@@ -73,15 +57,19 @@ private[codegen] object CometBatchKernelCodegenOutput {
       dataType: DataType,
       name: String,
       numRows: Int,
-      estimatedBytes: Int = -1): FieldVector = {
-    val field = Utils.toArrowField(name, dataType, nullable = true, "UTC")
+      estimatedBytes: Int = -1): FieldVector =
+    allocateOutput(
+      Utils.toArrowField(name, dataType, nullable = true, "UTC"),
+      numRows,
+      estimatedBytes)
+
+  /** Variant that takes a pre-computed Arrow `Field`, letting hot-path callers cache it. */
+  def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector = {
     val vec = field.createVector(CometArrowAllocator).asInstanceOf[FieldVector]
     try {
       vec.setInitialCapacity(numRows)
       vec match {
-        case v: VarCharVector if estimatedBytes > 0 =>
-          v.allocateNew(estimatedBytes.toLong, numRows)
-        case v: VarBinaryVector if estimatedBytes > 0 =>
+        case v: BaseVariableWidthVector if estimatedBytes > 0 =>
           v.allocateNew(estimatedBytes.toLong, numRows)
         case _ =>
           vec.allocateNew()
@@ -172,8 +160,11 @@ private[codegen] object CometBatchKernelCodegenOutput {
       // `DecimalVector.setSafe(int, long)` and skip the `java.math.BigDecimal` allocation
       // `setSafe(int, BigDecimal)` requires. For p > 18 the BigDecimal path is unavoidable.
       val write =
-        if (dt.precision <= 18) s"$targetVec.setSafe($idx, $source.toUnscaledLong());"
-        else s"$targetVec.setSafe($idx, $source.toJavaBigDecimal());"
+        if (dt.precision <= Decimal.MAX_LONG_DIGITS) {
+          s"$targetVec.setSafe($idx, $source.toUnscaledLong());"
+        } else {
+          s"$targetVec.setSafe($idx, $source.toJavaBigDecimal());"
+        }
       OutputEmit("", write)
     case _: StringType =>
       // Optimization: Utf8OutputOnHeapShortcut.

@@ -22,13 +22,20 @@ package org.apache.comet.codegen
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
 
 /**
- * Shim base for Comet-owned [[MapData]] views used by the Arrow-direct codegen kernel. Provides
- * `UnsupportedOperationException` defaults for every abstract method on `MapData`; the codegen-
- * emitted `InputMap_${path}` subclass overrides `numElements`, `keyArray`, and `valueArray`.
+ * Shim base for things that implement Spark's [[MapData]] in the Arrow-direct codegen kernel.
+ * Provides `UnsupportedOperationException` defaults for every abstract method on `MapData`;
+ * codegen-emitted `InputMap_${path}` subclasses override `numElements`, `keyArray`, and
+ * `valueArray`.
  *
- * Pairs with [[CometArrayData]] and [[CometInternalRow]]. `MapData` does not extend
- * `SpecializedGetters` (unlike `ArrayData` / `InternalRow`), so no version-specific shim is
- * needed here.
+ * Consumer: `InputMap_${path}` nested classes the input emitter generates per `MapType` input
+ * column. They back the kernel's `getMap(ord)` switch and route `keyArray()` / `valueArray()`
+ * through `InputArray_*` views (instances of [[CometArrayData]]) over the same backing key /
+ * value vectors.
+ *
+ * Sibling shims: [[CometInternalRow]] and [[CometArrayData]] cover the kernel's row-shape and
+ * array-shape views. `MapData` does not extend `SpecializedGetters` (unlike `InternalRow` and
+ * `ArrayData`), so this base does not mix in [[org.apache.comet.shims.CometInternalRowShim]] and
+ * does not delegate to [[CometSpecializedGettersDispatch]].
  */
 abstract class CometMapData extends MapData {
 

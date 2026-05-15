@@ -27,53 +27,36 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 import org.apache.comet.shims.CometInternalRowShim
 
 /**
- * Shim base for Comet-owned [[ArrayData]] views used by the Arrow-direct codegen kernel.
- *
+ * Shim base for things that implement Spark's [[ArrayData]] in the Arrow-direct codegen kernel.
  * Provides `UnsupportedOperationException` defaults for every abstract method on `ArrayData` and
- * `SpecializedGetters`. Codegen emits a concrete subclass per complex-typed input column,
- * overriding only the small set of getters the element type requires (e.g. `numElements`,
- * `isNullAt`, and `getUTF8String` for an `ArrayType(StringType)` input).
+ * `SpecializedGetters`; codegen-emitted subclasses override only the getters their element type
+ * needs (e.g. `numElements`, `isNullAt`, and `getUTF8String` for an `ArrayType(StringType)`
+ * input).
  *
- * Pattern mirrors [[CometInternalRow]]: centralize the boilerplate throws so the codegen- emitted
- * subclasses stay short, and absorb forward-compat breakage if Spark adds abstract methods to
- * `ArrayData` in a future version.
+ * Consumer: `InputArray_${path}` nested classes the input emitter generates per `ArrayType` input
+ * column. These back the kernel's `getArray(ord)` switch and the recursive nested classes for
+ * `Array<Array<...>>` / array-typed map keys / array-typed struct fields.
+ *
+ * Why this exists separately from [[CometInternalRow]]: in Spark, `ArrayData` and `InternalRow`
+ * are sibling abstract classes. They both extend `SpecializedGetters` (so they share the typed
+ * scalar getters) but neither inherits the other, so a base aimed at one cannot serve the other.
+ * The `get(ordinal, dataType)` dispatch body that '''is''' shared between the two lives in
+ * [[CometSpecializedGettersDispatch]].
+ *
+ * [[CometMapData]] is the third sibling for `MapType` views; it backs `InputMap_*` and routes
+ * `keyArray()` / `valueArray()` through `CometArrayData` instances.
  *
  * Mixes in [[CometInternalRowShim]] for the same reason `CometInternalRow` does: Spark 4.x adds
- * new abstract getters (`getVariant`, `getGeography`, `getGeometry`) on `SpecializedGetters` that
- * both `InternalRow` and `ArrayData` inherit. The shim is per-profile and provides throwing
- * defaults only on the profiles that declare those methods abstract.
+ * abstract `SpecializedGetters` methods (`getVariant`, `getGeography`, `getGeometry`) that both
+ * `InternalRow` and `ArrayData` inherit. The shim is per-profile and provides throwing defaults
+ * only on the profiles where those methods are abstract.
  */
 abstract class CometArrayData extends ArrayData with CometInternalRowShim {
 
   override def getInterval(ordinal: Int): CalendarInterval = unsupported("getInterval")
 
-  /**
-   * Generic `get(ordinal, dataType)` dispatcher. Spark codegen sometimes calls this rather than
-   * the typed getter (`SafeProjection` uses it when deserializing struct-valued ScalaUDF args,
-   * for example); leaving it as a throw leaks NPEs once callers catch the
-   * `UnsupportedOperationException` and propagate null. Dispatches to the typed getter matching
-   * `dataType`; a null entry returns `null` outright.
-   */
-  override def get(ordinal: Int, dataType: DataType): AnyRef = {
-    if (isNullAt(ordinal)) return null
-    dataType match {
-      case BooleanType => java.lang.Boolean.valueOf(getBoolean(ordinal))
-      case ByteType => java.lang.Byte.valueOf(getByte(ordinal))
-      case ShortType => java.lang.Short.valueOf(getShort(ordinal))
-      case IntegerType | DateType => java.lang.Integer.valueOf(getInt(ordinal))
-      case LongType | TimestampType | TimestampNTZType =>
-        java.lang.Long.valueOf(getLong(ordinal))
-      case FloatType => java.lang.Float.valueOf(getFloat(ordinal))
-      case DoubleType => java.lang.Double.valueOf(getDouble(ordinal))
-      case _: StringType => getUTF8String(ordinal)
-      case BinaryType => getBinary(ordinal)
-      case dt: DecimalType => getDecimal(ordinal, dt.precision, dt.scale)
-      case st: StructType => getStruct(ordinal, st.size)
-      case _: ArrayType => getArray(ordinal)
-      case _: MapType => getMap(ordinal)
-      case other => unsupported(s"get for dataType $other")
-    }
-  }
+  override def get(ordinal: Int, dataType: DataType): AnyRef =
+    CometSpecializedGettersDispatch.get(this, ordinal, dataType)
 
   override def isNullAt(ordinal: Int): Boolean = unsupported("isNullAt")
 

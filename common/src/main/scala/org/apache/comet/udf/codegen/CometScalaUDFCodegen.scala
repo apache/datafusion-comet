@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
+import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
 import org.apache.spark.sql.comet.util.Utils
@@ -103,8 +104,7 @@ class CometScalaUDFCodegen extends CometUDF {
     val kernel = ensureKernel(entry.compiled, key, partitionId)
 
     val out = CometBatchKernelCodegen.allocateOutput(
-      entry.outputType,
-      "codegen_result",
+      entry.outputField,
       n,
       estimatedOutputBytes(entry.outputType, dataCols))
     try {
@@ -204,8 +204,7 @@ class CometScalaUDFCodegen extends CometUDF {
         var i = 0
         while (i < dataCols.length) {
           dataCols(i) match {
-            case v: VarCharVector => sum += v.getDataBuffer.writerIndex().toInt
-            case v: VarBinaryVector => sum += v.getDataBuffer.writerIndex().toInt
+            case v: BaseVariableWidthVector => sum += v.getDataBuffer.writerIndex().toInt
             case _ => // no size hint for fixed-width vector types
           }
           i += 1
@@ -294,7 +293,9 @@ object CometScalaUDFCodegen {
         // a different `specs`, so it hits a different kernel compiled with nullable=true.
         val boundExpr = rewriteBoundReferences(rawExpr, specs)
         val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)
-        val entry = CacheEntry(compiled, boundExpr.dataType)
+        val outputField =
+          Utils.toArrowField("codegen_result", boundExpr.dataType, nullable = true, "UTC")
+        val entry = CacheEntry(compiled, boundExpr.dataType, outputField)
         kernelCache.put(key, entry)
         compileCount.incrementAndGet()
         entry
@@ -357,5 +358,6 @@ object CometScalaUDFCodegen {
 
   private case class CacheEntry(
       compiled: CometBatchKernelCodegen.CompiledKernel,
-      outputType: DataType)
+      outputType: DataType,
+      outputField: Field)
 }

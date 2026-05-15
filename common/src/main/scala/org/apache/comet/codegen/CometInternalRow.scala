@@ -27,15 +27,28 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 import org.apache.comet.shims.CometInternalRowShim
 
 /**
- * Shim base for Comet-owned [[InternalRow]] getters used by the Arrow-direct codegen kernel.
+ * Shim base for things that implement Spark's [[InternalRow]] in the Arrow-direct codegen kernel.
+ * Provides `UnsupportedOperationException` defaults for every abstract method declared by
+ * `InternalRow` and `SpecializedGetters`; concrete subclasses override only the getters they
+ * actually support for their input shape.
  *
- * Provides `throw new UnsupportedOperationException` defaults for every abstract method declared
- * by `InternalRow` and `SpecializedGetters`. Concrete subclasses (`CometBatchKernel` and its
- * generated subclasses) override only the getters they actually support for their input shape.
+ * Two consumers:
  *
- * Purpose: keep subclasses free of boilerplate throws, and absorb forward-compat breakage if
- * Spark adds abstract methods to `InternalRow` in a future version. Add the defaulted override
- * here once, all subclasses recompile.
+ *   - The compiled batch kernel itself. The orchestrator sets `ctx.INPUT_ROW = "row"` and emits
+ *     `InternalRow row = this;` at the top of `process`, so Spark's `BoundReference.genCode`
+ *     produces `row.getUTF8String(ord)` reads that resolve to the kernel's own typed getters. The
+ *     kernel '''is''' the row.
+ *   - `InputStruct_${path}` nested classes the input emitter generates per `StructType` input
+ *     column. These back the kernel's `getStruct(ord, n)` switch and provide field-level getters.
+ *
+ * Sibling shims: [[CometArrayData]] does the same for `ArrayData` (sibling of `InternalRow` in
+ * Spark, no inheritance between them), used by `InputArray_*` views; [[CometMapData]] does the
+ * same for `MapData`, used by `InputMap_*` views. The `get(ordinal, dataType)` dispatch body
+ * shared with `CometArrayData` lives in [[CometSpecializedGettersDispatch]].
+ *
+ * Centralising the throws here also absorbs forward-compat breakage when Spark adds abstract
+ * methods to `InternalRow` in a future version: defaulted override lands once, all subclasses
+ * recompile.
  */
 abstract class CometInternalRow extends InternalRow with CometInternalRowShim {
 
@@ -43,33 +56,8 @@ abstract class CometInternalRow extends InternalRow with CometInternalRowShim {
 
   override def getInterval(ordinal: Int): CalendarInterval = unsupported("getInterval")
 
-  /**
-   * Generic `get(ordinal, dataType)` dispatcher. Required because `SpecializedGetters` declares
-   * it abstract and some Spark codegen paths (notably `SafeProjection` for deserializing
-   * `ScalaUDF` struct arguments) call it instead of the typed getter. Dispatches to the typed
-   * getter matching `dataType`; a null entry returns `null` outright. Unsupported types fall
-   * through to the shared throw.
-   */
-  override def get(ordinal: Int, dataType: DataType): AnyRef = {
-    if (isNullAt(ordinal)) return null
-    dataType match {
-      case BooleanType => java.lang.Boolean.valueOf(getBoolean(ordinal))
-      case ByteType => java.lang.Byte.valueOf(getByte(ordinal))
-      case ShortType => java.lang.Short.valueOf(getShort(ordinal))
-      case IntegerType | DateType => java.lang.Integer.valueOf(getInt(ordinal))
-      case LongType | TimestampType | TimestampNTZType =>
-        java.lang.Long.valueOf(getLong(ordinal))
-      case FloatType => java.lang.Float.valueOf(getFloat(ordinal))
-      case DoubleType => java.lang.Double.valueOf(getDouble(ordinal))
-      case _: StringType => getUTF8String(ordinal)
-      case BinaryType => getBinary(ordinal)
-      case dt: DecimalType => getDecimal(ordinal, dt.precision, dt.scale)
-      case st: StructType => getStruct(ordinal, st.size)
-      case _: ArrayType => getArray(ordinal)
-      case _: MapType => getMap(ordinal)
-      case other => unsupported(s"get for dataType $other")
-    }
-  }
+  override def get(ordinal: Int, dataType: DataType): AnyRef =
+    CometSpecializedGettersDispatch.get(this, ordinal, dataType)
 
   override def isNullAt(ordinal: Int): Boolean = unsupported("isNullAt")
 

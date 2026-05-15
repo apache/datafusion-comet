@@ -21,11 +21,12 @@ package org.apache.comet.codegen
 
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
+import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DataType
+import org.apache.spark.sql.types._
 
 import org.apache.comet.shims.CometExprTraitShim
 
@@ -84,17 +85,34 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
+   * Type surface the kernel covers, on both the input getter side and the output writer side.
+   * Recursive: `ArrayType` / `StructType` / `MapType` are supported when their children are.
+   * Input and output use a single predicate today; if they ever need to diverge, split this back
+   * into per-direction methods.
+   */
+  def isSupportedDataType(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case _: DecimalType => true
+    case _: StringType | _: BinaryType => true
+    case DateType | TimestampType | TimestampNTZType => true
+    case ArrayType(inner, _) => isSupportedDataType(inner)
+    case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType))
+    case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
+    case _ => false
+  }
+
+  /**
    * Plan-time predicate: can the codegen dispatcher handle this bound expression end to end? If
    * it returns `None`, the serde is free to emit the codegen proto. If it returns `Some(reason)`,
    * the serde must fall back (usually via `withInfo(...) + None`) so Spark runs the expression
    * rather than crashing in the Janino compile at execute time.
    *
    * Checks:
-   *   - every `BoundReference`'s data type is in
-   *     [[CometBatchKernelCodegenInput.isSupportedInputType]] (i.e. the kernel has a typed getter
-   *     for it)
-   *   - the overall `expr.dataType` is in [[CometBatchKernelCodegenOutput.isSupportedOutputType]]
-   *     (i.e. `allocateOutput` and `emitWrite` know how to materialize it)
+   *   - every `BoundReference`'s data type is in [[isSupportedDataType]] (i.e. the kernel has a
+   *     typed getter for it)
+   *   - the overall `expr.dataType` is in [[isSupportedDataType]] (i.e. `allocateOutput` and
+   *     `emitWrite` know how to materialize it)
    *   - the expression is scalar (no `AggregateFunction`, no generators). These never reach a
    *     scalar serde, but we belt-and-suspenders anyway.
    *
@@ -103,7 +121,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    * the output vector) touch Arrow.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
-    if (!CometBatchKernelCodegenOutput.isSupportedOutputType(boundExpr.dataType)) {
+    if (!isSupportedDataType(boundExpr.dataType)) {
       return Some(s"codegen dispatch: unsupported output type ${boundExpr.dataType}")
     }
     // Reject expressions that can't be safely compiled or cached:
@@ -155,7 +173,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       case None =>
     }
     val badRef = boundExpr.collectFirst {
-      case b: BoundReference if !CometBatchKernelCodegenInput.isSupportedInputType(b.dataType) =>
+      case b: BoundReference if !isSupportedDataType(b.dataType) =>
         b
     }
     badRef.map(b =>
@@ -175,6 +193,10 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       estimatedBytes: Int = -1): FieldVector =
     CometBatchKernelCodegenOutput.allocateOutput(dataType, name, numRows, estimatedBytes)
 
+  /** Variant that takes a pre-computed Arrow `Field`, letting hot-path callers cache it. */
+  def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector =
+    CometBatchKernelCodegenOutput.allocateOutput(field, numRows, estimatedBytes)
+
   def compile(boundExpr: Expression, inputSchema: Seq[ArrowColumnSpec]): CompiledKernel = {
     val src = generateSource(boundExpr, inputSchema)
     val (clazz, _) =
@@ -188,8 +210,6 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
             t)
           throw t
       }
-    // One log per unique (expr, schema) compile; the caller caches the result so subsequent
-    // batches with the same shape reuse this compile.
     logInfo(
       s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
         s"-> ${boundExpr.dataType}  inputs=" +
@@ -529,8 +549,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       ScalarColumnSpec(vectorClass, nullable)
 
     /**
-     * Backward-compatible extractor for the common scalar case. Callers that want array / struct
-     * / future map specs should pattern match on the subclass directly.
+     * Trait-level extractor that destructures only the scalar case. Pattern-match callers use
+     * `case ArrowColumnSpec(cls, nullable)` to filter on scalar specs and pull out their vector
+     * class and nullability in one step; complex specs return `None` and skip the case.
      */
     def unapply(spec: ArrowColumnSpec): Option[(Class[_ <: ValueVector], Boolean)] = spec match {
       case ScalarColumnSpec(c, n) => Some((c, n))
