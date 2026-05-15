@@ -517,7 +517,7 @@
 - [ ] collation
 - [x] concat_ws
 - [x] contains
-- [ ] decode
+- [x] decode
 - [ ] elt
 - [ ] encode
 - [x] endswith
