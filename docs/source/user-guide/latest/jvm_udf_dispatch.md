@@ -33,6 +33,7 @@ Comet can route Spark `ScalaUDF` expressions through a JVM-side kernel that proc
 - Scalar input and output types: `Boolean`, `Byte`, `Short`, `Int`, `Long`, `Float`, `Double`, `Decimal`, `String`, `Binary`, `Date`, `Timestamp`, `TimestampNTZ`.
 - Complex input and output types with arbitrary nesting: `ArrayType`, `StructType`, `MapType`.
 - Composition with other Catalyst expressions inside the user function's argument tree (e.g. `myUdf(upper(s))` binds the whole tree and compiles into one kernel).
+- Higher-order functions (`transform`, `filter`, `exists`, `aggregate`, `zip_with`, `map_filter`, `map_zip_with`, etc.) inside the argument tree. Each HOF runs as a single per-row interpreted-eval call site spliced into the kernel; surrounding non-HOF expressions stay codegen.
 
 ## Not supported
 
@@ -41,6 +42,7 @@ Comet can route Spark `ScalaUDF` expressions through a JVM-side kernel that proc
 - Python `@udf` and Pandas `@pandas_udf`.
 - Hive `GenericUDF` and `SimpleUDF`.
 - `CalendarIntervalType` arguments and return types.
+- Trees whose total nested-field count (output plus all `BoundReference` inputs) exceeds `spark.sql.codegen.maxFields` (default 100). The dispatcher refuses these at plan time and the operator falls back to Spark.
 
 ## Behavior
 
