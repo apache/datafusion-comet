@@ -271,6 +271,27 @@ case class CometExecRule(session: SparkSession)
       case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[CSVScan] =>
         convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan)
 
+      // Contrib marker dispatch: a `CometScanExec` tagged with a contrib's `scanImpl`
+      // (i.e. listed in `nativeParquetScanImpls`) is routed through that contrib's
+      // `matchOperator` serde rather than the generic `CometScanWrapper` below. Without
+      // this, the marker would only get JVM-side parquet bytes-reuse, never reaching the
+      // contrib's `serialize` and therefore missing format-specific concerns -- e.g.
+      // Delta column-mapping physical-name substitution and `InputFileBlockHolder`
+      // population for `input_file_name()` / `_metadata.file_path`. If the contrib's
+      // `matchOperator` chooses to return None (e.g. the contrib only wants the full
+      // native conversion for certain scans), the marker falls back to the generic
+      // wrapper path -- which is also what happens when conversion itself returns None.
+      case scan: CometScanExec
+          if CometExtensionRegistry.nativeParquetScanImpls.contains(scan.scanImpl) =>
+        val handler = CometExtensionRegistry.serdeExtensions.iterator
+          .flatMap(_.matchOperator(scan))
+          .nextOption()
+          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
+        handler match {
+          case Some(h) => convertToComet(scan, h).getOrElse(scan)
+          case None => convertToComet(scan, CometScanWrapper).getOrElse(scan)
+        }
+
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
         convertToComet(op, CometScanWrapper).getOrElse(op)
