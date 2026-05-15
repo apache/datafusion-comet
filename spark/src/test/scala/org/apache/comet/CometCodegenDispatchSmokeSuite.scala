@@ -163,6 +163,33 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       s"expected no dispatcher activity under disabled config, got $after")
   }
 
+  test("schema exceeding spark.sql.codegen.maxFields falls back to Spark") {
+    // `CometBatchKernelCodegen.canHandle` mirrors WSCG's `spark.sql.codegen.maxFields` gate by
+    // counting nested input fields plus the output field and refusing once the total exceeds the
+    // configured cap. Comet has no mid-execution fallback, so the gate must fire at plan time
+    // (in the serde) rather than letting an oversized kernel reach Janino. With 5 input
+    // BoundReferences and a 1-field output we have 6 fields total; setting `maxFields=3` ensures
+    // the gate fires here regardless of test ordering or future schema additions.
+    spark.udf.register(
+      "sumFiveInts",
+      (a: Int, b: Int, c: Int, d: Int, e: Int) => a + b + c + d + e)
+    withTable("t") {
+      sql("CREATE TABLE t (a INT, b INT, c INT, d INT, e INT) USING parquet")
+      sql("INSERT INTO t VALUES (1, 2, 3, 4, 5), (10, 20, 30, 40, 50)")
+      CometScalaUDFCodegen.resetStats()
+      withSQLConf("spark.sql.codegen.maxFields" -> "3") {
+        // Result correctness still has to match Spark; only the dispatcher path is refused.
+        // ScalaUDF has no Comet-native path, so this runs on the JVM Spark path under fallback,
+        // hence `checkSparkAnswer` rather than `checkSparkAnswerAndOperator`.
+        checkSparkAnswer(sql("SELECT sumFiveInts(a, b, c, d, e) FROM t"))
+      }
+      val after = CometScalaUDFCodegen.stats()
+      assert(
+        after.compileCount == 0 && after.cacheHitCount == 0,
+        s"expected dispatcher fallback under maxFields=3, got $after")
+    }
+  }
+
   test("per-batch nullability produces distinct compiles for null-present vs null-absent") {
     // Same ScalaUDF + same Arrow vector class + different observed nullability should hit
     // different cache keys, because `ArrowColumnSpec.nullable` flips when the batch has no

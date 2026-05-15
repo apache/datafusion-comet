@@ -99,6 +99,18 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
+   * Count the number of leaf fields (including nested) in a [[DataType]]. Mirrors WSCG's
+   * `WholeStageCodegenExec.numOfNestedFields` so the [[canHandle]] threshold check uses the same
+   * unit as `spark.sql.codegen.maxFields`.
+   */
+  private def numOfNestedFields(dataType: DataType): Int = dataType match {
+    case st: StructType => st.fields.map(f => numOfNestedFields(f.dataType)).sum
+    case m: MapType => numOfNestedFields(m.keyType) + numOfNestedFields(m.valueType)
+    case a: ArrayType => numOfNestedFields(a.elementType)
+    case _ => 1
+  }
+
+  /**
    * Plan-time predicate: can the codegen dispatcher handle this bound expression end to end?
    * `None` greenlights the serde to emit the codegen proto; `Some(reason)` forces a Spark
    * fallback (typically `withInfo(...) + None`) rather than crashing the Janino compile at
@@ -111,6 +123,19 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   def canHandle(boundExpr: Expression): Option[String] = {
     if (!isSupportedDataType(boundExpr.dataType)) {
       return Some(s"codegen dispatch: unsupported output type ${boundExpr.dataType}")
+    }
+    // Mirror WSCG's `spark.sql.codegen.maxFields` gate. Count nested fields in the output type
+    // and in every `BoundReference`'s input type. Wide schemas blow the generated class's typed
+    // input field count, the typed-getter switch, and the constant pool. Refuse here so the
+    // operator falls back to Spark cleanly rather than tripping a Janino compile failure
+    // mid-execution (which Comet has no way to recover from).
+    val maxFields = SQLConf.get.wholeStageMaxNumFields
+    val totalFields = numOfNestedFields(boundExpr.dataType) +
+      boundExpr.collect { case b: BoundReference => numOfNestedFields(b.dataType) }.sum
+    if (totalFields > maxFields) {
+      return Some(
+        s"codegen dispatch: too many nested fields ($totalFields > " +
+          s"spark.sql.codegen.maxFields=$maxFields)")
     }
     // Reject expressions that can't be safely compiled or cached:
     //   - AggregateFunction / Generator: non-scalar bridge shape.
@@ -192,7 +217,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         case t: Throwable =>
           logError(
             s"CometBatchKernelCodegen: compile failed for ${boundExpr.getClass.getSimpleName}. " +
-              s"Generated source follows:\n${src.body}",
+              s"Generated source follows:\n${CodeFormatter.format(src.code)}",
             t)
           throw t
       }
