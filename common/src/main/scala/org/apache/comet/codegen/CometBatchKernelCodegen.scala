@@ -232,8 +232,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     //
     // TODO(method-size): perRowBody is inlined inside process's for-loop and not split.
     // Sufficiently deep trees can exceed Janino's 64KB method size; wrap in
-    // ctx.splitExpressionsWithCurrentInputs when hit. See
-    // docs/source/contributor-guide/jvm_udf_dispatch.md#open-items.
+    // ctx.splitExpressionsWithCurrentInputs when hit.
     val (concreteOutClass, outputSetup, perRowBody) = {
       // Class-field CSE. `generateExpressions` runs `subexpressionElimination` under the
       // hood, which populates `ctx.subexprFunctions` with per-row helper calls that write

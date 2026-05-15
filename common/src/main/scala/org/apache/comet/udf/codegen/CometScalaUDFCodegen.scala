@@ -79,7 +79,8 @@ class CometScalaUDFCodegen extends CometUDF {
     val bytes = exprVec.get(0)
 
     // TODO(dict-encoded): kernels assume materialized inputs; dict-encoded vectors would fail the
-    // cast in `specFor` below. See docs/source/contributor-guide/jvm_udf_dispatch.md#open-items.
+    // cast in `specFor` below. Fix is to materialize at the dispatcher (via
+    // `CDataDictionaryProvider`) or widen `emitTypedGetters` with a dict-index + lookup path.
 
     val numDataCols = inputs.length - 1
     val dataCols = new Array[ValueVector](numDataCols)
@@ -325,9 +326,9 @@ object CometScalaUDFCodegen {
    * Cache key: serialized expression bytes plus per-column compile-time invariants.
    *
    * `hashCode` walks `bytesKey` per lookup, so for large ScalaUDF closures it scales with closure
-   * size. TODO(perf-cache-key): see
-   * `docs/source/contributor-guide/jvm_udf_dispatch.md#open-items` for possible optimizations if
-   * a workload makes this hot.
+   * size. TODO(perf-cache-key): if this becomes hot, options are a driver-precomputed hash piggy-
+   * backed through the proto, a per-instance last-key memoization, or a two-tier cache keyed on
+   * the generated source string.
    */
   final case class CacheKey(bytesKey: ByteBuffer, specs: IndexedSeq[ArrowColumnSpec])
 
