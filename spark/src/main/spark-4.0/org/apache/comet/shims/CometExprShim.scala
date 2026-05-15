@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
@@ -145,7 +145,14 @@ trait CometExprShim extends CommonStringExprs {
               inputs,
               binding)
           case (Literal(evaluator: ParseUrlEvaluator, _), "evaluate", args) =>
-            exprToProtoInternal(ParseUrl(args, evaluator.failOnError), inputs, binding)
+            val parseUrl = ParseUrl(args, evaluator.failOnError)
+            val result = exprToProtoInternal(parseUrl, inputs, binding)
+            if (result.isEmpty) {
+              parseUrl
+                .getTagValue(CometExplainInfo.EXTENSION_INFO)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+            }
+            result
           case _ => None
         }
 
