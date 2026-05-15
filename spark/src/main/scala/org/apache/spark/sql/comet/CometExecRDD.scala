@@ -111,6 +111,16 @@ private[spark] class CometExecRDD(
       serializedPlan
     }
 
+    // Invoke registered per-partition metadata handlers. This is the SPI hook contribs
+    // use to populate executor thread-locals (e.g. `InputFileBlockHolder`) from their
+    // serialized per-partition payloads before the native iterator runs. The Delta
+    // contrib uses it so `input_file_name()` and Delta's `_metadata.file_path` resolve
+    // correctly; without this, UPDATE/DELETE/MERGE/CDC paths see empty file_path and
+    // throw `DELTA_FILE_TO_OVERWRITE_NOT_FOUND`. Handlers are called for every
+    // partition with non-empty plan data and are expected to no-op when the partition
+    // doesn't carry their proto. The registered handlers list is a `@volatile` read.
+    CometExecRDD.runPartitionMetadataHandlers(partition.planDataByKey, context)
+
     // Create shuffle block iterators for inputs that are CometShuffledBatchRDD
     val shuffleBlockIters = shuffleScanIndices.flatMap { idx =>
       inputRDDs(idx) match {
@@ -162,6 +172,56 @@ private[spark] class CometExecRDD(
 }
 
 object CometExecRDD {
+
+  /**
+   * SPI hook signature: a callback contribs register to inspect a partition's per-partition
+   * planning data BEFORE the native iterator starts producing rows on this task. Receives the
+   * `Map[String, Array[Byte]]` of serialized per-partition payloads keyed by `sourceKey` (the
+   * same shape contribs serialize into `perPartitionByKey` at planning time). Plus the active
+   * `TaskContext` so handlers can register completion listeners.
+   *
+   * Canonical use: the Delta contrib reads its `DeltaScan` payload, extracts the AddFile path,
+   * and calls `InputFileBlockHolder.set` so `input_file_name()` and Delta's `_metadata.file_path`
+   * resolve to the file being read (otherwise UPDATE/DELETE/MERGE/CDC throw
+   * `DELTA_FILE_TO_OVERWRITE_NOT_FOUND`).
+   *
+   * The signature is deliberately the data shape, NOT a Spark-internal partition type, so contribs
+   * don't have to live under `org.apache.spark.*` to see it. Handlers MUST:
+   *   - be stateless and free of contrib-specific assumptions on partitions that don't carry
+   *     their proto (no-op silently when their expected key/payload shape isn't present),
+   *   - register a task-completion listener for any thread-local they set, so the value is
+   *     cleared at the end of the task, and
+   *   - tolerate parse failures defensively -- another contrib may own this key.
+   */
+  type PartitionMetadataHandler = (Map[String, Array[Byte]], TaskContext) => Unit
+
+  @volatile private var partitionMetadataHandlers: Vector[PartitionMetadataHandler] = Vector.empty
+
+  /**
+   * Register a per-partition metadata handler. Called once per contrib at extension-load
+   * time (from `CometOperatorSerdeExtension.init`). Registration is idempotent on the
+   * same function reference but does not de-duplicate equivalent lambdas; contribs are
+   * expected to register exactly once.
+   */
+  def registerPartitionMetadataHandler(h: PartitionMetadataHandler): Unit = synchronized {
+    if (!partitionMetadataHandlers.contains(h)) {
+      partitionMetadataHandlers = partitionMetadataHandlers :+ h
+    }
+  }
+
+  /**
+   * Test-only / contrib reset. Visibility is `public` to mirror `resetForTesting` on the registry.
+   */
+  def clearPartitionMetadataHandlers(): Unit = synchronized {
+    partitionMetadataHandlers = Vector.empty
+  }
+
+  private[comet] def runPartitionMetadataHandlers(
+      planDataByKey: Map[String, Array[Byte]],
+      context: TaskContext): Unit = {
+    val hs = partitionMetadataHandlers
+    if (hs.nonEmpty) hs.foreach(_(planDataByKey, context))
+  }
 
   /**
    * Creates an RDD for native execution with optional per-partition planning data.

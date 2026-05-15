@@ -80,6 +80,18 @@ object CometExtensionRegistry extends Logging {
     mergedSerdesCache = newMerged
     nativeParquetScanImplsCache = newNativeParquetTags
     loaded.set(true)
+    // Call `init()` AFTER publishing the volatile fields and flipping `loaded`. This lets
+    // an extension's `init` synchronously call back into the registry (e.g. to read its
+    // sibling extensions) without observing a half-built state, and it lets `init` register
+    // executor-side callbacks on `CometExecRDD` without racing the first compute call.
+    // Failures are isolated per extension so one broken contrib doesn't take down the others.
+    newSerdeExts.foreach { ext =>
+      try ext.init()
+      catch {
+        case scala.util.control.NonFatal(e) =>
+          logWarning(s"CometOperatorSerdeExtension '${ext.name}' init failed; continuing", e)
+      }
+    }
     if (newScanExts.nonEmpty || newSerdeExts.nonEmpty) {
       logInfo(
         s"Comet contrib extensions loaded: " +
@@ -178,6 +190,10 @@ object CometExtensionRegistry extends Logging {
     serdeExts = Seq.empty
     mergedSerdesCache = Map.empty
     nativeParquetScanImplsCache = Set.empty
+    // Also clear any executor-side callbacks registered via the SPI's `init` hook so the
+    // next `load()` re-registers from scratch. Without this the test that exercises
+    // `resetForTesting` + `load` would accumulate handlers across reset boundaries.
+    org.apache.spark.sql.comet.CometExecRDD.clearPartitionMetadataHandlers()
   }
 
   private def loadOne[T](label: String)(implicit ct: scala.reflect.ClassTag[T]): Seq[T] = {

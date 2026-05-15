@@ -89,4 +89,17 @@ trait CometOperatorSerdeExtension {
    * override this to `Set("native_delta_compat")`.
    */
   def nativeParquetScanImpls: Set[String] = Set.empty
+
+  /**
+   * One-shot initialization hook invoked exactly once per JVM by `CometExtensionRegistry.load`
+   * after this extension has been instantiated. Use to register executor-side callbacks that
+   * can't be expressed declaratively in the `serdes` map -- e.g. a per-partition metadata
+   * handler on `CometExecRDD.registerPartitionMetadataHandler` for populating Spark
+   * thread-locals from a contrib's serialized per-partition payload.
+   *
+   * Default no-op so existing extensions don't have to opt in. Implementations MUST be safe
+   * to call once per JVM (e.g. don't accumulate state across query executions). Failures are
+   * logged and isolated: a broken `init` on one contrib doesn't take down the others.
+   */
+  def init(): Unit = ()
 }
