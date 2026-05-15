@@ -371,7 +371,7 @@
 - [x] cos
 - [x] cosh
 - [x] cot
-- [ ] csc
+- [x] csc
 - [x] degrees
 - [x] div
 - [ ] e
