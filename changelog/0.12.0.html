@@ -1,0 +1,676 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>DataFusion Comet 0.12.0 Changelog &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'changelog/0.12.0';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="DataFusion Comet 0.11.0 Changelog" href="0.11.0.html" />
+    <link rel="prev" title="DataFusion Comet 0.13.0 Changelog" href="0.13.0.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributor-guide/index.html">Contributor Guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Changelog</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="0.16.0.html">DataFusion Comet 0.16.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.15.0.html">DataFusion Comet 0.15.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.14.1.html">DataFusion Comet 0.14.1 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.14.0.html">DataFusion Comet 0.14.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.13.0.html">DataFusion Comet 0.13.0 Changelog</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">DataFusion Comet 0.12.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.11.0.html">DataFusion Comet 0.11.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.10.0.html">DataFusion Comet 0.10.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.9.1.html">DataFusion Comet 0.9.1 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.9.0.html">DataFusion Comet 0.9.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.8.0.html">DataFusion Comet 0.8.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.7.0.html">DataFusion Comet 0.7.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.6.0.html">DataFusion Comet 0.6.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.5.0.html">DataFusion Comet 0.5.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.4.0.html">DataFusion Comet 0.4.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.3.0.html">DataFusion Comet 0.3.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.2.0.html">DataFusion Comet 0.2.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.1.0.html">DataFusion Comet 0.1.0 Changelog</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../about/gluten_comparison.html">Comparison with Gluten</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Changelog</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">DataFusion Comet 0.12.0 Changelog</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="datafusion-comet-0-12-0-changelog">
+<h1>DataFusion Comet 0.12.0 Changelog<a class="headerlink" href="#datafusion-comet-0-12-0-changelog" title="Link to this heading">#</a></h1>
+<p>This release consists of 105 commits from 13 contributors. See credits at the end of this changelog for more information.</p>
+<p><strong>Fixed bugs:</strong></p>
+<ul class="simple">
+<li><p>fix: Fix <code class="docutils literal notranslate"><span class="pre">None.get</span></code> in <code class="docutils literal notranslate"><span class="pre">stringDecode</span></code> when <code class="docutils literal notranslate"><span class="pre">bin</span></code> child cannot be converted <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2606">#2606</a> (cfmcgrady)</p></li>
+<li><p>fix: Update FuzzDataGenerator to produce dictionary-encoded string arrays &amp; fix bugs that this exposes <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2635">#2635</a> (andygrove)</p></li>
+<li><p>fix: Fallback to Spark for lpad/rpad for unsupported arguments &amp; fix negative length handling <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2630">#2630</a> (andygrove)</p></li>
+<li><p>fix: Mark SortOrder with floating-point as incompatible <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2650">#2650</a> (andygrove)</p></li>
+<li><p>fix: Fall back to Spark for <code class="docutils literal notranslate"><span class="pre">trunc</span></code> / <code class="docutils literal notranslate"><span class="pre">date_trunc</span></code> functions when format string is unsupported, or is not a literal value <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2634">#2634</a> (andygrove)</p></li>
+<li><p>fix: [native_datafusion] only pass single partition of PartitionedFiles into DataSourceExec <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2675">#2675</a> (mbutrovich)</p></li>
+<li><p>fix: Fix subcommands options in fuzz-testing <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2684">#2684</a> (manuzhang)</p></li>
+<li><p>fix: Do not replace SMJ with HJ for <code class="docutils literal notranslate"><span class="pre">LeftSemi</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2687">#2687</a> (comphead)</p></li>
+<li><p>fix: Apply spotless on Iceberg 1.8.1 diff [iceberg] <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2700">#2700</a> (hsiang-c)</p></li>
+<li><p>fix: Fix generate-user-guide-reference-docs failure when mvn command is not executed at root <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2691">#2691</a> (manuzhang)</p></li>
+<li><p>fix: Fix missing SortOrder fallback reason in range partitioning <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2716">#2716</a> (andygrove)</p></li>
+<li><p>fix: CometLiteral class cast exception with arrays <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2718">#2718</a> (andygrove)</p></li>
+<li><p>fix: NormalizeNaNAndZero::children() returns child’s child <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2732">#2732</a> (mbutrovich)</p></li>
+<li><p>fix: checkSparkMaybeThrows should compare Spark and Comet results in success case <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2728">#2728</a> (andygrove)</p></li>
+<li><p>fix: Mark <code class="docutils literal notranslate"><span class="pre">WindowsExec</span></code> as incompatible <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2748">#2748</a> (andygrove)</p></li>
+<li><p>fix: Add strict floating point mode and fallback to Spark for min/max/sort on floating point inputs when enabled <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2747">#2747</a> (andygrove)</p></li>
+<li><p>fix: Implement producedAttributes for CometWindowExec <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2789">#2789</a> (rahulbabarwal89)</p></li>
+<li><p>fix: Pass all Comet configs to native plan <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2801">#2801</a> (andygrove)</p></li>
+</ul>
+<p><strong>Implemented enhancements:</strong></p>
+<ul class="simple">
+<li><p>feat: Add option to write benchmark results to file <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2640">#2640</a> (andygrove)</p></li>
+<li><p>feat: Implement metrics for iceberg compat <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2615">#2615</a> (EmilyMatt)</p></li>
+<li><p>feat: Define function signatures in CometFuzz <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2614">#2614</a> (andygrove)</p></li>
+<li><p>feat: cherry-pick UUID conversion logic from #2528 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2648">#2648</a> (mbutrovich)</p></li>
+<li><p>feat: support <code class="docutils literal notranslate"><span class="pre">concat</span></code> for strings <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2604">#2604</a> (comphead)</p></li>
+<li><p>feat: Add support for <code class="docutils literal notranslate"><span class="pre">abs</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2689">#2689</a> (andygrove)</p></li>
+<li><p>feat: Support variadic function in CometFuzz <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2682">#2682</a> (manuzhang)</p></li>
+<li><p>feat: CometExecRule refactor: Unify CometNativeExec creation with Serde in CometOperatorSerde trait <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2768">#2768</a> (andygrove)</p></li>
+<li><p>feat: support cot <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2755">#2755</a> (psvri)</p></li>
+<li><p>feat: Add bash script to build and run fuzz testing <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2686">#2686</a> (manuzhang)</p></li>
+<li><p>feat: Add getSupportLevel to CometAggregateExpressionSerde trait <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2777">#2777</a> (andygrove)</p></li>
+<li><p>feat: Add CI check to ensure generated docs are in sync with code <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2779">#2779</a> (andygrove)</p></li>
+<li><p>feat: Add prettier enforcement <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2783">#2783</a> (andygrove)</p></li>
+<li><p>feat: hyperbolic trig functions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2784">#2784</a> (psvri)</p></li>
+<li><p>feat: [iceberg] Native scan by serializing FileScanTasks to iceberg-rust <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2528">#2528</a> (mbutrovich)</p></li>
+</ul>
+<p><strong>Documentation updates:</strong></p>
+<ul class="simple">
+<li><p>docs: Add changelog for 0.11.0 release <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2585">#2585</a> (mbutrovich)</p></li>
+<li><p>docs: Improve documentation layout <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2587">#2587</a> (andygrove)</p></li>
+<li><p>docs: Publish 0.11.0 user guide <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2589">#2589</a> (andygrove)</p></li>
+<li><p>docs: Put Comet logo in top nav bar, respect light/dark mode <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2591">#2591</a> (andygrove)</p></li>
+<li><p>docs: Improve main landing page <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2593">#2593</a> (andygrove)</p></li>
+<li><p>docs: Improve site navigation <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2597">#2597</a> (andygrove)</p></li>
+<li><p>docs: Update benchmark results <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2596">#2596</a> (andygrove)</p></li>
+<li><p>docs: Upgrade pydata-sphinx-theme to 0.16.1 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2602">#2602</a> (andygrove)</p></li>
+<li><p>docs: Fix redirect <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2603">#2603</a> (andygrove)</p></li>
+<li><p>docs: Fix broken image link <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2613">#2613</a> (andygrove)</p></li>
+<li><p>docs: Add FFI docs to contributor guide <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2668">#2668</a> (andygrove)</p></li>
+<li><p>docs: Various documentation updates <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2674">#2674</a> (andygrove)</p></li>
+<li><p>docs: Add supported SortOrder expressions and fix a typo <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2694">#2694</a> (andygrove)</p></li>
+<li><p>docs: Minor docs update for running Spark SQL tests <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2712">#2712</a> (andygrove)</p></li>
+<li><p>docs: Update contributor guide for adding a new expression <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2704">#2704</a> (andygrove)</p></li>
+<li><p>docs: Documentation updates for <code class="docutils literal notranslate"><span class="pre">LocalTableScan</span></code> and <code class="docutils literal notranslate"><span class="pre">WindowExec</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2742">#2742</a> (andygrove)</p></li>
+<li><p>docs: Typo fix <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2752">#2752</a> (wForget)</p></li>
+<li><p>docs: Categorize some configs as <code class="docutils literal notranslate"><span class="pre">testing</span></code> and add notes about known time zone issues <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2740">#2740</a> (andygrove)</p></li>
+<li><p>docs: Run prettier on all markdown files <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2782">#2782</a> (andygrove)</p></li>
+<li><p>docs: Ignore prettier formatting for generated tables <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2790">#2790</a> (andygrove)</p></li>
+<li><p>docs: Add new section to contributor guide, explaining how to add a new operator <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2758">#2758</a> (andygrove)</p></li>
+</ul>
+<p><strong>Other:</strong></p>
+<ul class="simple">
+<li><p>chore: Start 0.12.0 development <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2584">#2584</a> (mbutrovich)</p></li>
+<li><p>chore: Bump Spark from 3.5.6 to 3.5.7 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2574">#2574</a> (cfmcgrady)</p></li>
+<li><p>chore(deps): bump parquet from 56.0.0 to 56.2.0 in /native <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2608">#2608</a> (dependabot[bot])</p></li>
+<li><p>chore(deps): bump tikv-jemallocator from 0.6.0 to 0.6.1 in /native <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2609">#2609</a> (dependabot[bot])</p></li>
+<li><p>chore(deps): bump tikv-jemalloc-ctl from 0.6.0 to 0.6.1 in /native <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2610">#2610</a> (dependabot[bot])</p></li>
+<li><p>tests: FuzzDataGenerator instead of Parquet-specific generator <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2616">#2616</a> (mbutrovich)</p></li>
+<li><p>chore: Simplify on-heap memory configuration <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2599">#2599</a> (andygrove)</p></li>
+<li><p>Feat: Add sha1 function impl <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2471">#2471</a> (kazantsev-maksim)</p></li>
+<li><p>chore: Refactor Parquet/DataFrame fuzz data generators <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2629">#2629</a> (andygrove)</p></li>
+<li><p>chore: Remove needless from_raw calls <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2638">#2638</a> (EmilyMatt)</p></li>
+<li><p>chore: support DataFusion 50.3.0 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2605">#2605</a> (comphead)</p></li>
+<li><p>chore(deps): bump actions/upload-artifact from 4 to 5 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2654">#2654</a> (dependabot[bot])</p></li>
+<li><p>chore(deps): bump cc from 1.2.42 to 1.2.43 in /native <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2653">#2653</a> (dependabot[bot])</p></li>
+<li><p>chore(deps): bump actions/download-artifact from 5 to 6 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2652">#2652</a> (dependabot[bot])</p></li>
+<li><p>chore: extract comparison into separate tool <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2632">#2632</a> (comphead)</p></li>
+<li><p>chore: Various improvements to <code class="docutils literal notranslate"><span class="pre">checkSparkAnswer*</span></code> methods in <code class="docutils literal notranslate"><span class="pre">CometTestBase</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2656">#2656</a> (andygrove)</p></li>
+<li><p>chore: Remove code for unpacking dictionaries prior to FilterExec <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2659">#2659</a> (andygrove)</p></li>
+<li><p>chore: display schema for datasets being compared <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2665">#2665</a> (comphead)</p></li>
+<li><p>chore: Remove <code class="docutils literal notranslate"><span class="pre">CopyExec</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2663">#2663</a> (andygrove)</p></li>
+<li><p>chore: Add extended explain plans to stability suite <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2669">#2669</a> (andygrove)</p></li>
+<li><p>chore(deps): bump aws-config from 1.8.8 to 1.8.10 in /native <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2677">#2677</a> (dependabot[bot])</p></li>
+<li><p>chore(deps): bump cc from 1.2.43 to 1.2.44 in /native <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2678">#2678</a> (dependabot[bot])</p></li>
+<li><p>chore: <code class="docutils literal notranslate"><span class="pre">tpcbench</span></code> output <code class="docutils literal notranslate"><span class="pre">explain</span></code> just once and formatted <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2679">#2679</a> (comphead)</p></li>
+<li><p>chore: Add tolerance for <code class="docutils literal notranslate"><span class="pre">ComparisonTool</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2699">#2699</a> (comphead)</p></li>
+<li><p>chore: Expand test coverage for <code class="docutils literal notranslate"><span class="pre">CometWindowsExec</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2711">#2711</a> (comphead)</p></li>
+<li><p>chore: generate Float/Double NaN <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2695">#2695</a> (hsiang-c)</p></li>
+<li><p>minor: Combine two CI workflows for Spark SQL tests <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2727">#2727</a> (andygrove)</p></li>
+<li><p>chore: Improve framework for specifying that configs can be set with env vars <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2722">#2722</a> (andygrove)</p></li>
+<li><p>chore: Rename <code class="docutils literal notranslate"><span class="pre">COMET_EXPLAIN_VERBOSE_ENABLED</span></code> to <code class="docutils literal notranslate"><span class="pre">COMET_EXTENDED_EXPLAIN_FORMAT</span></code> and change default <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2644">#2644</a> (andygrove)</p></li>
+<li><p>chore: Fallback to Spark for windows functions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2726">#2726</a> (comphead)</p></li>
+<li><p>chore: Refactor operator serde - part 1 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2738">#2738</a> (andygrove)</p></li>
+<li><p>Feat: Add CometLocalTableScanExec operator <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2735">#2735</a> (kazantsev-maksim)</p></li>
+<li><p>chore(deps): bump cc from 1.2.44 to 1.2.45 in /native <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2750">#2750</a> (dependabot[bot])</p></li>
+<li><p>chore(deps): bump aws-credential-types from 1.2.8 to 1.2.9 in /native <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2751">#2751</a> (dependabot[bot])</p></li>
+<li><p>chore: Operator serde refactor part 2 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2741">#2741</a> (andygrove)</p></li>
+<li><p>chore: Fallback to Spark for <code class="docutils literal notranslate"><span class="pre">array_reverse</span></code> for <code class="docutils literal notranslate"><span class="pre">array&lt;binary&gt;</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2759">#2759</a> (comphead)</p></li>
+<li><p>chore: [iceberg] test iceberg 1.10.0 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2709">#2709</a> (manuzhang)</p></li>
+<li><p>chore: Add <code class="docutils literal notranslate"><span class="pre">docs/comet-*</span></code> to rat exclude list <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2762">#2762</a> (manuzhang)</p></li>
+<li><p>Chore: Refactor static invoke exprs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2671">#2671</a> (kazantsev-maksim)</p></li>
+<li><p>minor: Small refactor for consistent serde for hash aggregate <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2764">#2764</a> (andygrove)</p></li>
+<li><p>minor: Move <code class="docutils literal notranslate"><span class="pre">operator2Proto</span></code> to <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2767">#2767</a> (andygrove)</p></li>
+<li><p>chore: various refactoring changes for iceberg [iceberg] <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2680">#2680</a> (parthchandra)</p></li>
+<li><p>chore: Refactor CometExecRule handling of sink operators <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2771">#2771</a> (andygrove)</p></li>
+<li><p>minor: Refactor to move window-specific code from <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> to <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2780">#2780</a> (andygrove)</p></li>
+<li><p>chore: Remove many references to <code class="docutils literal notranslate"><span class="pre">COMET_EXPR_ALLOW_INCOMPATIBLE</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2775">#2775</a> (andygrove)</p></li>
+<li><p>chore: Remove COMET_EXPR_ALLOW_INCOMPATIBLE config <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2786">#2786</a> (andygrove)</p></li>
+<li><p>chore: check <code class="docutils literal notranslate"><span class="pre">missingInput</span></code> for Comet plan nodes <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2795">#2795</a> (comphead)</p></li>
+<li><p>chore: Finish refactoring expression serde out of <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2791">#2791</a> (andygrove)</p></li>
+<li><p>chore: Update docs to fix CI after #2784 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2799">#2799</a> (mbutrovich)</p></li>
+<li><p>chore: Update q79 golden plan for Spark 4.0 after #2795 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2800">#2800</a> (mbutrovich)</p></li>
+<li><p>Fix: Fix null handling in CometVector implementations <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2643">#2643</a> (cfmcgrady)</p></li>
+</ul>
+<section id="credits">
+<h2>Credits<a class="headerlink" href="#credits" title="Link to this heading">#</a></h2>
+<p>Thank you to everyone who contributed to this release. Here is a breakdown of commits (PRs merged) per contributor.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>    <span class="mi">54</span>	<span class="n">Andy</span> <span class="n">Grove</span>
+    <span class="mi">11</span>	<span class="n">Oleks</span> <span class="n">V</span>
+    <span class="mi">10</span>	<span class="n">dependabot</span><span class="p">[</span><span class="n">bot</span><span class="p">]</span>
+     <span class="mi">9</span>	<span class="n">Matt</span> <span class="n">Butrovich</span>
+     <span class="mi">6</span>	<span class="n">Manu</span> <span class="n">Zhang</span>
+     <span class="mi">3</span>	<span class="n">Fu</span> <span class="n">Chen</span>
+     <span class="mi">3</span>	<span class="n">Kazantsev</span> <span class="n">Maksim</span>
+     <span class="mi">2</span>	<span class="n">Emily</span> <span class="n">Matheys</span>
+     <span class="mi">2</span>	<span class="n">Vrishabh</span>
+     <span class="mi">2</span>	<span class="n">hsiang</span><span class="o">-</span><span class="n">c</span>
+     <span class="mi">1</span>	<span class="n">Parth</span> <span class="n">Chandra</span>
+     <span class="mi">1</span>	<span class="n">Zhen</span> <span class="n">Wang</span>
+     <span class="mi">1</span>	<span class="n">rahulbabarwal89</span>
+</pre></div>
+</div>
+<p>Thank you also to everyone who contributed in other ways such as filing issues, reviewing PRs, and providing feedback on this release.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="0.13.0.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">DataFusion Comet 0.13.0 Changelog</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="0.11.0.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">DataFusion Comet 0.11.0 Changelog</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

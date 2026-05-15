@@ -1,0 +1,108 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# DataFusion Comet 0.4.0 Changelog
+
+This release consists of 51 commits from 10 contributors. See credits at the end of this changelog for more information.
+
+**Fixed bugs:**
+
+- fix: Use the number of rows from underlying arrays instead of logical row count from RecordBatch [#972](https://github.com/apache/datafusion-comet/pull/972) (viirya)
+- fix: The spilled_bytes metric of CometSortExec should be size instead of time [#984](https://github.com/apache/datafusion-comet/pull/984) (Kontinuation)
+- fix: Properly handle Java exceptions without error messages; fix loading of comet native library from java.library.path [#982](https://github.com/apache/datafusion-comet/pull/982) (Kontinuation)
+- fix: Fallback to Spark if scan has meta columns [#997](https://github.com/apache/datafusion-comet/pull/997) (viirya)
+- fix: Fallback to Spark if named_struct contains duplicate field names [#1016](https://github.com/apache/datafusion-comet/pull/1016) (viirya)
+- fix: Make comet-git-info.properties optional [#1027](https://github.com/apache/datafusion-comet/pull/1027) (andygrove)
+- fix: TopK operator should return correct results on dictionary column with nulls [#1033](https://github.com/apache/datafusion-comet/pull/1033) (viirya)
+- fix: need default value for getSizeAsMb(EXECUTOR_MEMORY.key) [#1046](https://github.com/apache/datafusion-comet/pull/1046) (neyama)
+
+**Performance related:**
+
+- perf: Remove one redundant CopyExec for SMJ [#962](https://github.com/apache/datafusion-comet/pull/962) (andygrove)
+- perf: Add experimental feature to replace SortMergeJoin with ShuffledHashJoin [#1007](https://github.com/apache/datafusion-comet/pull/1007) (andygrove)
+- perf: Cache jstrings during metrics collection [#1029](https://github.com/apache/datafusion-comet/pull/1029) (mbutrovich)
+
+**Implemented enhancements:**
+
+- feat: Support `GetArrayStructFields` expression [#993](https://github.com/apache/datafusion-comet/pull/993) (Kimahriman)
+- feat: Implement bloom_filter_agg [#987](https://github.com/apache/datafusion-comet/pull/987) (mbutrovich)
+- feat: Support more types with BloomFilterAgg [#1039](https://github.com/apache/datafusion-comet/pull/1039) (mbutrovich)
+- feat: Implement CAST from struct to string [#1066](https://github.com/apache/datafusion-comet/pull/1066) (andygrove)
+- feat: Use official DataFusion 43 release [#1070](https://github.com/apache/datafusion-comet/pull/1070) (andygrove)
+- feat: Implement CAST between struct types [#1074](https://github.com/apache/datafusion-comet/pull/1074) (andygrove)
+- feat: support array_append [#1072](https://github.com/apache/datafusion-comet/pull/1072) (NoeB)
+- feat: Require offHeap memory to be enabled (always use unified memory) [#1062](https://github.com/apache/datafusion-comet/pull/1062) (andygrove)
+
+**Documentation updates:**
+
+- doc: add documentation interlinks [#975](https://github.com/apache/datafusion-comet/pull/975) (comphead)
+- docs: Add IntelliJ documentation for generated source code [#985](https://github.com/apache/datafusion-comet/pull/985) (mbutrovich)
+- docs: Update tuning guide [#995](https://github.com/apache/datafusion-comet/pull/995) (andygrove)
+- docs: Various documentation improvements [#1005](https://github.com/apache/datafusion-comet/pull/1005) (andygrove)
+- docs: clarify that Maven central only has jars for Linux [#1009](https://github.com/apache/datafusion-comet/pull/1009) (andygrove)
+- doc: fix K8s links and doc [#1058](https://github.com/apache/datafusion-comet/pull/1058) (comphead)
+- docs: Update benchmarking.md [#1085](https://github.com/apache/datafusion-comet/pull/1085) (rluvaton-flarion)
+
+**Other:**
+
+- chore: Generate changelog for 0.3.0 release [#964](https://github.com/apache/datafusion-comet/pull/964) (andygrove)
+- chore: fix publish-to-maven script [#966](https://github.com/apache/datafusion-comet/pull/966) (andygrove)
+- chore: Update benchmarks results based on 0.3.0-rc1 [#969](https://github.com/apache/datafusion-comet/pull/969) (andygrove)
+- chore: update rem expression guide [#976](https://github.com/apache/datafusion-comet/pull/976) (kazuyukitanimura)
+- chore: Enable additional CreateArray tests [#928](https://github.com/apache/datafusion-comet/pull/928) (Kimahriman)
+- chore: fix compatibility guide [#978](https://github.com/apache/datafusion-comet/pull/978) (kazuyukitanimura)
+- chore: Update for 0.3.0 release, prepare for 0.4.0 development [#970](https://github.com/apache/datafusion-comet/pull/970) (andygrove)
+- chore: Don't transform the HashAggregate to CometHashAggregate if Comet shuffle is disabled [#991](https://github.com/apache/datafusion-comet/pull/991) (viirya)
+- chore: Make parquet reader options Comet options instead of Hadoop options [#968](https://github.com/apache/datafusion-comet/pull/968) (parthchandra)
+- chore: remove legacy comet-spark-shell [#1013](https://github.com/apache/datafusion-comet/pull/1013) (andygrove)
+- chore: Reserve memory for native shuffle writer per partition [#988](https://github.com/apache/datafusion-comet/pull/988) (viirya)
+- chore: Bump arrow-rs to 53.1.0 and datafusion [#1001](https://github.com/apache/datafusion-comet/pull/1001) (kazuyukitanimura)
+- chore: Revert "chore: Reserve memory for native shuffle writer per partition (#988)" [#1020](https://github.com/apache/datafusion-comet/pull/1020) (viirya)
+- minor: Remove hard-coded version number from Dockerfile [#1025](https://github.com/apache/datafusion-comet/pull/1025) (andygrove)
+- chore: Reserve memory for native shuffle writer per partition [#1022](https://github.com/apache/datafusion-comet/pull/1022) (viirya)
+- chore: Improve error handling when native lib fails to load [#1000](https://github.com/apache/datafusion-comet/pull/1000) (andygrove)
+- chore: Use twox-hash 2.0 xxhash64 oneshot api instead of custom implementation [#1041](https://github.com/apache/datafusion-comet/pull/1041) (NoeB)
+- chore: Refactor Arrow Array and Schema allocation in ColumnReader and MetadataColumnReader [#1047](https://github.com/apache/datafusion-comet/pull/1047) (viirya)
+- minor: Refactor binary expr serde to reduce code duplication [#1053](https://github.com/apache/datafusion-comet/pull/1053) (andygrove)
+- chore: Upgrade to DataFusion 43.0.0-rc1 [#1057](https://github.com/apache/datafusion-comet/pull/1057) (andygrove)
+- chore: Refactor UnaryExpr and MathExpr in protobuf [#1056](https://github.com/apache/datafusion-comet/pull/1056) (andygrove)
+- minor: use defaults instead of hard-coding values [#1060](https://github.com/apache/datafusion-comet/pull/1060) (andygrove)
+- minor: refactor UnaryExpr handling to make code more concise [#1065](https://github.com/apache/datafusion-comet/pull/1065) (andygrove)
+- chore: Refactor binary and math expression serde code [#1069](https://github.com/apache/datafusion-comet/pull/1069) (andygrove)
+- chore: Simplify CometShuffleMemoryAllocator to use Spark unified memory allocator [#1063](https://github.com/apache/datafusion-comet/pull/1063) (viirya)
+- test: Restore one test in CometExecSuite by adding COMET_SHUFFLE_MODE config [#1087](https://github.com/apache/datafusion-comet/pull/1087) (viirya)
+
+## Credits
+
+Thank you to everyone who contributed to this release. Here is a breakdown of commits (PRs merged) per contributor.
+
+```
+    19	Andy Grove
+    13	Matt Butrovich
+     8	Liang-Chi Hsieh
+     3	KAZUYUKI TANIMURA
+     2	Adam Binford
+     2	Kristin Cowalcijk
+     1	NoeB
+     1	Oleks V
+     1	Parth Chandra
+     1	neyama
+```
+
+Thank you also to everyone who contributed in other ways such as filing issues, reviewing PRs, and providing feedback on this release.

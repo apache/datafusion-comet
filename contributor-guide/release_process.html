@@ -65,7 +65,7 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Comparison of Comet and Gluten" href="../about/gluten_comparison.html" />
+    <link rel="next" title="Changelog" href="../changelog/index.html" />
     <link rel="prev" title="Comet Roadmap" href="roadmap.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -159,6 +159,13 @@ under the License.
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="index.html">
     Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../changelog/index.html">
+    Changelog
   </a>
 </li>
 
@@ -276,6 +283,13 @@ under the License.
 
 
 <li class="nav-item ">
+  <a class="nav-link nav-internal" href="../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
   <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
     Comparison with Gluten
   </a>
@@ -378,6 +392,7 @@ under the License.
 <li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="../changelog/index.html">Changelog</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../about/gluten_comparison.html">Comparison with Gluten</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
 </ul>
@@ -585,7 +600,7 @@ pip3<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </
 providing two commit ids or tags followed by the version number of the release being created. The following
 example generates a change log of all changes between the previous version and the current release branch HEAD revision.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">GITHUB_TOKEN</span><span class="o">=</span>&lt;your-token-here&gt;
-python3<span class="w"> </span>generate-changelog.py<span class="w"> </span><span class="m">0</span>.12.0<span class="w"> </span>HEAD<span class="w"> </span><span class="m">0</span>.13.0<span class="w"> </span>&gt;<span class="w"> </span>../changelog/0.13.0.md
+python3<span class="w"> </span>generate-changelog.py<span class="w"> </span><span class="m">0</span>.12.0<span class="w"> </span>HEAD<span class="w"> </span><span class="m">0</span>.13.0<span class="w"> </span>&gt;<span class="w"> </span>../../docs/source/changelog/0.13.0.md
 </pre></div>
 </div>
 <p>Create a PR against the <em>main</em> branch to add this change log and once this is approved and merged, cherry-pick the
@@ -892,11 +907,11 @@ contributor can drive this process.</p>
       </div>
     </a>
     <a class="right-next"
-       href="../about/gluten_comparison.html"
+       href="../changelog/index.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comparison of Comet and Gluten</p>
+        <p class="prev-next-title">Changelog</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

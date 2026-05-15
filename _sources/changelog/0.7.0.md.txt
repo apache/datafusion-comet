@@ -1,0 +1,102 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# DataFusion Comet 0.7.0 Changelog
+
+This release consists of 46 commits from 11 contributors. See credits at the end of this changelog for more information.
+
+**Fixed bugs:**
+
+- fix: Change default value of COMET_SCAN_ALLOW_INCOMPATIBLE and add documentation [#1398](https://github.com/apache/datafusion-comet/pull/1398) (andygrove)
+- fix: Reduce cast.rs and utils.rs logic from parquet_support.rs for experimental native scans [#1387](https://github.com/apache/datafusion-comet/pull/1387) (mbutrovich)
+- fix: Remove more cast.rs logic from parquet_support.rs for experimental native scans [#1413](https://github.com/apache/datafusion-comet/pull/1413) (mbutrovich)
+- fix: fix various unit test failures in native_datafusion and native_iceberg_compat readers [#1415](https://github.com/apache/datafusion-comet/pull/1415) (parthchandra)
+- fix: metrics tests for native_datafusion experimental native scan [#1445](https://github.com/apache/datafusion-comet/pull/1445) (mbutrovich)
+- fix: Reduce number of shuffle spill files, fix spilled_bytes metric, add some unit tests [#1440](https://github.com/apache/datafusion-comet/pull/1440) (andygrove)
+- fix: Executor memory overhead overriding [#1462](https://github.com/apache/datafusion-comet/pull/1462) (LukMRVC)
+- fix: Stop copying rust-toolchain to docker file [#1475](https://github.com/apache/datafusion-comet/pull/1475) (andygrove)
+- fix: PartitionBuffers should not have their own MemoryConsumer [#1496](https://github.com/apache/datafusion-comet/pull/1496) (EmilyMatt)
+- fix: enable full decimal to decimal support [#1385](https://github.com/apache/datafusion-comet/pull/1385) (himadripal)
+- fix: use common implementation of handling object store and hdfs urls for native_datafusion and native_iceberg_compat [#1494](https://github.com/apache/datafusion-comet/pull/1494) (parthchandra)
+- fix: Simplify CometShuffleMemoryAllocator logic, rename classes, remove config [#1485](https://github.com/apache/datafusion-comet/pull/1485) (mbutrovich)
+- fix: check overflow for decimal integral division [#1512](https://github.com/apache/datafusion-comet/pull/1512) (wForget)
+
+**Performance related:**
+
+- perf: Update RewriteJoin logic to choose optimal build side [#1424](https://github.com/apache/datafusion-comet/pull/1424) (andygrove)
+- perf: Reduce native shuffle memory overhead by 50% [#1452](https://github.com/apache/datafusion-comet/pull/1452) (andygrove)
+
+**Implemented enhancements:**
+
+- feat: CometNativeScan metrics from ParquetFileMetrics and FileStreamMetrics [#1172](https://github.com/apache/datafusion-comet/pull/1172) (mbutrovich)
+- feat: add experimental remote HDFS support for native DataFusion reader [#1359](https://github.com/apache/datafusion-comet/pull/1359) (comphead)
+- feat: add Win-amd64 profile [#1410](https://github.com/apache/datafusion-comet/pull/1410) (wForget)
+- feat: Support IntegralDivide function [#1428](https://github.com/apache/datafusion-comet/pull/1428) (wForget)
+- feat: Add div operator for fuzz testing and update expression doc [#1464](https://github.com/apache/datafusion-comet/pull/1464) (wForget)
+- feat: Upgrade to DataFusion 46.0.0-rc2 [#1423](https://github.com/apache/datafusion-comet/pull/1423) (andygrove)
+- feat: Add support for rpad [#1470](https://github.com/apache/datafusion-comet/pull/1470) (andygrove)
+- feat: Use official DataFusion 46.0.0 release [#1484](https://github.com/apache/datafusion-comet/pull/1484) (andygrove)
+
+**Documentation updates:**
+
+- docs: Add changelog for 0.6.0 release [#1402](https://github.com/apache/datafusion-comet/pull/1402) (andygrove)
+- docs: Improve documentation for running stability plan tests [#1469](https://github.com/apache/datafusion-comet/pull/1469) (andygrove)
+
+**Other:**
+
+- test: Add experimental native scans to CometReadBenchmark [#1150](https://github.com/apache/datafusion-comet/pull/1150) (mbutrovich)
+- chore: Prepare for 0.7.0 development [#1404](https://github.com/apache/datafusion-comet/pull/1404) (andygrove)
+- chore: Update released version in documentation [#1418](https://github.com/apache/datafusion-comet/pull/1418) (andygrove)
+- chore: Update protobuf to 3.25.5 [#1434](https://github.com/apache/datafusion-comet/pull/1434) (kazuyukitanimura)
+- chore: Update guava to 33.2.1-jre [#1435](https://github.com/apache/datafusion-comet/pull/1435) (kazuyukitanimura)
+- test: Register Spark-compatible expressions with a DataFusion context [#1432](https://github.com/apache/datafusion-comet/pull/1432) (viczsaurav)
+- chore: fixes for kube build [#1421](https://github.com/apache/datafusion-comet/pull/1421) (comphead)
+- build: pin machete to version 0.7.0 [#1444](https://github.com/apache/datafusion-comet/pull/1444) (andygrove)
+- chore: Re-organize shuffle writer code [#1439](https://github.com/apache/datafusion-comet/pull/1439) (andygrove)
+- chore: faster maven mirror [#1447](https://github.com/apache/datafusion-comet/pull/1447) (comphead)
+- build: Use stable channel in rust-toolchain [#1465](https://github.com/apache/datafusion-comet/pull/1465) (andygrove)
+- Feat: support array_compact function [#1321](https://github.com/apache/datafusion-comet/pull/1321) (kazantsev-maksim)
+- chore: Upgrade to Spark 3.5.4 [#1471](https://github.com/apache/datafusion-comet/pull/1471) (andygrove)
+- chore: Enable CI checks for `native_datafusion` scan [#1479](https://github.com/apache/datafusion-comet/pull/1479) (andygrove)
+- chore: Add `native_iceberg_compat` CI checks [#1487](https://github.com/apache/datafusion-comet/pull/1487) (andygrove)
+- chore: Stop disabling readside padding in TPC stability suite [#1491](https://github.com/apache/datafusion-comet/pull/1491) (andygrove)
+- chore: Remove num partitions from repartitioner [#1498](https://github.com/apache/datafusion-comet/pull/1498) (EmilyMatt)
+- test: fix Spark 3.5 tests [#1482](https://github.com/apache/datafusion-comet/pull/1482) (kazuyukitanimura)
+- minor: Remove hard-coded config default [#1503](https://github.com/apache/datafusion-comet/pull/1503) (andygrove)
+- chore: Use Datafusion's existing empty stream [#1517](https://github.com/apache/datafusion-comet/pull/1517) (EmilyMatt)
+
+## Credits
+
+Thank you to everyone who contributed to this release. Here is a breakdown of commits (PRs merged) per contributor.
+
+```
+    20	Andy Grove
+     6	Matt Butrovich
+     4	Zhen Wang
+     3	Emily Matheys
+     3	KAZUYUKI TANIMURA
+     3	Oleks V
+     2	Himadri Pal
+     2	Parth Chandra
+     1	Kazantsev Maksim
+     1	Lukas Moravec
+     1	Saurav Verma
+```
+
+Thank you also to everyone who contributed in other ways such as filing issues, reviewing PRs, and providing feedback on this release.
