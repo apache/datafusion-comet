@@ -28,6 +28,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 // Resolve Arrow vector classes through the codegen object so tests see the same `Class` objects
 // the shaded `common` module sees. A direct `classOf[org.apache.arrow.vector.VarCharVector]` here
@@ -1043,6 +1044,30 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       !src.contains("if (isNullAt(0)) return null;"),
       s"expected no null guard on non-nullable map field; got:\n$src")
+  }
+
+  test("CacheKey discriminates on ArrowColumnSpec.nullable") {
+    // Structural regression for the per-batch-nullability cache invariant: same expression bytes
+    // and same Arrow vector class with different `nullable` must produce non-equal cache keys
+    // so the dispatcher compiles a separate kernel for each variant. The non-nullable variant's
+    // generated source emits a literal `false` from `isNullAt`, which lets Spark's
+    // `BoundReference.doGenCode` skip the null branch at source level rather than relying on
+    // JIT folding. Conflating the two would silently use the nullable kernel on non-nullable
+    // batches, losing that elision.
+    val bytes = java.nio.ByteBuffer.wrap(Array[Byte](1, 2, 3))
+    val nullable =
+      IndexedSeq[ArrowColumnSpec](ArrowColumnSpec(varCharVectorClass, nullable = true))
+    val nonNullable =
+      IndexedSeq[ArrowColumnSpec](ArrowColumnSpec(varCharVectorClass, nullable = false))
+    val k1 = CometScalaUDFCodegen.CacheKey(bytes, nullable)
+    val k2 = CometScalaUDFCodegen.CacheKey(bytes, nonNullable)
+    assert(
+      k1 != k2,
+      "expected nullable=true and nullable=false specs to produce distinct cache keys")
+    assert(
+      k1.hashCode != k2.hashCode,
+      "case-class hashCode should also differ; identical hashCodes would degrade lookup but not " +
+        "equality, so the assertion is mainly a sanity check on Spec.hashCode")
   }
 }
 

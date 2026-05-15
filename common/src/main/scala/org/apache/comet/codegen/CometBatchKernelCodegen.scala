@@ -23,7 +23,7 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, HigherOrderFunction, LambdaFunction, Literal, NamedLambdaVariable, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -139,39 +139,38 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     }
     // Reject expressions that can't be safely compiled or cached:
     //   - AggregateFunction / Generator: non-scalar bridge shape.
-    //   - CodegenFallback: opts out of `doGenCode`, which our compile path assumes works.
-    //     Passing one in would emit interpreted-eval glue that our kernel can't splice cleanly.
-    //   - Unevaluable: unresolved plan markers. Shouldn't reach a serde, but cheap to guard.
-    //     `isCodegenInertUnevaluable` lets the shim exclude version-specific leaves that are
-    //     `Unevaluable` but never touched by codegen (e.g. Spark 4.0's `ResolvedCollation`, which
-    //     lives in `Collate.collation` as a type marker; `Collate.genCode` delegates to its child).
+    //   - CodegenFallback (other than HOF / lambda nodes admitted below): opts out of
+    //     `doGenCode`. The kernel cannot splice the interpreted-eval glue cleanly.
+    //   - Unevaluable: unresolved plan markers. `isCodegenInertUnevaluable` lets the shim allow
+    //     version-specific leaves that are `Unevaluable` but never touched by codegen (e.g.
+    //     Spark 4.0's `ResolvedCollation` in `Collate.collation` as a type marker;
+    //     `Collate.genCode` delegates to its child).
     //
-    // TODO(hof-lambdas): the `CodegenFallback` rule rejects `NamedLambdaVariable`, which flags
-    // every higher-order function (`ArrayTransform`, `ArrayAggregate`, `ArrayExists`,
-    // `ArrayFilter`, `ZipWith`, `MapFilter`, etc.) as unsupported. The variable is
-    // `CodegenFallback` only in isolation; the surrounding HOF binds its `value` field inline
-    // as part of its own
-    // `doGenCode`, and the resulting Java compiles fine. Loosening this would unlock
-    // element-iteration over `Array<Struct>` / `Array<Map>` which today have no fuzz path
-    // (`array_max` doesn't apply to non-comparable elements, generators are blocked above). Plan:
-    // allow `NamedLambdaVariable` / `LambdaFunction` in the rejection scan; verify the kernel
-    // splices the HOF's emitted loop without ctx.references collisions on the lambda holder.
+    // HOFs are `CodegenFallback` but admitted. `CodegenFallback.doGenCode` emits one
+    // `((Expression) references[N]).eval(row)` call site; the kernel dispatches to the HOF's
+    // interpreted `eval`, which mutates `NamedLambdaVariable.value` per element and reads the
+    // input array through the kernel's typed Arrow getters. Correctness depends on per-task
+    // `boundExpr` isolation in `CometScalaUDFCodegen.kernelCache`: concurrent partitions get
+    // their own deserialized expression tree, so they cannot race on the lambda variable's
+    // `AtomicReference`. See `CometCodegenHOFSuite`.
     //
     // Nondeterministic / stateful expressions are accepted: per-partition kernel allocation
-    // (`CometScalaUDFCodegen.ensureKernel`) plus a single `init(partitionIndex)` call at
+    // in `CometScalaUDFCodegen.ensureKernel` plus a single `init(partitionIndex)` call at
     // partition entry give `Rand` / `MonotonicallyIncreasingID` / etc. correct state across
     // batches and a clean reset across partitions.
     //
     // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`) is accepted via a chain:
     // the surrounding Comet operator's inherited `SparkPlan.waitForSubqueries` populates the
-    // subquery's mutable `result` field before evaluation; the closure serializer captures that
-    // populated value into the arg-0 bytes; the dispatcher keys its compile cache on those
-    // exact bytes, so distinct subquery results produce distinct cache entries with no
-    // cross-query staleness. Refactors to the cache-key derivation, the transport, or any
-    // Comet operator that bypasses `waitForSubqueries` would break this; preserve it.
+    // subquery's mutable `result` field before evaluation; the closure serializer captures
+    // that populated value into the arg-0 bytes; the dispatcher keys its compile cache on
+    // those exact bytes, so distinct subquery results produce distinct cache entries with no
+    // cross-query staleness. Comet operators that bypass `waitForSubqueries` would break this.
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
+      case _: HigherOrderFunction => false
+      case _: LambdaFunction => false
+      case _: NamedLambdaVariable => false
       case _: CodegenFallback => true
       case u: Unevaluable if isCodegenInertUnevaluable(u) => false
       case _: Unevaluable => true

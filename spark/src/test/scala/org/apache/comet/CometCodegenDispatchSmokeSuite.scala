@@ -66,20 +66,26 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   /**
-   * Stronger form of [[assertCodegenDidWork]]: asserts the full expression subtree compiled into
-   * at most one kernel. A "one JNI crossing per nesting level" implementation would produce one
-   * cache entry per sub-expression and `compileCount` of N. `<=` rather than `==` because the
-   * cache is JVM-wide; a prior test may have produced a hit (compileCount==0). The activity check
-   * guards against silent Spark fallback where the first two asserts pass vacuously.
+   * Stronger form of [[assertCodegenDidWork]]: asserts the full expression subtree compiles into
+   * one distinct kernel signature, not N (one per sub-expression). Compares the JVM-wide
+   * append-only signature set before and after `f`. `compileCount` is not usable here because
+   * each Spark task deserializes its own `boundExpr` and triggers its own compile (per-task cache
+   * is load-bearing for HOF correctness; see `CometScalaUDFCodegen` scaladoc), so a
+   * multi-partition query produces `compileCount > 1` even when the subtree fuses into one kernel
+   * shape. The signature set deduplicates across tasks. The activity check guards against silent
+   * Spark fallback where the size-delta assertion would pass vacuously.
    */
   private def assertOneKernelForSubtree(f: => Unit): Unit = {
     CometScalaUDFCodegen.resetStats()
-    val sizeBefore = CometScalaUDFCodegen.stats().cacheSize
+    val sigsBefore = CometScalaUDFCodegen.snapshotCompiledSignatures()
     f
+    val sigsAfter = CometScalaUDFCodegen.snapshotCompiledSignatures()
+    val grew = sigsAfter.size - sigsBefore.size
+    assert(
+      grew <= 1,
+      s"expected <= 1 new compiled-kernel signature for the composed subtree, grew by $grew; " +
+        s"new=${sigsAfter -- sigsBefore}")
     val after = CometScalaUDFCodegen.stats()
-    assert(after.compileCount <= 1, s"expected <= 1 compile for the composed subtree, got $after")
-    val grew = after.cacheSize - sizeBefore
-    assert(grew <= 1, s"expected cache to grow by <= 1 entry, grew by $grew; stats=$after")
     assert(
       after.compileCount + after.cacheHitCount >= 1,
       s"expected codegen dispatcher activity, got $after")
@@ -188,30 +194,6 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
         after.compileCount == 0 && after.cacheHitCount == 0,
         s"expected dispatcher fallback under maxFields=3, got $after")
     }
-  }
-
-  test("per-batch nullability produces distinct compiles for null-present vs null-absent") {
-    // Same ScalaUDF + same Arrow vector class + different observed nullability should hit
-    // different cache keys, because `ArrowColumnSpec.nullable` flips when the batch has no
-    // nulls. We don't assert on per-run deltas because Spark's partitioning can split the
-    // subject table so the first query alone sees both nullability variants across different
-    // partitions. Instead, assert the total invariant: across both queries we see at least two
-    // compiles, proving the cache key discriminated on nullability.
-    spark.udf.register("nullabilityMarker", (s: String) => if (s == null) null else s + "!")
-    CometScalaUDFCodegen.resetStats()
-
-    withSubjects("nullability_marker_1", null, "nullability_marker_2") {
-      checkSparkAnswerAndOperator(sql("SELECT nullabilityMarker(s) FROM t"))
-    }
-    withSubjects("nullability_marker_3", "nullability_marker_4") {
-      checkSparkAnswerAndOperator(sql("SELECT nullabilityMarker(s) FROM t"))
-    }
-    val after = CometScalaUDFCodegen.stats()
-
-    assert(
-      after.compileCount >= 2,
-      "expected at least two compiles across both nullability distributions (one per " +
-        s"nullable=true/false variant); got $after")
   }
 
   test("dispatcher caches the compiled kernel across batches of one query") {

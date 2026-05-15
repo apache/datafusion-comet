@@ -20,8 +20,10 @@
 package org.apache.comet.udf.codegen
 
 import java.nio.ByteBuffer
-import java.util.{Collections, LinkedHashMap}
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicLong
+
+import scala.collection.mutable
 
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
@@ -37,32 +39,39 @@ import org.apache.comet.udf.CometUDF
 
 /**
  * Arrow-direct codegen dispatcher. For each (bound `Expression`, input Arrow schema) pair,
- * compiles a specialized [[CometBatchKernel]] on first encounter and caches it; subsequent
- * batches with the same shape reuse the compile.
+ * compiles a specialized [[CometBatchKernel]] on first encounter and caches it.
  *
- * Arg 0 is a `VarBinaryVector` scalar carrying the closure-serialized bound Expression bytes.
+ * Arg 0 is a `VarBinaryVector` scalar carrying the closure-serialized bound `Expression` bytes.
  * Args 1..N are the data columns the `BoundReference`s read, in ordinal order. The bytes
  * self-describe the expression so the path works in cluster mode without executor-side state.
  *
- * Three caches at different scopes: the JVM-wide compile cache (`kernelCache` on the companion);
- * the per-task UDF-instance cache in `CometUdfBridge.INSTANCES`; and per-partition kernel state
- * on this instance (`activeKernel`, `activeKey`, `activePartition`) managed by [[ensureKernel]].
- * Each layer covers a distinct lifetime: JVM (compiled bytecode, immutable), task (UDF instance,
- * isolated from worker reuse), partition (kernel mutable state for `Rand` /
- * `MonotonicallyIncreasingID` / etc.).
+ * Three lifetime scopes:
+ *   - JVM-wide bytecode dedup: `CodeGenerator.compile`'s source-keyed Guava cache. Stateless.
+ *   - Per-task: this instance, lifetime managed by `CometUdfBridge.INSTANCES` keyed on
+ *     `taskAttemptId` and dropped via `TaskCompletionListener`. Holds [[kernelCache]], so the
+ *     deserialized `boundExpr` (which carries mutable state like `NamedLambdaVariable.value` for
+ *     HOFs) is not shared across concurrent tasks. Mirrors Spark's per-task closure-deserialize
+ *     model.
+ *   - Per-partition: [[activeKernel]] for kernel mutable state (`Rand`'s `XORShiftRandom`,
+ *     `MonotonicallyIncreasingID`'s counter) that advances across batches in one partition and
+ *     resets across partitions.
  */
 class CometScalaUDFCodegen extends CometUDF {
 
   /**
-   * Per-partition kernel instance cache. The compile cache stores the compiled `GeneratedClass`;
-   * the kernel '''instance''' holds per-row mutable state (`Rand`'s `XORShiftRandom`,
-   * `MonotonicallyIncreasingID`'s counter, etc.) that must advance across batches in one
-   * partition and reset across partitions. Allocating per partition gets that right.
-   *
-   * Plain `var`s are safe: this dispatcher is per-task (`CometUdfBridge.INSTANCES` keys by
-   * `taskAttemptId`) and Spark drives one partition per task, so [[ensureKernel]] never sees
-   * concurrent access. A different partition or expression triggers a fresh allocation.
+   * Per-task `(serialized-bytes, specs) -> compiled kernel + bound expression`. Per-task scope is
+   * load-bearing for HOF correctness: `ArrayTransform.eval` and other HOFs mutate
+   * `NamedLambdaVariable.value`'s `AtomicReference` per element, and a JVM-wide cache would race
+   * across concurrent tasks running the same query. Compile work itself stays deduped JVM-wide
+   * via `CodeGenerator.compile`'s internal source cache, so identical Janino source shares
+   * bytecode across tasks; only the `boundExpr` Java object is per-task.
    */
+  private val kernelCache
+      : mutable.Map[CometScalaUDFCodegen.CacheKey, CometScalaUDFCodegen.CacheEntry] =
+    mutable.HashMap.empty
+
+  // Plain `var`s: this instance is per-task, Spark drives one partition per task, so
+  // [[ensureKernel]] is never concurrent.
   private var activeKernel: CometBatchKernel = _
   private var activeKey: CometScalaUDFCodegen.CacheKey = _
   private var activePartition: Int = -1
@@ -96,7 +105,7 @@ class CometScalaUDFCodegen extends CometUDF {
     val specsSeq = specs.toIndexedSeq
 
     val key = CometScalaUDFCodegen.CacheKey(ByteBuffer.wrap(bytes), specsSeq)
-    val entry = CometScalaUDFCodegen.lookupOrCompile(key, bytes, specsSeq)
+    val entry = lookupOrCompile(key, bytes, specsSeq)
 
     val partitionId = CometScalaUDFCodegen.currentPartitionIndex()
     val kernel = ensureKernel(entry.compiled, key, partitionId)
@@ -130,6 +139,48 @@ class CometScalaUDFCodegen extends CometUDF {
       activePartition = partitionId
     }
     activeKernel
+  }
+
+  private def lookupOrCompile(
+      key: CometScalaUDFCodegen.CacheKey,
+      bytes: Array[Byte],
+      specs: IndexedSeq[ArrowColumnSpec]): CometScalaUDFCodegen.CacheEntry = {
+    val existing = kernelCache.get(key)
+    if (existing.isDefined) {
+      CometScalaUDFCodegen.cacheHitCount.incrementAndGet()
+      existing.get
+    } else {
+      val loader = Option(Thread.currentThread().getContextClassLoader)
+        .getOrElse(classOf[Expression].getClassLoader)
+      val rawExpr = SparkEnv.get.closureSerializer
+        .newInstance()
+        .deserialize[Expression](ByteBuffer.wrap(bytes), loader)
+      val boundExpr = rewriteBoundReferences(rawExpr, specs)
+      val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)
+      val outputField =
+        Utils.toArrowField("codegen_result", boundExpr.dataType, nullable = true, "UTC")
+      val entry = CometScalaUDFCodegen.CacheEntry(compiled, boundExpr.dataType, outputField)
+      kernelCache.put(key, entry)
+      CometScalaUDFCodegen.compileCount.incrementAndGet()
+      CometScalaUDFCodegen.recordCompiledSignature(specs, boundExpr.dataType)
+      entry
+    }
+  }
+
+  /**
+   * Walk the bound expression tree and rewrite any `BoundReference(ord, dt, nullable=true)` to
+   * `nullable=false` when the corresponding input column in `specs` is non-nullable for this
+   * batch. Only tightens; never relaxes.
+   */
+  private def rewriteBoundReferences(
+      expr: Expression,
+      specs: IndexedSeq[ArrowColumnSpec]): Expression = {
+    expr.transform {
+      case BoundReference(ord, dt, true)
+          if ord >= 0 && ord < specs.length && !specs(ord).nullable =>
+        BoundReference(ord, dt, nullable = false)
+      case other => other
+    }
   }
 
   /**
@@ -213,103 +264,46 @@ class CometScalaUDFCodegen extends CometUDF {
 
 object CometScalaUDFCodegen {
 
-  private val CacheCapacity: Int = 128
-  private val kernelCache: java.util.Map[CacheKey, CacheEntry] =
-    Collections.synchronizedMap(
-      new LinkedHashMap[CacheKey, CacheEntry](CacheCapacity, 0.75f, true) {
-        override def removeEldestEntry(
-            eldest: java.util.Map.Entry[CacheKey, CacheEntry]): Boolean =
-          size() > CacheCapacity
-      })
-  // Observability counters. Incremented under the `kernelCache.synchronized` block in
-  // `lookupOrCompile` so counter increments and cache mutations cannot interleave. Read via
-  // [[stats]]; reset via [[resetStats]] for tests.
+  // JVM-wide counters aggregated across all per-task instances. Compile work itself is
+  // deduplicated JVM-wide via `CodeGenerator.compile`'s source cache; these numbers track this
+  // dispatcher's per-task cache activity.
   private val compileCount = new AtomicLong(0)
   private val cacheHitCount = new AtomicLong(0)
 
-  /** Returns a snapshot of cache counters and current size. Cheap; safe to call anytime. */
-  def stats(): DispatcherStats =
-    DispatcherStats(compileCount.get(), cacheHitCount.get(), kernelCache.size())
+  // JVM-wide append-only set of distinct compiled-kernel signatures. Lets tests assert
+  // specialization shape (which vector-class / dataType combinations the dispatcher emitted)
+  // and that a composed subtree fuses into one kernel. Append-only because each per-task cache
+  // is dropped on task completion, leaving no other place to observe the set across runs.
+  private val compiledSignatures =
+    Collections.synchronizedSet(
+      new java.util.HashSet[(IndexedSeq[Class[_ <: ValueVector]], DataType)]())
 
-  /** Reset counters to zero. Leaves the compile cache intact. Intended for tests. */
+  /** Snapshot of JVM-wide counters and the distinct-signature count. Cheap. */
+  def stats(): DispatcherStats =
+    DispatcherStats(compileCount.get(), cacheHitCount.get(), compiledSignatures.size())
+
+  /** Reset counters. Leaves the signature set intact. Tests only. */
   def resetStats(): Unit = {
     compileCount.set(0)
     cacheHitCount.set(0)
   }
 
   /**
-   * Test-facing snapshot of compiled kernel signatures: `(input Arrow vector classes in ordinal
-   * order, output Spark DataType)` per cache entry. Lets tests assert specialization shape, not
-   * just result correctness. Drops `ArrowColumnSpec.nullable` so a single assertion matches both
-   * `nullable=true` and `nullable=false` variants of the same expression.
+   * Distinct compiled-kernel signatures: `(input Arrow vector classes in ordinal order, output
+   * Spark DataType)`. Drops `ArrowColumnSpec.nullable` so a single assertion matches both
+   * nullability variants of the same expression.
    */
   def snapshotCompiledSignatures(): Set[(IndexedSeq[Class[_ <: ValueVector]], DataType)] = {
-    kernelCache.synchronized {
-      import scala.jdk.CollectionConverters._
-      kernelCache
-        .entrySet()
-        .asScala
-        .iterator
-        .map { e =>
-          (e.getKey.specs.map(_.vectorClass), e.getValue.outputType)
-        }
-        .toSet
+    import scala.jdk.CollectionConverters._
+    compiledSignatures.synchronized {
+      compiledSignatures.iterator().asScala.toSet
     }
   }
 
-  private def lookupOrCompile(
-      key: CacheKey,
-      bytes: Array[Byte],
-      specs: IndexedSeq[ArrowColumnSpec]): CacheEntry = {
-    kernelCache.synchronized {
-      val existing = kernelCache.get(key)
-      if (existing != null) {
-        cacheHitCount.incrementAndGet()
-        existing
-      } else {
-        // Use a classloader that can see Spark classes. The Comet native runtime calls us on a
-        // Tokio worker thread where the context classloader may not be set to Spark's task
-        // loader, so fall back to the loader that loaded `Expression` itself if needed.
-        val loader = Option(Thread.currentThread().getContextClassLoader)
-          .getOrElse(classOf[Expression].getClassLoader)
-        val rawExpr = SparkEnv.get.closureSerializer
-          .newInstance()
-          .deserialize[Expression](ByteBuffer.wrap(bytes), loader)
-        // Tighten BoundReference.nullable based on the observed batch. The plan-time value is
-        // conservative (the column may be null somewhere in the query's execution), but for
-        // this specific batch we know. Rewriting lets Spark's `BoundReference.genCode` skip the
-        // `isNull` branch at source level rather than leaving it to JIT constant-folding.
-        // Correctness is preserved by the cache key: a later batch with nulls on this column has
-        // a different `specs`, so it hits a different kernel compiled with nullable=true.
-        val boundExpr = rewriteBoundReferences(rawExpr, specs)
-        val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)
-        val outputField =
-          Utils.toArrowField("codegen_result", boundExpr.dataType, nullable = true, "UTC")
-        val entry = CacheEntry(compiled, boundExpr.dataType, outputField)
-        kernelCache.put(key, entry)
-        compileCount.incrementAndGet()
-        entry
-      }
-    }
-  }
-
-  /**
-   * Walk the bound expression tree and rewrite any `BoundReference(ord, dt, nullable=true)` to
-   * `nullable=false` when the corresponding input column in `specs` is non-nullable for this
-   * batch. Only tightens; never relaxes. Expressions outside the `BoundReference` leaves are
-   * unchanged.
-   */
-  private def rewriteBoundReferences(
-      expr: Expression,
-      specs: IndexedSeq[ArrowColumnSpec]): Expression = {
-    expr.transform {
-      case BoundReference(ord, dt, true)
-          if ord >= 0 && ord < specs.length && !specs(ord).nullable =>
-        BoundReference(ord, dt, nullable = false)
-      // Fall through unchanged: non-BoundReference nodes and BoundReferences that are already
-      // non-nullable or point at a nullable column in this batch.
-      case other => other
-    }
+  private[codegen] def recordCompiledSignature(
+      specs: IndexedSeq[ArrowColumnSpec],
+      outputType: DataType): Unit = {
+    compiledSignatures.add((specs.map(_.vectorClass), outputType))
   }
 
   /**
