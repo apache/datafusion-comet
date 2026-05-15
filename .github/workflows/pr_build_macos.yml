@@ -18,10 +18,15 @@
 name: PR Build (macOS)
 
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  # Literal suffix keeps the group unique when this workflow is invoked via
+  # `workflow_call` from pr_build_entry.yml, since github.workflow then
+  # resolves to the caller's name.
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-pr-build-macos
   cancel-in-progress: true
 
 on:
+  # Called by pr_build_entry.yml on fork pushes. No inputs.
+  workflow_call:
   push:
     branches:
       - main

@@ -1,0 +1,88 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Reusable orchestrator called by build_main.yml on the fork side.
+#
+# Job layout mirrors Spark's build_and_test.yml:
+#   1. precondition: when running in a fork, merges the fork HEAD with
+#      upstream/main so downstream jobs test "fork changes applied on top
+#      of current upstream", giving the upstream check meaningful signal.
+#   2. The remaining jobs reuse the existing per-area workflows via
+#      `uses:`. Each target workflow must expose `on: workflow_call:`.
+#
+# The "Check changes" job name is referenced by notify_test_workflow.yml
+# in the upstream repo — keep them in sync.
+
+name: Run
+
+on:
+  workflow_call:
+
+jobs:
+  precondition:
+    name: Check changes
+    runs-on: ubuntu-24.04
+    outputs:
+      merge_sha: ${{ steps.sync.outputs.merge_sha }}
+    steps:
+      - name: Checkout upstream main
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          repository: apache/datafusion-comet
+          ref: main
+
+      - name: Sync current branch with upstream main
+        id: sync
+        if: github.repository != 'apache/datafusion-comet'
+        run: |
+          git fetch https://github.com/${GITHUB_REPOSITORY}.git ${GITHUB_REF#refs/heads/}
+          git -c user.name='Comet CI' -c user.email='ci@datafusion-comet.invalid' \
+            merge --no-commit --progress --squash FETCH_HEAD
+          git -c user.name='Comet CI' -c user.email='ci@datafusion-comet.invalid' \
+            commit -m "Merged commit" --allow-empty
+          echo "merge_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    name: PR Build (Linux)
+    needs: precondition
+    uses: ./.github/workflows/pr_build_linux.yml
+
+  build-macos:
+    name: PR Build (macOS)
+    needs: precondition
+    uses: ./.github/workflows/pr_build_macos.yml
+
+  spark-sql:
+    name: Spark SQL Tests
+    needs: precondition
+    uses: ./.github/workflows/spark_sql_test.yml
+
+  spark-sql-iceberg:
+    name: Spark SQL (native Iceberg)
+    needs: precondition
+    uses: ./.github/workflows/spark_sql_test_native_iceberg_compat.yml
+
+  iceberg-spark:
+    name: Iceberg Spark
+    needs: precondition
+    uses: ./.github/workflows/iceberg_spark_test.yml
+
+  miri:
+    name: Miri
+    needs: precondition
+    uses: ./.github/workflows/miri.yml
