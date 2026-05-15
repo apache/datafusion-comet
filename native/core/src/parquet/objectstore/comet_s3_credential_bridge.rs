@@ -71,9 +71,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 
-/// Hadoop-style config key naming the vendor `CometS3CredentialProvider` FQCN. Per-bucket form is
-/// `fs.s3a.bucket.<name>.comet.credential.provider.class`.
-pub const PROVIDER_CLASS_PROPERTY: &str = "comet.credential.provider.class";
+/// Hadoop-style config key (without `fs.s3a.` prefix) naming the vendor `CometS3CredentialProvider`
+/// FQCN. Iceberg's catalog properties use the same suffix under their `s3.` namespace.
+pub(crate) const PROVIDER_CLASS_PROPERTY: &str = "comet.credential.provider.class";
 
 /// Cap on opendal's credential cache when the provider does not report an expiry. Prevents the
 /// executor from holding a stale credential for the entire job lifetime.
@@ -92,23 +92,15 @@ pub enum AccessMode {
     Write = 1,
 }
 
-/// Resolve the configured provider class for the given bucket, applying the per-bucket override
-/// before falling back to the global key. Returns the trimmed FQCN if non-empty.
+/// Resolve the configured provider class for the given bucket via `super::s3::get_config_trimmed`,
+/// which already implements the per-bucket-then-global `fs.s3a.` lookup. Returns the trimmed FQCN
+/// if non-empty.
 pub fn lookup_provider_class<'a>(
     configs: &'a HashMap<String, String>,
     bucket: &str,
 ) -> Option<&'a str> {
-    let per_bucket = format!("fs.s3a.bucket.{bucket}.{PROVIDER_CLASS_PROPERTY}");
-    let value = configs.get(&per_bucket).or_else(|| {
-        let global = format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}");
-        configs.get(&global)
-    })?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
+    super::s3::get_config_trimmed(configs, bucket, PROVIDER_CLASS_PROPERTY)
+        .filter(|s| !s.is_empty())
 }
 
 /// Per-request credential provider that delegates to the Java SPI via JNI. Constructed once per

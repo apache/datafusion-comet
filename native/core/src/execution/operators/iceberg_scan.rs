@@ -45,7 +45,7 @@ use iceberg_storage_opendal::OpenDalStorageFactory;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::objectstore::comet_s3_credential_bridge::{
-    AccessMode, CometS3CredentialBridge,
+    AccessMode, CometS3CredentialBridge, PROVIDER_CLASS_PROPERTY,
 };
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
@@ -254,8 +254,9 @@ fn build_s3_credential_loader(
 ) -> Option<CustomAwsCredentialLoader> {
     let url = url::Url::parse(metadata_location).ok()?;
     let bucket = url.host_str()?;
+    let key = format!("s3.{PROVIDER_CLASS_PROPERTY}");
     let provider_class = catalog_properties
-        .get("s3.comet.credential.provider.class")
+        .get(&key)
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())?;
     let bridge = CometS3CredentialBridge::new(provider_class, bucket, url.path(), AccessMode::Read);

@@ -293,7 +293,7 @@ fn get_config<'a>(
     })
 }
 
-fn get_config_trimmed<'a>(
+pub(super) fn get_config_trimmed<'a>(
     configs: &'a HashMap<String, String>,
     bucket: &str,
     property: &str,

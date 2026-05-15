@@ -28,11 +28,9 @@ import org.slf4j.LoggerFactory;
 /**
  * JNI entry point invoked from native code to resolve a {@link CometS3CredentialProvider}.
  *
- * <p>The provider class is named in {@code fs.s3a.comet.credential.provider.class} (optionally
- * per-bucket). Native code reads that key from the object-store options it already forwards over
- * JNI and passes the FQCN here. We instantiate each named class once via reflection and cache it,
- * so a single executor JVM can serve multiple providers (e.g. one for the default config and one
- * for a specific bucket) without re-instantiation per request.
+ * <p>Native code passes the FQCN named in {@code fs.s3a.comet.credential.provider.class} (or its
+ * per-bucket / Iceberg-namespaced variants). Each named class is instantiated once via reflection
+ * and cached, so a single executor JVM can serve multiple providers (e.g. one per bucket).
  */
 public final class CometS3CredentialDispatcher {
 
