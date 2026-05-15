@@ -22,6 +22,7 @@ package org.apache.comet
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types._
 
@@ -266,6 +267,25 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       assertCodegenDidWork {
         checkSparkAnswerAndOperator(sql("SELECT shout(s) FROM t"))
       }
+    }
+  }
+
+  test("registered Java UDF1 routes through dispatcher") {
+    // Java API path: `spark.udf.register(name, UDF1<...>, returnType)`. Spark wraps the Java
+    // functional interface in a Scala function and produces a `ScalaUDF` expression at plan
+    // time, so the dispatcher handles it the same as a Scala-registered UDF. Sanity check that
+    // both registration paths land on the same routing code.
+    spark.udf.register(
+      "javaLen",
+      new UDF1[String, Integer] {
+        override def call(s: String): Integer = if (s == null) -1 else s.length
+      },
+      IntegerType)
+    withSubjects("abc", "hello", null, "x") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT javaLen(s) FROM t"))
+      }
+      assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
     }
   }
 
