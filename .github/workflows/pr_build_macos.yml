@@ -182,6 +182,12 @@ jobs:
               org.apache.comet.CometIcebergNativeSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
+              org.apache.comet.CometDeltaNativeSuite
+              org.apache.comet.CometDeltaColumnMappingSuite
+              org.apache.comet.CometDeltaAdvancedSuite
+              org.apache.comet.CometDeltaRowTrackingSuite
+              org.apache.comet.CometDeltaRoundTripSuite
+              org.apache.comet.CometFuzzDeltaSuite
           - name: "csv"
             value: |
               org.apache.comet.csv.CometCsvNativeReadSuite

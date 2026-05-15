@@ -28,6 +28,7 @@ import org.apache.parquet.hadoop.metadata.FileMetaData
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.FileSourceGeneratedMetadataStructField
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.comet.CometMetricNode
@@ -39,7 +40,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.parquet.ParquetReadSupport
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.Filter
-import org.apache.spark.sql.types.{DateType, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DateType, MapType, StructField, StructType, TimestampType}
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf
@@ -120,13 +121,27 @@ class CometParquetFileFormat(session: SparkSession)
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
 
+    // Delta's row-tracking / generated-metadata columns appear in the scan's
+    // required/data schemas under their LOGICAL names (e.g. `row_id`) with a
+    // `FileSourceGeneratedMetadataStructField` metadata marker carrying the
+    // PHYSICAL column name stored in the parquet file (when materialised) --
+    // see Spark's `FileSourceGeneratedMetadataStructField` +
+    // Delta's `RowId.RowIdMetadataStructField`. The stock Parquet reader
+    // translates these before the actual read; Comet's `NativeBatchReader`
+    // doesn't know about Spark metadata columns, so we substitute the
+    // physical name here. Only touches fields where `getInternalNameIfValid`
+    // returns `Some(name)`; everything else is passed through unchanged.
+    val substitutedRequiredSchema =
+      CometParquetFileFormat.substituteGeneratedMetadataFields(requiredSchema)
+    val substitutedDataSchema =
+      CometParquetFileFormat.substituteGeneratedMetadataFields(dataSchema)
     (file: PartitionedFile) => {
       val sharedConf = broadcastedHadoopConf.value.value
       val footer = FooterReader.readFooter(sharedConf, file)
       val footerFileMetaData = footer.getFileMetaData
       val datetimeRebaseSpec = CometParquetFileFormat.getDatetimeRebaseSpec(
         file,
-        requiredSchema,
+        substitutedRequiredSchema,
         sharedConf,
         footerFileMetaData,
         datetimeRebaseModeInRead)
@@ -134,7 +149,7 @@ class CometParquetFileFormat(session: SparkSession)
       val parquetSchema = footerFileMetaData.getSchema
       val parquetFilters = new ParquetFilters(
         parquetSchema,
-        dataSchema,
+        substitutedDataSchema,
         pushDownDate,
         pushDownTimestamp,
         pushDownDecimal,
@@ -162,8 +177,8 @@ class CometParquetFileFormat(session: SparkSession)
         footer,
         pushedNative.orNull,
         capacity,
-        requiredSchema,
-        dataSchema,
+        substitutedRequiredSchema,
+        substitutedDataSchema,
         isCaseSensitive,
         useFieldId,
         ignoreMissingIds,
@@ -193,6 +208,52 @@ class CometParquetFileFormat(session: SparkSession)
 }
 
 object CometParquetFileFormat extends Logging with ShimSQLConf {
+
+  /**
+   * Rewrite any fields in `schema` so they use the PHYSICAL column name stored in the parquet
+   * file instead of the LOGICAL attribute name. Fields without a known physical-name marker are
+   * returned unchanged. Handles two mechanisms:
+   *
+   *   - `FileSourceGeneratedMetadataStructField` (Spark-generated columns, e.g. Delta's
+   *     row-tracking `row_id` / `row_commit_version`). The stock `ParquetFileFormat` does this
+   *     substitution inside `ParquetReadSupport`, but Comet's `NativeBatchReader` reads the
+   *     schema as-is -- without the substitution, the read fails with "Required column 'row_id'
+   *     is missing in data file".
+   *
+   *   - `delta.columnMapping.physicalName` (Delta column-mapping `id` / `name` modes). For `name`
+   *     mode the physical name is what the parquet reader must use because there's no field-ID
+   *     fallback. Applies recursively to nested struct fields so every level of a
+   *     struct/array/map tree gets its physical name. Iceberg's equivalent mechanism
+   *     (`parquet.field.id`) is already handled by the native reader's `useFieldId` path; this
+   *     covers Delta (and any other Spark-side reader that carries the same metadata key).
+   */
+  def substituteGeneratedMetadataFields(schema: StructType): StructType = {
+    // Keep in sync with DeltaReflection.PhysicalNameMetadataKey. Hard-coded here so the
+    // parquet module has no compile-time dependency on the delta module.
+    val PhysicalNameKey = "delta.columnMapping.physicalName"
+
+    def deltaPhysical(f: StructField): Option[String] =
+      if (f.metadata.contains(PhysicalNameKey)) Some(f.metadata.getString(PhysicalNameKey))
+      else None
+
+    def rewriteDataType(dt: DataType): DataType = dt match {
+      case s: StructType => StructType(s.fields.map(rewriteField))
+      case a: ArrayType => ArrayType(rewriteDataType(a.elementType), a.containsNull)
+      case m: MapType =>
+        MapType(rewriteDataType(m.keyType), rewriteDataType(m.valueType), m.valueContainsNull)
+      case other => other
+    }
+
+    def rewriteField(f: StructField): StructField = {
+      val generatedPhysical = FileSourceGeneratedMetadataStructField
+        .getInternalNameIfValid(f.dataType, f.metadata)
+      val newName = generatedPhysical.orElse(deltaPhysical(f)).getOrElse(f.name)
+      StructField(newName, rewriteDataType(f.dataType), f.nullable, f.metadata)
+    }
+
+    val fields = schema.fields.map(rewriteField)
+    if (fields.sameElements(schema.fields)) schema else StructType(fields)
+  }
 
   /**
    * Populates Parquet related configurations from the input `sqlConf` to the `hadoopConf`

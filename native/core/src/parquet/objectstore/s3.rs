@@ -113,6 +113,46 @@ pub fn create_store(
     Ok((Box::new(object_store), path))
 }
 
+/// Resolve AWS credentials once for the given Hadoop S3A configs + bucket and return them
+/// as plain strings.
+///
+/// Use this when the caller needs to populate a different ObjectStore implementation that
+/// can't share `object_store`'s `CredentialProvider` types (e.g., delta-kernel-rs's
+/// `object_store_kernel` version pin). The credential provider chain is the same as
+/// [`create_store`] -- recognizes Hadoop providers (`SimpleAWSCredentialsProvider`,
+/// `TemporaryAWSCredentialsProvider`, `AssumedRoleCredentialProvider`,
+/// `IAMInstanceCredentialsProvider`, `AnonymousAWSCredentialsProvider`) and AWS SDK
+/// providers (container/web-identity/profile/env), plus the default chain when no
+/// provider is configured.
+///
+/// Returns:
+/// * `Ok(Some((access_key, secret_key, session_token)))` on successful resolution.
+/// * `Ok(None)` when the configured provider is anonymous (no credentials wanted).
+/// * `Err(...)` when resolution fails (misconfigured provider, IMDS unreachable, etc.).
+///
+/// Note: this is a SNAPSHOT resolution. The returned credentials don't auto-refresh; the
+/// caller must re-resolve if the credentials expire. For short-lived operations (like
+/// Delta log replay) a single resolve is fine; for long-running readers prefer
+/// [`create_store`] which keeps the full refresh-capable provider alive.
+pub fn resolve_static_credentials(
+    configs: &HashMap<String, String>,
+    bucket: &str,
+) -> Result<Option<(String, String, Option<String>)>, object_store::Error> {
+    let provider =
+        get_runtime().block_on(build_credential_provider(configs, bucket, Duration::from_secs(0)))?;
+    match provider {
+        None => Ok(None), // anonymous
+        Some(p) => {
+            let cred = get_runtime().block_on(p.get_credential())?;
+            Ok(Some((
+                cred.key_id.clone(),
+                cred.secret_key.clone(),
+                cred.token.clone(),
+            )))
+        }
+    }
+}
+
 /// Process-wide cache of resolved S3 bucket regions, keyed by bucket name.
 ///
 /// ## Why static / process lifetime?

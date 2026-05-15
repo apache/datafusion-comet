@@ -22,6 +22,7 @@ pub use mutable_vector::*;
 
 #[macro_use]
 pub mod util;
+pub mod ignore_missing_file_source;
 pub mod parquet_exec;
 pub mod parquet_read_cached_factory;
 pub mod parquet_support;
@@ -29,7 +30,7 @@ pub mod read;
 pub mod schema_adapter;
 
 mod cast_column;
-mod objectstore;
+pub(crate) mod objectstore;
 
 use std::collections::HashMap;
 use std::task::Poll;
@@ -517,8 +518,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             encryption_enabled,
             // The iceberg-compat path resolves IDs in the JVM via NativeBatchReader,
             // so the native side does not need to do field-ID matching here.
-            false,
-            false,
+            false, // use_field_id
+            false, // ignore_missing_field_id
+            false, // ignore_missing_files: not wired through this JNI entrypoint
         )?;
 
         let partition_index: usize = 0;

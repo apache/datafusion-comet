@@ -151,5 +151,6 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Explode(_) => None, // Not yet in OperatorType enum
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => None, // Not yet in OperatorType enum
+        OpStruct::DeltaScan(_) => None,   // Not yet in OperatorType enum
     }
 }

@@ -17,6 +17,7 @@
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::ignore_missing_file_source::IgnoreMissingFileSource;
 use crate::parquet::parquet_read_cached_factory::CachingParquetReaderFactory;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
@@ -74,6 +75,7 @@ pub(crate) fn init_datasource_exec(
     encryption_enabled: bool,
     use_field_id: bool,
     ignore_missing_field_id: bool,
+    ignore_missing_files: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     let (table_parquet_options, mut spark_parquet_options) = get_options(
         session_timezone,
@@ -166,6 +168,15 @@ pub(crate) fn init_datasource_exec(
                 .unwrap_or_else(|| Arc::new(parquet_source))
         }
         _ => Arc::new(parquet_source),
+    };
+
+    // Delta optionally tolerates files that vanished between snapshot listing and read
+    // (concurrent compaction/vacuum windows). Wrap the source so missing files emit empty
+    // batches instead of failing the scan.
+    let file_source: Arc<dyn FileSource> = if ignore_missing_files {
+        Arc::new(IgnoreMissingFileSource::new(file_source))
+    } else {
+        file_source
     };
 
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(

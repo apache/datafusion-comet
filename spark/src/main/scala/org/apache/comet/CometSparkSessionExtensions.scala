@@ -97,6 +97,91 @@ class CometSparkSessionExtensions
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
+
+    // Phase 3 auto-config: tell Delta to use its older DV read strategy
+    // (Project + Filter with __delta_internal_is_row_deleted) instead of
+    // the default metadata-row-index strategy. The older strategy inserts
+    // a plan-level Filter that CometScanRule.stripDeltaDvWrappers can
+    // detect and remove, routing DVs through our DeltaDvFilterExec.
+    //
+    // The metadata-row-index strategy applies DVs opaquely inside
+    // DeletionVectorBoundFileFormat at read time, which Comet's native
+    // reader can't intercept. By setting this config in an optimizer rule,
+    // it takes effect BEFORE Delta's PreprocessTableWithDVsStrategy runs
+    // (optimizer -> strategies ordering in Catalyst).
+    extensions.injectOptimizerRule { session =>
+      new org.apache.spark.sql.catalyst.rules.Rule[
+        org.apache.spark.sql.catalyst.plans.logical.LogicalPlan] {
+        override def apply(plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan)
+            : org.apache.spark.sql.catalyst.plans.logical.LogicalPlan = {
+          // Only flip the session config when this plan actually contains a Delta
+          // scan we would accelerate. A session-global sticky flip breaks Delta's
+          // own tests that deliberately set `useMetadataRowIndex=true` and expect
+          // it to stick (e.g. `DeltaParquetFileFormatWithPredicatePushdownSuite`).
+          //
+          // Skip plans that explicitly reference `__delta_internal_is_row_deleted`
+          // in their output — that's a raw DV-read test path where the user wants
+          // Delta's metadata-row-index strategy, and flipping would invalidate the
+          // constructor contract (`useMetadataRowIndex == optimizationsEnabled`).
+          try {
+            // Don't override an explicit user/test setting. Tests like
+            // `DeletionVectorsWithPredicatePushdownSuite` set
+            // `spark.databricks.delta.deletionVectors.useMetadataRowIndex=true`
+            // to exercise Delta's predicate-pushdown read path (which keeps
+            // `optimizationsEnabled=true` so files are splittable). Flipping
+            // it back to `false` here makes Delta produce one partition per
+            // file regardless of `FILES_MAX_PARTITION_BYTES`, breaking the
+            // `partitions.size === 2` assertion.
+            val confKey = "spark.databricks.delta.deletionVectors.useMetadataRowIndex"
+            // Probe whether the session has the conf set (test or user). `getConfString`
+            // returns the explicit value; `getOption` would also do, but that API isn't
+            // public in older Sparks. Wrap in try because reading an unset key throws.
+            val userSet =
+              try {
+                session.sessionState.conf.getConfString(confKey, null) != null
+              } catch { case scala.util.control.NonFatal(_) => false }
+            // Don't auto-flip on derived sessions (`spark.newSession`). The user/test
+            // may have set the conf on the *parent* session, which the new session does
+            // NOT inherit. Auto-flipping the child would silently override what the
+            // user requested for the SparkContext as a whole. Detect: if a default
+            // SparkSession exists and is different from this one, this is a derived
+            // session and we leave its conf alone. (For the default session itself,
+            // the auto-flip is the right behavior.)
+            val isDerivedSession =
+              SparkSession.getDefaultSession.exists(_ ne session)
+            if (!userSet && !isDerivedSession &&
+              CometConf.COMET_DELTA_NATIVE_ENABLED.get(session.sessionState.conf) &&
+              planHasDeltaScan(plan) &&
+              !planReferencesIsRowDeleted(plan)) {
+              session.conf.set(confKey, "false")
+            }
+          } catch {
+            case scala.util.control.NonFatal(_) => // delta-spark not on classpath; ignore
+          }
+          plan
+        }
+
+        private def planHasDeltaScan(
+            plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan): Boolean = {
+          import org.apache.spark.sql.execution.datasources.LogicalRelation
+          import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+          plan.find {
+            case LogicalRelation(hfr: HadoopFsRelation, _, _, _) =>
+              org.apache.comet.delta.DeltaReflection.isDeltaFileFormat(hfr.fileFormat)
+            case _ => false
+          }.isDefined
+        }
+
+        private def planReferencesIsRowDeleted(
+            plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan): Boolean = {
+          val name = org.apache.comet.delta.DeltaReflection.IsRowDeletedColumnName
+          plan.output.exists(_.name.equalsIgnoreCase(name)) ||
+          plan.find(_.output.exists(_.name.equalsIgnoreCase(name))).isDefined
+        }
+
+        override val ruleName: String = "CometDeltaDvConfigRule"
+      }
+    }
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {

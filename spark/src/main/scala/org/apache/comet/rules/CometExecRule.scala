@@ -180,9 +180,18 @@ case class CometExecRule(session: SparkSession)
             // Switch to use Decimal128 regardless of precision, since Arrow native execution
             // doesn't support Decimal32 and Decimal64 yet.
             conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-            CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+            val cse = CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+            // AQE creates a QueryStageExec at every Exchange node and asserts that the new
+            // stage's logicalLink is defined
+            // (AdaptiveSparkPlanExec.setLogicalLinkForNewQueryStage). Without this,
+            // MERGE / CDF / streaming-watermark plans hit "java.lang.AssertionError" the
+            // moment AQE wraps the shuffle.
+            s.logicalLink.foreach(cse.setLogicalLink)
+            cse
           case Some(CometColumnarShuffle) =>
-            CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+            val cse = CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+            s.logicalLink.foreach(cse.setLogicalLink)
+            cse
           case None =>
             s
         }
@@ -260,6 +269,10 @@ case class CometExecRule(session: SparkSession)
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         convertToComet(scan, CometNativeScan).getOrElse(scan)
+
+      // Fully native Delta scan for V1 (delta-kernel-rs log replay + Comet ParquetSource)
+      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DELTA_COMPAT =>
+        convertToComet(scan, CometDeltaNativeScan).getOrElse(scan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
       // Only handle scans with native metadata; other scans fall through to isCometScan
@@ -598,33 +611,46 @@ case class CometExecRule(session: SparkSession)
       // Set up logical links
       newPlan = newPlan.transform {
         case op: CometExec =>
-          if (op.originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
+          // Don't unset on a missing originalPlan link: AQE's
+          // `setLogicalLinkForNewQueryStage` walks the subtree and asserts
+          // SOMETHING has a link. If we unset here AND the wrapping exchange
+          // also has none, the join + column-mapping case (where
+          // EnsureRequirements injects a fresh exchange and Comet then wraps
+          // the scan beneath it) crashes the whole query with
+          // `java.lang.AssertionError`. Fall back to a descendant link
+          // instead, mirroring what the exchange branches below do.
+          if (op.originalPlan.logicalLink.isDefined) {
             op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+          } else {
+            op.collectFirst {
+              case p if p.logicalLink.isDefined => p.logicalLink.get
+            }.foreach(op.setLogicalLink)
           }
           op
         case op: CometShuffleExchangeExec =>
-          // Original Spark shuffle exchange operator might have empty logical link.
-          // But the `setLogicalLink` call above on downstream operator of
-          // `CometShuffleExchangeExec` will set its logical link to the downstream
-          // operators which cause AQE behavior to be incorrect. So we need to unset
-          // the logical link here.
-          if (op.originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
+          // Original Spark shuffle exchange operator might have empty logical link
+          // (EnsureRequirements injects exchanges that don't correspond to any logical
+          // node). In that case, fall back to a descendant's logical link rather than
+          // unsetting -- AQE's setLogicalLinkForNewQueryStage walks the plan tree and
+          // asserts SOMETHING in the subtree carries a link, so unsetting on this
+          // exchange while children also lack it crashes MERGE / CDF / watermark plans
+          // with `java.lang.AssertionError`.
+          if (op.originalPlan.logicalLink.isDefined) {
             op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+          } else {
+            op.collectFirst {
+              case p if p.logicalLink.isDefined => p.logicalLink.get
+            }.foreach(op.setLogicalLink)
           }
           op
 
         case op: CometBroadcastExchangeExec =>
-          if (op.originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
+          if (op.originalPlan.logicalLink.isDefined) {
             op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+          } else {
+            op.collectFirst {
+              case p if p.logicalLink.isDefined => p.logicalLink.get
+            }.foreach(op.setLogicalLink)
           }
           op
       }
