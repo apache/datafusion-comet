@@ -270,6 +270,59 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
     }
   }
 
+  /**
+   * Doubly-nested array element fuzz: `flatten(arr)` collapses `Array<Array<X>>` into `Array<X>`
+   * (exercising the outer-array element getter that returns each inner ArrayData), then
+   * `array_max` walks the leaf X primitives. Closes the gap that the singly-nested
+   * `array_max(arr)` test alone leaves on doubly-nested primitive arrays.
+   */
+  test("array_max element fuzz: flatten on Array<Array<primitive>> columns") {
+    val nestedArrayPrimitiveFields = spark.table("t2").schema.fields.filter {
+      case StructField(_, ArrayType(ArrayType(elemDt, _), _), _, _) if !isComplexType(elemDt) =>
+        true
+      case _ => false
+    }
+    for (field <- nestedArrayPrimitiveFields) {
+      val ArrayType(ArrayType(elemDt, _), _) = field.dataType: @unchecked
+      val udfName = s"id_arrflat_${field.name}"
+      registerIdentityUdfFor(elemDt, udfName).foreach { _ =>
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(
+            s"SELECT $udfName(array_max(flatten(${field.name}))) FROM t2")
+        }
+      }
+    }
+  }
+
+  /**
+   * Element-level fuzz for `Array<Struct<...>>`. `array_distinct` is a non-HOF unary expression
+   * that hashes each element to dedupe; struct hashing is field-wise, so the kernel emits element
+   * reads on each struct's fields. (Tried `array_sort` first; it's a `HigherOrderFunction` whose
+   * `CodegenFallback` mark trips the dispatcher's reject — the lambda gap documented on
+   * `CometBatchKernelCodegen.canHandle`.) `cardinality` consumes without materialization. Asserts
+   * the optimizer keeps `ArrayDistinct` so the coverage isn't vacuously folded.
+   */
+  test("array_distinct element fuzz: Array<Struct<primitives>> columns") {
+    val arrayStructFields = spark.table("t1").schema.fields.filter {
+      case StructField(_, ArrayType(_: StructType, _), _, _) => true
+      case _ => false
+    }
+    spark.udf.register("id_int_arrdistinct", (i: Int) => i)
+    for (field <- arrayStructFields) {
+      val q = s"SELECT id_int_arrdistinct(cardinality(array_distinct(${field.name}))) FROM t1"
+      val df = sql(q)
+      val plan = df.queryExecution.optimizedPlan.toString
+      val planLower = plan.toLowerCase
+      assert(
+        planLower.contains("array_distinct") || planLower.contains("arraydistinct"),
+        s"optimizer eliminated array_distinct on column ${field.name}; coverage would be " +
+          s"vacuous. plan=\n$plan")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
   private def probeCardinality(accessor: String, viewName: String): Unit = {
     assertCodegenRan {
       checkSparkAnswerAndOperator(

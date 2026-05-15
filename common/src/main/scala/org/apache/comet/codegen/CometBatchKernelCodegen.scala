@@ -121,6 +121,16 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     //     `Unevaluable` but never touched by codegen (e.g. Spark 4.0's `ResolvedCollation`, which
     //     lives in `Collate.collation` as a type marker; `Collate.genCode` delegates to its child).
     //
+    // TODO(hof-lambdas): the `CodegenFallback` rule rejects `NamedLambdaVariable`, which flags
+    // every higher-order function (`ArrayTransform`, `ArrayAggregate`, `ArrayExists`,
+    // `ArrayFilter`, `ZipWith`, `MapFilter`, etc.) as unsupported. The variable is `CodegenFallback`
+    // only in isolation; the surrounding HOF binds its `value` field inline as part of its own
+    // `doGenCode`, and the resulting Java compiles fine. Loosening this would unlock
+    // element-iteration over `Array<Struct>` / `Array<Map>` which today have no fuzz path
+    // (`array_max` doesn't apply to non-comparable elements, generators are blocked above). Plan:
+    // allow `NamedLambdaVariable` / `LambdaFunction` in the rejection scan; verify the kernel
+    // splices the HOF's emitted loop without ctx.references collisions on the lambda holder.
+    //
     // Nondeterministic / stateful expressions are accepted: per-partition kernel allocation
     // (`CometScalaUDFCodegen.ensureKernel`) plus a single `init(partitionIndex)` call at
     // partition entry give `Rand` / `MonotonicallyIncreasingID` / etc. correct state across

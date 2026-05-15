@@ -472,10 +472,9 @@ class CometCodegenSourceSuite extends AnyFunSuite {
 
   test("ArrayType(StringType) input emits InputArray_col0 nested class with UTF8 child getter") {
     // Array input with string elements: the kernel must expose a `getArray(0)` that hands Spark's
-    // `doGenCode` a zero-allocation `ArrayData` view onto the Arrow `ListVector`'s child
-    // `VarCharVector`. Markers: the nested class declaration, a `reset(int)` bracketing the
-    // per-row slice, the typed child getter using `fromAddress`, and a `getArray` switch on the
-    // ordinal returning the pre-allocated instance.
+    // `doGenCode` an `ArrayData` view onto the Arrow `ListVector`'s child `VarCharVector`.
+    // Markers: the nested class declaration with a slice constructor, the typed child getter
+    // using `fromAddress`, and a `getArray` switch on the ordinal that allocates a fresh view.
     val varCharChildSpec = ScalarColumnSpec(varCharVectorClass, nullable = true)
     val arraySpec =
       ArrayColumnSpec(nullable = true, elementSparkType = StringType, element = varCharChildSpec)
@@ -486,11 +485,11 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("class InputArray_col0"),
       s"expected nested ArrayData class for array col0; got:\n$src")
     assert(
-      src.contains("col0_e") && src.contains("col0_arrayData"),
-      s"expected typed child-vector field and pre-allocated ArrayData instance; got:\n$src")
+      src.contains("InputArray_col0(int startIdx, int len)"),
+      s"expected InputArray_col0 to take a slice via constructor; got:\n$src")
     assert(
       src.contains("getElementStartIndex(") && src.contains("getElementEndIndex("),
-      s"expected list-offset reads inside `reset`; got:\n$src")
+      s"expected list-offset reads at the call site; got:\n$src")
     assert(
       src.contains("public org.apache.spark.unsafe.types.UTF8String getUTF8String(int i)"),
       s"expected element-type-specific UTF8String getter; got:\n$src")
@@ -501,8 +500,8 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("public org.apache.spark.sql.catalyst.util.ArrayData getArray(int ordinal)"),
       s"expected kernel-level getArray switch; got:\n$src")
     assert(
-      src.contains("col0_arrayData.reset("),
-      s"expected getArray to reset the pre-allocated instance; got:\n$src")
+      src.contains("return new InputArray_col0("),
+      s"expected getArray to allocate a fresh InputArray_col0 view; got:\n$src")
   }
 
   test("ArrayType(IntegerType) input emits primitive int getter in nested class") {
@@ -579,7 +578,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   private def generate(expr: Expression, specs: IndexedSeq[ArrowColumnSpec]): String =
     CometBatchKernelCodegen.generateSource(expr, specs).body
 
-  test("Array<Array<Int>> emits outer + inner array classes with _e_arrayData router") {
+  test("Array<Array<Int>> emits outer + inner array classes with fresh inner allocation") {
     val innerArray = ArrayColumnSpec(
       nullable = true,
       elementSparkType = IntegerType,
@@ -596,14 +595,14 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("class InputArray_col0 ") && src.contains("class InputArray_col0_e "),
       s"expected both outer and inner array classes; got:\n$src")
     assert(
-      src.contains("col0_e_arrayData.reset("),
-      s"expected outer class to route getArray via inner instance reset; got:\n$src")
+      src.contains("return new InputArray_col0_e("),
+      s"expected outer class to allocate a fresh inner array view per call; got:\n$src")
     assert(
       src.contains("public int getInt(int i)"),
       s"expected innermost scalar getter for IntegerType element; got:\n$src")
   }
 
-  test("Array<Struct<a: Int>> emits array class routing getStruct via _e_structData") {
+  test("Array<Struct<a: Int>> emits array class allocating fresh InputStruct_col0_e") {
     val innerStruct = StructColumnSpec(
       nullable = true,
       fields = Seq(
@@ -625,8 +624,8 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("class InputArray_col0 ") && src.contains("class InputStruct_col0_e "),
       s"expected array-of-struct nested classes; got:\n$src")
     assert(
-      src.contains("col0_e_structData.reset(startIndex + i)"),
-      s"expected array getStruct to route to inner struct instance; got:\n$src")
+      src.contains("return new InputStruct_col0_e(startIndex + i)"),
+      s"expected array getStruct to allocate a fresh inner struct view; got:\n$src")
   }
 
   test("Struct<s: Struct<a: Int>> emits outer + inner struct classes") {
@@ -659,14 +658,14 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("class InputStruct_col0 ") && src.contains("class InputStruct_col0_f0 "),
       s"expected outer + inner struct classes; got:\n$src")
     assert(
-      src.contains("col0_f0_structData.reset(this.rowIdx)"),
-      s"expected outer struct getStruct to route to inner instance; got:\n$src")
+      src.contains("return new InputStruct_col0_f0(this.rowIdx)"),
+      s"expected outer struct getStruct to allocate a fresh inner struct view; got:\n$src")
     assert(
       src.contains("public int getInt(int ordinal)"),
       s"expected innermost getInt on InputStruct_col0_f0; got:\n$src")
   }
 
-  test("Struct<a: Array<Int>> emits struct class routing getArray via _f0_arrayData") {
+  test("Struct<a: Array<Int>> emits struct class allocating fresh InputArray_col0_f0") {
     val innerArray = ArrayColumnSpec(
       nullable = true,
       elementSparkType = IntegerType,
@@ -684,8 +683,8 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("class InputStruct_col0 ") && src.contains("class InputArray_col0_f0 "),
       s"expected struct-of-array nested classes; got:\n$src")
     assert(
-      src.contains("col0_f0_arrayData.reset("),
-      s"expected struct getArray to route to inner array instance; got:\n$src")
+      src.contains("return new InputArray_col0_f0("),
+      s"expected struct getArray to allocate a fresh inner array view; got:\n$src")
   }
 
   test("Map<String, Int> emits InputMap_col0 + keyArray / valueArray views") {
@@ -708,17 +707,17 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("class InputArray_col0_k ") && src.contains("class InputArray_col0_v "),
       s"expected key/value array view classes; got:\n$src")
     assert(
-      src.contains("col0_k_arrayData.reset(this.startIndex, this.length)"),
-      s"expected keyArray to reset with slice; got:\n$src")
+      src.contains("return new InputArray_col0_k(this.startIndex, this.length)"),
+      s"expected keyArray to allocate a fresh view over the map slice; got:\n$src")
     assert(
-      src.contains("col0_v_arrayData.reset(this.startIndex, this.length)"),
-      s"expected valueArray to reset with slice; got:\n$src")
+      src.contains("return new InputArray_col0_v(this.startIndex, this.length)"),
+      s"expected valueArray to allocate a fresh view over the map slice; got:\n$src")
     assert(
       src.contains("public org.apache.spark.sql.catalyst.util.MapData getMap(int ordinal)"),
       s"expected kernel-level getMap switch; got:\n$src")
     assert(
-      src.contains("col0_mapData.reset("),
-      s"expected getMap to reset the pre-allocated map instance; got:\n$src")
+      src.contains("return new InputMap_col0("),
+      s"expected getMap to allocate a fresh InputMap_col0 view; got:\n$src")
   }
 
   test("Map<Array<Int>, Array<String>> emits complex key and complex value views") {
@@ -749,6 +748,301 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       "class InputArray_col0_v_e ").foreach { marker =>
       assert(src.contains(marker), s"expected $marker in emission; got:\n$src")
     }
+  }
+
+  // ============================================================================================
+  // Null-guard emission for nested reference-typed getters. Spark's
+  // `CodeGenerator.setArrayElement` only emits an `isNullAt` check before `update(i, getX(j))`
+  // for primitive elements. For reference types (Decimal / String / Binary / Struct / Array /
+  // Map) it relies on the source's `getX` to return null on null positions itself. The emitter
+  // honors this by prepending `if (isNullAt(...)) return null;` to those getters when the
+  // element / field is nullable, eliding the guard otherwise.
+  //
+  // Runtime regression coverage for the leaf reference types lives in
+  // `CometCodegenDispatchSmokeSuite` (Binary / String / Decimal short / Decimal long REPROs).
+  // The complex types (Struct / Array / Map) can't be runtime-tested without HOFs (see
+  // TODO(hof-lambdas) on `CometBatchKernelCodegen.canHandle`), so they live here.
+  // ============================================================================================
+
+  private val nullableIntStruct = StructColumnSpec(
+    nullable = true,
+    fields = Seq(
+      StructFieldSpec(
+        "a",
+        IntegerType,
+        nullable = true,
+        ScalarColumnSpec(
+          CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+          nullable = true))))
+  private val nullableIntStructType =
+    StructType(Seq(StructField("a", IntegerType, nullable = true)).toArray)
+
+  private val nullableIntArray = ArrayColumnSpec(
+    nullable = true,
+    elementSparkType = IntegerType,
+    element = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true))
+
+  private val nullableIntStrMap = MapColumnSpec(
+    nullable = true,
+    keySparkType = IntegerType,
+    valueSparkType = StringType,
+    key = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = false),
+    value = ScalarColumnSpec(varCharVectorClass, nullable = true))
+
+  test("nested array of nullable Struct emits null guard before allocating InputStruct view") {
+    val outer = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = nullableIntStructType,
+      element = nullableIntStruct)
+    val expr = Size(BoundReference(0, ArrayType(nullableIntStructType), nullable = true))
+    val src = generate(expr, IndexedSeq(outer))
+    assert(
+      src.contains("if (isNullAt(i)) return null;") &&
+        src.contains("new InputStruct_col0_e(startIndex + i)"),
+      s"expected null guard and InputStruct alloc on nullable Struct element; got:\n$src")
+  }
+
+  test("nested array of non-nullable Struct elides null guard") {
+    // Fully non-nullable inner spec: outer struct nullable=false AND inner Int field
+    // nullable=false. Without the inner field also being non-nullable the inner
+    // primitive-Int getter wouldn't emit a guard anyway (we only guard reference types), but
+    // making everything non-nullable means the broad `!src.contains("if (isNullAt(...))")`
+    // assertion verifies "no guards anywhere" rather than passing because the inner happens
+    // to be a primitive we don't guard.
+    val nonNullableInner = StructColumnSpec(
+      nullable = false,
+      fields = Seq(
+        StructFieldSpec(
+          "a",
+          IntegerType,
+          nullable = false,
+          ScalarColumnSpec(
+            CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+            nullable = false))))
+    val outer = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = nullableIntStructType,
+      element = nonNullableInner)
+    val expr = Size(BoundReference(0, ArrayType(nullableIntStructType), nullable = true))
+    val src = generate(expr, IndexedSeq(outer))
+    assert(
+      src.contains("new InputStruct_col0_e(startIndex + i)"),
+      s"sanity: alloc still emitted; got:\n$src")
+    assert(
+      !src.contains("if (isNullAt(i)) return null;") &&
+        !src.contains("if (isNullAt(0)) return null;"),
+      s"expected no null guard anywhere on fully non-nullable Struct element; got:\n$src")
+  }
+
+  test(
+    "nested array of nullable inner Array emits null guard before allocating InputArray view") {
+    val outer = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = ArrayType(IntegerType),
+      element = nullableIntArray)
+    val expr = Size(BoundReference(0, ArrayType(ArrayType(IntegerType)), nullable = true))
+    val src = generate(expr, IndexedSeq(outer))
+    assert(
+      src.contains("if (isNullAt(i)) return null;") &&
+        src.contains("new InputArray_col0_e(__s, __e - __s)"),
+      s"expected null guard and InputArray alloc on nullable Array element; got:\n$src")
+  }
+
+  test("nested array of non-nullable inner Array elides null guard") {
+    val nonNullableInner = ArrayColumnSpec(
+      nullable = false,
+      elementSparkType = IntegerType,
+      element = ScalarColumnSpec(
+        CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+        nullable = false))
+    val outer = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = ArrayType(IntegerType),
+      element = nonNullableInner)
+    val expr = Size(BoundReference(0, ArrayType(ArrayType(IntegerType)), nullable = true))
+    val src = generate(expr, IndexedSeq(outer))
+    assert(
+      src.contains("new InputArray_col0_e(__s, __e - __s)"),
+      s"sanity: alloc still emitted; got:\n$src")
+    assert(
+      !src.contains("if (isNullAt(i)) return null;"),
+      s"expected no null guard on non-nullable inner Array element; got:\n$src")
+  }
+
+  test("nested array of nullable Map emits null guard before allocating InputMap view") {
+    val outer = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = MapType(IntegerType, StringType),
+      element = nullableIntStrMap)
+    val expr =
+      Size(BoundReference(0, ArrayType(MapType(IntegerType, StringType)), nullable = true))
+    val src = generate(expr, IndexedSeq(outer))
+    assert(
+      src.contains("if (isNullAt(i)) return null;") &&
+        src.contains("new InputMap_col0_e(__s, __e - __s)"),
+      s"expected null guard and InputMap alloc on nullable Map element; got:\n$src")
+  }
+
+  test("nested array of non-nullable Map elides null guard") {
+    val nonNullableMap = MapColumnSpec(
+      nullable = false,
+      keySparkType = IntegerType,
+      valueSparkType = StringType,
+      key = ScalarColumnSpec(
+        CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+        nullable = false),
+      value = ScalarColumnSpec(varCharVectorClass, nullable = false))
+    val outer = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = MapType(IntegerType, StringType),
+      element = nonNullableMap)
+    val expr =
+      Size(BoundReference(0, ArrayType(MapType(IntegerType, StringType)), nullable = true))
+    val src = generate(expr, IndexedSeq(outer))
+    assert(
+      src.contains("new InputMap_col0_e(__s, __e - __s)"),
+      s"sanity: alloc still emitted; got:\n$src")
+    assert(
+      !src.contains("if (isNullAt(i)) return null;"),
+      s"expected no null guard on non-nullable Map element; got:\n$src")
+  }
+
+  test("struct with nullable struct field emits null guard in getStruct(ordinal) switch") {
+    val outerStruct = StructColumnSpec(
+      nullable = true,
+      fields =
+        Seq(StructFieldSpec("s", nullableIntStructType, nullable = true, nullableIntStruct)))
+    val outerType =
+      StructType(Seq(StructField("s", nullableIntStructType, nullable = true)).toArray)
+    val expr = GetStructField(
+      GetStructField(BoundReference(0, outerType, nullable = true), 0, Some("s")),
+      0,
+      Some("a"))
+    val src = generate(expr, IndexedSeq(outerStruct))
+    assert(
+      src.contains("if (isNullAt(0)) return null;") &&
+        src.contains("new InputStruct_col0_f0(this.rowIdx)"),
+      s"expected null guard and InputStruct alloc for nullable struct field; got:\n$src")
+  }
+
+  test("struct with non-nullable struct field elides null guard") {
+    val nonNullableInner = StructColumnSpec(
+      nullable = false,
+      fields = Seq(
+        StructFieldSpec(
+          "a",
+          IntegerType,
+          nullable = false,
+          ScalarColumnSpec(
+            CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+            nullable = false))))
+    val outerStruct = StructColumnSpec(
+      nullable = true,
+      fields =
+        Seq(StructFieldSpec("s", nullableIntStructType, nullable = false, nonNullableInner)))
+    val outerType =
+      StructType(Seq(StructField("s", nullableIntStructType, nullable = false)).toArray)
+    val expr = GetStructField(
+      GetStructField(BoundReference(0, outerType, nullable = true), 0, Some("s")),
+      0,
+      Some("a"))
+    val src = generate(expr, IndexedSeq(outerStruct))
+    assert(
+      src.contains("new InputStruct_col0_f0(this.rowIdx)"),
+      s"sanity: alloc still emitted; got:\n$src")
+    assert(
+      !src.contains("if (isNullAt(0)) return null;") &&
+        !src.contains("if (isNullAt(i)) return null;"),
+      s"expected no null guard anywhere on fully non-nullable struct field; got:\n$src")
+  }
+
+  test("struct with nullable array field emits null guard in getArray(ordinal) switch") {
+    val outerStruct = StructColumnSpec(
+      nullable = true,
+      fields =
+        Seq(StructFieldSpec("a", ArrayType(IntegerType), nullable = true, nullableIntArray)))
+    val outerType =
+      StructType(Seq(StructField("a", ArrayType(IntegerType), nullable = true)).toArray)
+    val expr =
+      Size(GetStructField(BoundReference(0, outerType, nullable = true), 0, Some("a")))
+    val src = generate(expr, IndexedSeq(outerStruct))
+    assert(
+      src.contains("if (isNullAt(0)) return null;") &&
+        src.contains("new InputArray_col0_f0(__s, __e - __s)"),
+      s"expected null guard and InputArray alloc for nullable array field; got:\n$src")
+  }
+
+  test("struct with non-nullable array field elides null guard") {
+    val nonNullableInner = ArrayColumnSpec(
+      nullable = false,
+      elementSparkType = IntegerType,
+      element = ScalarColumnSpec(
+        CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+        nullable = false))
+    val outerStruct = StructColumnSpec(
+      nullable = true,
+      fields =
+        Seq(StructFieldSpec("a", ArrayType(IntegerType), nullable = false, nonNullableInner)))
+    val outerType =
+      StructType(Seq(StructField("a", ArrayType(IntegerType), nullable = false)).toArray)
+    val expr =
+      Size(GetStructField(BoundReference(0, outerType, nullable = true), 0, Some("a")))
+    val src = generate(expr, IndexedSeq(outerStruct))
+    assert(
+      src.contains("new InputArray_col0_f0(__s, __e - __s)"),
+      s"sanity: alloc still emitted; got:\n$src")
+    assert(
+      !src.contains("if (isNullAt(0)) return null;") &&
+        !src.contains("if (isNullAt(i)) return null;"),
+      s"expected no null guard anywhere on fully non-nullable array field; got:\n$src")
+  }
+
+  test("struct with nullable map field emits null guard in getMap(ordinal) switch") {
+    val outerStruct = StructColumnSpec(
+      nullable = true,
+      fields = Seq(
+        StructFieldSpec(
+          "m",
+          MapType(IntegerType, StringType),
+          nullable = true,
+          nullableIntStrMap)))
+    val outerType =
+      StructType(Seq(StructField("m", MapType(IntegerType, StringType), nullable = true)).toArray)
+    val expr = Size(GetStructField(BoundReference(0, outerType, nullable = true), 0, Some("m")))
+    val src = generate(expr, IndexedSeq(outerStruct))
+    assert(
+      src.contains("if (isNullAt(0)) return null;") &&
+        src.contains("new InputMap_col0_f0(__s, __e - __s)"),
+      s"expected null guard and InputMap alloc for nullable map field; got:\n$src")
+  }
+
+  test("struct with non-nullable map field elides null guard") {
+    val nonNullableMap = MapColumnSpec(
+      nullable = false,
+      keySparkType = IntegerType,
+      valueSparkType = StringType,
+      key = ScalarColumnSpec(
+        CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+        nullable = false),
+      value = ScalarColumnSpec(varCharVectorClass, nullable = false))
+    val outerStruct = StructColumnSpec(
+      nullable = true,
+      fields = Seq(
+        StructFieldSpec("m", MapType(IntegerType, StringType), nullable = false, nonNullableMap)))
+    val outerType = StructType(
+      Seq(StructField("m", MapType(IntegerType, StringType), nullable = false)).toArray)
+    val expr = Size(GetStructField(BoundReference(0, outerType, nullable = true), 0, Some("m")))
+    val src = generate(expr, IndexedSeq(outerStruct))
+    assert(
+      src.contains("new InputMap_col0_f0(__s, __e - __s)"),
+      s"sanity: alloc still emitted; got:\n$src")
+    assert(
+      !src.contains("if (isNullAt(0)) return null;"),
+      s"expected no null guard on non-nullable map field; got:\n$src")
   }
 }
 

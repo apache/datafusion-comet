@@ -25,9 +25,15 @@ import org.apache.spark.sql.types._
 /**
  * Shared `SpecializedGetters.get(ordinal, dataType)` dispatch used by [[CometInternalRow]] and
  * [[CometArrayData]]. Spark codegen paths (notably `SafeProjection` for deserializing `ScalaUDF`
- * struct arguments) call the generic `get` instead of the typed getter, so both kernel-side
- * subclasses need a non-throwing implementation. The body would be byte-for-byte the same in both
- * classes; centralising it here keeps them in sync.
+ * struct arguments) and interpreted-eval fallbacks (`ArrayDistinct.nullSafeEval` etc.) call the
+ * generic `get` instead of the typed getter, so both kernel-side subclasses need a non-throwing
+ * implementation. The body would be byte-for-byte the same in both classes; centralising it here
+ * keeps them in sync.
+ *
+ * Complex types (`StructType` / `ArrayType` / `MapType`) return whatever the typed getter
+ * returns. The codegen template allocates a fresh `InputStruct_*` / `InputArray_*` / `InputMap_*`
+ * with `final` slice fields per call (`ColumnarRow`-style), so retain-by-reference consumers like
+ * `OpenHashSet` get distinct identities and lazy reads work.
  */
 private[codegen] object CometSpecializedGettersDispatch {
 

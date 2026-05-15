@@ -1080,6 +1080,157 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
       }
     }
   }
+
+  // =============================================================================================
+  // Regression tests pinning specific kernel bugs first surfaced in CometCodegenDispatchFuzzSuite.
+  // Each is the smallest deterministic input that triggered the bug; kept post-fix as a guard
+  // against future regression.
+  // =============================================================================================
+
+  test("array_distinct on Array<Struct<Int, String>> retains element identity across hash set") {
+    // Fuzz signal: cardinality(array_distinct(arr_of_struct)) returns 1 where Spark returns 2.
+    // Hypothesis: the kernel's InputStruct wrapper backing array_distinct's element reads is
+    // reused without resetting per-element state, so every hashed element looks identical and
+    // distinct collapses the array to a single entry.
+    spark.udf.register("idIntDistinct", (i: Int) => i)
+    withTable("t") {
+      sql("CREATE TABLE t (s ARRAY<STRUCT<a: INT, b: STRING>>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(array(named_struct('a', 1, 'b', 'x'), named_struct('a', 1, 'b', 'x'))), " +
+          "(array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'y'))), " +
+          "(array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'y'), " +
+          "named_struct('a', 1, 'b', 'x')))")
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(
+          sql("SELECT idIntDistinct(cardinality(array_distinct(s))) FROM t"))
+      }
+    }
+  }
+
+  test("array_max(flatten(arr)) on Array<Array<Binary>> with mixed null inner arrays") {
+    // Fuzz signal: array_max(flatten(arr)) returns empty byte arrays where Spark returns the
+    // actual max binary, with the empties sorting to the front of the output. Pattern points at
+    // cross-batch state pollution. Generate 100 rows of varied outer/inner shape, longer
+    // binaries, mixed nulls; force multiple batches with a small batch size.
+    spark.udf.register("idBinFlat", (b: Array[Byte]) => b)
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "16") {
+      withTable("t") {
+        sql("CREATE TABLE t (a ARRAY<ARRAY<BINARY>>) USING parquet")
+        val rows = (0 until 100).map { i =>
+          if (i % 11 == 0) {
+            "(NULL)"
+          } else {
+            val outerSize = (i % 5) + 1
+            val inners = (0 until outerSize).map { j =>
+              val pick = (i * 7 + j) % 13
+              if (pick == 0) "array()"
+              else if (pick == 1) "NULL"
+              else {
+                val innerSize = ((i + j) % 4) + 1
+                val bytes = (0 until innerSize).map { k =>
+                  val len = ((i + j + k) % 8) + 1
+                  val hex = (0 until len)
+                    .map(b => f"${(i * 13 + j * 17 + k * 5 + b) & 0xff}%02x")
+                    .mkString
+                  s"X'$hex'"
+                }
+                "array(" + bytes.mkString(", ") + ")"
+              }
+            }
+            s"(array(${inners.mkString(", ")}))"
+          }
+        }
+        sql(s"INSERT INTO t VALUES ${rows.mkString(", ")}")
+        assertCodegenDidWork {
+          checkSparkAnswerAndOperator(sql("SELECT idBinFlat(array_max(flatten(a))) FROM t"))
+        }
+      }
+    }
+  }
+
+  // =============================================================================================
+  // Regression tests for nested reference-type getter null-handling. Spark's
+  // `CodeGenerator.setArrayElement` (called from e.g. `Flatten.doGenCode`) only emits an
+  // `isNullAt` check before `array.update(i, getX(j))` when the element is a Java primitive
+  // (`int`/`long`/etc.). For reference-typed elements (Binary, String, Decimal, Struct, Array,
+  // Map) it emits `array.update(i, getX(j))` unconditionally, relying on the source's getter to
+  // return `null` for null positions itself (Spark's own `ColumnarArray.getBinary` does
+  // `if (isNullAt(...)) return null;`). Our nested `InputArray_*.getX` getters do not honor that
+  // contract, so any inner null at a reference-typed position becomes an empty-bytes / empty-
+  // string / garbage-decimal / non-null-shell value in the flattened output. Each test below
+  // pins one reference-type variant so the fix can be verified per type.
+  // =============================================================================================
+
+  test(
+    "array_max(flatten(arr)) on Array<Array<Binary>> with null inner Binary returns null") {
+    spark.udf.register("idBin", (b: Array[Byte]) => b)
+    withArrayTable(
+      "ARRAY<ARRAY<BINARY>>",
+      "(array(array(NULL))), " +
+        "(array(array(NULL, NULL))), " +
+        "(array(array(), array(NULL)))") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT idBin(array_max(flatten(a))) FROM t"))
+      }
+    }
+  }
+
+  test(
+    "array_max(flatten(arr)) on Array<Array<String>> with null inner String returns null") {
+    spark.udf.register("idStr", (s: String) => s)
+    withArrayTable(
+      "ARRAY<ARRAY<STRING>>",
+      "(array(array(NULL))), " +
+        "(array(array(NULL, NULL))), " +
+        "(array(array(), array(NULL)))") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT idStr(array_max(flatten(a))) FROM t"))
+      }
+    }
+  }
+
+  test(
+    "array_max(flatten(arr)) on Array<Array<DECIMAL(10,2)>> with null inner Decimal " +
+      "(short-precision fast path)") {
+    spark.udf.register("idDec10", (d: java.math.BigDecimal) => d)
+    withArrayTable(
+      "ARRAY<ARRAY<DECIMAL(10, 2)>>",
+      "(array(array(CAST(NULL AS DECIMAL(10, 2))))), " +
+        "(array(array(" +
+        "CAST(NULL AS DECIMAL(10, 2)), CAST(NULL AS DECIMAL(10, 2))))), " +
+        "(array(array(), array(CAST(NULL AS DECIMAL(10, 2)))))") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT idDec10(array_max(flatten(a))) FROM t"))
+      }
+    }
+  }
+
+  test(
+    "array_max(flatten(arr)) on Array<Array<DECIMAL(30,2)>> with null inner Decimal " +
+      "(long-precision slow path)") {
+    spark.udf.register("idDec30", (d: java.math.BigDecimal) => d)
+    withArrayTable(
+      "ARRAY<ARRAY<DECIMAL(30, 2)>>",
+      "(array(array(CAST(NULL AS DECIMAL(30, 2))))), " +
+        "(array(array(" +
+        "CAST(NULL AS DECIMAL(30, 2)), CAST(NULL AS DECIMAL(30, 2))))), " +
+        "(array(array(), array(CAST(NULL AS DECIMAL(30, 2)))))") {
+      assertCodegenDidWork {
+        checkSparkAnswerAndOperator(sql("SELECT idDec30(array_max(flatten(a))) FROM t"))
+      }
+    }
+  }
+
+  // Note: a runtime regression test for nullable nested `getStruct` / `getArray` / `getMap` would
+  // need a
+  // non-HOF expression that reads null elements after `flatten`. Spark's optimizer rules
+  // (`SimplifyExtractValueOps` and friends) tend to rewrite the obvious candidates
+  // (`element_at(flatten(arr), 1).x`, `flatten(arr)[i].x`) into shapes our dispatcher rejects
+  // without a clean reason, and the only iteration paths over complex elements without
+  // simplification go through HOFs (`array_filter`, `transform`) which our `canHandle` rejects
+  // (TODO(hof-lambdas) on `CometBatchKernelCodegen`). Static coverage of the emitter for these
+  // three getters lives in `CometCodegenSourceSuite` instead.
 }
 
 /**
