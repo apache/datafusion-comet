@@ -19,20 +19,96 @@
 
 package org.apache.comet
 
+import java.io.File
+import java.text.SimpleDateFormat
+
 import scala.util.Random
 
+import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types._
 
+import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Randomized tests for the Arrow-direct codegen dispatcher. Generates inputs at varying null
- * densities and runs them through ScalaUDFs that route through the dispatcher, asserting Comet
- * results agree with Spark. Fixes a seed per test for reproducibility.
+ * Randomized tests for the Arrow-direct codegen dispatcher. Schema-driven coverage of every input
+ * vector class via random parquet files, plus a decimal precision-scale sweep across the
+ * `Decimal.MAX_LONG_DIGITS=18` boundary at varying null densities.
+ *
+ * Extends [[CometTestBase]] (not [[CometFuzzTestBase]]) and inlines the random parquet setup so
+ * tests run once. The base's three-way cross-product (`shuffle` x `nativeC2R`) does not change
+ * the codegen path for projection-only queries, so it would be runtime cost without coverage.
  */
 class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
+  /** Random schema with primitives plus shallow arrays and structs. No maps, no deep nesting. */
+  private var mixedTypesFilename: String = _
+
+  /** Random schema with deeply nested arrays / structs / maps. */
+  private var nestedTypesFilename: String = _
+
+  /** Asia/Kathmandu has a non-zero minute offset (UTC+5:45); good for timezone edge cases. */
+  private val defaultTimezone = "Asia/Kathmandu"
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    val tempDir = System.getProperty("java.io.tmpdir")
+    val random = new Random(42)
+    val dataGenOptions = DataGenOptions(
+      generateNegativeZero = false,
+      baseDate = new SimpleDateFormat("YYYY-MM-DD hh:mm:ss")
+        .parse("2024-05-25 12:34:56")
+        .getTime)
+
+    mixedTypesFilename =
+      s"$tempDir/CometCodegenDispatchFuzzSuite_${System.currentTimeMillis()}.parquet"
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
+      val schemaGenOptions =
+        SchemaGenOptions(generateArray = true, generateStruct = true)
+      ParquetGenerator.makeParquetFile(
+        random,
+        spark,
+        mixedTypesFilename,
+        1000,
+        schemaGenOptions,
+        dataGenOptions)
+    }
+
+    nestedTypesFilename =
+      s"$tempDir/CometCodegenDispatchFuzzSuite_nested_${System.currentTimeMillis()}.parquet"
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
+      val schemaGenOptions =
+        SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
+      val schema = FuzzDataGenerator.generateNestedSchema(
+        random,
+        numCols = 10,
+        minDepth = 2,
+        maxDepth = 4,
+        options = schemaGenOptions)
+      ParquetGenerator.makeParquetFile(
+        random,
+        spark,
+        nestedTypesFilename,
+        schema,
+        1000,
+        dataGenOptions)
+    }
+  }
+
+  protected override def afterAll(): Unit = {
+    super.afterAll()
+    FileUtils.deleteDirectory(new File(mixedTypesFilename))
+    FileUtils.deleteDirectory(new File(nestedTypesFilename))
+  }
 
   private val RowCount: Int = 512
   private val nullDensities: Seq[Double] = Seq(0.0, 0.1, 0.5, 1.0)
@@ -55,6 +131,145 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
     assert(
       after.compileCount + after.cacheHitCount >= 1,
       s"expected at least one codegen dispatcher invocation during this query, got $after")
+  }
+
+  /**
+   * Identity ScalaUDF for one of the 14 primitive types in
+   * [[org.apache.comet.testing.SchemaGenOptions.defaultPrimitiveTypes]]. Returns the registered
+   * name when the type maps to a known Scala arg, or `None` for shapes we choose not to probe.
+   * `BigDecimal` UDF args are encoded as `DecimalType(38, 18)`; Spark inserts an implicit cast
+   * around the call but the underlying column read still hits our kernel's `getDecimal` at the
+   * column's native precision.
+   */
+  private def registerIdentityUdfFor(dt: DataType, name: String): Option[String] = dt match {
+    case _: BooleanType => spark.udf.register(name, (x: Boolean) => x); Some(name)
+    case _: ByteType => spark.udf.register(name, (x: Byte) => x); Some(name)
+    case _: ShortType => spark.udf.register(name, (x: Short) => x); Some(name)
+    case _: IntegerType => spark.udf.register(name, (x: Int) => x); Some(name)
+    case _: LongType => spark.udf.register(name, (x: Long) => x); Some(name)
+    case _: FloatType => spark.udf.register(name, (x: Float) => x); Some(name)
+    case _: DoubleType => spark.udf.register(name, (x: Double) => x); Some(name)
+    case _: DecimalType =>
+      spark.udf.register(name, (x: java.math.BigDecimal) => x); Some(name)
+    case _: DateType => spark.udf.register(name, (x: java.sql.Date) => x); Some(name)
+    case _: TimestampType =>
+      spark.udf.register(name, (x: java.sql.Timestamp) => x); Some(name)
+    case _: TimestampNTZType =>
+      spark.udf.register(name, (x: java.time.LocalDateTime) => x); Some(name)
+    case _: StringType => spark.udf.register(name, (x: String) => x); Some(name)
+    case _: BinaryType => spark.udf.register(name, (x: Array[Byte]) => x); Some(name)
+    case _ => None
+  }
+
+  /**
+   * Identity-Int UDF for the cardinality-based complex probe. One UDF covers every Array and Map
+   * column, regardless of element type.
+   *
+   * Avoiding `Seq[T]` / `Map[K, V]` materialization is deliberate: Spark's
+   * `org.apache.spark.sql.catalyst.expressions.objects.MapObjects` codegen reads each element via
+   * `getLong`/`getFloat`/etc. unconditionally and only checks `isNullAt` afterward to decide
+   * whether to wrap the value in `Option` or null. On null positions of a dictionary-encoded
+   * primitive Arrow vector the underlying ID buffer holds uninitialized bytes, and
+   * `decodeToLong/decodeToFloat` against those garbage IDs throws
+   * `ArrayIndexOutOfBoundsException`. The buggy code is in Spark; the failure reproduces in pure
+   * Spark execution (no Comet on the trace), so `checkSparkAnswerAndOperator` cannot compute the
+   * baseline answer. `cardinality(col)` exercises the kernel's `getArray`/`getMap` length read
+   * while bypassing the element deserializer entirely.
+   */
+  private lazy val cardinalityProbeUdf: String = {
+    val name = "sz_complex"
+    spark.udf.register(name, (i: Int) => i)
+    name
+  }
+
+  test("identity ScalaUDF over every primitive column") {
+    val df = spark.read.parquet(mixedTypesFilename)
+    df.createOrReplaceTempView("t1")
+    val primitiveFields = df.schema.fields.filterNot(f => isComplexType(f.dataType))
+    assert(primitiveFields.nonEmpty, "expected at least one primitive column in random schema")
+    for (field <- primitiveFields) {
+      val udfName = s"id_${field.name}"
+      registerIdentityUdfFor(field.dataType, udfName) match {
+        case Some(_) =>
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(s"SELECT $udfName(${field.name}) FROM t1")
+          }
+        case None =>
+          fail(
+            s"primitive column ${field.name}: ${field.dataType} not in identity UDF catalog; " +
+              "extend registerIdentityUdfFor")
+      }
+    }
+  }
+
+  test("complex-probe ScalaUDF on every complex column") {
+    val df = spark.read.parquet(mixedTypesFilename)
+    df.createOrReplaceTempView("t1")
+    val complexFields = df.schema.fields.filter(f => isComplexType(f.dataType))
+    assert(complexFields.nonEmpty, "expected at least one complex column in random schema")
+    for (field <- complexFields) {
+      probeComplexColumn(field, viewName = "t1")
+    }
+  }
+
+  test("complex-probe ScalaUDF on top-level columns of deeply nested schema") {
+    val df = spark.read.parquet(nestedTypesFilename)
+    df.createOrReplaceTempView("t2")
+    for (field <- df.schema.fields) {
+      probeComplexColumn(field, viewName = "t2")
+    }
+  }
+
+  /**
+   * Probes one complex top-level column. ArrayType / MapType go through `cardinality(col)` fed to
+   * the identity-Int probe UDF (see [[cardinalityProbeUdf]] for the rationale). StructType drills
+   * into each scalar child via `GetStructField` and runs the identity UDF on it; complex children
+   * are recursed via the same dot-path (depth bounded by the schema generator).
+   */
+  private def probeComplexColumn(field: StructField, viewName: String): Unit = {
+    field.dataType match {
+      case _: ArrayType | _: MapType =>
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(
+            s"SELECT $cardinalityProbeUdf(cardinality(${field.name})) FROM $viewName")
+        }
+
+      case st: StructType =>
+        for (subField <- st.fields) {
+          val accessor = s"${field.name}.${subField.name}"
+          if (isComplexType(subField.dataType)) {
+            probeComplexAccessor(subField, accessor, viewName)
+          } else {
+            val udfName = s"id_${field.name}_${subField.name}"
+            registerIdentityUdfFor(subField.dataType, udfName).foreach { _ =>
+              assertCodegenRan {
+                checkSparkAnswerAndOperator(s"SELECT $udfName($accessor) FROM $viewName")
+              }
+            }
+          }
+        }
+
+      case _ => // not complex; caller filtered
+    }
+  }
+
+  /**
+   * Probes a complex sub-field reached via dot access (e.g. `s.items` for an inner array). The
+   * dispatcher's bound tree carries `Cardinality(GetStructField(...))` around the kernel's
+   * complex column read.
+   */
+  private def probeComplexAccessor(
+      field: StructField,
+      accessor: String,
+      viewName: String): Unit = {
+    field.dataType match {
+      case _: ArrayType | _: MapType =>
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(
+            s"SELECT $cardinalityProbeUdf(cardinality($accessor)) FROM $viewName")
+        }
+      case _ => // deeper struct nesting skipped to keep the sweep bounded
+    }
   }
 
   /**
