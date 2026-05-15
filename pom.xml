@@ -39,13 +39,13 @@ under the License.
     <module>spark</module>
     <module>spark-integration</module>
     <!--
-      contrib/<name>/ modules. Each is a self-contained extension that ships as a
-      separate Maven artifact; when the matching Cargo feature on core is enabled
-      (off by default; users opt in via -Pcontrib-<name>), the contrib's Rust rlib is
-      linked into libcomet so the native side of the SPI works without a second cdylib.
-      See docs/source/contributor-guide/contrib-extensions.md.
+      Contribs are NOT Maven modules. Each contrib (contrib/<name>/) is a source
+      directory whose Scala/Java files are compiled INTO comet-spark.jar when the
+      matching `-Pcontrib-<name>` Maven profile is active on spark/. The native rlib
+      under contrib/<name>/native/ is similarly compiled into libcomet via the
+      matching Cargo feature on native/core. See
+      docs/source/contributor-guide/contrib-extensions.md.
     -->
-    <module>contrib/example</module>
   </modules>
 
   <properties>

@@ -30,18 +30,25 @@ and walks through every integration point that the example does not exercise.
 
 ## Architecture at a glance
 
-Each contrib has two halves that ship as separate artifacts but are wired together at
-build time:
+A contrib has two halves, both **bundled into Comet's published artifacts at build
+time** when their matching flags are enabled. Nothing about a contrib is independently
+distributable — the contrib lives inside Comet's release.
 
-- **JVM half** — a separate Maven JAR
-  (`comet-contrib-<name>-spark${spark.version.short}_${scala.binary.version}`) containing
-  Scala/Java extension classes plus contrib-private generated proto classes. Discovered
-  at runtime via `java.util.ServiceLoader` from the contrib JAR's `META-INF/services/`
-  entries.
-- **Native half** — a Rust `rlib` crate (NOT `cdylib`) that is **linked INTO core's
-  `libcomet`** at build time when the matching Cargo feature on core is enabled. There
-  is exactly one Comet native library at runtime; the contrib's `#[ctor]` registers its
-  operator planners during library load.
+- **JVM half** — Scala/Java classes plus generated Java proto. Built as a Maven
+  submodule under `contrib/<name>/` and **shaded into `comet-spark.jar`** via the
+  `-Pcontrib-<name>` Maven profile on `spark/pom.xml`. With no profile active, the
+  contrib's classes are not in the published JAR. The contrib's `META-INF/services/`
+  entries are bundled along with the classes; ServiceLoader at runtime then discovers
+  them from inside `comet-spark.jar` itself.
+- **Native half** — a Rust `rlib` crate (NOT `cdylib`) **linked into `libcomet`** via
+  the matching `--features contrib-<name>` Cargo flag on the core crate. The contrib's
+  `#[ctor]` registers its operator planners during library load.
+
+The two halves are symmetric: contribs are build-time options on Comet, JVM and
+native both. `mvn install -Pcontrib-example && cargo build --features contrib-example`
+produces a Comet build that includes the example contrib in both `comet-spark.jar` and
+`libcomet`; a vanilla build of either side produces an artifact with zero contrib
+surface.
 
 The wire format between JVM and native uses a single generic envelope on the operator
 proto, `ContribOp { kind, payload }`. Core's planner dispatches by `kind`; the contrib's
@@ -50,25 +57,29 @@ writes into the proto.
 
 ## Required files (mirror `contrib/example/` exactly)
 
+A contrib is a directory of sources, **not a Maven module**. No `pom.xml`. The contrib's
+Scala/Java sources are pulled into `comet-spark`'s compile by a profile on
+`spark/pom.xml`; the contrib's Rust sources are pulled into `libcomet` by a Cargo
+feature on `native/core`. The directory layout:
+
 ```
 contrib/<name>/
-  pom.xml                                                          ← Maven module
   src/main/scala/org/apache/comet/contrib/<name>/
     <SomeClass>.scala                                              ← CometScanRuleExtension / CometOperatorSerdeExtension impl
   src/main/resources/META-INF/services/
     org.apache.comet.spi.CometScanRuleExtension                    ← one line per extension class
     org.apache.comet.spi.CometOperatorSerdeExtension               ← (only if you implement serdes)
   src/test/scala/org/apache/comet/contrib/<name>/
-    <SomeClass>Suite.scala                                         ← integration test
+    <SomeClass>Suite.scala                                         ← integration test (runs as part of comet-spark's tests when profile active)
   native/
     Cargo.toml                                                     ← rlib crate, workspace = "../../../native"
     build.rs                                                       ← runs prost-build over your proto schema
     src/lib.rs                                                     ← ContribOperatorPlanner impl + #[ctor] registration
-    src/proto/<your_op>.proto                                      ← contrib-private proto schema, your own package
+    src/proto/<your_op>.proto                                      ← contrib-private proto schema (also used by JVM-side protoc generation)
     src/generated/                                                 ← (gitignored) prost-build output
 ```
 
-Plus three edits to existing files (collected under "Wiring into core", below).
+Plus a handful of build-config edits (collected under "Wiring into core", below).
 
 ### Prerequisites
 
@@ -100,10 +111,86 @@ breaks the workspace lookup; place the contrib at the documented depth.
 
 ## Wiring into core
 
-Three single-line edits to existing files:
+Four edits, two per side:
 
-1. **Root `pom.xml`** — add `<module>contrib/<name></module>` under the existing
-   `<modules>` block so `mvn install` builds the contrib JAR.
+### JVM side
+
+1. **`spark/pom.xml`** — add a `contrib-<name>` profile under `<profiles>`. The
+   `contrib-example` profile is the copy-this template. The profile uses
+   `build-helper-maven-plugin` to add the contrib's source/test directories,
+   `maven-resources-plugin` to merge in `META-INF/services` entries, and
+   `protoc-jar-maven-plugin` to generate the contrib's Java protos:
+
+   ```xml
+   <profile>
+     <id>contrib-<name></id>
+     <build>
+       <plugins>
+         <plugin>
+           <groupId>org.codehaus.mojo</groupId>
+           <artifactId>build-helper-maven-plugin</artifactId>
+           <executions>
+             <execution>
+               <id>add-contrib-<name>-source</id>
+               <phase>generate-sources</phase>
+               <goals><goal>add-source</goal></goals>
+               <configuration>
+                 <sources><source>../contrib/<name>/src/main/scala</source></sources>
+               </configuration>
+             </execution>
+             <execution>
+               <id>add-contrib-<name>-test-source</id>
+               <phase>generate-test-sources</phase>
+               <goals><goal>add-test-source</goal></goals>
+               <configuration>
+                 <sources><source>../contrib/<name>/src/test/scala</source></sources>
+               </configuration>
+             </execution>
+           </executions>
+         </plugin>
+         <plugin>
+           <groupId>org.apache.maven.plugins</groupId>
+           <artifactId>maven-resources-plugin</artifactId>
+           <executions>
+             <execution>
+               <id>copy-contrib-<name>-resources</id>
+               <phase>process-resources</phase>
+               <goals><goal>copy-resources</goal></goals>
+               <configuration>
+                 <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                 <resources>
+                   <resource><directory>../contrib/<name>/src/main/resources</directory></resource>
+                 </resources>
+               </configuration>
+             </execution>
+           </executions>
+         </plugin>
+         <plugin>
+           <groupId>com.github.os72</groupId>
+           <artifactId>protoc-jar-maven-plugin</artifactId>
+           <executions>
+             <execution>
+               <id>generate-contrib-<name>-proto</id>
+               <phase>generate-sources</phase>
+               <goals><goal>run</goal></goals>
+               <configuration>
+                 <protocArtifact>com.google.protobuf:protoc:${protobuf.version}</protocArtifact>
+                 <inputDirectories>
+                   <include>../contrib/<name>/native/src/proto</include>
+                 </inputDirectories>
+               </configuration>
+             </execution>
+           </executions>
+         </plugin>
+       </plugins>
+     </build>
+   </profile>
+   ```
+
+   No additions to the parent `pom.xml`'s `<modules>` — contribs are not Maven modules.
+
+### Native side
+
 2. **`native/Cargo.toml`** — add `../contrib/<name>/native` to the workspace `members`
    list (NOT `default-members` — contribs are consumed via core's feature flags).
 3. **`native/core/Cargo.toml`** — add a `contrib-<name>` feature gate and a matching
@@ -118,8 +205,7 @@ Three single-line edits to existing files:
    ```
 
    Do **not** add the feature to `default = [...]`. Production builds carry zero contrib
-   surface by design; users opt in explicitly. (CI matrix builds should add the feature.)
-
+   surface by design; users opt in explicitly.
 4. **`native/core/src/lib.rs`** — add the matching feature-gated `extern crate` so the
    contrib's `#[ctor]` is linked in when the feature is on:
 
@@ -128,20 +214,32 @@ Three single-line edits to existing files:
    extern crate comet_contrib_<name>;
    ```
 
-## Cargo feature gate
+## Build matrix
 
 ```bash
-# Default release build: zero contrib surface. registered_contrib_kinds() is empty.
+# Vanilla Comet build: zero contribs on either side.
+mvn install
 cargo build
 
-# Enable a specific contrib explicitly:
+# Build with the example contrib bundled into both halves.
+mvn install -Pcontrib-example
 cargo build --features contrib-example
-# Multiple at once:
-cargo build --features 'contrib-example contrib-<name>'
 
-# Verify the slim build path:
+# Multiple contribs at once.
+mvn install -Pcontrib-example,contrib-delta
+cargo build --features 'contrib-example contrib-delta'
+
+# Verify the slim native build path.
 cargo build --no-default-features
 ```
+
+The JVM and native flags MUST agree for a contrib to work. Activating only the Maven
+profile gives you a `comet-spark.jar` whose serde produces `ContribOp` envelopes the
+native side can't dispatch (you'll get
+`No contrib planner registered for ContribOp.kind=...`). Activating only the Cargo
+feature gives you a `libcomet` ready to dispatch a contrib whose serde isn't on the
+classpath, so the registered planner sits dormant. The contributor guide and release
+notes call out both flags together.
 
 A core test under `#[cfg(not(any(feature = "contrib-example")))]` (today's form;
 the `any(...)` will list every contrib feature once more are added) asserts
@@ -150,20 +248,16 @@ the `any(...)` will list every contrib feature once more are added) asserts
 `native/core/src/execution/planner/contrib.rs`'s `production_build_has_no_contrib_planners_registered`)
 to add `feature = "contrib-<name>"` so the canary still compiles on your contrib's CI row.
 
-The JVM side is **always** conditional: the contrib JAR is its own Maven artifact, and
-Spark only loads it when it's on the classpath. Even with the Cargo feature on, a user
-who doesn't add the contrib JAR sees no behaviour change — the contrib's native planner
-sits dormant in the registry, waiting for a JVM serde that never calls it.
-
 ## SPI stability
 
 The contrib SPI is currently **alpha** — minor Comet versions may carry breaking
-changes during the early-adopter period. Concretely:
+changes during the early-adopter period. Because contribs ship in-tree (as part of
+Comet's release), every Comet build is internally consistent — a `0.18.x`
+`comet-spark.jar` is bundled with `0.18.x` contribs. Version-skew concerns
+("contrib JAR built against 0.17, Comet runtime 0.18") don't apply.
 
-- `comet-contrib-spi` is workspace-versioned alongside core. A contrib built against
-  Comet `0.17.x` is **not** guaranteed to work with Comet `0.18.x` at runtime; the SPI
-  traits may evolve. Pin your contrib's `<version>` and `comet-spark` dependency to a
-  specific Comet patch version.
+What stability guarantees the SPI does aim for:
+
 - `ParquetDatasourceParams` and `ContribError` are `#[non_exhaustive]` so additive
   changes (new fields / variants) are minor bumps, not breaks. Use
   `ParquetDatasourceParams::new(...)` + `with_*` setters rather than struct-literal
@@ -377,26 +471,11 @@ path — convenient for editor tooling. The file is gitignored.
 The contrib's `Cargo.toml` adds `prost-build` to `[build-dependencies]` and `prost`
 to `[dependencies]`.
 
-### Proto, JVM side — handling Comet's protobuf shade
+### Proto, JVM side
 
-This is the single trickiest piece of the JVM build. **Read carefully.**
-
-`comet-spark` shades `com.google.protobuf` under `${comet.shade.packageName}.protobuf`
-(value: `org.apache.comet.shaded.protobuf`). The shading is applied in `spark/pom.xml`'s
-`maven-shade-plugin` execution — it is **NOT inherited** by other modules through
-`pluginManagement`. So when `OperatorOuterClass.ContribOp.Builder` is compiled into
-the published `comet-spark.jar`, its `setPayload(ByteString)` signature references the
-shaded type `org.apache.comet.shaded.protobuf.ByteString`. A contrib JAR that ships
-unshaded `com.google.protobuf.ByteString` references (the default output of
-`protoc-jar-maven-plugin`) will fail at runtime with `NoSuchMethodError` the first time
-it calls `setPayload(myMessage.toByteString())`.
-
-The contrib pom must therefore:
-
-1. Generate Java proto classes via `protoc-jar-maven-plugin`.
-2. Run its own `maven-shade-plugin` execution that relocates the same package the
-   parent declares (`${comet.shade.packageName}.protobuf`), so the contrib's generated
-   `ByteString` / `Message` references match the shaded comet-spark surface at runtime.
+Add `protoc-jar-maven-plugin` to your contrib `pom.xml`, pointing at your `.proto`
+schema. Generated Java classes end up under `target/generated-sources/protobuf/java/`
+and get compiled into the contrib's JAR by the inherited `scala-maven-plugin`:
 
 ```xml
 <dependencies>
@@ -404,7 +483,6 @@ The contrib pom must therefore:
     <groupId>com.google.protobuf</groupId>
     <artifactId>protobuf-java</artifactId>
     <version>${protobuf.version}</version>
-    <!-- compile scope: the contrib's shade execution will relocate + include it. -->
   </dependency>
 </dependencies>
 
@@ -427,43 +505,15 @@ The contrib pom must therefore:
         </execution>
       </executions>
     </plugin>
-    <plugin>
-      <groupId>org.apache.maven.plugins</groupId>
-      <artifactId>maven-shade-plugin</artifactId>
-      <executions>
-        <execution>
-          <phase>package</phase>
-          <goals><goal>shade</goal></goals>
-          <configuration>
-            <shadedArtifactAttached>false</shadedArtifactAttached>
-            <createDependencyReducedPom>true</createDependencyReducedPom>
-            <artifactSet>
-              <includes>
-                <include>com.google.protobuf:protobuf-java</include>
-              </includes>
-            </artifactSet>
-            <relocations>
-              <relocation>
-                <pattern>com.google.protobuf</pattern>
-                <shadedPattern>${comet.shade.packageName}.protobuf</shadedPattern>
-              </relocation>
-            </relocations>
-          </configuration>
-        </execution>
-      </executions>
-    </plugin>
   </plugins>
 </build>
 ```
 
-The relocation pattern MUST be `${comet.shade.packageName}.protobuf` (matching the
-parent pom's property) — if you hardcode `org.apache.comet.shaded.protobuf` it works
-today but breaks the moment Comet's build renames the shade prefix.
-
-`contrib/example/` does NOT exercise this path because its Scala side never builds a
-`ContribOp` — the example only validates dispatch wiring. The first real-format
-contrib in the tree will be where this section's snippets are first exercised
-end-to-end against CI.
+**Shading is handled automatically.** When the `contrib-<name>` profile on
+`spark/pom.xml` bundles your contrib into `comet-spark.jar`, the inherited shade
+execution relocates `com.google.protobuf` to `${comet.shade.packageName}.protobuf`
+across both your classes and `comet-spark`'s. Don't add your own `maven-shade-plugin`
+execution to the contrib pom; that would shade twice and break the runtime types.
 
 ### Building a `ContribOp` envelope
 
@@ -742,37 +792,19 @@ classpath). Discovery is **lazy** — triggered the first time `CometScanRule._a
 `--jars`-injected JARs are on the classpath, so order-of-arrival inside the driver
 JVM is not a concern.
 
-## Maven JAR packaging + version pinning
+## Maven packaging
 
-The example contrib ships a thin JAR with no shading. Real contribs SHOULD prefer thin
-JARs too. If your contrib must include a third-party library that conflicts with the
-user's classpath, shade the conflicting classes under your contrib's package prefix
-(`org.apache.comet.contrib.<name>.shaded.*`) so classloader collisions stay local.
-Do **not** shade `comet-spark` or its transitive dependencies — those are `provided`
-scope and the user supplies them.
+Contribs are in-tree only — they ship as part of Comet's release. The contrib's
+Maven module produces a standalone JAR (built unconditionally so the workspace stays
+consistent), but the JAR is **not deployed**: `maven.deploy.skip=true` inherits from
+the parent pom. The contrib's classes reach users through `comet-spark.jar`, which
+bundles them via the `contrib-<name>` profile on `spark/pom.xml`.
 
-`comet-spark`'s shading of `com.google.protobuf` is the one external dep that does
-need attention: generated Java classes from your `.proto` reference the shaded
-package, which is handled automatically when you use the parent pom's plugin
-configuration (the contrib pom inherits the same `<comet.shade.packageName>` property).
-
-### Version pinning
-
-`comet-spark` is `<scope>provided</scope>` in your contrib's pom. Pin the dependency to
-the exact Comet patch version your contrib was tested against:
-
-```xml
-<dependency>
-  <groupId>org.apache.datafusion</groupId>
-  <artifactId>comet-spark-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.17.0</version>  <!-- not ${project.version} unless your contrib is in-tree -->
-  <scope>provided</scope>
-</dependency>
-```
-
-In-tree contribs use `${project.version}`; out-of-tree contribs use the explicit Comet
-version they were built against. A contrib built against Comet `0.17.x` is not
-guaranteed runtime-compatible with Comet `0.18.x` — the SPI is alpha.
+If your contrib pulls in a third-party library, declare the dep in your contrib's pom
+in `compile` scope (no `provided` — the contrib's classes go through the same shade
+execution as core's, and any deps the contrib pulls need to be visible to that shade).
+Avoid third-party deps where you can; the more your contrib drags in, the more
+likely the shade hits a relocation collision with `comet-spark`'s own includes.
 
 ### Multi-Spark-version support
 

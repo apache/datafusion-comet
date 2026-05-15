@@ -351,6 +351,109 @@ under the License.
         </plugins>
       </build>
     </profile>
+
+    <!--
+      Contrib bundling profiles. Symmetric with native/core/Cargo.toml's `contrib-<name>`
+      Cargo features: activating the profile compiles the contrib's Scala/Java sources
+      into comet-spark.jar (along with its META-INF/services entries and its
+      contrib-private generated proto classes). With no profile active, the contrib's
+      sources sit under contrib/<name>/ but nothing references them.
+
+      No separate Maven module per contrib; the contrib lives as a source directory
+      under contrib/<name>/, mirroring how contrib/<name>/native/ is an rlib crate
+      whose sources are compiled INTO libcomet rather than into a separate cdylib.
+      This avoids a circular Maven dep (the contrib's Scala extends SPI traits in
+      comet-spark; comet-spark would consume the contrib in turn).
+
+      Adding a new contrib? Copy the contrib-example block below, swap `example` for
+      your contrib's name, and ensure the source/resource/proto paths point at your
+      contrib's directory.
+    -->
+    <profile>
+      <id>contrib-example</id>
+      <build>
+        <plugins>
+          <!--
+            Inject the contrib's Scala sources into comet-spark's compile. The shim
+            module already uses this pattern (see common/pom.xml's add-shim-source
+            execution) for per-Spark-version source roots.
+          -->
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>build-helper-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>add-contrib-example-source</id>
+                <phase>generate-sources</phase>
+                <goals><goal>add-source</goal></goals>
+                <configuration>
+                  <sources>
+                    <source>../contrib/example/src/main/scala</source>
+                  </sources>
+                </configuration>
+              </execution>
+              <execution>
+                <id>add-contrib-example-test-source</id>
+                <phase>generate-test-sources</phase>
+                <goals><goal>add-test-source</goal></goals>
+                <configuration>
+                  <sources>
+                    <source>../contrib/example/src/test/scala</source>
+                  </sources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <!--
+            Add the contrib's META-INF/services/ resources to comet-spark's resource
+            roots. The shade execution's ServicesResourceTransformer merges them with
+            any existing entries.
+          -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-resources-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>copy-contrib-example-resources</id>
+                <phase>process-resources</phase>
+                <goals><goal>copy-resources</goal></goals>
+                <configuration>
+                  <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>../contrib/example/src/main/resources</directory>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <!--
+            Generate the contrib's Java protos into comet-spark's target/. The contrib's
+            own .proto schema lives under contrib/example/native/src/proto/ alongside
+            the Rust-side schema (one source of truth). The contrib's classes can then
+            import comet.contrib.example.* generated classes directly.
+          -->
+          <plugin>
+            <groupId>com.github.os72</groupId>
+            <artifactId>protoc-jar-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>generate-contrib-example-proto</id>
+                <phase>generate-sources</phase>
+                <goals><goal>run</goal></goals>
+                <configuration>
+                  <protocArtifact>com.google.protobuf:protoc:${protobuf.version}</protocArtifact>
+                  <inputDirectories>
+                    <include>../contrib/example/native/src/proto</include>
+                  </inputDirectories>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
   </profiles>
 
   <build>
@@ -435,6 +538,16 @@ under the License.
                   <shadedPattern>${comet.shade.packageName}.guava.thirdparty</shadedPattern>
                 </relocation>
               </relocations>
+              <!--
+                Merge META-INF/services/ entries across the artifacts being shaded
+                rather than letting the last one win. This is what makes a
+                ServiceLoader-discoverable contrib's META-INF/services file survive
+                being bundled into comet-spark.jar via the contrib-<name> profile
+                below.
+              -->
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
             </configuration>
           </execution>
         </executions>

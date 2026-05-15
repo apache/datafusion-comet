@@ -27,20 +27,23 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 
 /**
- * Process-wide singleton that discovers and exposes contrib extensions found on the classpath via
- * `java.util.ServiceLoader`.
+ * Process-wide singleton that exposes the contrib extensions bundled into comet-spark.jar.
  *
- * Discovery happens once per JVM, idempotent: the first `load()` call enumerates every
- * `META-INF/services/org.apache.comet.spi.CometScanRuleExtension` and
- * `META-INF/services/org.apache.comet.spi.CometOperatorSerdeExtension` resource on the Comet
- * classloader. Subsequent calls are no-ops.
+ * Discovery uses `java.util.ServiceLoader` against `META-INF/services/` entries inside
+ * comet-spark.jar. Those entries get there at build time: each contrib (under `contrib/<name>/`)
+ * carries its own `META-INF/services/` files, and the `contrib-<name>` Maven profile on
+ * spark/pom.xml shades the contrib's classes plus those service entries into the published
+ * comet-spark.jar. A vanilla `mvn install` produces a comet-spark.jar with zero contribs; a
+ * `mvn install -Pcontrib-example` build bundles the example contrib. The native side mirrors
+ * this exactly via `--features contrib-example` on the Rust core crate.
  *
- * `load()` is invoked lazily from `CometScanRule._apply` and `CometExecRule._apply` the first
- * time either rule runs against a Comet-enabled session. Spark sessions that never enable Comet
- * pay zero ServiceLoader cost.
+ * Discovery is idempotent: the first `load()` call enumerates the service entries; subsequent
+ * calls are no-ops. `load()` is invoked lazily from `CometScanRule._apply` and
+ * `CometExecRule._apply` the first time either rule runs against a Comet-enabled session.
+ * Spark sessions that never enable Comet pay zero ServiceLoader cost.
  *
- * Failures to instantiate individual extensions are logged but do NOT fail Comet startup -- a
- * misconfigured contrib JAR shouldn't take down the whole Spark session.
+ * Failures to instantiate individual extensions are logged at WARN but do NOT fail Comet
+ * startup -- a misconfigured contrib shouldn't take down the whole Spark session.
  */
 object CometExtensionRegistry extends Logging {
 
@@ -82,13 +85,14 @@ object CometExtensionRegistry extends Logging {
           s"serde=[${newSerdeExts.map(_.name).mkString(", ")}]")
       detectDuplicateSerdeClasses(newSerdeExts)
     } else {
-      // Positive signal that discovery ran. Without this line a user with a misconfigured
-      // contrib JAR (missing META-INF/services, or the JAR not on any classloader Comet
-      // can see) gets no diagnostic and silently loses contrib functionality.
+      // Positive signal that discovery ran. Comet-spark.jar's contrib content depends on
+      // which `-Pcontrib-<name>` Maven profiles were active at build time; this line is
+      // what tells a user whose contrib went missing whether to suspect their Comet build
+      // or their classpath.
       logInfo(
-        "Comet contrib extensions: none discovered on classpath " +
-          "(no META-INF/services entries for CometScanRuleExtension or " +
-          "CometOperatorSerdeExtension)")
+        "Comet contrib extensions: none discovered. comet-spark.jar was built " +
+          "without any contrib profiles enabled, or the contrib's META-INF/services " +
+          "entries were not bundled correctly.")
     }
   }
 
