@@ -780,33 +780,14 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
+  // Delegate to the companion object's pure helper so the implementation lives in one
+  // place. Kept as a class-level method so existing in-class callers (transformV1Scan,
+  // transformV2Scan) compile unchanged.
   private def isSchemaSupported(
       scanExec: FileSourceScanExec,
       scanImpl: String,
-      r: HadoopFsRelation): Boolean = {
-    val fallbackReasons = new ListBuffer[String]()
-    val typeChecker = CometScanTypeChecker(scanImpl)
-    val schemaSupported =
-      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
-    if (!schemaSupported) {
-      withInfo(
-        scanExec,
-        s"Unsupported schema ${scanExec.requiredSchema} " +
-          s"for $scanImpl: ${fallbackReasons.mkString(", ")}")
-      return false
-    }
-    val partitionSchemaSupported =
-      typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
-    if (!partitionSchemaSupported) {
-      withInfo(
-        scanExec,
-        s"Unsupported partitioning schema ${scanExec.requiredSchema} " +
-          s"for $scanImpl: ${fallbackReasons
-              .mkString(", ")}")
-      return false
-    }
-    true
-  }
+      r: HadoopFsRelation): Boolean =
+    CometScanRule.isSchemaSupported(scanExec, scanImpl, r)
 }
 
 case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with CometTypeShim {
@@ -845,6 +826,39 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
 }
 
 object CometScanRule extends Logging {
+
+  /**
+   * Schema-support check + fallback-reason emission, callable from contrib extensions under
+   * `org.apache.comet.contrib.*`. Pure function; no shared state with CometScanRule instances.
+   * `private[comet]` keeps it out of the public API while letting subpackages (contribs) reach
+   * it.
+   */
+  private[comet] def isSchemaSupported(
+      scanExec: FileSourceScanExec,
+      scanImpl: String,
+      r: HadoopFsRelation): Boolean = {
+    val fallbackReasons = new ListBuffer[String]()
+    val typeChecker = CometScanTypeChecker(scanImpl)
+    val schemaSupported =
+      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+    if (!schemaSupported) {
+      org.apache.comet.CometSparkSessionExtensions.withInfo(
+        scanExec,
+        s"Unsupported schema ${scanExec.requiredSchema} " +
+          s"for $scanImpl: ${fallbackReasons.mkString(", ")}")
+      return false
+    }
+    val partitionSchemaSupported =
+      typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
+    if (!partitionSchemaSupported) {
+      org.apache.comet.CometSparkSessionExtensions.withInfo(
+        scanExec,
+        s"Unsupported partitioning schema ${scanExec.requiredSchema} " +
+          s"for $scanImpl: ${fallbackReasons.mkString(", ")}")
+      return false
+    }
+    true
+  }
 
   /**
    * Tag set on a scan (`FileSourceScanExec` or `BatchScanExec`) that should be left as a plain

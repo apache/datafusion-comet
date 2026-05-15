@@ -277,9 +277,10 @@ trait CometOperatorSerdeExtension {
 }
 ```
 
-Contribs that need a custom physical operator (e.g., a contrib-specific scan exec
-carrying contrib-private state) define their own `SparkPlan` subclass and register a
-serde keyed on the new class:
+Two dispatch shapes are supported:
+
+**Class-keyed** — the contrib defines its own `SparkPlan` subclass (typical for
+operator-style contribs):
 
 ```scala
 case class CometMyFormatScanExec(...) extends CometNativeExec { /* ... */ }
@@ -296,8 +297,42 @@ The merged map across all extensions is computed once at registry load time;
 contribs are logged as a warning at load — the convention is **one contrib defines a
 class, that contrib owns its serde**.
 
-Avoid relying on the legacy `scanImpl: String` tag pattern on a generic `CometScanExec`
-— the SPI dispatches by class, not by tag.
+**Predicate-keyed (marker-class with scanImpl tag)** — required when the contrib uses
+core's `CometScanExec` as a marker disambiguated by a `scanImpl` string. `CometScanExec`
+is a Scala case class shared with core, so two contribs marking different tag values
+on the same class would otherwise collide. Override `matchOperator` instead of (or in
+addition to) populating `serdes`, and declare your tag(s) via `nativeParquetScanImpls`
+if your scan goes through Comet's tuned ParquetSource:
+
+```scala
+class MyFormatSerdeExtension extends CometOperatorSerdeExtension {
+  override def name: String = "myformat"
+
+  // Your contrib's scanImpl marker. Pick a stable string; no central registry of these
+  // exists in core, but conventionally contribs use snake-case like "native_<name>_compat".
+  private val MyScanImpl = "native_myformat_compat"
+
+  override def matchOperator(op: SparkPlan): Option[CometOperatorSerde[_]] = op match {
+    case s: CometScanExec if s.scanImpl == MyScanImpl => Some(CometMyFormatScan)
+    case _ => None
+  }
+
+  // Tell core's CometScanExec.supportedDataFilters to apply DataFusion-style filter
+  // exclusions to this tag. Required when your scan goes through Comet's tuned
+  // ParquetSource (the same path SCAN_NATIVE_DATAFUSION uses).
+  override def nativeParquetScanImpls: Set[String] = Set(MyScanImpl)
+}
+```
+
+`CometExecRule` checks `matchOperator` only after the class-keyed `serdes` map misses,
+so the two patterns coexist. Multiple registered extensions' `matchOperator` calls are
+tried in registration order; the first `Some` wins.
+
+Core's CometConf defines `SCAN_NATIVE_DATAFUSION` / `SCAN_NATIVE_ICEBERG_COMPAT` for
+core's own scan variants. Contribs are expected to define their own scanImpl strings
+inside their own code (not in `CometConf`); registering via `nativeParquetScanImpls`
+is the SPI hook that lets `CometScanExec.supportedDataFilters` apply the right filter
+treatment without core needing to know the contrib's tag name.
 
 ##### `CometOperatorSerde[T <: SparkPlan]` contract
 

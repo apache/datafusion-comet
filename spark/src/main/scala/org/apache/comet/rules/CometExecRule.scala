@@ -357,9 +357,20 @@ case class CometExecRule(session: SparkSession)
           // that aren't in `allExecs`, so this merge never overrides a core mapping in
           // practice; duplicate-class detection at load() time logs a warning if it
           // does happen.
+          // Three-step dispatch:
+          //   1. core's built-in class-keyed map (allExecs)
+          //   2. contrib serde-extensions' class-keyed map (mergedSerdes)
+          //   3. contrib serde-extensions' predicate-based matchOperator hook
+          //      (for marker-class patterns where one shared SparkPlan class --
+          //      e.g. CometScanExec -- is disambiguated by a runtime tag)
           val handler = allExecs
             .get(op.getClass)
             .orElse(CometExtensionRegistry.mergedSerdes.get(op.getClass))
+            .orElse {
+              CometExtensionRegistry.serdeExtensions.iterator
+                .flatMap(_.matchOperator(op))
+                .nextOption()
+            }
             .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
           handler match {
             case Some(handler) =>

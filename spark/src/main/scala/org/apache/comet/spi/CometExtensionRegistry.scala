@@ -33,17 +33,17 @@ import org.apache.spark.internal.Logging
  * comet-spark.jar. Those entries get there at build time: each contrib (under `contrib/<name>/`)
  * carries its own `META-INF/services/` files, and the `contrib-<name>` Maven profile on
  * spark/pom.xml shades the contrib's classes plus those service entries into the published
- * comet-spark.jar. A vanilla `mvn install` produces a comet-spark.jar with zero contribs; a
- * `mvn install -Pcontrib-example` build bundles the example contrib. The native side mirrors
- * this exactly via `--features contrib-example` on the Rust core crate.
+ * comet-spark.jar. A vanilla `mvn install` produces a comet-spark.jar with zero contribs; a `mvn
+ * install -Pcontrib-example` build bundles the example contrib. The native side mirrors this
+ * exactly via `--features contrib-example` on the Rust core crate.
  *
  * Discovery is idempotent: the first `load()` call enumerates the service entries; subsequent
  * calls are no-ops. `load()` is invoked lazily from `CometScanRule._apply` and
- * `CometExecRule._apply` the first time either rule runs against a Comet-enabled session.
- * Spark sessions that never enable Comet pay zero ServiceLoader cost.
+ * `CometExecRule._apply` the first time either rule runs against a Comet-enabled session. Spark
+ * sessions that never enable Comet pay zero ServiceLoader cost.
  *
- * Failures to instantiate individual extensions are logged at WARN but do NOT fail Comet
- * startup -- a misconfigured contrib shouldn't take down the whole Spark session.
+ * Failures to instantiate individual extensions are logged at WARN but do NOT fail Comet startup
+ * -- a misconfigured contrib shouldn't take down the whole Spark session.
  */
 object CometExtensionRegistry extends Logging {
 
@@ -71,12 +71,14 @@ object CometExtensionRegistry extends Logging {
     val newScanExts = loadOne[CometScanRuleExtension]("CometScanRuleExtension")
     val newSerdeExts = loadOne[CometOperatorSerdeExtension]("CometOperatorSerdeExtension")
     val newMerged = newSerdeExts.flatMap(_.serdes).toMap
+    val newNativeParquetTags = newSerdeExts.flatMap(_.nativeParquetScanImpls).toSet
     // Publish the @volatile fields BEFORE flipping `loaded` so other threads either see
     // the empty defaults (and may re-enter -- benign, blocked by the monitor) or the
     // fully-populated state (and may skip -- also benign).
     scanExts = newScanExts
     serdeExts = newSerdeExts
     mergedSerdesCache = newMerged
+    nativeParquetScanImplsCache = newNativeParquetTags
     loaded.set(true)
     if (newScanExts.nonEmpty || newSerdeExts.nonEmpty) {
       logInfo(
@@ -107,12 +109,23 @@ object CometExtensionRegistry extends Logging {
    * the contrib uses for class-keyed dispatch in `CometExecRule`. Computed once at `load()` time;
    * an empty map until `load()` has run.
    */
-  def mergedSerdes: Map[Class[_ <: org.apache.spark.sql.execution.SparkPlan],
+  def mergedSerdes: Map[
+    Class[_ <: org.apache.spark.sql.execution.SparkPlan],
     org.apache.comet.serde.CometOperatorSerde[_]] = mergedSerdesCache
 
-  @volatile private var mergedSerdesCache
-    : Map[Class[_ <: org.apache.spark.sql.execution.SparkPlan],
-      org.apache.comet.serde.CometOperatorSerde[_]] = Map.empty
+  @volatile private var mergedSerdesCache: Map[
+    Class[_ <: org.apache.spark.sql.execution.SparkPlan],
+    org.apache.comet.serde.CometOperatorSerde[_]] = Map.empty
+
+  /**
+   * Union of every registered extension's `nativeParquetScanImpls`. Consumed by
+   * `CometScanExec.supportedDataFilters` to decide whether the marker scan's filter set should
+   * get the same native-parquet exclusions as `SCAN_NATIVE_DATAFUSION`. Computed once at `load()`
+   * time; empty until `load()` has run.
+   */
+  def nativeParquetScanImpls: Set[String] = nativeParquetScanImplsCache
+
+  @volatile private var nativeParquetScanImplsCache: Set[String] = Set.empty
 
   /**
    * Log a warning when two registered contribs claim the same `Class[_ <: SparkPlan]` for serde
@@ -126,7 +139,9 @@ object CometExtensionRegistry extends Logging {
    */
   private def detectDuplicateSerdeClasses(exts: Seq[CometOperatorSerdeExtension]): Unit = {
     val perClassOwners = scala.collection.mutable.Map
-      .empty[Class[_ <: org.apache.spark.sql.execution.SparkPlan], scala.collection.mutable.ArrayBuffer[String]]
+      .empty[
+        Class[_ <: org.apache.spark.sql.execution.SparkPlan],
+        scala.collection.mutable.ArrayBuffer[String]]
     exts.foreach { ext =>
       ext.serdes.keys.foreach { cls =>
         perClassOwners
@@ -149,10 +164,10 @@ object CometExtensionRegistry extends Logging {
    * Test-only: reset the registry to the empty state. Lets unit tests re-run discovery with a
    * different classpath / overridden services. Not for production use.
    *
-   * Visibility is `public` (rather than `private[comet]`) because contribs are not required to
-   * be packaged under `org.apache.comet.*`; a contrib living under e.g. `io.delta.comet.contrib`
-   * must still be able to reset between tests. The method's name carries the "test-only"
-   * contract by convention.
+   * Visibility is `public` (rather than `private[comet]`) because contribs are not required to be
+   * packaged under `org.apache.comet.*`; a contrib living under e.g. `io.delta.comet.contrib`
+   * must still be able to reset between tests. The method's name carries the "test-only" contract
+   * by convention.
    */
   def resetForTesting(): Unit = synchronized {
     // synchronized so concurrent `load()` callers don't observe torn state -- e.g.
@@ -162,6 +177,7 @@ object CometExtensionRegistry extends Logging {
     scanExts = Seq.empty
     serdeExts = Seq.empty
     mergedSerdesCache = Map.empty
+    nativeParquetScanImplsCache = Set.empty
   }
 
   private def loadOne[T](label: String)(implicit ct: scala.reflect.ClassTag[T]): Seq[T] = {

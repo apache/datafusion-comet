@@ -1168,6 +1168,14 @@ under the License.
             <exclude>dev/release/rat_exclude_files.txt</exclude>
             <exclude>dev/release/requirements.txt</exclude>
             <exclude>native/proto/src/generated/**</exclude>
+            <!-- Contrib build outputs: prost-build's generated Rust sits under
+                 contrib/<name>/native/src/generated/, and the META-INF/services
+                 ServiceLoader entries are plain-text class names with no comment
+                 syntax that supports a license header. Patterns are glob-style
+                 (no leading `/`) so they match against the path RAT sees
+                 regardless of which module the plugin runs against. -->
+            <exclude>**/native/src/generated/**</exclude>
+            <exclude>**/META-INF/services/**</exclude>
             <exclude>benchmarks/tpc/queries/**</exclude>
             <exclude>.claude/**</exclude>
           </excludes>
