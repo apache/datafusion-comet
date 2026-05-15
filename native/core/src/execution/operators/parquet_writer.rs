@@ -18,7 +18,6 @@
 //! Parquet writer operator for writing RecordBatches to Parquet files
 
 use std::{
-    any::Any,
     collections::HashMap,
     fmt,
     fmt::{Debug, Formatter},
@@ -38,6 +37,7 @@ use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::{
     error::{DataFusionError, Result},
     execution::context::TaskContext,
@@ -46,8 +46,8 @@ use datafusion::{
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
         stream::RecordBatchStreamAdapter,
-        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-        SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PhysicalExpr,
+        PlanProperties, SendableRecordBatchStream,
     },
 };
 use futures::TryStreamExt;
@@ -404,12 +404,15 @@ impl DisplayAs for ParquetWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ParquetWriterExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ParquetWriterExec"
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

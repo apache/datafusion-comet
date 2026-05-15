@@ -28,7 +28,7 @@ use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
 use datafusion::physical_expr::expressions::format_state_name;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use crate::utils::{build_bool_state, is_valid_decimal_precision, unlikely};
 use crate::{decimal_sum_overflow_error, EvalMode, SparkErrorWithContext};
@@ -108,11 +108,6 @@ impl AvgDecimal {
 }
 
 impl AggregateUDFImpl for AvgDecimal {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         match (&self.sum_data_type, &self.result_data_type) {
             (Decimal128(sum_precision, sum_scale), Decimal128(target_precision, target_scale)) => {

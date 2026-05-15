@@ -29,7 +29,7 @@ use datafusion::{
 };
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 pub fn create_negate_expr(
     expr: Arc<dyn PhysicalExpr>,
@@ -96,11 +96,6 @@ impl std::fmt::Display for NegativeExpr {
 }
 
 impl PhysicalExpr for NegativeExpr {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
         self.arg.data_type(input_schema)
     }

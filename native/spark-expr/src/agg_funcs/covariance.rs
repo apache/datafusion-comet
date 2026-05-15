@@ -25,11 +25,9 @@ use arrow::{
 };
 use datafusion::common::{downcast_value, unwrap_or_internal_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion::logical_expr::type_coercion::aggregates::NUMERICS;
 use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature, Volatility};
 use datafusion::physical_expr::expressions::format_state_name;
 use datafusion::physical_expr::expressions::StatsType;
-use std::any::Any;
 use std::sync::Arc;
 
 /// COVAR_SAMP and COVAR_POP aggregate expression
@@ -65,7 +63,10 @@ impl Covariance {
         assert!(matches!(data_type, DataType::Float64));
         Self {
             name: name.into(),
-            signature: Signature::uniform(2, NUMERICS.to_vec(), Volatility::Immutable),
+            signature: Signature::exact(
+                vec![DataType::Float64, DataType::Float64],
+                Volatility::Immutable,
+            ),
             stats_type,
             null_on_divide_by_zero,
         }
@@ -73,11 +74,6 @@ impl Covariance {
 }
 
 impl AggregateUDFImpl for Covariance {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }

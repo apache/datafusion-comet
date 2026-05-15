@@ -22,7 +22,6 @@ use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValu
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::{
-    any::Any,
     fmt::{Display, Formatter},
     hash::Hash,
     sync::Arc,
@@ -62,10 +61,6 @@ impl GetStructField {
 }
 
 impl PhysicalExpr for GetStructField {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }

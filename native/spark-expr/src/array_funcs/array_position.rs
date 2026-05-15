@@ -28,7 +28,6 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 use num::Float;
-use std::any::Any;
 use std::sync::Arc;
 
 /// Spark array_position() function that returns the 1-based position of an element in an array.
@@ -313,10 +312,6 @@ impl SparkArrayPositionFunc {
 }
 
 impl ScalarUDFImpl for SparkArrayPositionFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "spark_array_position"
     }

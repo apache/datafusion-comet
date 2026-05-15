@@ -24,6 +24,7 @@ use crate::{
 };
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{arrow_datafusion_err, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
@@ -37,7 +38,6 @@ use datafusion::{
 use futures::Stream;
 use jni::objects::{Global, JByteBuffer, JObject};
 use std::{
-    any::Any,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -221,8 +221,11 @@ fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
 }
 
 impl ExecutionPlan for ShuffleScanExec {
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn schema(&self) -> SchemaRef {

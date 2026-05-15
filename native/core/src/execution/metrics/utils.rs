@@ -71,14 +71,19 @@ pub(crate) fn to_native_metric_node(
         children: Vec::with_capacity(children.len()),
     };
 
-    if let Some(metrics) = node_metrics {
-        for m in metrics.iter() {
-            let value = m.value();
-            native_metric_node
-                .metrics
-                .insert(value.name().to_string(), value.as_usize() as i64);
-        }
-    }
+    // Aggregate metrics by name using DataFusion's aggregate_by_name(), which
+    // correctly handles duplicate metric names (e.g. BaselineMetrics registered
+    // by both FileStream and ParquetMorselizer on the same ExecutionPlanMetricsSet).
+    // The additional_native_plans branch below already does this.
+    node_metrics
+        .unwrap_or_default()
+        .aggregate_by_name()
+        .iter()
+        .map(|m| m.value())
+        .map(|m| (m.name(), m.as_usize() as i64))
+        .for_each(|(name, value)| {
+            native_metric_node.metrics.insert(name.to_string(), value);
+        });
 
     for child_plan in children {
         let child_node = to_native_metric_node(child_plan)?;

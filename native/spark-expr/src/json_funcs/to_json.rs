@@ -79,10 +79,6 @@ impl PartialEq<dyn Any> for ToJson {
 }
 
 impl PhysicalExpr for ToJson {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
