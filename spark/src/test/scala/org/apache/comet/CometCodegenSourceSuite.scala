@@ -406,7 +406,9 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     //   - startNewValue / endValue bracketing
     //   - setIndexDefined on each struct entry
     //   - keyArray() / valueArray() retrieval from the MapData source
-    //   - null-guard on the value write (key is always non-null per Arrow invariant)
+    // Non-null literals here mean `valueContainsNull == false`, so the value-side null guard is
+    // elided; the existence and elision of the `isNullAt` guard are exercised by the dedicated
+    // [[NullableElementElision]] tests below.
     val expr = CreateMap(
       Seq(
         Literal.create("a", StringType),
@@ -421,10 +423,51 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       ".endValue(",
       ".setIndexDefined(",
       ".keyArray()",
-      ".valueArray()",
-      ".isNullAt(").foreach { marker =>
+      ".valueArray()").foreach { marker =>
       assert(src.contains(marker), s"expected $marker in MapType output emission; got:\n$src")
     }
+  }
+
+  test("ArrayType output elides isNullAt on the element loop when containsNull is false") {
+    // CreateArray over only-non-null Literals produces ArrayType(elementType, containsNull=false).
+    // The element write should drop the `arr.isNullAt(j)` guard at source level rather than
+    // relying on JIT folding.
+    val expr = CreateArray(Seq(Literal(1, IntegerType), Literal(2, IntegerType)))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq.empty).body
+    assert(
+      !src.contains(".isNullAt("),
+      s"expected no isNullAt in element loop when containsNull=false; got:\n$src")
+    assert(src.contains(".startNewValue("), s"expected startNewValue still emitted; got:\n$src")
+  }
+
+  test("ArrayType output keeps isNullAt on the element loop when containsNull is true") {
+    // CreateArray with at least one nullable child produces containsNull=true; the element
+    // null-guard must survive.
+    val expr =
+      CreateArray(Seq(BoundReference(0, IntegerType, nullable = true), Literal(2, IntegerType)))
+    val intSpec = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(intSpec)).body
+    assert(
+      src.contains(".isNullAt("),
+      s"expected isNullAt in element loop when containsNull=true; got:\n$src")
+  }
+
+  test("MapType output keeps value isNullAt when valueContainsNull is true") {
+    // ElementAt with safe-index selection produces a nullable Int; wrapping the value column in
+    // a CreateMap with that nullable Int makes valueContainsNull=true. The value-side null-guard
+    // must survive.
+    val expr =
+      CreateMap(
+        Seq(Literal.create("a", StringType), BoundReference(0, IntegerType, nullable = true)))
+    val intSpec = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(intSpec)).body
+    assert(
+      src.contains(".isNullAt("),
+      s"expected isNullAt on the value-write branch when valueContainsNull=true; got:\n$src")
   }
 
   test("ArrayType(StringType) input emits InputArray_col0 nested class with UTF8 child getter") {
