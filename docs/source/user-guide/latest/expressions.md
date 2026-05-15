@@ -112,6 +112,7 @@ of expressions that be disabled.
 | Hour             | `hour`                       |
 | LastDay          | `last_day`                   |
 | MakeDate         | `make_date`                  |
+| MakeDTInterval   | `make_dt_interval`           |
 | Minute           | `minute`                     |
 | NextDay          | `next_day`                   |
 | Second           | `second`                     |
