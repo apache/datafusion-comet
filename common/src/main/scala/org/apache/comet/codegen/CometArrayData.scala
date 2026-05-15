@@ -27,29 +27,23 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 import org.apache.comet.shims.CometInternalRowShim
 
 /**
- * Shim base for things that implement Spark's [[ArrayData]] in the Arrow-direct codegen kernel.
- * Provides `UnsupportedOperationException` defaults for every abstract method on `ArrayData` and
- * `SpecializedGetters`; codegen-emitted subclasses override only the getters their element type
- * needs (e.g. `numElements`, `isNullAt`, and `getUTF8String` for an `ArrayType(StringType)`
- * input).
+ * Throwing-default base for [[ArrayData]] in the Arrow-direct codegen kernel. Subclasses override
+ * only the getters their element type needs (e.g. `numElements`, `isNullAt`, `getUTF8String` for
+ * an `ArrayType(StringType)` input).
  *
  * Consumer: `InputArray_${path}` nested classes the input emitter generates per `ArrayType` input
- * column. These back the kernel's `getArray(ord)` switch and the recursive nested classes for
- * `Array<Array<...>>` / array-typed map keys / array-typed struct fields.
+ * column. They back `getArray(ord)` plus the recursion for `Array<Array<...>>` and array-typed
+ * map keys / struct fields.
  *
- * Why this exists separately from [[CometInternalRow]]: in Spark, `ArrayData` and `InternalRow`
- * are sibling abstract classes. They both extend `SpecializedGetters` (so they share the typed
- * scalar getters) but neither inherits the other, so a base aimed at one cannot serve the other.
- * The `get(ordinal, dataType)` dispatch body that '''is''' shared between the two lives in
- * [[CometSpecializedGettersDispatch]].
- *
- * [[CometMapData]] is the third sibling for `MapType` views; it backs `InputMap_*` and routes
- * `keyArray()` / `valueArray()` through `CometArrayData` instances.
+ * `ArrayData` and [[CometInternalRow]]'s [[InternalRow]] are sibling abstract classes in Spark
+ * (both extend `SpecializedGetters`, neither inherits the other), so a base aimed at one cannot
+ * serve the other. The dispatch body that '''is''' shared between them lives in
+ * [[CometSpecializedGettersDispatch]]. The third sibling, [[CometMapData]], backs `InputMap_*`
+ * and routes `keyArray()` / `valueArray()` through `CometArrayData` instances.
  *
  * Mixes in [[CometInternalRowShim]] for the same reason `CometInternalRow` does: Spark 4.x adds
  * abstract `SpecializedGetters` methods (`getVariant`, `getGeography`, `getGeometry`) that both
- * `InternalRow` and `ArrayData` inherit. The shim is per-profile and provides throwing defaults
- * only on the profiles where those methods are abstract.
+ * `InternalRow` and `ArrayData` inherit; the per-profile shim provides throwing defaults.
  */
 abstract class CometArrayData extends ArrayData with CometInternalRowShim {
 

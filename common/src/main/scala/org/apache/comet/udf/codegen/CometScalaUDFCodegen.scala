@@ -36,35 +36,32 @@ import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowC
 import org.apache.comet.udf.CometUDF
 
 /**
- * Arrow-direct codegen dispatcher. For each (bound Spark `Expression`, input Arrow schema) pair,
- * compiles a specialized [[CometBatchKernel]] on first encounter and caches the compile.
- * Subsequent batches with the same expression and schema reuse the cached compile.
+ * Arrow-direct codegen dispatcher. For each (bound `Expression`, input Arrow schema) pair,
+ * compiles a specialized [[CometBatchKernel]] on first encounter and caches it; subsequent
+ * batches with the same shape reuse the compile.
  *
- * Arg 0 is a `VarBinaryVector` scalar carrying the serialized Expression bytes (produced on the
- * driver by Spark's closure serializer). Args 1..N are the data columns the `BoundReference`s
- * refer to, in ordinal order. The bytes self-describe the expression so the path works in cluster
- * mode without executor-side state.
+ * Arg 0 is a `VarBinaryVector` scalar carrying the closure-serialized bound Expression bytes.
+ * Args 1..N are the data columns the `BoundReference`s read, in ordinal order. The bytes
+ * self-describe the expression so the path works in cluster mode without executor-side state.
  *
- * Three caches compose at different scopes: the JVM-wide compile cache on the companion
- * (`kernelCache`); a per-thread UDF instance map in `CometUdfBridge.INSTANCES`; and per-partition
- * kernel instance state on this object (`activeKernel`, `activeKey`, `activePartition`) managed
- * by [[ensureKernel]]. See `docs/source/contributor-guide/jvm_udf_dispatch.md` for the rationale
- * and why none of the layers can be collapsed.
+ * Three caches at different scopes: the JVM-wide compile cache (`kernelCache` on the companion);
+ * the per-task UDF-instance cache in `CometUdfBridge.INSTANCES`; and per-partition kernel state
+ * on this instance (`activeKernel`, `activeKey`, `activePartition`) managed by [[ensureKernel]].
+ * Each layer covers a distinct lifetime: JVM (compiled bytecode, immutable), task (UDF instance,
+ * isolated from worker reuse), partition (kernel mutable state for `Rand` /
+ * `MonotonicallyIncreasingID` / etc.).
  */
 class CometScalaUDFCodegen extends CometUDF {
 
   /**
-   * Per-partition kernel instance cache. The dispatcher's compile cache (on the companion object)
-   * is JVM-wide and stores the compiled `GeneratedClass`. The kernel '''instance''', however,
-   * holds per-row mutable state for non-deterministic and stateful expressions (`Rand`'s
-   * `XORShiftRandom`, `MonotonicallyIncreasingID`'s counter, etc.). That state must advance
-   * across batches in one partition and reset across partitions. Allocating per batch (the prior
-   * model) reset state every batch and was wrong; allocating per partition is right.
+   * Per-partition kernel instance cache. The compile cache stores the compiled `GeneratedClass`;
+   * the kernel '''instance''' holds per-row mutable state (`Rand`'s `XORShiftRandom`,
+   * `MonotonicallyIncreasingID`'s counter, etc.) that must advance across batches in one
+   * partition and reset across partitions. Allocating per partition gets that right.
    *
-   * `CometScalaUDFCodegen` is per-thread via `CometUdfBridge.INSTANCES`, and Spark tasks are
-   * single-threaded on a partition, so plain instance fields are safe without synchronisation. A
-   * different partition or a different cached expression flowing through the same thread triggers
-   * a fresh allocation; same partition + same expression reuses the kernel.
+   * Plain `var`s are safe: this dispatcher is per-task (`CometUdfBridge.INSTANCES` keys by
+   * `taskAttemptId`) and Spark drives one partition per task, so [[ensureKernel]] never sees
+   * concurrent access. A different partition or expression triggers a fresh allocation.
    */
   private var activeKernel: CometBatchKernel = _
   private var activeKey: CometScalaUDFCodegen.CacheKey = _
@@ -135,16 +132,14 @@ class CometScalaUDFCodegen extends CometUDF {
   }
 
   /**
-   * Did any row in this Arrow vector set the null bit? The cache key carries this per column, so
-   * a batch with no nulls and a later batch with nulls map to different keys and different
-   * compiles, no correctness risk from flipping this. The tighter `nullable=false` compile lets
-   * the kernel emit `return false` from its `isNullAt` switch and, once paired with the
-   * BoundReference tree rewrite in `lookupOrCompile`, lets Spark's `BoundReference.genCode` skip
-   * the null branch at source level rather than relying on JIT constant-folding.
+   * Did any row in this batch set the null bit? Carried per column on the cache key, so batches
+   * with different nullability map to different kernels (no correctness risk). The
+   * `nullable=false` compile emits `return false` from `isNullAt` and, paired with the
+   * `BoundReference` tree rewrite in `lookupOrCompile`, lets Spark skip the null branch at source
+   * level rather than via JIT folding.
    *
-   * Trade-off: if real workloads flip a column's nullability frequently across batches, each
-   * expression caches up to `2^numCols` variants and the bounded LRU churns. The common case is
-   * stable per-column nullability per query, which keeps variance at one kernel per expression.
+   * Workloads that flip nullability frequently can cache up to `2^numCols` kernel variants per
+   * expression; common-case stable nullability stays at one.
    */
   private def nullable(v: ValueVector): Boolean = v.getNullCount != 0
 
@@ -242,16 +237,10 @@ object CometScalaUDFCodegen {
   }
 
   /**
-   * Test-facing snapshot of compiled kernel signatures currently in the cache. Each entry is the
-   * pair `(input Arrow vector classes in ordinal order, output Spark DataType)` the kernel
-   * compiled against. Lets tests assert that the dispatcher actually specialized on the types it
-   * was expected to, not just that the query returned a correct result (which Spark would do
-   * regardless of how the kernel was shaped).
-   *
-   * Drops the `ArrowColumnSpec.nullable` bit to keep assertions robust to per-batch nullability
-   * variance: test data with no nulls compiles with `nullable=false` and the same expression run
-   * against data with nulls would cache a second variant. Tests assert on vector class and output
-   * type; both variants satisfy the same assertion.
+   * Test-facing snapshot of compiled kernel signatures: `(input Arrow vector classes in ordinal
+   * order, output Spark DataType)` per cache entry. Lets tests assert specialization shape, not
+   * just result correctness. Drops `ArrowColumnSpec.nullable` so a single assertion matches both
+   * `nullable=true` and `nullable=false` variants of the same expression.
    */
   def snapshotCompiledSignatures(): Set[(IndexedSeq[Class[_ <: ValueVector]], DataType)] = {
     kernelCache.synchronized {

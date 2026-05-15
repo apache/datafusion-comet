@@ -35,28 +35,24 @@ import org.apache.comet.shims.CometExprTraitShim
  * Arrow input reads, expression evaluation, and Arrow output writes into one Janino-compiled
  * method per (expression, schema) pair.
  *
- * The kernel is generic over Catalyst expressions. It does not know or assume that the bound tree
- * came from a `ScalaUDF`; any bound `Expression` whose input and output types are in the
- * supported surface compiles. Today the only consumer is the JVM UDF dispatcher in
- * [[org.apache.comet.udf.codegen.CometScalaUDFCodegen]], but a future consumer (e.g. Spark
+ * The kernel is generic over Catalyst expressions; it does not know or assume that the bound tree
+ * came from a `ScalaUDF`. Today's only consumer is
+ * [[org.apache.comet.udf.codegen.CometScalaUDFCodegen]], but a future consumer (Spark
  * `WholeStageCodegenExec` integration, a non-UDF batch evaluator) can drive this class directly.
  *
- * Constraints today:
- *   - Single output vector per kernel; whole projections would need a multi-output extension.
- *   - Per-row scalar evaluation; aggregation, window, and generator expressions are out of scope
- *     and rejected by [[canHandle]].
+ * Constraints: single output vector per kernel (whole projections need a multi-output extension);
+ * per-row scalar evaluation only (aggregation, window, generator rejected by [[canHandle]]).
  *
  * Input- and output-side emission live in [[CometBatchKernelCodegenInput]] and
- * [[CometBatchKernelCodegenOutput]]. This file is the orchestrator: the [[ArrowColumnSpec]]
- * vocabulary, [[canHandle]] / [[allocateOutput]] / [[compile]] / [[generateSource]] entry points,
- * and the cross-cutting kernel-shape decisions (null-intolerant short-circuit, CSE variant).
+ * [[CometBatchKernelCodegenOutput]]. This file owns the [[ArrowColumnSpec]] vocabulary, the
+ * [[canHandle]] / [[allocateOutput]] / [[compile]] / [[generateSource]] entry points, and
+ * cross-cutting kernel-shape decisions (null-intolerant short-circuit, CSE variant).
  *
  * The generated kernel '''is''' the `InternalRow` that Spark's `BoundReference.genCode` reads
- * from. `ctx.INPUT_ROW = "row"` plus `InternalRow row = this;` inside `process` routes every
+ * from: `ctx.INPUT_ROW = "row"` plus `InternalRow row = this;` inside `process` routes
  * `row.getUTF8String(ord)` to the kernel's own typed getter (final method, constant ordinal; JIT
- * devirtualizes and folds the switch). `row` rather than `this` because Spark's
- * `splitExpressions` uses INPUT_ROW as a helper-method parameter name and `this` is a reserved
- * Java keyword.
+ * devirtualizes and folds). `row` rather than `this` because Spark's `splitExpressions` passes
+ * INPUT_ROW as a helper-method parameter name and `this` is a reserved Java keyword.
  */
 object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
@@ -103,22 +99,14 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
-   * Plan-time predicate: can the codegen dispatcher handle this bound expression end to end? If
-   * it returns `None`, the serde is free to emit the codegen proto. If it returns `Some(reason)`,
-   * the serde must fall back (usually via `withInfo(...) + None`) so Spark runs the expression
-   * rather than crashing in the Janino compile at execute time.
+   * Plan-time predicate: can the codegen dispatcher handle this bound expression end to end?
+   * `None` greenlights the serde to emit the codegen proto; `Some(reason)` forces a Spark
+   * fallback (typically `withInfo(...) + None`) rather than crashing the Janino compile at
+   * execute time.
    *
-   * Checks:
-   *   - every `BoundReference`'s data type is in [[isSupportedDataType]] (i.e. the kernel has a
-   *     typed getter for it)
-   *   - the overall `expr.dataType` is in [[isSupportedDataType]] (i.e. `allocateOutput` and
-   *     `emitWrite` know how to materialize it)
-   *   - the expression is scalar (no `AggregateFunction`, no generators). These never reach a
-   *     scalar serde, but we belt-and-suspenders anyway.
-   *
-   * Intermediate node types are '''not''' checked. Spark's `doGenCode` materializes intermediates
-   * in local variables; only the leaves (which read from the row) and the root (which writes to
-   * the output vector) touch Arrow.
+   * Checks every `BoundReference`'s data type and the root `expr.dataType` against
+   * [[isSupportedDataType]], and rejects aggregates / generators. Intermediate nodes are not
+   * checked: only leaves (row reads) and the root (output write) touch Arrow.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
     if (!isSupportedDataType(boundExpr.dataType)) {
@@ -133,31 +121,18 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     //     `Unevaluable` but never touched by codegen (e.g. Spark 4.0's `ResolvedCollation`, which
     //     lives in `Collate.collation` as a type marker; `Collate.genCode` delegates to its child).
     //
-    // Nondeterministic and stateful expressions are accepted: the dispatcher allocates one
-    // kernel instance per partition (per `CometScalaUDFCodegen.ensureKernel`) and calls
-    // `init(partitionIndex)` once on partition entry, so per-row state on `Rand`,
-    // `MonotonicallyIncreasingID`, etc. advances correctly across batches in the same
-    // partition and resets across partitions.
+    // Nondeterministic / stateful expressions are accepted: per-partition kernel allocation
+    // (`CometScalaUDFCodegen.ensureKernel`) plus a single `init(partitionIndex)` call at
+    // partition entry give `Rand` / `MonotonicallyIncreasingID` / etc. correct state across
+    // batches and a clean reset across partitions.
     //
-    // `ExecSubqueryExpression` (e.g. `ScalarSubquery`, `InSubqueryExec`) is also accepted, and
-    // works correctly via a four-link invariant:
-    //   1. The surrounding Comet operator inherits `SparkPlan.waitForSubqueries`, which calls
-    //      `updateResult()` on every `ExecSubqueryExpression` in its `expressions` before the
-    //      operator's compute path ever reaches the JVM UDF bridge.
-    //   2. `ScalarSubquery.result` (and equivalents on other subquery expressions) is a plain
-    //      mutable field on the case class. `@volatile` affects cross-thread visibility but
-    //      not serializability: Java/Kryo serializers include it.
-    //   3. `SparkEnv.closureSerializer` captures the populated `result` value in the bytes
-    //      that travel through `CometScalaUDFCodegen`'s arg-0 transport.
-    //   4. The dispatcher's cache key is those exact bytes (see
-    //      `CometScalaUDFCodegen.CacheKey`). Different `result` values produce different
-    //      bytes, hence different cache entries, hence a fresh compile per distinct subquery
-    //      value. No cross-query staleness.
-    //
-    // If any of those four links breaks (a different cache-key derivation that drops `result`;
-    // a Comet operator that bypasses `waitForSubqueries`; a transport that strips `@volatile`
-    // fields), subquery correctness regresses. Keep this invariant intact when refactoring the
-    // cache-key or transport layers.
+    // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`) is accepted via a chain:
+    // the surrounding Comet operator's inherited `SparkPlan.waitForSubqueries` populates the
+    // subquery's mutable `result` field before evaluation; the closure serializer captures that
+    // populated value into the arg-0 bytes; the dispatcher keys its compile cache on those
+    // exact bytes, so distinct subquery results produce distinct cache entries with no
+    // cross-query staleness. Refactors to the cache-key derivation, the transport, or any
+    // Comet operator that bypasses `waitForSubqueries` would break this; preserve it.
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
@@ -348,23 +323,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
-   * Per-row body for the default path.
+   * Per-row body for the default path. For `NullIntolerant` expressions (null in any input ->
+   * null output), prepends a short-circuit that skips expression evaluation entirely when any
+   * input column is null this row, saving the full `ev.code` cost. Otherwise the standard shape:
+   * run `ev.code`, then `setNull` or write based on `ev.isNull`.
    *
-   * For expressions that implement the `NullIntolerant` marker trait (null in any input -> null
-   * output), emits a short-circuit that skips expression evaluation entirely when any input
-   * column is null in the current row. This saves the full `ev.code` cost for null rows, not just
-   * the output setNull call. Does not change behavior, only performance.
-   *
-   * For other expressions, the standard shape applies: evaluate the expression, then check
-   * `ev.isNull` to decide between `setNull` and a write. Null semantics are handled internally by
-   * Spark's generated `ev.code`.
-   *
-   * `subExprsCode` is the CSE helper-invocation block (see the "Subexpression elimination"
-   * section of the object-level Scaladoc). It writes common subexpression results into class
-   * fields that `ev.code` reads, so it must run before `ev.code`. In the NullIntolerant short-
-   * circuit case it is placed inside the else branch, skipping CSE evaluation for null rows as
-   * well as main-body evaluation. In the default case it precedes `ev.code`. Empty string when
-   * CSE is disabled or the tree has no common subexpressions.
+   * `subExprsCode` is the CSE helper-invocation block; it writes common subexpression results
+   * into class fields that `ev.code` reads, so it must run before `ev.code`. Inside the
+   * short-circuit it lives in the else branch, skipping CSE for null rows. Empty when CSE is
+   * disabled or the tree has none.
    */
   private def defaultBody(
       boundExpr: Expression,
@@ -512,21 +479,18 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
-   * Result of compiling a bound [[Expression]] into a Janino kernel. The `factory` is the Spark
-   * [[GeneratedClass]] produced by Janino and is safe to share across threads and partitions: it
-   * holds no mutable state. The `freshReferences` closure regenerates the references array each
-   * time a new kernel instance is allocated.
+   * Result of compiling a bound [[Expression]] into a Janino kernel. The Spark-generated
+   * `factory` is stateless and safe to share across partitions; `freshReferences` regenerates the
+   * references array per kernel allocation.
    *
-   * Why not cache a single `references` array: some expressions (notably [[ScalaUDF]]) embed
-   * stateful Spark `ExpressionEncoder` serializers into `references` via `ctx.addReferenceObj`.
-   * Those serializers reuse an internal `UnsafeRow` / `byte[]` buffer per `.apply(...)` call and
-   * are not thread-safe. If two kernels on different partitions shared one serializer instance,
-   * they would race on that buffer and produce garbage. Re-running `genCode` per kernel
-   * allocation costs microseconds; Janino compile costs milliseconds. Cache the expensive piece,
-   * refresh the cheap one, stay correct.
+   * The references array can't be cached because some expressions (notably [[ScalaUDF]]) embed
+   * stateful `ExpressionEncoder` serializers via `ctx.addReferenceObj` that reuse an internal
+   * `UnsafeRow` / `byte[]` per `.apply(...)`. Sharing one serializer across partition kernels
+   * would race on that buffer. Re-running `genCode` is microseconds; Janino compile is
+   * milliseconds. Cache the expensive piece, refresh the cheap one.
    *
-   * Mirrors Spark `WholeStageCodegenExec`: compile once per plan, instantiate per partition, call
-   * `init(partitionIndex)` once, iterate.
+   * Mirrors Spark `WholeStageCodegenExec`: compile once per plan, instantiate per partition,
+   * `init(partitionIndex)`, iterate.
    */
   final case class CompiledKernel(factory: GeneratedClass, freshReferences: () => Array[Any]) {
     def newInstance(): CometBatchKernel =

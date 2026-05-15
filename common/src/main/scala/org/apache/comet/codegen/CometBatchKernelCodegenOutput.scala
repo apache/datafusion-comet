@@ -39,31 +39,25 @@ import org.apache.comet.CometArrowAllocator
 private[codegen] object CometBatchKernelCodegenOutput {
 
   /**
-   * Allocate an Arrow output vector matching `dataType`. Delegates field and vector construction
-   * to [[Utils.toArrowField]] + `Field.createVector`, which is the pattern the rest of Comet uses
-   * to go Spark -> Arrow and handles complex-type wiring (including Arrow's non-null-key and
-   * non-null-entries invariants on `MapVector`).
+   * Allocate an Arrow output vector matching `dataType`. Delegates to [[Utils.toArrowField]] +
+   * `Field.createVector` for the Spark -> Arrow mapping (handles `MapVector`'s non-null-key and
+   * non-null-entries invariants).
    *
-   * For variable-length scalar outputs (`StringType`, `BinaryType`), callers can pass
-   * `estimatedBytes` to pre-size the data buffer and avoid `setSafe` reallocation mid-loop. The
-   * hint is only applied when the root vector is `VarCharVector` or `VarBinaryVector`; inside a
-   * `ListVector` / `StructVector` / `MapVector`, the parent's `allocateNew` reallocates child
-   * buffers at default size, so a leaf hint would be lost.
+   * For variable-length scalar outputs (`StringType`, `BinaryType`), `estimatedBytes` pre-sizes
+   * the data buffer to avoid mid-loop realloc; ignored for non-`BaseVariableWidthVector` roots,
+   * and not propagated into nested var-width children (those get default sizing because the
+   * parent's `allocateNew` resets child buffers).
    *
-   * TODO(nested-varwidth-sizing): thread the byte estimate into nested var-width children via the
-   * Arrow `Field` tree so a `Map<String, Array<String>>` UDF return doesn't realloc its key /
-   * value data buffers per row. Arrow Java's child-vector hints are allocator-level rather than
-   * per-child, so this needs a small loop or a heuristic that overshoots root size into
-   * known-leaf children.
+   * TODO(nested-varwidth-sizing): thread the estimate into nested var-width children. Arrow
+   * Java's child-vector hints are allocator-level, so this needs a small recursion or a heuristic
+   * that overshoots root size into known-leaf children.
    *
    * TODO(cached-write-buffer-addrs): mirror the input emitter's `_valueAddr` / `_offsetAddr`
-   * caching on the write side. Cache the data and offset buffer addresses once at the start of
-   * `process` and emit `Platform.putByte` / `Platform.copyMemory` writes for VarChar / VarBinary
-   * / Decimal scalar outputs, bypassing `setSafe`'s realloc check. Requires pre-allocated buffers
-   * (the existing `estimatedBytes` plus the nested-sizing TODO above).
+   * caching. Cache buffer addresses at `process` setup and emit `Platform.putByte` /
+   * `Platform.copyMemory` for VarChar / VarBinary / Decimal scalar outputs, bypassing `setSafe`'s
+   * realloc check. Depends on pre-allocated buffers (above).
    *
-   * Closes the vector on any failure between construction and return so a partially-initialized
-   * tree does not leak buffers back to the allocator.
+   * Closes the vector on any failure so a partially-initialised tree doesn't leak buffers.
    */
   def allocateOutput(
       dataType: DataType,
@@ -141,16 +135,13 @@ private[codegen] object CometBatchKernelCodegenOutput {
 
   /**
    * Composable write emitter. Returns an [[OutputEmit]] whose `setup` declares once-per-batch
-   * typed child-vector casts (hoisted above the `process` for-loop) and whose `perRow` writes the
-   * value produced by `source` into `targetVec` at index `idx`. `targetVec` is assumed to be
-   * already typed to the concrete Arrow vector class for `dataType` at the call site (via the
-   * prelude cast in `process` for the root, or via a setup cast declared by the caller for nested
-   * children).
+   * typed child-vector casts (hoisted above the `process` loop) and whose `perRow` writes
+   * `source` into `targetVec` at `idx`. `targetVec` is assumed pre-cast to the right Arrow class
+   * (root prelude cast or a parent's setup cast).
    *
-   * Scalars emit `perRow` only; complex types (`ArrayType` / `StructType` / `MapType`) emit both
-   * setup (child-vector casts) and perRow (loops, null guards, recursive writes). Inner
-   * `emitWrite` calls return their own setup, which the outer caller concatenates so child-of-
-   * child casts bubble up to the batch prelude.
+   * Scalars emit `perRow` only. Complex types emit both: setup for child casts, perRow for the
+   * loop / null guards / recursive writes. Inner `emitWrite` setup bubbles up so deep child casts
+   * land at the batch prelude.
    */
   private def emitWrite(
       targetVec: String,

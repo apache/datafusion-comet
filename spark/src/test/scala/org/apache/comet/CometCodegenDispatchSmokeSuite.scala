@@ -65,18 +65,11 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   /**
-   * Stronger form of [[assertCodegenDidWork]] for composition tests. Asserts that the full
-   * expression subtree compiled into at most one kernel. The "one JNI crossing per nesting level"
-   * alternative (the PR description's foil) would produce one `(bytes, specs)` cache entry per
-   * nested sub-expression, so `compileCount` would be N and the cache would grow by N after the
-   * first batch. Asserting `compileCount <= 1` and `cacheSize` growth `<= 1` directly falsifies
-   * that shape.
-   *
-   * Uses `<=` rather than `==` because the compile cache is JVM-wide and shared across tests; a
-   * prior test that already compiled the same `(expression bytes, input schema)` pair will make
-   * this run a cache hit (`compileCount == 0`). The dispatcher-activity check guards against a
-   * silent fallback where the query runs through Spark and the first two assertions pass
-   * vacuously.
+   * Stronger form of [[assertCodegenDidWork]]: asserts the full expression subtree compiled into
+   * at most one kernel. A "one JNI crossing per nesting level" implementation would produce one
+   * cache entry per sub-expression and `compileCount` of N. `<=` rather than `==` because the
+   * cache is JVM-wide; a prior test may have produced a hit (compileCount==0). The activity check
+   * guards against silent Spark fallback where the first two asserts pass vacuously.
    */
   private def assertOneKernelForSubtree(f: => Unit): Unit = {
     CometScalaUDFCodegen.resetStats()
@@ -92,22 +85,15 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   /**
-   * Assert that the dispatcher's compile cache contains a kernel compiled for the given input
-   * Arrow vector classes (in ordinal order) and output Spark `DataType`. This is a specialization
-   * check: the dispatcher is supposed to bake the concrete Arrow vector class into the generated
-   * kernel, and the cache key reflects that. If a future change accidentally loses that
-   * discrimination, `checkSparkAnswerAndOperator` would still pass (Spark computes the right
-   * answer) but this assertion would fail.
+   * Assert the compile cache contains a kernel matching the given input Arrow vector classes (in
+   * ordinal order) and output `DataType`. A specialization check: if a future change loses
+   * vector-class discrimination on the cache key, `checkSparkAnswerAndOperator` still passes
+   * (Spark answers correctly) but this assertion fails. Cache is JVM-wide so a prior test's
+   * compile counts; pair with `assertCodegenDidWork` to also prove this test ran the dispatcher.
    *
-   * Asserts presence in the cache, not newness. The cache is JVM-wide and shared across tests; if
-   * a prior test already compiled the same signature, that still counts. Combined with
-   * `assertCodegenDidWork` (which proves the dispatcher ran in this test), the pair gives both
-   * "this test exercised the dispatcher" and "the dispatcher's cache has a kernel of the expected
-   * shape".
-   *
-   * Compares by simple name because the `common` module shades `org.apache.arrow`, so a direct
-   * class-identity check against `classOf[VarCharVector]` at this call site (unshaded) misses the
-   * shaded classes the dispatcher actually uses internally.
+   * Compares by simple name because `common` shades `org.apache.arrow`; a direct
+   * `classOf[VarCharVector]` here (unshaded) wouldn't match the shaded class the dispatcher
+   * actually stores.
    */
   private def assertKernelSignaturePresent(
       inputs: Seq[Class[_ <: ValueVector]],
@@ -378,16 +364,12 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
 
   /**
    * Type-surface ScalaUDF tests. Each exercises a distinct Arrow input vector class plus the
-   * matching output writer through the full SQL -> serde -> dispatcher -> Janino -> kernel
-   * pipeline. Before ScalaUDF routing, non-string types were covered only by the direct-compile
-   * suite (since the regex serdes all produce string or boolean output).
+   * matching output writer end to end.
    *
-   * Backed by parquet tables with declared column types rather than derived-from-range views:
-   * when the source column is a derived projection (e.g. `cast(id as int)` from `spark.range`),
-   * the optimizer folds the cast into the outer plan and the ScalaUDF's `BoundReference` ends up
-   * on the underlying long, not the projected int. A declared parquet column type keeps the
-   * `AttributeReference` on the expected type and the Arrow vector the dispatcher sees matches
-   * the UDF's signature.
+   * Backed by parquet tables with declared column types rather than `spark.range` projections:
+   * derived `cast(id as int)` columns get folded into the plan and leave the `BoundReference` on
+   * the underlying long, not the projected int. A declared parquet column keeps the Arrow vector
+   * the dispatcher sees aligned with the UDF's signature.
    */
   private def withTypedCol(sqlType: String, valueLiterals: String*)(f: => Unit): Unit = {
     withTable("t") {
