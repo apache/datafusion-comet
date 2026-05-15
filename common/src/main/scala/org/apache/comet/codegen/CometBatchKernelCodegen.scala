@@ -123,8 +123,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     //
     // TODO(hof-lambdas): the `CodegenFallback` rule rejects `NamedLambdaVariable`, which flags
     // every higher-order function (`ArrayTransform`, `ArrayAggregate`, `ArrayExists`,
-    // `ArrayFilter`, `ZipWith`, `MapFilter`, etc.) as unsupported. The variable is `CodegenFallback`
-    // only in isolation; the surrounding HOF binds its `value` field inline as part of its own
+    // `ArrayFilter`, `ZipWith`, `MapFilter`, etc.) as unsupported. The variable is
+    // `CodegenFallback` only in isolation; the surrounding HOF binds its `value` field inline
+    // as part of its own
     // `doGenCode`, and the resulting Java compiles fine. Loosening this would unlock
     // element-iteration over `Array<Struct>` / `Array<Map>` which today have no fuzz path
     // (`array_max` doesn't apply to non-comparable elements, generators are blocked above). Plan:

@@ -1162,8 +1162,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   // pins one reference-type variant so the fix can be verified per type.
   // =============================================================================================
 
-  test(
-    "array_max(flatten(arr)) on Array<Array<Binary>> with null inner Binary returns null") {
+  test("array_max(flatten(arr)) on Array<Array<Binary>> with null inner Binary returns null") {
     spark.udf.register("idBin", (b: Array[Byte]) => b)
     withArrayTable(
       "ARRAY<ARRAY<BINARY>>",
@@ -1176,8 +1175,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test(
-    "array_max(flatten(arr)) on Array<Array<String>> with null inner String returns null") {
+  test("array_max(flatten(arr)) on Array<Array<String>> with null inner String returns null") {
     spark.udf.register("idStr", (s: String) => s)
     withArrayTable(
       "ARRAY<ARRAY<STRING>>",

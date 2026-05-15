@@ -604,7 +604,7 @@ private[codegen] object CometBatchKernelCodegenInput {
   private def emitArrayElementGetter(path: String, spec: ArrayColumnSpec): String = {
     val elemPath = s"${path}_e"
     val nullGuard =
-      if (spec.element.nullable) s"        if (isNullAt(i)) return null;\n"
+      if (spec.element.nullable) "        if (isNullAt(i)) return null;\n"
       else ""
     spec.element match {
       case _: ScalarColumnSpec =>
