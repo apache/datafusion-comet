@@ -21,6 +21,7 @@ CREATE TABLE test_size(arr array<int>, m map<string, int>) USING parquet
 statement
 INSERT INTO test_size VALUES (array(1, 2, 3), map('a', 1, 'b', 2)), (array(), map()), (NULL, NULL)
 
+-- size does not support map inputs]
 query spark_answer_only
 SELECT size(arr), size(m) FROM test_size
 

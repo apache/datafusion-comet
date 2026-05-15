@@ -26,34 +26,34 @@ statement
 INSERT INTO test_str_right VALUES ('hello', 3), ('hello', 0), ('hello', -1), ('hello', 10), ('', 3), (NULL, 3), ('hello', NULL)
 
 -- both columns: len must be literal, falls back
-query spark_answer_only
+query expect_fallback(Substring pos and len must be literals)
 SELECT right(s, n) FROM test_str_right
 
 -- column + literal: basic
-query spark_answer_only
+query
 SELECT right(s, 3) FROM test_str_right
 
 -- column + literal: edge cases
-query spark_answer_only
+query
 SELECT right(s, 0) FROM test_str_right
 
-query spark_answer_only
+query
 SELECT right(s, -1) FROM test_str_right
 
-query spark_answer_only
+query
 -- n exceeds length of 'hello' (5 chars)
 SELECT right(s, 10) FROM test_str_right
 
 -- literal + column: falls back
-query spark_answer_only
+query expect_fallback(Substring pos and len must be literals)
 SELECT right('hello', n) FROM test_str_right
 
 -- literal + literal
-query spark_answer_only
+query
 SELECT right('hello', 3), right('hello', 0), right('hello', -1), right('', 3), right(NULL, 3)
 
 -- null propagation with len <= 0 (critical: NULL str with non-positive len must return NULL, not empty string)
-query spark_answer_only
+query
 SELECT right(CAST(NULL AS STRING), 0), right(CAST(NULL AS STRING), -1), right(CAST(NULL AS STRING), 2)
 
 -- mixed null and non-null values with len <= 0
@@ -63,17 +63,17 @@ CREATE TABLE test_str_right_nulls(s string) USING parquet
 statement
 INSERT INTO test_str_right_nulls VALUES ('hello'), (NULL), (''), ('world')
 
-query spark_answer_only
+query
 SELECT s, right(s, 0) FROM test_str_right_nulls
 
-query spark_answer_only
+query
 SELECT s, right(s, -1) FROM test_str_right_nulls
 
-query spark_answer_only
+query
 SELECT s, right(s, 2) FROM test_str_right_nulls
 
 -- equivalence with substring
-query spark_answer_only
+query
 SELECT s, right(s, 3), substring(s, -3, 3) FROM test_str_right_nulls
 
 -- unicode
@@ -83,11 +83,11 @@ CREATE TABLE test_str_right_unicode(s string) USING parquet
 statement
 INSERT INTO test_str_right_unicode VALUES ('café'), ('hello世界'), ('😀emoji'), ('తెలుగు'), (NULL)
 
-query spark_answer_only
+query
 SELECT s, right(s, 2) FROM test_str_right_unicode
 
-query spark_answer_only
+query
 SELECT s, right(s, 4) FROM test_str_right_unicode
 
-query spark_answer_only
+query
 SELECT s, right(s, 0) FROM test_str_right_unicode

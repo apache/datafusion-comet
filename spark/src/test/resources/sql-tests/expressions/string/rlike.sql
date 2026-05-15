@@ -27,5 +27,5 @@ SELECT s RLIKE '^[0-9]+$' FROM test_rlike
 query expect_fallback(Regexp pattern)
 SELECT s RLIKE '^[a-z]+$' FROM test_rlike
 
-query spark_answer_only
+query expect_fallback(Regexp pattern)
 SELECT s RLIKE '' FROM test_rlike
