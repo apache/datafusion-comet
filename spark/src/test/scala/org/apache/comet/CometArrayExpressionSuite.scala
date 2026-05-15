@@ -252,7 +252,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
         checkSparkAnswerAndFallbackReasons(
           df.select("arrUnsupportedArgs"),
-          Set("codegen dispatch disabled", "unsupported arguments for ArrayInsert"))
+          Set("ScalaUDF has no native path", "unsupported arguments for ArrayInsert"))
       }
     }
   }
