@@ -17,6 +17,7 @@
 
 mod array_compact;
 mod array_insert;
+mod array_position;
 mod arrays_overlap;
 mod arrays_zip;
 mod get_array_struct_fields;
@@ -25,6 +26,7 @@ mod size;
 
 pub use array_compact::SparkArrayCompact;
 pub use array_insert::ArrayInsert;
+pub use array_position::SparkArrayPositionFunc;
 pub use arrays_overlap::SparkArraysOverlap;
 pub use arrays_zip::SparkArraysZipFunc;
 pub use get_array_struct_fields::GetArrayStructFields;

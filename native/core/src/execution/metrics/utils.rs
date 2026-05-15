@@ -45,11 +45,6 @@ pub(crate) fn update_comet_metric(
 pub(crate) fn to_native_metric_node(
     spark_plan: &Arc<SparkPlan>,
 ) -> Result<NativeMetricNode, CometError> {
-    let mut native_metric_node = NativeMetricNode {
-        metrics: HashMap::new(),
-        children: Vec::new(),
-    };
-
     let node_metrics = if spark_plan.additional_native_plans.is_empty() {
         spark_plan.native_plan.metrics()
     } else {
@@ -68,6 +63,14 @@ pub(crate) fn to_native_metric_node(
         Some(metrics.aggregate_by_name())
     };
 
+    let children = spark_plan.children();
+    let mut native_metric_node = NativeMetricNode {
+        // Most operator metric maps are well under 20 entries (e.g. hash-join: 9,
+        // native-scan: ~20). Pre-sizing to 16 avoids the default-capacity rehash.
+        metrics: HashMap::with_capacity(16),
+        children: Vec::with_capacity(children.len()),
+    };
+
     // Aggregate metrics by name using DataFusion's aggregate_by_name(), which
     // correctly handles duplicate metric names (e.g. BaselineMetrics registered
     // by both FileStream and ParquetMorselizer on the same ExecutionPlanMetricsSet).
@@ -82,8 +85,7 @@ pub(crate) fn to_native_metric_node(
             native_metric_node.metrics.insert(name.to_string(), value);
         });
 
-    // add children
-    for child_plan in spark_plan.children() {
+    for child_plan in children {
         let child_node = to_native_metric_node(child_plan)?;
         native_metric_node.children.push(child_node);
     }

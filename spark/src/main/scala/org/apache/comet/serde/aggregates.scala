@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withInfo}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
@@ -151,6 +151,9 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Falls back to Spark in ANSI mode. Supports all numeric inputs except decimal types.")
+
   override def convert(
       aggExpr: AggregateExpression,
       avg: Average,
@@ -202,6 +205,8 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq("Falls back to Spark in ANSI mode.")
+
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
@@ -214,7 +219,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       return None
     }
 
-    val evalMode = sum.evalMode
+    val evalMode = CometEvalModeUtil.sumEvalMode(sum)
 
     val childExpr = exprToProto(sum.child, inputs, binding)
     val dataType = serializeDataType(sum.dataType)
@@ -242,6 +247,10 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
 }
 
 object CometFirst extends CometAggregateExpressionSerde[First] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "This function is not deterministic. Results may not match Spark.")
+
   override def convert(
       aggExpr: AggregateExpression,
       first: First,
@@ -274,6 +283,10 @@ object CometFirst extends CometAggregateExpressionSerde[First] {
 }
 
 object CometLast extends CometAggregateExpressionSerde[Last] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "This function is not deterministic. Results may not match Spark.")
+
   override def convert(
       aggExpr: AggregateExpression,
       last: Last,
@@ -647,6 +660,13 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
       builder.setNumItems(numItemsExpr.get)
       builder.setNumBits(numBitsExpr.get)
       builder.setDatatype(dataType.get)
+      // SPARK-47547 (Spark 4.1) introduced a V2 BloomFilter binary format with
+      // different bit-scattering. Spark 4.1's `BloomFilter.create` (used by
+      // `BloomFilterAggregate`) defaults to V2; older Spark always wrote V1. Match
+      // the Spark version so `bloom_filter_agg` outputs are byte-equivalent.
+      builder.setVersion(
+        if (isSpark41Plus) ExprOuterClass.BloomFilterVersion.BLOOM_FILTER_VERSION_V2
+        else ExprOuterClass.BloomFilterVersion.BLOOM_FILTER_VERSION_V1)
 
       Some(
         ExprOuterClass.AggExpr
@@ -665,6 +685,12 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
 }
 
 object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a" +
+      s" distinct value. When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, `collect_set`" +
+      " on floating-point types falls back to Spark unless" +
+      " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
     if (COMET_EXEC_STRICT_FLOATING_POINT.get() &&

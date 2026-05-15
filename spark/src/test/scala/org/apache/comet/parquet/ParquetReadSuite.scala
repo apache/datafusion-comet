@@ -998,6 +998,53 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native_datafusion rejects string read as non-string/binary type") {
+    // Regression guard for https://github.com/apache/datafusion-comet/issues/4088.
+    // Spark's vectorized reader rejects reading a Parquet BINARY column as
+    // anything except StringType, BinaryType, or a binary-encoded decimal (see
+    // TypeUtil.checkParquetType, BINARY case). The native_datafusion scan
+    // must do the same in its schema adapter rather than letting DataFusion's
+    // cast silently parse the bytes or reinterpret them.
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        Seq("a", "b", "c").toDF("c").write.parquet(path)
+        // Cover representative non-string/binary target types: numeric,
+        // boolean, date, and timestamp. Each would silently produce wrong
+        // results without the schema-adapter guard.
+        Seq("int", "bigint", "double", "boolean", "date", "timestamp").foreach { sqlType =>
+          val df = spark.read.schema(s"c $sqlType").parquet(path)
+          assertThrows[SparkException](df.collect())
+        }
+      }
+    }
+  }
+
+  test("native_datafusion rejects incompatible decimal precision/scale") {
+    // Regression guard for https://github.com/apache/datafusion-comet/issues/4089.
+    // Reading Decimal(10,2) under a Decimal(5,0) read schema is unconditionally
+    // lossy: target precision is smaller than source precision and scales differ.
+    // Spark's vectorized reader throws SchemaColumnConvertNotSupportedException
+    // here on all versions. The native_datafusion scan must reject this in its
+    // schema adapter rather than letting Spark Cast silently rescale/truncate.
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark
+          .sql("select cast('123.45' as decimal(10,2)) as d " +
+            "union all select cast('67.89' as decimal(10,2))")
+          .write
+          .parquet(path)
+        val df = spark.read.schema("d decimal(5,0)").parquet(path)
+        assertThrows[SparkException](df.collect())
+      }
+    }
+  }
+
   test("type widening: byte → short/int/long, short → int/long, int → long") {
     withSQLConf(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.key -> "true") {
       withTempPath { dir =>
@@ -1368,6 +1415,177 @@ abstract class ParquetReadSuite extends CometTestBase {
         df2.write.parquet(path.getCanonicalPath)
         readParquetFile(path.getCanonicalPath) { df =>
           checkAnswer(df, answer)
+        }
+      }
+    }
+  }
+
+  // Based on Spark ParquetFieldIdIOSuite.test("Parquet reads infer fields using field ids
+  // correctly"). Forces SCAN_NATIVE_DATAFUSION so we can prove that the gate in CometScanRule
+  // is removed and that the native_datafusion scan resolves columns by field id rather than by
+  // name (the read schema names differ from what is in the file).
+  test("native_datafusion: read by Parquet field id when names differ") {
+    val writeSchema = StructType(
+      Seq(
+        StructField("random", IntegerType, nullable = true, withId(1)),
+        StructField("name", StringType, nullable = true, withId(0))))
+    val readSchema = StructType(
+      Seq(
+        StructField("a", StringType, nullable = true, withId(0)),
+        StructField("b", IntegerType, nullable = true, withId(1))))
+    val writeData = Seq(Row(100, "text"), Row(200, "more"))
+
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  // Based on Spark ParquetFieldIdIOSuite.test("SPARK-38094: absence of field ids: reading nested
+  // schema"). Exercises ID matching at every nesting level (struct, array<struct>, map) under
+  // SCAN_NATIVE_DATAFUSION. Names differ from the file at every level.
+  test("native_datafusion: read nested types by Parquet field id when names differ") {
+    val writeSchema = StructType(
+      Seq(StructField(
+        "outer",
+        StructType(Seq(
+          StructField("inner_a", IntegerType, nullable = true, withId(11)),
+          StructField(
+            "inner_arr",
+            ArrayType(StructType(Seq(
+              StructField("ea", StringType, nullable = true, withId(21)),
+              StructField("eb", IntegerType, nullable = true, withId(22))))),
+            nullable = true,
+            withId(12)),
+          StructField(
+            "inner_map",
+            MapType(StringType, IntegerType, valueContainsNull = true),
+            nullable = true,
+            withId(13)))),
+        nullable = true,
+        withId(1))))
+
+    val readSchema = StructType(
+      Seq(StructField(
+        "renamed_outer",
+        StructType(Seq(
+          StructField("renamed_a", IntegerType, nullable = true, withId(11)),
+          StructField(
+            "renamed_arr",
+            ArrayType(StructType(Seq(
+              StructField("renamed_ea", StringType, nullable = true, withId(21)),
+              StructField("renamed_eb", IntegerType, nullable = true, withId(22))))),
+            nullable = true,
+            withId(12)),
+          StructField(
+            "renamed_map",
+            MapType(StringType, IntegerType, valueContainsNull = true),
+            nullable = true,
+            withId(13)))),
+        nullable = true,
+        withId(1))))
+
+    val data = Seq(
+      Row(Row(1, Seq(Row("x", 10), Row("y", 20)), Map("k1" -> 100))),
+      Row(Row(2, Seq(Row("z", 30)), Map("k2" -> 200, "k3" -> 300))))
+
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(data), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  // Verbatim port of Spark `ParquetFieldIdIOSuite.test("multiple id matches")`, pinned to
+  // `SCAN_NATIVE_DATAFUSION` so the shim error path is exercised on both 3.x and 4.x.
+  // The stock suite is the CI signal but it requires the Spark test jars and
+  // `withAllParquetReaders`; keeping a copy here lets us iterate locally.
+  test("multiple id matches") {
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val readSchema =
+          new StructType()
+            .add("a", IntegerType, true, withId(1))
+
+        val writeSchema =
+          new StructType()
+            .add("a", IntegerType, true, withId(1))
+            .add("rand1", StringType, true, withId(2))
+            .add("rand2", StringType, true, withId(1))
+
+        val writeData = Seq(Row(100, "text", "txt"), Row(200, "more", "mr"))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        val cause = intercept[SparkException] {
+          spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
+        }.getCause
+        assert(
+          cause.isInstanceOf[RuntimeException] &&
+            cause.getMessage.contains("Found duplicate field(s)"))
+      }
+    }
+  }
+
+  // Verbatim port of Spark `ParquetFieldIdIOSuite.test("read parquet file without ids")`,
+  // pinned to `SCAN_NATIVE_DATAFUSION` for the same reason as the duplicate-id test above.
+  test("read parquet file without ids") {
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val readSchema =
+          new StructType()
+            .add("a", IntegerType, true, withId(1))
+
+        val writeSchema =
+          new StructType()
+            .add("a", IntegerType, true)
+            .add("rand1", StringType, true)
+            .add("rand2", StringType, true)
+
+        val writeData = Seq(Row(100, "text", "txt"), Row(200, "more", "mr"))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        Seq(readSchema, readSchema.add("b", StringType, true)).foreach { schema =>
+          val cause = intercept[SparkException] {
+            spark.read.schema(schema).parquet(dir.getCanonicalPath).collect()
+          }.getCause
+          assert(
+            cause.isInstanceOf[RuntimeException] &&
+              cause.getMessage.contains("Parquet file schema doesn't contain any field Ids"))
+          val expectedValues = (1 to schema.length).map(_ => null)
+          withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
+            checkAnswer(
+              spark.read.schema(schema).parquet(dir.getCanonicalPath),
+              Row(expectedValues: _*) :: Row(expectedValues: _*) :: Nil)
+          }
         }
       }
     }

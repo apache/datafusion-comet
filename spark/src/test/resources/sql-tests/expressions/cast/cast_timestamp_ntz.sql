@@ -51,6 +51,20 @@ SELECT cast(d as timestamp_ntz), id FROM test_ts_ntz ORDER BY id
 query
 SELECT cast(ts as timestamp_ntz), id FROM test_ts_ntz ORDER BY id
 
+-- String -> NTZ via column reference (not constant-folded)
+statement
+CREATE TABLE test_str_to_ntz(s string, id int) USING parquet
+
+statement
+INSERT INTO test_str_to_ntz VALUES
+  ('2020-01-01 12:34:56', 1),
+  ('2020-06-15T12:30:00Z', 2),
+  ('2021-11-22 10:54:27 +08:00', 3),
+  (NULL, 4)
+
+query
+SELECT cast(s as timestamp_ntz), id FROM test_str_to_ntz ORDER BY id
+
 -- Literal casts
 query
 SELECT cast(TIMESTAMP_NTZ'2020-01-01 12:34:56.789' as string)
@@ -60,3 +74,43 @@ SELECT cast(TIMESTAMP_NTZ'2020-01-01 12:34:56' as date)
 
 query
 SELECT cast(DATE'2020-01-15' as timestamp_ntz)
+
+-- String -> NTZ (timezone-independent: parses local time, discards any TZ info)
+query
+SELECT cast('2020-01-01 12:34:56.123456' as timestamp_ntz)
+
+query
+SELECT cast('2020-01-01T12:34:56' as timestamp_ntz)
+
+query
+SELECT cast('2020-01-01' as timestamp_ntz)
+
+-- Timezone in string should be silently discarded for NTZ
+query
+SELECT cast('2020-06-15 12:30:00Z' as timestamp_ntz)
+
+query
+SELECT cast('2020-06-15 12:30:00+05:30' as timestamp_ntz)
+
+query
+SELECT cast('2020-06-15 12:30:00-08:00' as timestamp_ntz)
+
+-- DST transition times (same regardless of session TZ since NTZ has no DST)
+query
+SELECT cast('2024-03-10 02:30:00' as timestamp_ntz), cast('2024-11-03 01:30:00' as timestamp_ntz)
+
+-- Time-only strings should produce NULL for NTZ
+query
+SELECT cast('T12:34:56' as timestamp_ntz), cast('12:34' as timestamp_ntz)
+
+-- Invalid inputs -> NULL
+query
+SELECT cast('not a timestamp' as timestamp_ntz), cast('' as timestamp_ntz)
+
+-- TRY_CAST: invalid input should return NULL
+query
+SELECT try_cast('invalid' as timestamp_ntz), try_cast('T12:34' as timestamp_ntz)
+
+-- TRY_CAST: valid inputs
+query
+SELECT try_cast('2020-01-01 12:34:56' as timestamp_ntz)

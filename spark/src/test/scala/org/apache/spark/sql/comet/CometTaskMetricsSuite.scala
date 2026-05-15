@@ -38,6 +38,7 @@ import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -228,10 +229,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // (e.g. footer reads, page headers, buffering granularity).
       assert(sparkBytes > 0, s"Spark bytesRead should be > 0, got $sparkBytes")
       assert(cometBytes > 0, s"Comet bytesRead should be > 0, got $cometBytes")
-      val ratio = cometBytes.toDouble / sparkBytes.toDouble
-      assert(
-        ratio >= 0.7 && ratio <= 1.3,
-        s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
+      assertCometBytesReadInRange(cometBytes, sparkBytes)
     }
   }
 
@@ -280,11 +278,30 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
 
         // Both sides should contribute to the total bytes
-        val ratio = cometBytes.toDouble / sparkBytes.toDouble
-        assert(
-          ratio >= 0.7 && ratio <= 1.3,
-          s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
+        assertCometBytesReadInRange(cometBytes, sparkBytes)
       }
+    }
+  }
+
+  /**
+   * Compare Comet's `bytesRead` against Spark's baseline. On Spark <= 4.0 the two readers report
+   * the same Hadoop-FS thread-local byte count, so we keep a tight 0.7-1.3 band. Spark 4.1
+   * pre-opens the parquet `SeekableInputStream` outside the FileScanRDD `compute()` thread, so
+   * its `getFSBytesReadOnThreadCallback` no longer captures most of the parquet IO and
+   * `inputMetrics.bytesRead` is now a small fraction of the actual file IO. Comet (via
+   * DataFusion's `bytes_scanned`) still reports actual bytes, so the only safe cross-version
+   * invariant on 4.1+ is that Comet >= Spark and both are positive.
+   */
+  private def assertCometBytesReadInRange(cometBytes: Long, sparkBytes: Long): Unit = {
+    if (isSpark41Plus) {
+      assert(
+        cometBytes >= sparkBytes,
+        s"Comet bytesRead should be >= Spark bytesRead on 4.1+: comet=$cometBytes, spark=$sparkBytes")
+    } else {
+      val ratio = cometBytes.toDouble / sparkBytes.toDouble
+      assert(
+        ratio >= 0.7 && ratio <= 1.3,
+        s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
     }
   }
 
@@ -331,10 +348,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(sparkRecords > 0, s"Spark recordsRead should be > 0, got $sparkRecords")
         assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
 
-        val ratio = cometBytes.toDouble / sparkBytes.toDouble
-        assert(
-          ratio >= 0.7 && ratio <= 1.3,
-          s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
+        assertCometBytesReadInRange(cometBytes, sparkBytes)
       }
     }
   }

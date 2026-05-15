@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.jdk.CollectionConverters._
@@ -101,7 +100,9 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           case 2 =>
             c.newInstance(conf, null).asInstanceOf[IndexShuffleBlockResolver]
           case 3 =>
-            c.newInstance(conf, null, Collections.emptyMap())
+            // Spark 4.1 changed the third parameter type from java.util.Map to
+            // java.util.concurrent.ConcurrentMap. ConcurrentHashMap satisfies both.
+            c.newInstance(conf, null, new ConcurrentHashMap[Int, OpenHashSet[Long]]())
               .asInstanceOf[IndexShuffleBlockResolver]
         }
       }
@@ -240,6 +241,9 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           metrics,
           dep.rangePartitionBounds)
       case bypassMergeSortHandle: CometBypassMergeSortShuffleHandle[K @unchecked, V @unchecked] =>
+        val bypassDep =
+          bypassMergeSortHandle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
+        val bypassEncodeMetric = bypassDep.shuffleWriteMetrics.get("encode_time").orNull
         new CometBypassMergeSortShuffleWriter(
           env.blockManager,
           context.taskMemoryManager(),
@@ -248,8 +252,12 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           mapId,
           env.conf,
           metrics,
-          shuffleExecutorComponents)
+          shuffleExecutorComponents,
+          bypassEncodeMetric)
       case unsafeShuffleHandle: CometSerializedShuffleHandle[K @unchecked, V @unchecked] =>
+        val unsafeDep =
+          unsafeShuffleHandle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
+        val unsafeEncodeMetric = unsafeDep.shuffleWriteMetrics.get("encode_time").orNull
         new CometUnsafeShuffleWriter(
           env.blockManager,
           context.taskMemoryManager(),
@@ -258,7 +266,8 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           context,
           env.conf,
           metrics,
-          shuffleExecutorComponents)
+          shuffleExecutorComponents,
+          unsafeEncodeMetric)
       case _ =>
         // It is a Spark shuffle dependency, so we use Spark Sort Shuffle Writer.
         sortShuffleManager.getWriter(handle, mapId, context, metrics)

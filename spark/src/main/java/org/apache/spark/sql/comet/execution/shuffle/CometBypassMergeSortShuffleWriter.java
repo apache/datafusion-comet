@@ -26,6 +26,7 @@ import java.io.OutputStream;
 import java.nio.channels.FileChannel;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
+import javax.annotation.Nullable;
 
 import scala.*;
 import scala.collection.Iterator;
@@ -41,7 +42,6 @@ import org.apache.spark.internal.config.package$;
 import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.network.shuffle.checksum.ShuffleChecksumHelper;
 import org.apache.spark.scheduler.MapStatus;
-import org.apache.spark.scheduler.MapStatus$;
 import org.apache.spark.serializer.SerializerInstance;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.ShuffleWriter;
@@ -54,6 +54,7 @@ import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.shuffle.sort.CometShuffleExternalSorter;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
+import org.apache.spark.sql.execution.metric.SQLMetric;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
 import org.apache.spark.storage.FileSegment;
@@ -120,6 +121,9 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
   private boolean tracingEnabled;
 
+  /** SQLMetric for encode + compression time; null when not available (e.g. non-Comet path). */
+  @Nullable private final SQLMetric encodeTimeMetric;
+
   CometBypassMergeSortShuffleWriter(
       BlockManager blockManager,
       TaskMemoryManager memoryManager,
@@ -128,7 +132,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       long mapId,
       SparkConf conf,
       ShuffleWriteMetricsReporter writeMetrics,
-      ShuffleExecutorComponents shuffleExecutorComponents) {
+      ShuffleExecutorComponents shuffleExecutorComponents,
+      @Nullable SQLMetric encodeTimeMetric) {
     // Use getSizeAsKb (not bytes) to maintain backwards compatibility if no units are provided
     this.fileBufferSize = (int) (long) conf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
     this.transferToEnabled = conf.getBoolean("spark.file.transferTo", true);
@@ -158,6 +163,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       logger.info("Async shuffle writer disabled");
       this.threadPool = null;
     }
+    this.encodeTimeMetric = encodeTimeMetric;
   }
 
   @Override
@@ -171,8 +177,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
             mapOutputWriter
                 .commitAllPartitions(ShuffleChecksumHelper.EMPTY_CHECKSUM_VALUE)
                 .getPartitionLengths();
-        mapStatus =
-            MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
+        mapStatus = MapStatusHelper.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
         return;
       }
       final long openStartTime = System.nanoTime();
@@ -239,12 +244,18 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       }
 
       long spillRecords = 0;
+      long totalEncodeNanos = 0;
 
       for (int i = 0; i < numPartitions; i++) {
         CometDiskBlockWriter writer = partitionWriters[i];
         partitionWriterSegments[i] = writer.close();
 
         spillRecords += writer.getOutputRecords();
+        totalEncodeNanos += writer.getEncodeNanos();
+      }
+
+      if (encodeTimeMetric != null) {
+        encodeTimeMetric.add(totalEncodeNanos);
       }
 
       if (tracingEnabled) {
@@ -262,7 +273,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
       // TODO: We probably can move checksum generation here when concatenating partition files
       partitionLengths = writePartitionedData(mapOutputWriter);
-      mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
+      mapStatus = MapStatusHelper.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
     } catch (Exception e) {
       try {
         mapOutputWriter.abort(e);

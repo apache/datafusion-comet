@@ -230,32 +230,130 @@ cd native && cargo test
 
 Alternatively, use `make test-rust` which handles the JVM compilation dependency automatically.
 
-### Avoid Using `-pl` to Select Modules
+### Never Use `-pl` to Select Modules
 
-When running Maven tests, avoid using `-pl spark` to select only the spark module. This can cause
-Maven to pick up the `common` module from your local Maven repository instead of using the current
-codebase, leading to inconsistent test results:
+Do not use `-pl spark` (or any other `-pl <module>`) when running Maven goals. With `-pl`, Maven
+does not rebuild sibling modules in the reactor and instead resolves them from your local Maven
+repository (`~/.m2/repository`). This leads to two failure modes:
+
+- **Stale code.** Tests run against the last `mvn install`ed version of `common` (or
+  `spark-shims`), not against your current edits. You can chase a "failing" test for hours that
+  is actually green in your working tree.
+- **Cross-worktree corruption.** If you have multiple worktrees open and run `mvn install` in one
+  while running `mvn test -pl spark` in another, the second worktree picks up the first
+  worktree's artifacts from the shared `~/.m2/repository`. Builds and tests then mix code from
+  different branches non-deterministically.
+
+Always run Maven from the repo root without `-pl`. Maven's reactor will compile only what is
+needed:
 
 ```sh
-# Avoid this - may use stale common module from local repo
+# Wrong: resolves sibling modules from ~/.m2, breaks under concurrent worktrees
 ./mvnw test -pl spark -Dsuites="..."
 
-# Do this instead - builds and tests with current code
+# Right: reactor build, always uses current source
 ./mvnw test -Dsuites="..."
 ```
 
-### Use `wildcardSuites` for Running Tests
+### Running a Specific ScalaTest Suite
 
-When running specific test suites, use `wildcardSuites` instead of `suites` for more flexible
-matching. The `wildcardSuites` parameter allows partial matching of suite names:
+To run a single suite (and only that suite), use `-Dsuites=` with the **fully qualified class name**
+and `-Dtest=none`:
 
 ```sh
-# Run all suites containing "CometCast"
-./mvnw test -DwildcardSuites="CometCast"
+# Run exactly one suite
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometArrayExpressionSuite"
 
-# Run specific suite with filter
-./mvnw test -Dsuites="org.apache.comet.CometCastSuite valid"
+# Run multiple suites (comma-separated, fully qualified)
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite,org.apache.comet.CometArrayExpressionSuite"
+
+# Run only tests whose name contains "valid" inside one suite
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite valid"
 ```
+
+`-Dtest=none` tells the Surefire (JUnit) plugin to skip its tests; without it, Surefire still
+runs the JUnit `*Test.java` matchers in addition to your selected ScalaTest suite.
+
+#### Pitfall: `-DwildcardSuites=""` runs everything
+
+A common mistake is to combine `-Dsuites=...` with `-DwildcardSuites=""`:
+
+```sh
+# WRONG: runs every suite in the project, takes ~1 hour
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometArrayExpressionSuite" -DwildcardSuites=""
+```
+
+`wildcardSuites` does substring matching, and the empty string is a substring of every suite
+name, so it expands to "run all suites" and overrides the narrower `-Dsuites=` selection. If you
+want to run a single suite, omit `-DwildcardSuites` entirely. If you want substring matching,
+pass a non-empty pattern:
+
+```sh
+# Run every suite whose fully qualified name contains "CometCast"
+./mvnw test -Dtest=none -DwildcardSuites="CometCast"
+```
+
+#### Pitfall: line breaks silently truncate the command
+
+A bare newline ends a shell command. If the command is split across lines without a trailing
+backslash, the shell only runs the first line and treats the rest as separate (failed)
+commands:
+
+```sh
+# WRONG: shell runs only the first line, which omits -Dsuites and runs every suite
+./mvnw test -Dtest=none
+  -Dsuites="org.apache.comet.CometArrayExpressionSuite" -DfailIfNoTests=false
+```
+
+The first line `./mvnw test -Dtest=none` runs every ScalaTest suite in the module (about 1800
+tests). The second line errors out trying to execute `-Dsuites=...` as a program, but by then
+the test run is already in progress. Symptom: you asked for one suite and ScalaTest reports
+"Expected test count is: 1797" starting at an alphabetically earlier suite.
+
+Either keep the command on one line, or use a trailing backslash on every continued line:
+
+```sh
+./mvnw test -Dtest=none \
+  -Dsuites="org.apache.comet.CometArrayExpressionSuite" \
+  -DfailIfNoTests=false
+```
+
+This is a common trap when copy-pasting commands from chat windows or terminals that wrap text
+without inserting the backslash.
+
+#### Pitfall: a "successful" run does not mean your suite ran
+
+Maven exits with status `0` whenever the build phases it executed completed without error, even
+when no ScalaTest suite matched your filter or a different suite ran than the one you intended.
+This is especially misleading for automated agents that key off the exit code: an empty or
+mistyped `-Dsuites=` value can produce a green run that tested nothing, or a wrong-but-matching
+suite name can run a much larger set than you wanted.
+
+Always check the output, not just the exit code. ScalaTest prints a summary line near the end:
+
+```text
+Run completed in 12 seconds, 345 milliseconds.
+Total number of tests run: 42
+Suites: completed 1, aborted 0
+Tests: succeeded 42, failed 0, canceled 0, ignored 0, pending 0
+All tests passed.
+```
+
+Confirm both that the **suite count** matches what you asked for (typically `1`) and that the
+**test count** is in the expected range for that suite. A run that reports `Total number of
+tests run: 0` or one that reports thousands of tests when you asked for a single suite is a
+filter problem, not a successful run.
+
+### Skip Scalastyle When Iterating
+
+The `scalastyle:check` goal runs in every Maven test invocation and re-scans every Scala source
+file even when nothing relevant changed. When iterating on a single test, skip it:
+
+```sh
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometArrayExpressionSuite" -Dscalastyle.skip=true
+```
+
+CI still enforces scalastyle, so this is purely a local iteration shortcut.
 
 ## Development Environment
 
@@ -276,19 +374,91 @@ Comet uses generated source files that are too large for IntelliJ's default size
 by going to `Help -> Edit Custom Properties...`. For example, adding `idea.max.intellisense.filesize=16384` increases the file
 size limit to 16 MB.
 
+#### Working with Spark 4.x profiles in IntelliJ IDEA
+
+Spark 4.x requires JDK 17 and Scala 2.13. When switching an existing IntelliJ project from the
+default Spark 3.x setup to a Spark 4.x profile, it is usually best to re-import the Maven project
+from a clean IntelliJ configuration:
+
+1. Close the IntelliJ project.
+2. Delete the `.idea` directory from the repository root.
+3. Make sure `protoc` is available. On macOS, install it with `brew install protobuf`; on Linux,
+   install `protobuf-compiler` or the equivalent package for your distribution.
+4. Make sure `JAVA_HOME` points to JDK 17. On macOS, you can select it with:
+
+   ```sh
+   export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+   export PATH="$JAVA_HOME/bin:$PATH"
+   ```
+
+   On Apple Silicon, the selected JDK architecture must match the native Rust target. Verify that
+   `file "$JAVA_HOME/lib/server/libjvm.dylib"` reports `arm64`.
+
+5. Build the profile once from the command line so generated sources and native artifacts are in
+   place:
+
+   ```sh
+   PROFILES="-Pspark-4.0" make release
+   ```
+
+   The `spark-4.0` profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
+   `PROFILES="-Pspark-4.0 -Pscala-2.13 -Pjdk17" make release`.
+
+   The Maven profile is named `jdk17` in this project.
+
+   If the native build previously used a different JDK, clear Cargo's cached JNI link path before
+   rebuilding:
+
+   ```sh
+   cd native && cargo clean
+   ```
+
+6. Open the repository root as a new project in IntelliJ IDEA.
+7. In the Maven tool window, enable the `spark-4.0` and `jdk17` profiles. Disable conflicting Spark
+   version profiles such as `spark-3.4` or `spark-3.5` if IntelliJ selected them.
+8. Re-import or reload the Maven project.
+9. Build the project in IntelliJ.
+
+When running tests from IntelliJ on JDK 17, add the same VM options that Maven uses through the
+root `pom.xml`'s `extraJavaTestArgs` property:
+
+```text
+-XX:+IgnoreUnrecognizedVMOptions
+--add-opens=java.base/java.lang=ALL-UNNAMED
+--add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+--add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+--add-opens=java.base/java.io=ALL-UNNAMED
+--add-opens=java.base/java.net=ALL-UNNAMED
+--add-opens=java.base/java.nio=ALL-UNNAMED
+--add-opens=java.base/java.util=ALL-UNNAMED
+--add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED
+--add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+--add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+--add-opens=java.base/sun.security.action=ALL-UNNAMED
+--add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+-Djdk.reflect.useDirectMethodHandle=false
+```
+
+If IntelliJ still resolves Spark 3.x dependencies or reports shim source errors after switching
+profiles, repeat the clean import steps above. Maven profile state is cached in the IntelliJ
+project files, and stale profile selections are a common cause of mixed Spark 3.x and Spark 4.x
+source roots.
+
 ### CLion
 
 First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
 After that you can open the project in CLion. The IDE should automatically detect the project structure and import as a Cargo project.
 
-### SQL file tests (recommended for expressions)
+### Comet SQL Tests (recommended for expressions)
 
-For testing expressions and operators, prefer using SQL file tests over writing Scala test
-code. SQL file tests are plain `.sql` files that are automatically discovered and executed --
+For testing expressions and operators, prefer using Comet SQL Tests over writing Comet Scala
+Tests. Comet SQL Tests are plain `.sql` files that are automatically discovered and executed:
 no Scala code to write, and no recompilation needed when tests change. This makes it easy to
 iterate quickly and to get good coverage of edge cases and argument combinations.
 
-See the [SQL File Tests](sql-file-tests) guide for the full documentation on how to write
+See the [Comet SQL Tests](sql-file-tests) guide for the full documentation on how to write
 and run these tests.
 
 ### Running Tests in IDEA
@@ -298,15 +468,18 @@ However if the tests is related to the native side. Please make sure to run `mak
 
 ### Running Tests from command line
 
-It is possible to specify which ScalaTest suites you want to run from the CLI using the `suites`
-argument, for example if you only want to execute the test cases that contains _valid_
-in their name in `org.apache.comet.CometCastSuite` you can use
+Specify which ScalaTest suites to run with the `suites` argument and disable Surefire's JUnit
+discovery with `-Dtest=none`. For example, to run only the test cases containing _valid_ in
+their name from `org.apache.comet.CometCastSuite`:
 
 ```sh
 ./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite valid"
 ```
 
-Other options for selecting specific suites are described in the [ScalaTest Maven Plugin documentation](https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin)
+See [Running a Specific ScalaTest Suite](#running-a-specific-scalatest-suite) above for the full
+list of common patterns and pitfalls (including why `-DwildcardSuites=""` silently runs every
+suite). Other options for selecting specific suites are described in the
+[ScalaTest Maven Plugin documentation](https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin).
 
 ## Plan Stability Testing
 
@@ -444,7 +617,7 @@ Comet's CI does not automatically discover test suites. Instead, test suites are
 in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
 jobs. This reduces overall CI time.
 
-If you add a new Scala test suite, you must add it to the `suite` matrix in **both** workflow files:
+If you add a new Comet Scala Test suite, you must add it to the `suite` matrix in **both** workflow files:
 
 - `.github/workflows/pr_build_linux.yml`
 - `.github/workflows/pr_build_macos.yml`
@@ -471,7 +644,7 @@ Choose the group that best matches the area your test covers:
 | `parquet`     | Parquet read/write and native reader tests                 |
 | `csv`         | CSV native read tests                                      |
 | `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\* |
-| `expressions` | Expression evaluation, casts, and SQL file tests           |
+| `expressions` | Expression evaluation, casts, and Comet SQL Tests          |
 | `sql`         | SQL-level behavior tests                                   |
 
 **Important:** The suite lists in both workflow files must stay in sync. A separate CI check
