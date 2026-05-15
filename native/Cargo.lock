@@ -1502,6 +1502,7 @@ dependencies = [
 name = "comet-contrib-spi"
 version = "0.17.0"
 dependencies = [
+ "arc-swap",
  "datafusion",
  "datafusion-comet-proto",
  "log",

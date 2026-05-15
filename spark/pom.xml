@@ -371,6 +371,21 @@ under the License.
     -->
     <profile>
       <id>contrib-example</id>
+      <!--
+        Pull the contrib's external Maven deps onto comet-spark's compile classpath.
+        comet-contrib-<name>-deps is a `<packaging>pom</packaging>` artifact whose
+        sole purpose is to enumerate those deps; we depend on it as `<type>pom</type>`
+        so Maven resolves its transitive deps. The example contrib's deps pom is
+        empty (no external deps); real contribs add their deps there.
+      -->
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.datafusion</groupId>
+          <artifactId>comet-contrib-example-deps-spark${spark.version.short}_${scala.binary.version}</artifactId>
+          <version>${project.version}</version>
+          <type>pom</type>
+        </dependency>
+      </dependencies>
       <build>
         <plugins>
           <!--

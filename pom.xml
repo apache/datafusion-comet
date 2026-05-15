@@ -39,13 +39,22 @@ under the License.
     <module>spark</module>
     <module>spark-integration</module>
     <!--
-      Contribs are NOT Maven modules. Each contrib (contrib/<name>/) is a source
-      directory whose Scala/Java files are compiled INTO comet-spark.jar when the
-      matching `-Pcontrib-<name>` Maven profile is active on spark/. The native rlib
-      under contrib/<name>/native/ is similarly compiled into libcomet via the
-      matching Cargo feature on native/core. See
+      Each contrib has a deps-only Maven pom (packaging=pom, no code, no shading).
+      The pom exists ONLY to declare the contrib's external Maven dependencies
+      (e.g. delta-spark for the Delta contrib). The contrib's Scala/Java sources
+      are compiled INTO comet-spark.jar by the matching `-Pcontrib-<name>` profile
+      on spark/pom.xml, with the deps pom pulled in via `<type>pom</type>` so its
+      transitive deps land on spark's compile classpath.
+
+      No reactor cycle: the contrib pom has no `<dependency>` on `comet-spark`;
+      it's a leaf list of external deps. spark/pom.xml depends on the contrib pom
+      (one direction).
+
+      The contrib's Rust rlib under contrib/<name>/native/ is similarly compiled
+      into libcomet via the matching Cargo feature on native/core. See
       docs/source/contributor-guide/contrib-extensions.md.
     -->
+    <module>contrib/example</module>
   </modules>
 
   <properties>

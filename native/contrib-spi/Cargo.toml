@@ -32,6 +32,9 @@ datafusion-comet-proto = { workspace = true }
 # Surface the `Path` type on the SPI's prepare_object_store return value.
 object_store = { workspace = true }
 log = "0.4"
+# Lock-free registry primitive. Reads (per ContribOp dispatch, hot path) are one atomic
+# load + ref-count bump; writes (per contrib's #[ctor] at lib init) are an RCU swap.
+arc-swap = "1"
 
 [features]
 # Off by default. When enabled, the crate exposes `ScopedContribPlannerRegistration` and

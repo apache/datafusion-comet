@@ -36,8 +36,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, OnceLock},
 };
+
+use arc_swap::ArcSwap;
 
 use datafusion::{
     arrow::datatypes::SchemaRef,
@@ -279,10 +281,18 @@ impl std::fmt::Display for ContribError {
 impl std::error::Error for ContribError {}
 
 /// Process-wide registry of contrib operator planners, keyed by `ContribOp.kind`.
-fn registry() -> &'static RwLock<HashMap<String, Arc<dyn ContribOperatorPlanner>>> {
-    static REGISTRY: OnceLock<RwLock<HashMap<String, Arc<dyn ContribOperatorPlanner>>>> =
-        OnceLock::new();
-    REGISTRY.get_or_init(|| RwLock::new(HashMap::new()))
+///
+/// `ArcSwap<HashMap<...>>` gives lock-free reads (one atomic load + Arc ref-count bump)
+/// on the dispatch hot path. Writes happen exclusively during library init from
+/// `#[ctor]`s (sequential, single-threaded) and use `rcu` to swap an updated map atom.
+/// The init-once / read-many access pattern is exactly what `ArcSwap` is designed for;
+/// the previous `RwLock<HashMap>` would have introduced reader-writer contention for
+/// no gain since there are effectively no concurrent writes.
+type RegistryMap = HashMap<String, Arc<dyn ContribOperatorPlanner>>;
+
+fn registry() -> &'static ArcSwap<RegistryMap> {
+    static REGISTRY: OnceLock<ArcSwap<RegistryMap>> = OnceLock::new();
+    REGISTRY.get_or_init(|| ArcSwap::from_pointee(HashMap::new()))
 }
 
 /// Register a contrib operator planner under the given `kind` identifier. Last-write-wins
@@ -293,33 +303,29 @@ pub fn register_contrib_planner(
     planner: Arc<dyn ContribOperatorPlanner>,
 ) {
     let kind = kind.into();
-    let mut guard = registry()
-        .write()
-        .expect("contrib planner registry poisoned");
-    if guard.contains_key(&kind) {
-        log::warn!(
-            "register_contrib_planner: replacing existing planner for kind={kind:?}; \
-             second registration usually indicates a misconfigured test harness"
-        );
-    }
-    guard.insert(kind, planner);
+    registry().rcu(|current| {
+        let mut new_map: RegistryMap = (**current).clone();
+        if new_map.contains_key(&kind) {
+            log::warn!(
+                "register_contrib_planner: replacing existing planner for kind={kind:?}; \
+                 second registration usually indicates a misconfigured test harness"
+            );
+        }
+        new_map.insert(kind.clone(), Arc::clone(&planner));
+        new_map
+    });
 }
 
 /// Look up the contrib planner registered for `kind`, or `None` if no contrib is loaded
 /// for that operator. Core's dispatcher uses this to route `OpStruct::ContribOp` payloads.
 pub fn lookup_contrib_planner_by_kind(kind: &str) -> Option<Arc<dyn ContribOperatorPlanner>> {
-    let guard = registry()
-        .read()
-        .expect("contrib planner registry poisoned");
-    guard.get(kind).cloned()
+    registry().load().get(kind).cloned()
 }
 
 /// Return a snapshot of all registered contrib kinds, for diagnostics and tests.
 pub fn registered_contrib_kinds() -> Vec<String> {
-    let guard = registry()
-        .read()
-        .expect("contrib planner registry poisoned");
-    let mut kinds: Vec<String> = guard.keys().cloned().collect();
+    let snapshot = registry().load();
+    let mut kinds: Vec<String> = snapshot.keys().cloned().collect();
     kinds.sort();
     kinds
 }
@@ -343,10 +349,14 @@ impl ScopedContribPlannerRegistration {
     /// previously-registered planner (if any) is restored on drop.
     pub fn new(kind: impl Into<String>, planner: Arc<dyn ContribOperatorPlanner>) -> Self {
         let kind = kind.into();
-        let mut guard = registry()
-            .write()
-            .expect("contrib planner registry poisoned");
-        let previous = guard.insert(kind.clone(), planner);
+        // Snapshot the previous binding BEFORE the rcu so retries (under contention) don't
+        // observe our own write as the previous value.
+        let previous = registry().load().get(&kind).cloned();
+        registry().rcu(|current| {
+            let mut new_map: RegistryMap = (**current).clone();
+            new_map.insert(kind.clone(), Arc::clone(&planner));
+            new_map
+        });
         Self { kind, previous }
     }
 }
@@ -354,17 +364,20 @@ impl ScopedContribPlannerRegistration {
 #[cfg(any(test, feature = "test-utils"))]
 impl Drop for ScopedContribPlannerRegistration {
     fn drop(&mut self) {
-        let mut guard = registry()
-            .write()
-            .expect("contrib planner registry poisoned");
-        match self.previous.take() {
-            Some(prev) => {
-                guard.insert(self.kind.clone(), prev);
+        let kind = std::mem::take(&mut self.kind);
+        let previous = self.previous.take();
+        registry().rcu(|current| {
+            let mut new_map: RegistryMap = (**current).clone();
+            match &previous {
+                Some(prev) => {
+                    new_map.insert(kind.clone(), Arc::clone(prev));
+                }
+                None => {
+                    new_map.remove(&kind);
+                }
             }
-            None => {
-                guard.remove(&self.kind);
-            }
-        }
+            new_map
+        });
     }
 }
 
@@ -373,10 +386,7 @@ impl Drop for ScopedContribPlannerRegistration {
 /// removes the entries every other concurrent test depends on.
 #[cfg(any(test, feature = "test-utils"))]
 pub fn _clear_for_test() {
-    let mut guard = registry()
-        .write()
-        .expect("contrib planner registry poisoned");
-    guard.clear();
+    registry().store(Arc::new(HashMap::new()));
 }
 
 #[cfg(test)]

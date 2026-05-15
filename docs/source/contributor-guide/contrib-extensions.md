@@ -57,13 +57,17 @@ writes into the proto.
 
 ## Required files (mirror `contrib/example/` exactly)
 
-A contrib is a directory of sources, **not a Maven module**. No `pom.xml`. The contrib's
+A contrib is a directory of sources plus a deps-only Maven pom. The contrib's
 Scala/Java sources are pulled into `comet-spark`'s compile by a profile on
 `spark/pom.xml`; the contrib's Rust sources are pulled into `libcomet` by a Cargo
-feature on `native/core`. The directory layout:
+feature on `native/core`. The `pom.xml` exists solely to enumerate external Maven
+deps (e.g., `io.delta:delta-spark` for a Delta contrib); it does NOT produce code
+and does NOT depend on `comet-spark` (those two together would create a Maven
+reactor cycle).
 
 ```
 contrib/<name>/
+  pom.xml                                                          ← <packaging>pom</packaging>; declares external Maven deps only
   src/main/scala/org/apache/comet/contrib/<name>/
     <SomeClass>.scala                                              ← CometScanRuleExtension / CometOperatorSerdeExtension impl
   src/main/resources/META-INF/services/
@@ -78,6 +82,12 @@ contrib/<name>/
     src/proto/<your_op>.proto                                      ← contrib-private proto schema (also used by JVM-side protoc generation)
     src/generated/                                                 ← (gitignored) prost-build output
 ```
+
+The `pom.xml` is a `<packaging>pom</packaging>` with one job: list the contrib's
+external Maven deps. A Delta contrib's pom would carry `<dependency>` entries for
+`io.delta:delta-spark`. `spark/pom.xml`'s `contrib-<name>` profile depends on this
+deps-pom via `<type>pom</type>`, which transitively resolves the listed deps onto
+comet-spark's classpath.
 
 Plus a handful of build-config edits (collected under "Wiring into core", below).
 
@@ -111,83 +121,39 @@ breaks the workspace lookup; place the contrib at the documented depth.
 
 ## Wiring into core
 
-Four edits, two per side:
+Five edits, three per side (JVM) + two (native):
 
 ### JVM side
 
-1. **`spark/pom.xml`** — add a `contrib-<name>` profile under `<profiles>`. The
-   `contrib-example` profile is the copy-this template. The profile uses
-   `build-helper-maven-plugin` to add the contrib's source/test directories,
-   `maven-resources-plugin` to merge in `META-INF/services` entries, and
-   `protoc-jar-maven-plugin` to generate the contrib's Java protos:
+1. **Root `pom.xml`** — add `<module>contrib/<name></module>` so Maven always builds
+   the contrib's deps-pom. The pom is tiny (no code, no JAR — just `<packaging>pom</packaging>`).
+2. **`contrib/<name>/pom.xml`** — create a `<packaging>pom</packaging>` file enumerating
+   your external Maven deps. Copy `contrib/example/pom.xml` as the template; the
+   example's `<dependencies>` block is empty (no external deps needed). A Delta-style
+   contrib would add e.g.:
 
    ```xml
-   <profile>
-     <id>contrib-<name></id>
-     <build>
-       <plugins>
-         <plugin>
-           <groupId>org.codehaus.mojo</groupId>
-           <artifactId>build-helper-maven-plugin</artifactId>
-           <executions>
-             <execution>
-               <id>add-contrib-<name>-source</id>
-               <phase>generate-sources</phase>
-               <goals><goal>add-source</goal></goals>
-               <configuration>
-                 <sources><source>../contrib/<name>/src/main/scala</source></sources>
-               </configuration>
-             </execution>
-             <execution>
-               <id>add-contrib-<name>-test-source</id>
-               <phase>generate-test-sources</phase>
-               <goals><goal>add-test-source</goal></goals>
-               <configuration>
-                 <sources><source>../contrib/<name>/src/test/scala</source></sources>
-               </configuration>
-             </execution>
-           </executions>
-         </plugin>
-         <plugin>
-           <groupId>org.apache.maven.plugins</groupId>
-           <artifactId>maven-resources-plugin</artifactId>
-           <executions>
-             <execution>
-               <id>copy-contrib-<name>-resources</id>
-               <phase>process-resources</phase>
-               <goals><goal>copy-resources</goal></goals>
-               <configuration>
-                 <outputDirectory>${project.build.outputDirectory}</outputDirectory>
-                 <resources>
-                   <resource><directory>../contrib/<name>/src/main/resources</directory></resource>
-                 </resources>
-               </configuration>
-             </execution>
-           </executions>
-         </plugin>
-         <plugin>
-           <groupId>com.github.os72</groupId>
-           <artifactId>protoc-jar-maven-plugin</artifactId>
-           <executions>
-             <execution>
-               <id>generate-contrib-<name>-proto</id>
-               <phase>generate-sources</phase>
-               <goals><goal>run</goal></goals>
-               <configuration>
-                 <protocArtifact>com.google.protobuf:protoc:${protobuf.version}</protocArtifact>
-                 <inputDirectories>
-                   <include>../contrib/<name>/native/src/proto</include>
-                 </inputDirectories>
-               </configuration>
-             </execution>
-           </executions>
-         </plugin>
-       </plugins>
-     </build>
-   </profile>
+   <dependencies>
+     <dependency>
+       <groupId>io.delta</groupId>
+       <artifactId>delta-spark_${scala.binary.version}</artifactId>
+       <version>3.3.2</version>
+       <scope>provided</scope>
+     </dependency>
+   </dependencies>
    ```
 
-   No additions to the parent `pom.xml`'s `<modules>` — contribs are not Maven modules.
+   Use `<scope>provided</scope>` for deps the user supplies on their Spark classpath;
+   `<scope>compile</scope>` if the contrib ships them itself (shaded into comet-spark
+   via the inherited shade execution).
+
+3. **`spark/pom.xml`** — add a `contrib-<name>` profile under `<profiles>`. Copy the
+   `contrib-example` profile as the template. The profile (a) depends on the contrib's
+   deps-pom via `<type>pom</type>`, (b) uses `build-helper-maven-plugin` to add the
+   contrib's source/test directories, (c) uses `maven-resources-plugin` to merge in
+   `META-INF/services` entries, and (d) uses `protoc-jar-maven-plugin` to generate
+   the contrib's Java protos. See `contrib/example`'s entry in `spark/pom.xml` for
+   the verbatim block to copy.
 
 ### Native side
 
@@ -880,10 +846,12 @@ size you need and the use case — the cap is a guardrail, not a feature.
 
 ## Registry implementation note
 
-The native contrib planner registry is currently a `RwLock<HashMap<String, Arc<...>>>`.
-Lookups happen once per `ContribOp` plan call; writes happen only during library init.
-The implementation may switch to a lock-free primitive (`ArcSwap`) in a future release
-if profiling shows the read path matters; the public API stays unchanged either way.
+The native contrib planner registry uses `ArcSwap<HashMap<String, Arc<...>>>` —
+lock-free for readers, RCU swap for writers. Reads on the `ContribOp` dispatch hot
+path are a single atomic load plus an `Arc` ref-count bump; there is no
+reader-writer contention because writes happen exclusively during library init
+(sequential `#[ctor]` registrations, no concurrent writers). Contribs never call
+the registry primitives directly.
 
 ## See also
 
