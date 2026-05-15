@@ -19,72 +19,87 @@
 
 package org.apache.comet.cloud.s3;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.ServiceLoader;
-import java.util.stream.Collectors;
+import java.lang.reflect.InvocationTargetException;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * JNI entry point invoked from native code to resolve {@link CometS3CredentialProvider}.
+ * JNI entry point invoked from native code to resolve a {@link CometS3CredentialProvider}.
  *
- * <p>The provider is resolved once via {@link ServiceLoader} and cached in a {@code static final}
- * field. A query falling back from Comet to Spark mid-execution therefore sees identical
- * credentials, since both paths resolve from the same executor classpath.
- *
- * <p>Multiple registered impls fail fast at class-load; chaining is a vendor-side concern.
+ * <p>The provider class is named in {@code fs.s3a.comet.credential.provider.class} (optionally
+ * per-bucket). Native code reads that key from the object-store options it already forwards over
+ * JNI and passes the FQCN here. We instantiate each named class once via reflection and cache it,
+ * so a single executor JVM can serve multiple providers (e.g. one for the default config and one
+ * for a specific bucket) without re-instantiation per request.
  */
 public final class CometS3CredentialDispatcher {
 
   private static final Logger LOG = LoggerFactory.getLogger(CometS3CredentialDispatcher.class);
 
-  private static final CometS3CredentialProvider PROVIDER = resolve();
+  private static final ConcurrentHashMap<String, CometS3CredentialProvider> INSTANCES =
+      new ConcurrentHashMap<>();
   private static final CometS3AccessMode[] MODES = CometS3AccessMode.values();
 
   private CometS3CredentialDispatcher() {}
 
-  public static boolean isProviderRegistered() {
-    return PROVIDER != null;
-  }
-
-  /** Invoked by native code. {@code mode} is the {@link CometS3AccessMode} ordinal. */
-  public static CometS3Credentials getCredentialsForPath(String bucket, String path, int mode)
-      throws Exception {
-    if (PROVIDER == null) {
-      throw new IllegalStateException(
-          "No CometS3CredentialProvider registered; check META-INF/services on the classpath");
+  /**
+   * Invoked by native code. {@code mode} is the {@link CometS3AccessMode} ordinal.
+   *
+   * @param providerClassName FQCN configured in {@code fs.s3a.comet.credential.provider.class}
+   */
+  public static CometS3Credentials getCredentialsForPath(
+      String providerClassName, String bucket, String path, int mode) throws Exception {
+    if (providerClassName == null || providerClassName.isEmpty()) {
+      throw new IllegalArgumentException(
+          "providerClassName is empty; native side should not call without a configured class");
     }
     if (mode < 0 || mode >= MODES.length) {
       throw new IllegalArgumentException("Invalid CometS3AccessMode ordinal: " + mode);
     }
+    CometS3CredentialProvider provider = resolve(providerClassName);
     CometS3AccessMode accessMode = MODES[mode];
     if (LOG.isDebugEnabled()) {
-      LOG.debug("Fetching credentials for bucket={} path={} mode={}", bucket, path, accessMode);
+      LOG.debug(
+          "Fetching credentials via {} for bucket={} path={} mode={}",
+          providerClassName,
+          bucket,
+          path,
+          accessMode);
     }
-    return PROVIDER.getCredentialsForPath(bucket, path, accessMode);
+    return provider.getCredentialsForPath(bucket, path, accessMode);
   }
 
-  private static CometS3CredentialProvider resolve() {
-    List<CometS3CredentialProvider> impls = new ArrayList<>();
-    for (CometS3CredentialProvider impl : ServiceLoader.load(CometS3CredentialProvider.class)) {
-      impls.add(impl);
-    }
-    if (impls.isEmpty()) {
-      LOG.info(
-          "No CometS3CredentialProvider registered; native S3 readers will use the default "
-              + "AWS credential chain");
-      return null;
-    }
-    if (impls.size() > 1) {
-      List<String> names =
-          impls.stream().map(p -> p.getClass().getName()).collect(Collectors.toList());
+  private static CometS3CredentialProvider resolve(String providerClassName) {
+    return INSTANCES.computeIfAbsent(providerClassName, CometS3CredentialDispatcher::instantiate);
+  }
+
+  private static CometS3CredentialProvider instantiate(String providerClassName) {
+    Class<?> clazz;
+    try {
+      clazz = Class.forName(providerClassName);
+    } catch (ClassNotFoundException e) {
       throw new IllegalStateException(
-          "Multiple CometS3CredentialProvider impls on classpath: " + names);
+          "CometS3CredentialProvider class not found: "
+              + providerClassName
+              + ". Ensure the vendor JAR is on the executor classpath.",
+          e);
     }
-    CometS3CredentialProvider provider = impls.get(0);
-    LOG.info("Registered CometS3CredentialProvider: {}", provider.getClass().getName());
-    return provider;
+    if (!CometS3CredentialProvider.class.isAssignableFrom(clazz)) {
+      throw new IllegalStateException(
+          providerClassName + " does not implement " + CometS3CredentialProvider.class.getName());
+    }
+    try {
+      Object instance = clazz.getDeclaredConstructor().newInstance();
+      LOG.info("Instantiated CometS3CredentialProvider {}", providerClassName);
+      return (CometS3CredentialProvider) instance;
+    } catch (NoSuchMethodException e) {
+      throw new IllegalStateException(
+          providerClassName + " must declare a public no-arg constructor", e);
+    } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
+      throw new IllegalStateException(
+          "Failed to instantiate CometS3CredentialProvider " + providerClassName, e);
+    }
   }
 }

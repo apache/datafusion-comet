@@ -18,7 +18,7 @@
 use jni::{
     errors::Result as JniResult,
     objects::{JClass, JFieldID, JStaticMethodID},
-    signature::{Primitive, ReturnType},
+    signature::ReturnType,
     strings::JNIString,
     Env,
 };
@@ -30,8 +30,6 @@ pub struct CometS3CredentialDispatcher<'a> {
     /// Retained so the cached POJO `JFieldID`s stay alive for the executor lifetime.
     #[allow(dead_code)]
     pub credentials_class: JClass<'a>,
-    pub method_is_provider_registered: JStaticMethodID,
-    pub method_is_provider_registered_ret: ReturnType,
     pub method_get_credentials_for_path: JStaticMethodID,
     pub method_get_credentials_for_path_ret: ReturnType,
     pub field_access_key_id: JFieldID,
@@ -49,17 +47,11 @@ impl<'a> CometS3CredentialDispatcher<'a> {
         let credentials_class = env.find_class(JNIString::new(Self::CREDENTIALS_CLASS))?;
 
         Ok(CometS3CredentialDispatcher {
-            method_is_provider_registered: env.get_static_method_id(
-                JNIString::new(Self::JVM_CLASS),
-                jni::jni_str!("isProviderRegistered"),
-                jni::jni_sig!("()Z"),
-            )?,
-            method_is_provider_registered_ret: ReturnType::Primitive(Primitive::Boolean),
             method_get_credentials_for_path: env.get_static_method_id(
                 JNIString::new(Self::JVM_CLASS),
                 jni::jni_str!("getCredentialsForPath"),
                 jni::jni_sig!(
-                    "(Ljava/lang/String;Ljava/lang/String;I)Lorg/apache/comet/cloud/s3/CometS3Credentials;"
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)Lorg/apache/comet/cloud/s3/CometS3Credentials;"
                 ),
             )?,
             method_get_credentials_for_path_ret: ReturnType::Object,

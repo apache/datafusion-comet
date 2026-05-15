@@ -29,8 +29,6 @@ import org.testcontainers.utility.DockerImageName
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 
-import org.apache.comet.cloud.s3.MinioCometS3CredentialProvider
-
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.{CreateBucketRequest, HeadBucketRequest}
@@ -49,10 +47,6 @@ trait CometS3TestBase extends CometTestBase {
       .withPassword(password)
     minioContainer.start()
     createBucketIfNotExists(testBucketName)
-
-    // Install Minio's credentials into the test SPI so every S3 suite sharing this JVM routes
-    // through the bridge cleanly.
-    MinioCometS3CredentialProvider.installCredentials(userName, password)
 
     super.beforeAll()
   }

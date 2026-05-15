@@ -203,7 +203,10 @@ impl IcebergScanExec {
         Ok(Box::pin(wrapped_stream))
     }
 
-    fn storage_factory_for(path: &str) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
+    fn storage_factory_for(
+        path: &str,
+        catalog_properties: &HashMap<String, String>,
+    ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
         let scheme = if path.contains("://") {
             path.split("://").next().unwrap_or("file")
         } else {
@@ -212,7 +215,8 @@ impl IcebergScanExec {
         match scheme {
             "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
             "s3" | "s3a" => {
-                let customized_credential_load = build_s3_credential_loader(path);
+                let customized_credential_load =
+                    build_s3_credential_loader(path, catalog_properties);
                 Ok(Arc::new(OpenDalStorageFactory::S3 {
                     customized_credential_load,
                 }))
@@ -229,7 +233,7 @@ impl IcebergScanExec {
         catalog_properties: &HashMap<String, String>,
         metadata_location: &str,
     ) -> Result<FileIO, DataFusionError> {
-        let factory = Self::storage_factory_for(metadata_location)?;
+        let factory = Self::storage_factory_for(metadata_location, catalog_properties)?;
         let mut file_io_builder = FileIOBuilder::new(factory);
 
         for (key, value) in catalog_properties {
@@ -240,11 +244,21 @@ impl IcebergScanExec {
     }
 }
 
-/// Wires the registered Comet credential provider into opendal's S3 service for this scan, or
-/// returns `None` so opendal falls back to its default credential chain.
-fn build_s3_credential_loader(metadata_location: &str) -> Option<CustomAwsCredentialLoader> {
+/// Wires the configured Comet credential provider into opendal's S3 service for this scan, or
+/// returns `None` so opendal falls back to its default credential chain. Iceberg passes its
+/// per-catalog properties (`spark.sql.catalog.<name>.*` after Spark stripping), so the activation
+/// key here is `s3.comet.credential.provider.class` to match Iceberg's `s3.*` namespace.
+fn build_s3_credential_loader(
+    metadata_location: &str,
+    catalog_properties: &HashMap<String, String>,
+) -> Option<CustomAwsCredentialLoader> {
     let url = url::Url::parse(metadata_location).ok()?;
-    let bridge = CometS3CredentialBridge::for_url(&url, AccessMode::Read)?;
+    let bucket = url.host_str()?;
+    let provider_class = catalog_properties
+        .get("s3.comet.credential.provider.class")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())?;
+    let bridge = CometS3CredentialBridge::new(provider_class, bucket, url.path(), AccessMode::Read);
     Some(CustomAwsCredentialLoader::new(bridge))
 }
 

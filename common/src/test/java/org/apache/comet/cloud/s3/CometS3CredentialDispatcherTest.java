@@ -31,6 +31,7 @@ import static org.junit.Assert.assertTrue;
 
 public class CometS3CredentialDispatcherTest {
 
+  private static final String TEST_PROVIDER = TestCometS3CredentialProvider.class.getName();
   private static final int READ = CometS3AccessMode.READ.ordinal();
   private static final int WRITE = CometS3AccessMode.WRITE.ordinal();
 
@@ -40,14 +41,10 @@ public class CometS3CredentialDispatcherTest {
   }
 
   @Test
-  public void providerIsRegisteredFromTestClasspath() {
-    assertTrue(CometS3CredentialDispatcher.isProviderRegistered());
-  }
-
-  @Test
   public void getCredentialsRoundTripsThroughProvider() throws Exception {
     CometS3Credentials creds =
-        CometS3CredentialDispatcher.getCredentialsForPath("my-bucket", "path/to/object", READ);
+        CometS3CredentialDispatcher.getCredentialsForPath(
+            TEST_PROVIDER, "my-bucket", "path/to/object", READ);
 
     assertNotNull(creds);
     assertEquals("AKIATEST", creds.getAccessKeyId());
@@ -63,7 +60,7 @@ public class CometS3CredentialDispatcherTest {
 
   @Test
   public void writeModeIsForwarded() throws Exception {
-    CometS3CredentialDispatcher.getCredentialsForPath("b", "k", WRITE);
+    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, "b", "k", WRITE);
     assertEquals(CometS3AccessMode.WRITE, TestCometS3CredentialProvider.lastMode);
   }
 
@@ -71,7 +68,50 @@ public class CometS3CredentialDispatcherTest {
   public void unknownModeRejected() {
     assertThrows(
         IllegalArgumentException.class,
-        () -> CometS3CredentialDispatcher.getCredentialsForPath("b", "k", 99));
+        () -> CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, "b", "k", 99));
+  }
+
+  @Test
+  public void emptyClassNameRejected() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CometS3CredentialDispatcher.getCredentialsForPath("", "b", "k", READ));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CometS3CredentialDispatcher.getCredentialsForPath(null, "b", "k", READ));
+  }
+
+  @Test
+  public void missingClassReportsActionableError() {
+    Exception thrown =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                CometS3CredentialDispatcher.getCredentialsForPath(
+                    "com.does.not.Exist", "b", "k", READ));
+    assertTrue(thrown.getMessage().contains("not found"));
+  }
+
+  @Test
+  public void classNotImplementingInterfaceRejected() {
+    Exception thrown =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                CometS3CredentialDispatcher.getCredentialsForPath(
+                    NotACredentialProvider.class.getName(), "b", "k", READ));
+    assertTrue(thrown.getMessage().contains("does not implement"));
+  }
+
+  @Test
+  public void classWithoutNoArgCtorRejected() {
+    Exception thrown =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                CometS3CredentialDispatcher.getCredentialsForPath(
+                    NoNoArgCtorProvider.class.getName(), "b", "k", READ));
+    assertTrue(thrown.getMessage().contains("no-arg constructor"));
   }
 
   @Test
@@ -82,7 +122,7 @@ public class CometS3CredentialDispatcherTest {
     Exception thrown =
         assertThrows(
             Exception.class,
-            () -> CometS3CredentialDispatcher.getCredentialsForPath("b", "k", READ));
+            () -> CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, "b", "k", READ));
     assertSame(boom, thrown);
   }
 
@@ -90,16 +130,17 @@ public class CometS3CredentialDispatcherTest {
   public void nullSessionTokenAllowed() throws Exception {
     TestCometS3CredentialProvider.nextResult = new CometS3Credentials("AKIA", "sec", null, 0L);
 
-    CometS3Credentials creds = CometS3CredentialDispatcher.getCredentialsForPath("b", "k", READ);
+    CometS3Credentials creds =
+        CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, "b", "k", READ);
 
     assertNull(creds.getSessionToken());
   }
 
   @Test
   public void providerReceivesEachCallSeparately() throws Exception {
-    CometS3CredentialDispatcher.getCredentialsForPath("b1", "k1", READ);
-    CometS3CredentialDispatcher.getCredentialsForPath("b2", "k2", READ);
-    CometS3CredentialDispatcher.getCredentialsForPath("b3", "k3", READ);
+    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, "b1", "k1", READ);
+    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, "b2", "k2", READ);
+    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, "b3", "k3", READ);
 
     assertEquals(3, TestCometS3CredentialProvider.callCount.get());
     assertEquals("b3", TestCometS3CredentialProvider.lastBucket);

@@ -81,7 +81,8 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    builder = if let Some(bridge) = CometS3CredentialBridge::for_url(url, AccessMode::Read) {
+    builder = if let Some(bridge) = CometS3CredentialBridge::for_url(url, configs, AccessMode::Read)
+    {
         builder.with_credentials(Arc::new(bridge))
     } else {
         match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {

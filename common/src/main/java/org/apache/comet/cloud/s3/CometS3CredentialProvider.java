@@ -45,10 +45,11 @@ package org.apache.comet.cloud.s3;
  *       ship this logic as Java code, not HTTP.
  * </ul>
  *
- * <p>Vendors register an implementation via {@code
- * META-INF/services/org.apache.comet.cloud.s3.CometS3CredentialProvider}. {@link
- * #getCredentialsForPath} may be invoked concurrently from many native tokio tasks, so
- * implementations must be thread-safe.
+ * <p>Vendors register an implementation by setting {@code
+ * spark.hadoop.fs.s3a.comet.credential.provider.class} (or the per-bucket form {@code
+ * spark.hadoop.fs.s3a.bucket.<name>.comet.credential.provider.class}) to the implementing FQCN. The
+ * class must have a public no-arg constructor. {@link #getCredentialsForPath} may be invoked
+ * concurrently from many native tokio tasks, so implementations must be thread-safe.
  *
  * <p>Returns credentials or throws; there is no fall-through return value. A provider that is only
  * authoritative for some paths should resolve the default AWS chain itself for the rest. See the

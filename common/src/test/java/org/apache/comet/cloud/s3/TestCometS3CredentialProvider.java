@@ -22,8 +22,8 @@ package org.apache.comet.cloud.s3;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Test-only provider registered via {@code META-INF/services}. State is static because the
- * dispatcher caches a single provider instance for the JVM lifetime.
+ * Test-only provider instantiated by the dispatcher when its FQCN is passed across JNI. State is
+ * static because the dispatcher caches one instance per class name for the JVM lifetime.
  */
 public class TestCometS3CredentialProvider implements CometS3CredentialProvider {
 

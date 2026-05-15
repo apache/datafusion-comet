@@ -39,9 +39,14 @@ class CometS3CredentialBridgeSuite extends CometS3TestBase with AdaptiveSparkPla
 
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
+    val providerClassName = classOf[MinioCometS3CredentialProvider].getName
+    // Activate the bridge for the Parquet (object_store) path via the Hadoop S3A namespace.
+    conf.set("spark.hadoop.fs.s3a.comet.credential.provider.class", providerClassName)
+    // Activate the bridge for the Iceberg (opendal) path via the per-catalog s3 namespace.
     conf.set("spark.sql.catalog.s3_catalog", "org.apache.iceberg.spark.SparkCatalog")
     conf.set("spark.sql.catalog.s3_catalog.type", "hadoop")
     conf.set("spark.sql.catalog.s3_catalog.warehouse", s"s3a://$testBucketName/warehouse")
+    conf.set("spark.sql.catalog.s3_catalog.s3.comet.credential.provider.class", providerClassName)
     applyS3CatalogProps(conf, "s3_catalog")
     conf.set(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key, "true")
     conf
