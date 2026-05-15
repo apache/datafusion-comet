@@ -221,6 +221,74 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
   }
 
   /**
+   * Element-level fuzz for nested array reads. For every `Array<primitive>` column in the random
+   * schema, runs `id_X(array_max(col))` so Spark's `ArrayMax.doGenCode` walks every element of
+   * every row and calls the kernel's nested element getter
+   * (`getInt`/`getLong`/`getDecimal`/etc.). The cardinality probe deliberately avoids element
+   * materialization, so without this test no fuzz coverage exists on the element-getter paths the
+   * unsafe-access optimization would touch. `array_max` is comparison-only on every primitive
+   * Spark supports, so one expression covers all 14 element types.
+   */
+  test("array_max element fuzz: every Array<primitive> column") {
+    val df = spark.read.parquet(mixedTypesFilename)
+    df.createOrReplaceTempView("t1")
+    val arrayPrimitiveFields = df.schema.fields.filter {
+      case StructField(_, ArrayType(elemDt, _), _, _) if !isComplexType(elemDt) => true
+      case _ => false
+    }
+    assert(
+      arrayPrimitiveFields.nonEmpty,
+      "expected at least one Array<primitive> column in random schema")
+    for (field <- arrayPrimitiveFields) {
+      val ArrayType(elemDt, _) = field.dataType: @unchecked
+      val udfName = s"id_arrmax_${field.name}"
+      registerIdentityUdfFor(elemDt, udfName) match {
+        case Some(_) =>
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(s"SELECT $udfName(array_max(${field.name})) FROM t1")
+          }
+        case None =>
+          fail(
+            s"array column ${field.name} elem ${elemDt} not in identity UDF catalog; " +
+              "extend registerIdentityUdfFor")
+      }
+    }
+  }
+
+  /**
+   * Element-level fuzz for map key and value reads. `map_keys(col)` / `map_values(col)` produce
+   * arrays the kernel walks via Spark's `ArrayMax`, exercising the map's child key/value getter.
+   * The leaf primitive read is structurally the same as in the array element fuzz, but the parent
+   * offset chain (MapVector -> entries StructVector -> child) differs, so a buggy unsafe getter
+   * that mishandled the map's per-row offset would slip past the array test alone. Filters to
+   * top-level `Map<primitive, primitive>` columns from the random nested schema.
+   */
+  test("array_max element fuzz: map_keys / map_values on Map<primitive, primitive> columns") {
+    val df = spark.read.parquet(nestedTypesFilename)
+    df.createOrReplaceTempView("t2")
+    val mapPrimitiveFields = df.schema.fields.filter {
+      case StructField(_, MapType(kDt, vDt, _), _, _)
+          if !isComplexType(kDt) && !isComplexType(vDt) =>
+        true
+      case _ => false
+    }
+    for (field <- mapPrimitiveFields) {
+      val MapType(kDt, vDt, _) = field.dataType: @unchecked
+      registerIdentityUdfFor(kDt, s"id_mapk_${field.name}").foreach { udf =>
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(s"SELECT $udf(array_max(map_keys(${field.name}))) FROM t2")
+        }
+      }
+      registerIdentityUdfFor(vDt, s"id_mapv_${field.name}").foreach { udf =>
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(
+            s"SELECT $udf(array_max(map_values(${field.name}))) FROM t2")
+        }
+      }
+    }
+  }
+
+  /**
    * Probes one complex top-level column. ArrayType / MapType go through `cardinality(col)` fed to
    * the identity-Int probe UDF (see [[cardinalityProbeUdf]] for the rationale). StructType drills
    * into each scalar child via `GetStructField` and runs the identity UDF on it; complex children
