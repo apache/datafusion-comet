@@ -60,6 +60,34 @@ import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStr
 import org.apache.comet.serde.operator.CometSink
 
 /**
+ * Generic source of per-partition planning data for a Comet native exec. Implementations expose
+ * the trio of inputs that `CometExecRDD.compute` needs to feed `PlanDataInjector.injectPlanData`:
+ *
+ *   - `planDataSourceKey`: stable identifier the matching `PlanDataInjector.getKey` reproduces
+ *     by hashing the operator's common payload. Must agree between driver-side (RDD construction)
+ *     and executor-side (injector lookup) views of the SAME operator's proto.
+ *   - `planDataCommonBytes`: serialized common block (schemas, table root, filters, ...) the
+ *     contrib's `serialize` produced once per scan.
+ *   - `planDataPerPartitionBytes`: array of serialized per-partition payloads, one entry per
+ *     partition, carrying that partition's task list / file list / ranges.
+ *
+ * `findAllPlanData` checks for this trait BEFORE the hardcoded `CometNativeScanExec` /
+ * `CometIcebergNativeScanExec` arms so contribs can plug in without core-side enumeration.
+ * Core's own scans implement the trait too for symmetry (no behavioural change -- the trait's
+ * defaults just delegate to their existing accessors).
+ *
+ * Implementations whose driver-side `commonData` / `perPartitionData` require Spark's standard
+ * `prepare -> waitForSubqueries` lifecycle (typically because DPP `InSubqueryExec` values land
+ * in the per-partition payload) override `ensureSubqueriesResolvedIfApplicable` to trigger it.
+ */
+trait PlanDataSource { self: SparkPlan =>
+  def planDataSourceKey: String
+  def planDataCommonBytes: Array[Byte]
+  def planDataPerPartitionBytes: Array[Array[Byte]]
+  def ensureSubqueriesResolvedIfApplicable(): Unit = ()
+}
+
+/**
  * Trait for injecting per-partition planning data into operator nodes.
  *
  * Implementations handle specific operator types (e.g., Iceberg scans, Delta scans).
@@ -692,6 +720,16 @@ abstract class CometNativeExec extends CometExec {
   private def findAllPlanData(
       plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
     plan match {
+      // Contribs (e.g. the Delta contrib's `CometDeltaNativeScanExec`) implement
+      // `PlanDataSource` to expose their per-partition payload and matching
+      // `sourceKey`. Checked before the explicit core cases below so subclasses can
+      // override the trait without colliding with the hardcoded matches.
+      case src: PlanDataSource =>
+        src.ensureSubqueriesResolvedIfApplicable()
+        (
+          Map(src.planDataSourceKey -> src.planDataCommonBytes),
+          Map(src.planDataSourceKey -> src.planDataPerPartitionBytes))
+
       case iceberg: CometIcebergNativeScanExec =>
         // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
         // InSubqueryExec values are resolved before commonData is read. Without this,
