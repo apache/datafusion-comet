@@ -638,6 +638,13 @@ abstract class CometNativeExec extends CometExec {
           _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
           _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
         func(plan)
+      // Any other leaf `CometNativeExec` (e.g. a contrib-defined leaf scan such as the Delta
+      // contrib's `CometDeltaNativeScanExec`) is a Comet input boundary -- recursing into its
+      // (non-existent) children would otherwise leave it invisible to the caller, which then
+      // misinterprets a leaf-only plan as having no inputs at all and crashes on
+      // `firstNonBroadcastPlan.get`. Treat it the same as the explicit list above.
+      case p: CometNativeExec if p.children.isEmpty =>
+        func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
         plan.children.foreach(foreachUntilCometInput(_)(func))
