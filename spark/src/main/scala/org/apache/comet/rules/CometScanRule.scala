@@ -207,16 +207,6 @@ case class CometScanRule(session: SparkSession)
         s"$SCAN_NATIVE_DATAFUSION scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
       return None
     }
-    // Disabling the vectorized reader opts into parquet-mr's permissive behavior
-    // (silent overflow / null-on-narrowing). Comet has no parquet-mr-equivalent
-    // backend, so fall back to Spark.
-    if (!conf.parquetVectorizedReaderEnabled) {
-      withInfo(
-        scanExec,
-        s"$SCAN_NATIVE_DATAFUSION scan is incompatible with " +
-          s"${SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key}=false")
-      return None
-    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
