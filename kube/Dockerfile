@@ -55,7 +55,6 @@ COPY mvnw /comet/mvnw
 COPY common /comet/common
 COPY dev /comet/dev
 COPY docs /comet/docs
-COPY fuzz-testing /comet/fuzz-testing
 COPY spark /comet/spark
 COPY spark-integration /comet/spark-integration
 COPY scalafmt.conf /comet/scalafmt.conf
