@@ -79,14 +79,35 @@ private[comet] trait PlanDataInjector {
 /**
  * Registry and utilities for injecting per-partition planning data into operator trees.
  */
-private[comet] object PlanDataInjector {
+object PlanDataInjector {
 
-  // Registry of injectors for different operator types
-  private val injectors: Seq[PlanDataInjector] = Seq(
+  // Built-in injectors for core operator types. Contribs add to this via
+  // `registerInjector` from their `CometOperatorSerdeExtension.init` -- the
+  // generic SPI route -- so core stays format-agnostic.
+  private val builtinInjectors: Seq[PlanDataInjector] = Seq(
     IcebergPlanDataInjector,
-    NativeScanPlanDataInjector
-    // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
-  )
+    NativeScanPlanDataInjector)
+
+  @volatile private var contribInjectors: Vector[PlanDataInjector] = Vector.empty
+
+  /**
+   * SPI: register a contrib-side `PlanDataInjector`. Called once per contrib at
+   * extension-load time (from `CometOperatorSerdeExtension.init`). Registration is
+   * idempotent on the same instance but not de-duplicated across structurally-equal
+   * implementations -- contribs are expected to register exactly once.
+   */
+  def registerInjector(injector: PlanDataInjector): Unit = synchronized {
+    if (!contribInjectors.contains(injector)) {
+      contribInjectors = contribInjectors :+ injector
+    }
+  }
+
+  /** Test-only reset, mirroring `CometExtensionRegistry.resetForTesting`. */
+  def clearContribInjectors(): Unit = synchronized {
+    contribInjectors = Vector.empty
+  }
+
+  private def injectors: Seq[PlanDataInjector] = builtinInjectors ++ contribInjectors
 
   /**
    * Injects planning data into an Operator tree by finding nodes that need injection and applying

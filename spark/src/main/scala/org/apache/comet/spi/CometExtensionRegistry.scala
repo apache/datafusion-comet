@@ -194,6 +194,7 @@ object CometExtensionRegistry extends Logging {
     // next `load()` re-registers from scratch. Without this the test that exercises
     // `resetForTesting` + `load` would accumulate handlers across reset boundaries.
     org.apache.spark.sql.comet.CometExecRDD.clearPartitionMetadataHandlers()
+    org.apache.spark.sql.comet.PlanDataInjector.clearContribInjectors()
   }
 
   private def loadOne[T](label: String)(implicit ct: scala.reflect.ClassTag[T]): Seq[T] = {
