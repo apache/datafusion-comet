@@ -27,7 +27,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Comet Benchmarking Guide &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Versioning Policy &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -61,12 +61,12 @@ under the License.
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=9a2dae69"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/benchmarking';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'about/versioning_policy';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Apache DataFusion Comet: Benchmarks Derived From TPC-H" href="benchmark-results/tpc-h.html" />
-    <link rel="prev" title="ANSI SQL Error Propagation in Comet" href="sql_error_propagation.html" />
+    <link rel="next" title="ASF Links" href="../asf/index.html" />
+    <link rel="prev" title="Comparison of Comet and Gluten" href="gluten_comparison.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -156,8 +156,8 @@ under the License.
 </li>
 
 
-<li class="nav-item current active">
-  <a class="nav-link nav-internal" href="index.html">
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../contributor-guide/index.html">
     Contributor Guide
   </a>
 </li>
@@ -171,14 +171,14 @@ under the License.
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+  <a class="nav-link nav-internal" href="gluten_comparison.html">
     Comparison with Gluten
   </a>
 </li>
 
 
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../about/versioning_policy.html">
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
     Versioning Policy
   </a>
 </li>
@@ -292,8 +292,8 @@ under the License.
 </li>
 
 
-<li class="nav-item current active">
-  <a class="nav-link nav-internal" href="index.html">
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../contributor-guide/index.html">
     Contributor Guide
   </a>
 </li>
@@ -307,14 +307,14 @@ under the License.
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../about/gluten_comparison.html">
+  <a class="nav-link nav-internal" href="gluten_comparison.html">
     Comparison with Gluten
   </a>
 </li>
 
 
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../about/versioning_policy.html">
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
     Versioning Policy
   </a>
 </li>
@@ -389,43 +389,10 @@ under the License.
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="index.html">Contributor Guide</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
-<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
-<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
-<li class="toctree-l2"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
-<li class="toctree-l2"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
-<li class="toctree-l2"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
-<li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="sql_error_propagation.html">ANSI Error Propagation</a></li>
-<li class="toctree-l2 current"><a class="current reference internal" href="#">Benchmarking Guide</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="benchmark-results/tpc-h.html">Apache DataFusion Comet: Benchmarks Derived From TPC-H</a></li>
-<li class="toctree-l3"><a class="reference internal" href="benchmark-results/tpc-ds.html">Apache DataFusion Comet: Benchmarks Derived From TPC-DS</a></li>
-<li class="toctree-l3"><a class="reference internal" href="benchmarking_macos.html">Comet Benchmarking on macOS</a></li>
-<li class="toctree-l3"><a class="reference internal" href="benchmarking_aws_ec2.html">Comet Benchmarking in EC2</a></li>
-<li class="toctree-l3"><a class="reference internal" href="benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
-</ul>
-</li>
-<li class="toctree-l2"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
-<li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
-<li class="toctree-l2"><a class="reference internal" href="adding_a_new_spark_version.html">Adding a New Spark Version</a></li>
-<li class="toctree-l2"><a class="reference internal" href="spark_expressions_support.html">Supported Spark Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="spark_configs_support.html">Supported Spark Configurations</a></li>
-<li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
-<li class="toctree-l2"><a class="reference internal" href="profiling.html">Profiling</a></li>
-<li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
-<li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
-<li class="toctree-l2"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
-<li class="toctree-l2"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
-<li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
-<li class="toctree-l2"><a class="reference internal" href="release_process.html">Release Process</a></li>
-<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
-</ul>
-</li>
+<li class="toctree-l1"><a class="reference internal" href="../contributor-guide/index.html">Contributor Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../changelog/index.html">Changelog</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../about/gluten_comparison.html">Comparison with Gluten</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../about/versioning_policy.html">Versioning Policy</a></li>
+<li class="toctree-l1"><a class="reference internal" href="gluten_comparison.html">Comparison with Gluten</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Versioning Policy</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
 </ul>
 
@@ -469,10 +436,7 @@ under the License.
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
-    
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comet Benchmarking Guide</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Versioning Policy</span></li>
   </ul>
 </nav>
 </div>
@@ -507,29 +471,96 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<section id="comet-benchmarking-guide">
-<h1>Comet Benchmarking Guide<a class="headerlink" href="#comet-benchmarking-guide" title="Link to this heading">#</a></h1>
-<p>To track progress on performance, we regularly run benchmarks derived from TPC-H and TPC-DS.</p>
-<p>The benchmarking scripts are contained <a class="reference external" href="https://github.com/apache/datafusion-comet/tree/main/benchmarks/tpc">here</a>.</p>
-<p>Data generation scripts are available in the <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">DataFusion Benchmarks</a> GitHub repository.</p>
-<section id="current-benchmark-results">
-<h2>Current Benchmark Results<a class="headerlink" href="#current-benchmark-results" title="Link to this heading">#</a></h2>
+<section id="versioning-policy">
+<h1>Versioning Policy<a class="headerlink" href="#versioning-policy" title="Link to this heading">#</a></h1>
+<p>Apache DataFusion Comet follows <a class="reference external" href="https://semver.org/">semantic versioning</a> with the format
+<code class="docutils literal notranslate"><span class="pre">MAJOR.MINOR.PATCH</span></code>. This document describes what each component of a release means, what
+compatibility guarantees Comet provides, and how Comet relates to Apache Spark versions.</p>
+<p>This policy is inspired by, but is not identical to, the
+<a class="reference external" href="https://spark.apache.org/versioning-policy.html">Apache Spark versioning policy</a>. The differences
+reflect the fact that Comet is currently pre-1.0 and ships much more frequently than Spark.</p>
+<section id="pre-1-0-releases">
+<h2>Pre-1.0 Releases<a class="headerlink" href="#pre-1-0-releases" title="Link to this heading">#</a></h2>
+<p>Comet is currently in the <code class="docutils literal notranslate"><span class="pre">0.x</span></code> series. Per semantic versioning, the <code class="docutils literal notranslate"><span class="pre">0.x</span></code> series is considered
+unstable:</p>
 <ul class="simple">
-<li><p><a class="reference internal" href="benchmark-results/tpc-h.html"><span class="doc std std-doc">Benchmarks derived from TPC-H</span></a></p></li>
-<li><p><a class="reference internal" href="benchmark-results/tpc-ds.html"><span class="doc std std-doc">Benchmarks derived from TPC-DS</span></a></p></li>
+<li><p>A minor release (<code class="docutils literal notranslate"><span class="pre">0.X.0</span></code>) may include breaking changes.</p></li>
+<li><p>A patch release (<code class="docutils literal notranslate"><span class="pre">0.X.Y</span></code>, where <code class="docutils literal notranslate"><span class="pre">Y</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>) contains bug fixes only.</p></li>
 </ul>
+<p>In particular, the following are explicitly <strong>not</strong> stable in the <code class="docutils literal notranslate"><span class="pre">0.x</span></code> series and may change in any
+minor release without prior notice:</p>
+<ul class="simple">
+<li><p>Configuration keys under <code class="docutils literal notranslate"><span class="pre">spark.comet.*</span></code> (names, defaults, and semantics).</p></li>
+<li><p>The protobuf format used to serialize query plans between the JVM and the native library.</p></li>
+<li><p>Internal Scala, Java, and Rust APIs that are not part of the documented public API.</p></li>
+</ul>
+<p>Where a breaking change is significant, it will be called out in the release notes.</p>
 </section>
-<section id="benchmarking-guides">
-<h2>Benchmarking Guides<a class="headerlink" href="#benchmarking-guides" title="Link to this heading">#</a></h2>
-<p>Available benchmarking guides:</p>
+<section id="compatibility-commitments">
+<h2>Compatibility Commitments<a class="headerlink" href="#compatibility-commitments" title="Link to this heading">#</a></h2>
+<p>The following commitments apply to every Comet release, including the <code class="docutils literal notranslate"><span class="pre">0.x</span></code> series.</p>
+<section id="public-scala-and-java-api">
+<h3>Public Scala and Java API<a class="headerlink" href="#public-scala-and-java-api" title="Link to this heading">#</a></h3>
+<p>Public classes and methods (for example, <code class="docutils literal notranslate"><span class="pre">org.apache.spark.CometPlugin</span></code>) are considered part of
+Comet’s public API. Removing or making source- or binary-incompatible changes to a public API
+requires a deprecation cycle: the API must remain available, with a deprecation warning, for at
+least one minor release before removal.</p>
+<p>Public APIs annotated with <code class="docutils literal notranslate"><span class="pre">&#64;Unstable</span></code> are exempt from this guarantee and may change in any minor
+release without a deprecation cycle. The <code class="docutils literal notranslate"><span class="pre">&#64;Unstable</span></code> annotation does not yet exist and will be
+introduced as the need arises.</p>
+</section>
+<section id="query-result-semantics">
+<h3>Query Result Semantics<a class="headerlink" href="#query-result-semantics" title="Link to this heading">#</a></h3>
+<p>Expressions and operators whose support level is <code class="docutils literal notranslate"><span class="pre">Compatible</span></code> are expected to produce results that
+match Apache Spark. Result differences in <code class="docutils literal notranslate"><span class="pre">Compatible</span></code> items are tracked as bugs and fixed in
+subsequent releases.</p>
+<p>Items whose support level is <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> or <code class="docutils literal notranslate"><span class="pre">Unsupported</span></code> have no result-compatibility
+guarantees. <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> items require an explicit per-expression or per-operator opt-in
+(for example, <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.&lt;Name&gt;.allowIncompatible=true</span></code>).</p>
+<p>For details on per-expression and per-operator support levels, see the
+<a class="reference internal" href="../user-guide/latest/compatibility/index.html"><span class="std std-doc">compatibility guide</span></a>.</p>
+</section>
+</section>
+<section id="apache-spark-version-support">
+<h2>Apache Spark Version Support<a class="headerlink" href="#apache-spark-version-support" title="Link to this heading">#</a></h2>
+<p>Each Comet release supports the <strong>latest patch version</strong> of every Apache Spark minor release that
+Comet targets at the time of release. The currently supported Spark versions are listed on the
+<a class="reference internal" href="../user-guide/latest/compatibility/spark-versions.html"><span class="std std-doc">Spark Version Compatibility</span></a> page.</p>
+<p>When the upstream Spark project publishes a new patch within a supported minor (for example,
+<code class="docutils literal notranslate"><span class="pre">3.5.8</span></code> → <code class="docutils literal notranslate"><span class="pre">3.5.9</span></code>), the next Comet release will pick it up. Older Spark patches within the same
+minor are not separately supported.</p>
+<p>Dropping support for an entire Spark minor (for example, removing Spark 3.4) is announced in the
+release notes of the <strong>preceding</strong> Comet minor release, giving users at least one release of
+notice before the change takes effect.</p>
+<p>Comet binaries are published per <code class="docutils literal notranslate"><span class="pre">(Spark</span> <span class="pre">minor</span> <span class="pre">×</span> <span class="pre">Scala</span> <span class="pre">binary</span> <span class="pre">version)</span></code> combination. Users must
+select the binary that matches their Spark and Scala installation.</p>
+</section>
+<section id="release-cadence">
+<h2>Release Cadence<a class="headerlink" href="#release-cadence" title="Link to this heading">#</a></h2>
+<p>Comet targets a <code class="docutils literal notranslate"><span class="pre">0.X.0</span></code> minor release every four to six weeks. Patch releases (<code class="docutils literal notranslate"><span class="pre">0.X.Y</span></code>) are made
+on demand, only when a critical bug or security fix needs to ship before the next minor release.</p>
+<p>Only the most recent minor release receives patch releases. Comet does not currently backport
+fixes to older minor releases; users are expected to upgrade forward.</p>
+</section>
+<section id="native-library-coupling">
+<h2>Native Library Coupling<a class="headerlink" href="#native-library-coupling" title="Link to this heading">#</a></h2>
+<p>Each Comet release ships a JVM jar and a native library that are built and tested together. The
+two artifacts must come from the <strong>same Comet release</strong>. Mixing a JVM jar from one Comet release
+with a native library from another is unsupported and may fail at runtime due to protobuf or FFI
+incompatibilities.</p>
+</section>
+<section id="road-to-1-0">
+<h2>Road to 1.0<a class="headerlink" href="#road-to-1-0" title="Link to this heading">#</a></h2>
+<p>When <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code> ships:</p>
 <ul class="simple">
-<li><p><a class="reference internal" href="benchmarking_macos.html"><span class="std std-doc">Benchmarking on macOS</span></a></p></li>
-<li><p><a class="reference internal" href="benchmarking_aws_ec2.html"><span class="doc std std-doc">Benchmarking on AWS EC2</span></a></p></li>
-<li><p><a class="reference internal" href="benchmarking_spark_sql_perf.html"><span class="std std-doc">TPC-DS Benchmarking with spark-sql-perf</span></a></p></li>
+<li><p>Strict semantic versioning will apply to the public Scala and Java API: breaking changes will
+only be made in a future major release. APIs annotated with <code class="docutils literal notranslate"><span class="pre">&#64;Unstable</span></code> remain exempt and may
+change in any minor release.</p></li>
+<li><p>The stability commitments for configuration keys and the protobuf plan format will be
+re-evaluated and documented as part of the <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code> release.</p></li>
 </ul>
-<p>We also have many micro benchmarks that can be run from an IDE located <a class="reference external" href="https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark">here</a>.</p>
-<div class="toctree-wrapper compound">
-</div>
+<p>Tracking and planning for the <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code> release happens in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4082">issue #4082</a>.</p>
 </section>
 </section>
 
@@ -544,20 +575,20 @@ under the License.
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="sql_error_propagation.html"
+       href="gluten_comparison.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">ANSI SQL Error Propagation in Comet</p>
+        <p class="prev-next-title">Comparison of Comet and Gluten</p>
       </div>
     </a>
     <a class="right-next"
-       href="benchmark-results/tpc-h.html"
+       href="../asf/index.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Apache DataFusion Comet: Benchmarks Derived From TPC-H</p>
+        <p class="prev-next-title">ASF Links</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
