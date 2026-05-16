@@ -101,6 +101,7 @@ of expressions that be disabled.
 
 | Expression       | SQL                          |
 | ---------------- | ---------------------------- |
+| CurrentTimeZone  | `current_timezone`           |
 | DateAdd          | `date_add`                   |
 | DateDiff         | `datediff`                   |
 | DateFormat       | `date_format`                |
@@ -150,6 +151,7 @@ of expressions that be disabled.
 | Cos            | `cos`          |
 | Cosh           | `cosh`         |
 | Cot            | `cot`          |
+| Csc            | `csc`          |
 | Divide         | `/`            |
 | Exp            | `exp`          |
 | Expm1          | `expm1`        |

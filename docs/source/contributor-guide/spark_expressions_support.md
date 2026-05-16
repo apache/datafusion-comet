@@ -220,7 +220,7 @@
 - [ ] current_date
 - [ ] current_time
 - [ ] current_timestamp
-- [ ] current_timezone
+- [x] current_timezone
 - [x] date_add
 - [x] date_diff
 - [x] date_format
@@ -371,7 +371,7 @@
 - [x] cos
 - [x] cosh
 - [x] cot
-- [ ] csc
+- [x] csc
 - [x] degrees
 - [x] div
 - [ ] e
