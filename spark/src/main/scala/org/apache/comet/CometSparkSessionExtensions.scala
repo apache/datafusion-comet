@@ -127,12 +127,12 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
-    if (COMET_EXEC_SHUFFLE_REQUIRED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
+    if (COMET_EXEC_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
       logWarning(
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
           "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager. " +
           "Comet provides limited benefit without its shuffle manager. " +
-          s"Set ${COMET_EXEC_SHUFFLE_REQUIRED.key}=false to keep Comet enabled with " +
+          s"Set ${COMET_EXEC_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
           "Spark's default shuffle manager.")
       return false
     }
