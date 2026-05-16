@@ -988,113 +988,129 @@ footer.prev-next-footer {
 }
 
 /* ─── FOOTER ───────────────────────────────────────────────────────── */
+/* Used across every doc page. Job: be quiet, surface 5-6 useful links,
+   satisfy ASF legal requirements. Not a place to repeat marketing copy. */
+
 .bd-footer-content { display: none !important; }
 
 footer.comet-footer {
   font-family: var(--comet-font) !important;
-  border-top: 1px solid var(--pst-color-border);
-  background: var(--pst-color-background);
+  border-top: 1px solid var(--pst-color-border-muted);
+  background: transparent;
   color: var(--pst-color-text-muted);
 }
 
 .comet-footer__inner {
-  display: flex;
-  justify-content: space-between;
-  gap: 48px;
-  padding: 48px 56px 40px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 80px;
+  align-items: start;
   max-width: 1100px;
+  margin: 0 auto;
+  padding: 56px 56px 40px;
 }
 
-/* Brand column */
+/* Brand: just the logo, clickable, no tagline */
 .comet-footer__brand {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 260px;
+  display: inline-block;
+  text-decoration: none;
   flex-shrink: 0;
+  opacity: 0.85;
+  transition: opacity 120ms ease;
 }
+
+.comet-footer__brand:hover { opacity: 1; }
 
 .comet-footer__logo {
-  height: 56px;
+  height: 42px;
   width: auto;
   display: block;
   object-fit: contain;
-  max-width: 220px;
+  max-width: 180px;
 }
 
-.comet-footer__tagline {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--pst-color-text-muted);
-  margin: 0;
-}
-
-.comet-footer__copy {
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--pst-color-text-muted);
-  opacity: 0.7;
-  margin: 0;
-}
-
-.comet-footer__copy a {
-  color: var(--comet-accent);
-  text-decoration: none;
-}
-
-.comet-footer__copy a:hover { text-decoration: underline; }
-
-/* Link columns */
+/* Link columns: two of them, generous gap, monospaced rhythm */
 .comet-footer__links {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
   gap: 48px;
-  flex-wrap: wrap;
+  justify-content: end;
+  justify-self: end;
 }
 
 .comet-footer__col {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  min-width: 120px;
+  gap: 12px;
 }
 
 .comet-footer__col-title {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   color: var(--pst-color-on-surface);
-  margin-bottom: 2px;
+  margin: 0 0 6px 0;
 }
 
 .comet-footer__col a {
-  font-size: 13.5px;
+  font-size: 14px;
   color: var(--pst-color-text-muted);
   text-decoration: none;
   transition: color 120ms ease;
+  padding: 2px 0;
+  width: max-content;
 }
 
-.comet-footer__col a:hover { color: var(--pst-color-on-surface); }
+.comet-footer__col a:hover { color: var(--comet-accent); }
 
-/* Bottom bar */
-.comet-footer__bottom {
-  border-top: 1px solid var(--pst-color-border);
-  padding: 18px 56px;
+/* Legal bar: hairline divider, two quiet lines, plenty of breathing room */
+.comet-footer__legal {
   max-width: 1100px;
+  margin: 0 auto;
+  padding: 22px 56px 28px;
+  border-top: 1px solid var(--pst-color-border-muted);
 }
 
-.comet-footer__bottom p {
-  font-size: 11.5px;
+.comet-footer__legal p {
+  font-size: 12px;
   line-height: 1.6;
   color: var(--pst-color-text-muted);
-  opacity: 0.65;
-  margin: 0;
+  margin: 0 0 6px 0;
+}
+
+.comet-footer__legal p:last-child {
+  margin-bottom: 0;
+}
+
+.comet-footer__legal a {
+  color: var(--pst-color-text-muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.comet-footer__legal a:hover {
+  color: var(--comet-accent);
+  border-bottom-color: var(--comet-accent);
+}
+
+.comet-footer__trademark {
+  opacity: 0.7;
 }
 
 @media (max-width: 768px) {
-  .comet-footer__inner { flex-direction: column; padding: 32px 24px 28px; }
-  .comet-footer__links { gap: 28px; }
-  .comet-footer__bottom { padding: 16px 24px; }
+  .comet-footer__inner {
+    grid-template-columns: 1fr;
+    gap: 36px;
+    padding: 40px 24px 28px;
+  }
+  .comet-footer__links {
+    justify-self: start;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 28px;
+  }
+  .comet-footer__legal { padding: 18px 24px 24px; }
 }
 
 /* ─── BACK TO TOP ──────────────────────────────────────────────────── */
@@ -1165,4 +1181,956 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #d0d0d0; border
 
 @media (max-width: 960px) {
   .bd-article-container { padding: 28px 32px 64px !important; }
+}
+
+/* ─── LANDING PAGE ─────────────────────────────────────────────────── */
+/* Sphinx puts a body class of `bd-page-{pagename}` so we can target only
+   the homepage. The hero/cards/etc. take over the full canvas there;
+   every other page keeps the article-container constraints. */
+
+body:has(.comet-hero) .bd-article-container {
+  max-width: 100% !important;
+  padding: 0 !important;
+}
+
+body:has(.comet-hero) article.bd-article {
+  padding: 0 !important;
+}
+
+/* Hide page chrome on the landing page — the hero+sections replace them.
+   The H1 is wrapped in a <section> by MyST, so we have to descend deeper
+   than `article > h1`. The prev/next footer is meaningless on a marketing
+   page that links out to specific docs via cards/CTAs. */
+body:has(.comet-hero) article.bd-article > section:first-of-type > h1:first-of-type,
+body:has(.comet-hero) .bd-breadcrumbs,
+body:has(.comet-hero) footer.prev-next-footer,
+body:has(.comet-hero) .prev-next-area {
+  display: none !important;
+}
+
+body:has(.comet-hero) .bd-main {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+/* Each landing section is full-bleed, with its own internal max-width */
+.comet-hero,
+.comet-install,
+.comet-perf,
+.comet-cards,
+.comet-arch,
+.comet-foot-cta {
+  width: 100%;
+  display: block;
+}
+
+.comet-hero__inner,
+.comet-install__inner,
+.comet-perf__inner,
+.comet-cards__inner,
+.comet-arch__inner,
+.comet-foot-cta__inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────── */
+.comet-hero {
+  padding: 88px 0 72px;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+  background:
+    radial-gradient(circle at 80% -20%, rgba(232, 101, 10, 0.08), transparent 55%),
+    radial-gradient(circle at 10% 110%, rgba(232, 101, 10, 0.05), transparent 50%);
+}
+
+/* Terminal-style hero variant — centered layout with terminal block centerpiece */
+.comet-hero--terminal {
+  padding: 80px 0 80px;
+  text-align: center;
+}
+
+.comet-hero--terminal .comet-hero__inner {
+  text-align: center;
+  max-width: 1080px;
+}
+
+.comet-hero--terminal .comet-hero__title {
+  max-width: none;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.comet-hero--terminal .comet-hero__lede {
+  margin-left: auto !important;
+  margin-right: auto !important;
+  max-width: 56ch;
+}
+
+.comet-hero--terminal .comet-hero__ctas {
+  justify-content: center;
+}
+
+.comet-hero__inner {
+  text-align: left;
+  max-width: 980px;
+}
+
+.comet-hero__eyebrow {
+  font-family: var(--comet-font);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 18px 0;
+}
+
+.comet-hero__title {
+  font-family: var(--comet-font) !important;
+  font-size: clamp(2.4rem, 4.5vw, 3.6rem) !important;
+  font-weight: 700 !important;
+  line-height: 1.08 !important;
+  letter-spacing: -0.03em !important;
+  margin: 0 0 22px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+  max-width: 24ch;
+}
+
+.comet-hero__title-accent {
+  color: var(--comet-accent);
+}
+
+.comet-hero__lede {
+  font-size: 1.15rem !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-text-base) !important;
+  max-width: 60ch;
+  margin: 0 0 32px 0 !important;
+}
+
+.comet-hero__ctas {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 24px 0;
+}
+
+.comet-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--comet-font) !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  padding: 12px 22px !important;
+  border-radius: 8px !important;
+  text-decoration: none !important;
+  border: 1px solid transparent !important;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease !important;
+  cursor: pointer;
+}
+
+.comet-cta--primary {
+  background: var(--comet-accent) !important;
+  color: #ffffff !important;
+}
+
+.comet-cta--primary:hover {
+  background: var(--comet-accent-lite) !important;
+  transform: translateY(-1px);
+}
+
+.comet-cta--secondary {
+  background: transparent !important;
+  color: var(--pst-color-on-surface) !important;
+  border-color: var(--pst-color-border) !important;
+}
+
+.comet-cta--secondary:hover {
+  border-color: var(--comet-accent) !important;
+  color: var(--comet-accent) !important;
+}
+
+.comet-hero__meta {
+  font-size: 12.5px !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 !important;
+}
+
+/* ── Install block ────────────────────────────────────────────────── */
+.comet-install {
+  padding: 56px 0;
+  background: var(--pst-color-surface);
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+html[data-theme="dark"] .comet-install {
+  background: #0e0e0e;
+}
+
+.comet-install__label {
+  font-family: var(--comet-font);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--pst-color-text-muted);
+  margin: 0 0 14px 0;
+}
+
+.comet-install__cmd {
+  font-family: var(--comet-mono) !important;
+  font-size: 14px !important;
+  line-height: 1.7 !important;
+  background: var(--pst-color-background) !important;
+  color: var(--pst-color-on-surface) !important;
+  border: 1px solid var(--pst-color-border) !important;
+  border-radius: 8px !important;
+  padding: 22px 26px !important;
+  margin: 0 0 14px 0 !important;
+  overflow-x: auto !important;
+  white-space: pre !important;
+}
+
+html[data-theme="dark"] .comet-install__cmd {
+  background: #060606 !important;
+  color: #d4d4d4 !important;
+}
+
+.comet-install__hint {
+  font-size: 13.5px !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 !important;
+}
+
+.comet-install__hint a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+}
+
+.comet-install__hint a:hover {
+  border-bottom-color: var(--comet-accent) !important;
+}
+
+/* ── Performance section ──────────────────────────────────────────── */
+.comet-perf {
+  padding: 80px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+.comet-perf__inner {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(0, 1.8fr);
+  gap: 56px;
+  align-items: center;
+}
+
+.comet-perf__eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-perf__title {
+  font-family: var(--comet-font) !important;
+  font-size: 1.7rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  line-height: 1.2 !important;
+  margin: 0 0 18px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+  max-width: 18ch;
+}
+
+.comet-perf__caption {
+  font-size: 1.05rem !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-on-surface) !important;
+  margin: 0 0 18px 0 !important;
+  font-weight: 400 !important;
+}
+
+.comet-perf__detail {
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 !important;
+}
+
+.comet-perf__detail code {
+  font-family: var(--comet-mono) !important;
+  font-size: 12.5px !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+  background: var(--pst-color-surface) !important;
+  border: 1px solid var(--pst-color-border) !important;
+  color: var(--pst-color-on-surface) !important;
+}
+
+.comet-perf__detail a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+}
+
+.comet-perf__chart figure {
+  margin: 0 !important;
+}
+
+.comet-perf__chart img {
+  width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  border-radius: 10px !important;
+  border: 1px solid var(--pst-color-border) !important;
+  background: #ffffff !important;
+  padding: 16px !important;
+}
+
+.comet-perf__chart figcaption {
+  font-size: 12.5px !important;
+  color: var(--pst-color-text-muted) !important;
+  text-align: center !important;
+  margin-top: 12px !important;
+  font-style: italic !important;
+}
+
+/* ── Cards grid ───────────────────────────────────────────────────── */
+.comet-cards {
+  padding: 80px 0;
+  background: var(--pst-color-surface);
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+html[data-theme="dark"] .comet-cards {
+  background: #0e0e0e;
+}
+
+.comet-cards__title {
+  font-size: 1.6rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  margin: 0 0 36px 0 !important;
+  border: none !important;
+  padding: 0 !important;
+  color: var(--pst-color-heading) !important;
+}
+
+.comet-cards__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+
+.comet-card {
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 24px !important;
+  border: 1px solid var(--pst-color-border) !important;
+  border-radius: 12px !important;
+  background: var(--pst-color-background) !important;
+  text-decoration: none !important;
+  transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease !important;
+}
+
+.comet-card:hover {
+  border-color: var(--comet-accent) !important;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(232, 101, 10, 0.08);
+}
+
+.comet-card__icon {
+  font-size: 28px;
+  margin-bottom: 16px;
+  line-height: 1;
+}
+
+.comet-card__title {
+  font-family: var(--comet-font) !important;
+  font-size: 1.05rem !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  margin: 0 0 10px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+.comet-card__body {
+  font-size: 14px !important;
+  line-height: 1.55 !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 0 18px 0 !important;
+  flex: 1;
+}
+
+.comet-card__cta {
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  color: var(--comet-accent) !important;
+  margin: 0 !important;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Architecture section ─────────────────────────────────────────── */
+.comet-arch {
+  padding: 80px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+.comet-arch__inner {
+  display: grid;
+  grid-template-columns: 1fr 1.1fr;
+  gap: 56px;
+  align-items: center;
+}
+
+.comet-arch__eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-arch__title {
+  font-size: 1.7rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  line-height: 1.25 !important;
+  margin: 0 0 20px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+  max-width: 22ch;
+}
+
+.comet-arch__body {
+  font-size: 1rem !important;
+  line-height: 1.65 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 0 16px 0 !important;
+}
+
+.comet-arch__links {
+  font-size: 14px !important;
+  margin: 22px 0 0 0 !important;
+  color: var(--pst-color-text-muted) !important;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.comet-arch__links a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  font-weight: 500 !important;
+  border-bottom: 1px solid transparent !important;
+  transition: border-color 120ms ease !important;
+}
+
+.comet-arch__links a:hover {
+  border-bottom-color: var(--comet-accent) !important;
+}
+
+.comet-arch__diagram img {
+  width: 100% !important;
+  height: auto !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--pst-color-border) !important;
+  background: #ffffff;
+  padding: 12px;
+}
+
+/* ── Foot CTA ─────────────────────────────────────────────────────── */
+.comet-foot-cta {
+  padding: 88px 0;
+  text-align: center;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(232, 101, 10, 0.06), transparent 60%);
+}
+
+.comet-foot-cta__title {
+  font-size: 1.9rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  margin: 0 0 14px 0 !important;
+  border: none !important;
+  padding: 0 !important;
+  color: var(--pst-color-heading) !important;
+}
+
+.comet-foot-cta__body {
+  font-size: 1.05rem !important;
+  line-height: 1.55 !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 auto 28px auto !important;
+  max-width: 52ch;
+}
+
+.comet-foot-cta__inner .comet-hero__ctas {
+  justify-content: center;
+}
+
+/* ── Terminal block (hero centerpiece) ────────────────────────────── */
+.comet-terminal {
+  margin: 36px auto 36px;
+  max-width: 880px;
+  border-radius: 12px;
+  overflow: hidden;
+  text-align: left;
+  background: #0d0f12;
+  border: 1px solid #1f242b;
+  box-shadow:
+    0 24px 60px -20px rgba(0, 0, 0, 0.35),
+    0 8px 24px -8px rgba(232, 101, 10, 0.10);
+}
+
+.comet-terminal__bar {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  background: #15181c;
+  border-bottom: 1px solid #1f242b;
+  position: relative;
+}
+
+.comet-terminal__dots {
+  display: flex;
+  gap: 7px;
+}
+
+.comet-terminal__dots i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #5a5a5a;
+}
+
+.comet-terminal__dots i:nth-child(1) { background: #ff5f57; }
+.comet-terminal__dots i:nth-child(2) { background: #febc2e; }
+.comet-terminal__dots i:nth-child(3) { background: #28c840; }
+
+.comet-terminal__title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--comet-mono);
+  font-size: 12px;
+  color: #8a8f95;
+  letter-spacing: 0.02em;
+}
+
+.comet-terminal__body {
+  font-family: var(--comet-mono) !important;
+  font-size: 13px !important;
+  line-height: 1.7 !important;
+  color: #d4d8de !important;
+  padding: 22px 24px 26px !important;
+  margin: 0 !important;
+  background: #0d0f12 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  overflow-x: auto !important;
+  white-space: pre !important;
+  text-align: left !important;
+}
+
+.comet-terminal__body .term-line {
+  display: block;
+}
+
+.comet-terminal__body .term-spacer {
+  display: block;
+  height: 6px;
+}
+
+.comet-terminal__body .term-comment {
+  color: #6a737d;
+  font-style: italic;
+}
+
+.comet-terminal__body .term-prompt {
+  color: var(--comet-accent);
+  margin-right: 6px;
+  user-select: none;
+}
+
+.comet-terminal__body .term-var {
+  color: #c792ea;
+}
+
+.comet-terminal__body .term-str {
+  color: #c3e88d;
+}
+
+.comet-terminal__body .term-indent {
+  padding-left: 28px;
+  color: #b9bec5;
+}
+
+.comet-terminal__body .term-blink {
+  display: inline-block;
+  color: var(--comet-accent);
+  animation: term-blink 1s steps(2, end) infinite;
+}
+
+@keyframes term-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comet-terminal__body .term-blink { animation: none; }
+}
+
+/* ── Prose band (the official two-paragraph pitch) ────────────────── */
+.comet-prose {
+  padding: 64px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+.comet-prose__inner {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 32px;
+  text-align: center;
+}
+
+.comet-prose__lede {
+  font-size: 1.15rem !important;
+  line-height: 1.65 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 0 18px 0 !important;
+}
+
+.comet-prose__lede:last-child {
+  margin-bottom: 0 !important;
+}
+
+.comet-prose__lede a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+}
+
+/* ── Stacked perf section (two charts, full-width) ────────────────── */
+.comet-perf__inner--stacked {
+  display: block;
+}
+
+.comet-perf__head {
+  text-align: center;
+  max-width: 720px;
+  margin: 0 auto 36px;
+}
+
+.comet-perf__head .comet-perf__eyebrow {
+  font-family: var(--comet-font);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-perf__head .comet-perf__caption {
+  font-size: 1.5rem !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  line-height: 1.3 !important;
+  color: var(--pst-color-heading) !important;
+  margin: 0 0 14px 0 !important;
+}
+
+.comet-perf__head .comet-perf__detail {
+  font-size: 15px !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 !important;
+}
+
+.comet-perf__figure {
+  margin: 0 0 40px 0 !important;
+  background: #ffffff;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.comet-perf__figure:last-child {
+  margin-bottom: 0 !important;
+}
+
+.comet-perf__figure img {
+  width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  border: none !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  margin: 0 auto !important;
+}
+
+.comet-perf__figure figcaption {
+  font-size: 13px !important;
+  color: var(--pst-color-text-muted) !important;
+  text-align: center !important;
+  margin-top: 14px !important;
+  font-style: italic !important;
+}
+
+/* ── Feature bands (alternating colors) ───────────────────────────── */
+.comet-feature {
+  padding: 80px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+.comet-feature--alt {
+  background: var(--pst-color-surface);
+}
+
+html[data-theme="dark"] .comet-feature--alt {
+  background: #0e0e0e;
+}
+
+.comet-feature__inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+.comet-feature__copy {
+  text-align: left;
+}
+
+.comet-feature__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-feature__title {
+  font-family: var(--comet-font) !important;
+  font-size: 1.7rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  line-height: 1.25 !important;
+  margin: 0 0 18px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+  max-width: 28ch;
+}
+
+.comet-feature__body {
+  font-size: 1.02rem !important;
+  line-height: 1.65 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 0 14px 0 !important;
+}
+
+.comet-feature__body:last-child {
+  margin-bottom: 0 !important;
+}
+
+.comet-feature__links {
+  font-size: 14px !important;
+  margin: 20px 0 0 0 !important;
+}
+
+.comet-feature__links a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid transparent !important;
+  transition: border-color 120ms ease !important;
+}
+
+.comet-feature__links a:hover {
+  border-bottom-color: var(--comet-accent) !important;
+}
+
+.comet-feature__figure {
+  margin: 28px 0 0 0 !important;
+  background: #ffffff;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.comet-feature__figure img {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  margin: 0 auto !important;
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+
+.comet-feature__figure figcaption {
+  font-size: 13px !important;
+  color: var(--pst-color-text-muted) !important;
+  margin-top: 14px !important;
+  font-style: italic !important;
+}
+
+/* ── Stacked architecture (two diagrams full-width) ───────────────── */
+.comet-arch__inner--stacked {
+  display: block;
+}
+
+.comet-arch__head {
+  text-align: center;
+  max-width: 720px;
+  margin: 0 auto 28px;
+}
+
+.comet-arch__head:not(:first-child) {
+  margin-top: 56px;
+}
+
+.comet-arch__head .comet-arch__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-arch__head .comet-arch__body {
+  font-size: 1.05rem !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 !important;
+}
+
+.comet-arch__figure {
+  margin: 0 !important;
+  background: #ffffff;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.comet-arch__figure img {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  margin: 0 auto !important;
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+
+.comet-arch__figure figcaption {
+  font-size: 13px !important;
+  color: var(--pst-color-text-muted) !important;
+  margin-top: 14px !important;
+  font-style: italic !important;
+}
+
+/* ── Community 3-column band ──────────────────────────────────────── */
+.comet-community {
+  padding: 80px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+  background: var(--pst-color-surface);
+}
+
+html[data-theme="dark"] .comet-community {
+  background: #0e0e0e;
+}
+
+.comet-community__inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 32px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 40px;
+}
+
+.comet-community__inner--two {
+  max-width: 880px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 56px;
+}
+
+.comet-community__col {
+  text-align: left;
+}
+
+.comet-community__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-community__body {
+  font-size: 15px !important;
+  line-height: 1.65 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 !important;
+}
+
+.comet-community__body a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+}
+
+/* ── Responsive collapses ─────────────────────────────────────────── */
+@media (max-width: 960px) {
+  .comet-hero,
+  .comet-hero--terminal { padding: 56px 0 40px; }
+  .comet-perf__inner,
+  .comet-arch__inner { grid-template-columns: 1fr; gap: 32px; }
+  .comet-cards__grid,
+  .comet-community__inner { grid-template-columns: 1fr; gap: 32px; }
+  .comet-install,
+  .comet-perf,
+  .comet-cards,
+  .comet-arch,
+  .comet-feature,
+  .comet-prose,
+  .comet-community,
+  .comet-foot-cta { padding: 56px 0; }
+  .comet-hero__inner,
+  .comet-install__inner,
+  .comet-perf__inner,
+  .comet-cards__inner,
+  .comet-arch__inner,
+  .comet-feature__inner,
+  .comet-prose__inner,
+  .comet-community__inner,
+  .comet-foot-cta__inner { padding: 0 22px; }
+  .comet-terminal { margin: 24px auto; }
+  .comet-terminal__body { font-size: 11.5px !important; padding: 16px 16px 18px !important; }
+  .comet-terminal__title { display: none; }
 }

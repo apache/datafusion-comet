@@ -134,6 +134,8 @@ html_js_files = [
 
 html_sidebars = {
     "**": ["search-field.html", "docs-sidebar.html"],
+    # Landing page is a full-width marketing page — no left rail.
+    "index": [],
 }
 
 # tell myst_parser to auto-generate anchor links for headers h1, h2, h3, h4

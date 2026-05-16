@@ -19,6 +19,8 @@
 
 /*
  * Comet docs UX enhancements layered on top of pydata_sphinx_theme:
+ *   - "Home" tab injected at the start of the top navbar (toctree can't
+ *     self-reference, so the landing page link lives here)
  *   - Click-to-toggle expand/collapse arrows on sidebar nav groups
  *   - In-sidebar search filter with character highlighting (replaces the
  *     default Sphinx redirect-to-/search.html flow)
@@ -172,6 +174,38 @@
     });
   }
 
+  // ── Inject "Home" link into the top navbar ─────────────────────────
+  // The toctree can't self-reference, so we add the Home tab via JS.
+  // It's prepended to the desktop nav AND the mobile drawer. The link
+  // is computed from the navbar logo's href so it stays correct at any
+  // page depth.
+  function initHomeNavLink() {
+    var logo = document.querySelector('a.navbar-brand');
+    var homeHref = logo ? logo.getAttribute('href') : null;
+    if (!homeHref) return;
+
+    var isHomePage = !!document.querySelector('.comet-hero');
+
+    document
+      .querySelectorAll('.bd-navbar-elements.navbar-nav')
+      .forEach(function (nav) {
+        if (nav.querySelector('.comet-home-nav-item')) return;
+
+        var li = document.createElement('li');
+        li.className = 'nav-item comet-home-nav-item';
+        if (isHomePage) li.classList.add('active', 'current');
+
+        var a = document.createElement('a');
+        a.className = 'nav-link nav-internal';
+        a.setAttribute('href', homeHref);
+        if (isHomePage) a.setAttribute('aria-current', 'page');
+        a.textContent = 'Home';
+
+        li.appendChild(a);
+        nav.insertBefore(li, nav.firstChild);
+      });
+  }
+
   // ── Breadcrumb trim ────────────────────────────────────────────────
   // "Comet 0.16.0-SNAPSHOT User Guide" reads as noise in a breadcrumb
   // when the section is already shown in the top nav. Trim to "0.16.0-
@@ -204,6 +238,7 @@
   }
 
   function bootstrap() {
+    initHomeNavLink();
     initSidebarToggle();
     initSidebarSearch();
     initSecondaryTocVisibility();
