@@ -1053,7 +1053,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           assert(
             found,
-            s"expected SchemaColumnConvertNotSupportedException somewhere in cause chain " +
+            "expected SchemaColumnConvertNotSupportedException somewhere in cause chain " +
               s"for $schema; chain was:\n" +
               Iterator
                 .iterate[Throwable](outer)(_.getCause)
