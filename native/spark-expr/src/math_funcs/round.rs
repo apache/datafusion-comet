@@ -19,12 +19,9 @@ use crate::arithmetic_overflow_error;
 use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
 use arrow::array::{Array, ArrowNativeTypeOp};
 use arrow::array::{Int16Array, Int32Array, Int64Array, Int8Array};
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
-use datafusion::common::config::ConfigOptions;
 use datafusion::common::{exec_err, internal_err, DataFusionError, ScalarValue};
-use datafusion::functions::math::round::RoundFunc;
-use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl};
 use datafusion::physical_plan::ColumnarValue;
 use std::{cmp::min, sync::Arc};
 
@@ -110,8 +107,6 @@ pub fn spark_round(
     let ColumnarValue::Scalar(ScalarValue::Int64(Some(point))) = point else {
         return internal_err!("Invalid point argument for Round(): {:#?}", point);
     };
-    // DataFusion's RoundFunc expects Int32 for decimal_places
-    let point_i32 = ColumnarValue::Scalar(ScalarValue::Int32(Some(*point as i32)));
     match value {
         ColumnarValue::Array(array) => match array.data_type() {
             DataType::Int64 if *point < 0 => {
@@ -131,18 +126,9 @@ pub fn spark_round(
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_array(array, precision, scale, &f)
             }
-            DataType::Float32 | DataType::Float64 => {
-                let round_udf = RoundFunc::new();
-                let return_field = Arc::new(Field::new("round", array.data_type().clone(), true));
-                let args_for_round = ScalarFunctionArgs {
-                    args: vec![ColumnarValue::Array(Arc::clone(array)), point_i32.clone()],
-                    number_rows: array.len(),
-                    return_field,
-                    arg_fields: vec![],
-                    config_options: Arc::new(ConfigOptions::default()),
-                };
-                round_udf.invoke_with_args(args_for_round)
-            }
+            // Float32 / Float64 are routed to a JVM UDF (RoundFloatUDF / RoundDoubleUDF) by the
+            // serde, because matching Spark's BigDecimal-via-Double.toString rounding from native
+            // code does not stay consistent across JDK versions.
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
         ColumnarValue::Scalar(a) => match a {
@@ -162,19 +148,6 @@ pub fn spark_round(
                 let f = decimal_round_f(scale, point);
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_scalar(a, precision, scale, &f)
-            }
-            ScalarValue::Float32(_) | ScalarValue::Float64(_) => {
-                let round_udf = RoundFunc::new();
-                let data_type = a.data_type();
-                let return_field = Arc::new(Field::new("round", data_type, true));
-                let args_for_round = ScalarFunctionArgs {
-                    args: vec![ColumnarValue::Scalar(a.clone()), point_i32.clone()],
-                    number_rows: 1,
-                    return_field,
-                    arg_fields: vec![],
-                    config_options: Arc::new(ConfigOptions::default()),
-                };
-                round_udf.invoke_with_args(args_for_round)
             }
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
@@ -207,77 +180,92 @@ mod test {
 
     use crate::spark_round;
 
-    use arrow::array::{Float32Array, Float64Array};
+    use arrow::array::Decimal128Array;
     use arrow::datatypes::DataType;
-    use datafusion::common::cast::{as_float32_array, as_float64_array};
     use datafusion::common::{Result, ScalarValue};
     use datafusion::physical_plan::ColumnarValue;
 
     #[test]
     #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
-    fn test_round_f32_array() -> Result<()> {
+    fn test_round_decimal128_array_pos_point() -> Result<()> {
+        // Decimal128(10, 4) values: 125.2345, 15.3455, 0.1234, 0.1250, 0.7850, 123.1230
+        let input = Decimal128Array::from(vec![1252345, 153455, 1234, 1250, 7850, 1231230])
+            .with_precision_and_scale(10, 4)?;
         let args = vec![
-            ColumnarValue::Array(Arc::new(Float32Array::from(vec![
-                125.2345, 15.3455, 0.1234, 0.125, 0.785, 123.123,
-            ]))),
+            ColumnarValue::Array(Arc::new(input)),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float32, false)? else {
+        let return_type = DataType::Decimal128(8, 2);
+        let ColumnarValue::Array(result) = spark_round(&args, &return_type, false)? else {
             unreachable!()
         };
-        let floats = as_float32_array(&result)?;
-        let expected = Float32Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.79, 123.12]);
-        assert_eq!(floats, &expected);
+        // HALF_UP: 0.125 -> 0.13, 0.785 -> 0.79
+        let expected = Decimal128Array::from(vec![12523, 1535, 12, 13, 79, 12312])
+            .with_precision_and_scale(8, 2)?;
+        let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(actual, &expected);
         Ok(())
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
-    fn test_round_f64_array() -> Result<()> {
+    fn test_round_decimal128_array_neg_point() -> Result<()> {
+        // Decimal128(10, 4) values: 125.2345, -125.2345, 150.0000, -150.0000, 0.0000
+        let input = Decimal128Array::from(vec![1252345, -1252345, 1500000, -1500000, 0])
+            .with_precision_and_scale(10, 4)?;
         let args = vec![
-            ColumnarValue::Array(Arc::new(Float64Array::from(vec![
-                125.2345, 15.3455, 0.1234, 0.125, 0.785, 123.123,
-            ]))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
+            ColumnarValue::Array(Arc::new(input)),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(-2))),
         ];
-        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float64, false)? else {
+        let return_type = DataType::Decimal128(6, 0);
+        let ColumnarValue::Array(result) = spark_round(&args, &return_type, false)? else {
             unreachable!()
         };
-        let floats = as_float64_array(&result)?;
-        let expected = Float64Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.79, 123.12]);
-        assert_eq!(floats, &expected);
+        // HALF_UP: 125.2345 rounds DOWN to 100, 150 ties round AWAY from zero to 200
+        let expected = Decimal128Array::from(vec![100, -100, 200, -200, 0])
+            .with_precision_and_scale(6, 0)?;
+        let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(actual, &expected);
         Ok(())
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
-    fn test_round_f32_scalar() -> Result<()> {
+    fn test_round_decimal128_scalar_pos_point() -> Result<()> {
+        // 125.2345, point=2 -> 125.23
         let args = vec![
-            ColumnarValue::Scalar(ScalarValue::Float32(Some(125.2345))),
+            ColumnarValue::Scalar(ScalarValue::Decimal128(Some(1252345), 10, 4)),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-        let ColumnarValue::Scalar(ScalarValue::Float32(Some(result))) =
-            spark_round(&args, &DataType::Float32, false)?
+        let return_type = DataType::Decimal128(8, 2);
+        let ColumnarValue::Scalar(ScalarValue::Decimal128(Some(result), p, s)) =
+            spark_round(&args, &return_type, false)?
         else {
             unreachable!()
         };
-        assert_eq!(result, 125.23);
+        assert_eq!(result, 12523);
+        assert_eq!(p, 8);
+        assert_eq!(s, 2);
         Ok(())
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
-    fn test_round_f64_scalar() -> Result<()> {
+    fn test_round_decimal128_scalar_neg_point() -> Result<()> {
+        // 150.0000, point=-2 -> 200 (HALF_UP rounds the .5 tie away from zero)
         let args = vec![
-            ColumnarValue::Scalar(ScalarValue::Float64(Some(125.2345))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
+            ColumnarValue::Scalar(ScalarValue::Decimal128(Some(1500000), 10, 4)),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(-2))),
         ];
-        let ColumnarValue::Scalar(ScalarValue::Float64(Some(result))) =
-            spark_round(&args, &DataType::Float64, false)?
+        let return_type = DataType::Decimal128(6, 0);
+        let ColumnarValue::Scalar(ScalarValue::Decimal128(Some(result), p, s)) =
+            spark_round(&args, &return_type, false)?
         else {
             unreachable!()
         };
-        assert_eq!(result, 125.23);
+        assert_eq!(result, 200);
+        assert_eq!(p, 6);
+        assert_eq!(s, 0);
         Ok(())
     }
 }
