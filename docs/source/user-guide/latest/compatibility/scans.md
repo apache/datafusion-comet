@@ -120,6 +120,16 @@ behavior.
   `Encountered error while reading file . Data type mismatches…` (note the empty path). Behavior is
   consistent across Spark versions. See
   [#4316](https://github.com/apache/datafusion-comet/issues/4316).
+- **Spark 3.x: extra `SparkException` layer in the cause chain**. The native error is translated to a
+  `SparkException` whose cause is `SchemaColumnConvertNotSupportedException` (matching what Spark would
+  throw); on Spark 3.x the executor / task error handling re-wraps this once more on the way back to
+  the driver, producing a two-level chain (`SparkException → SparkException →
+  SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark's own vectorized
+  reader produces. Code that catches `SparkException` and inspects only the immediate cause via
+  `e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException]` will see the inner
+  `SparkException` instead. Walk the cause chain to recover the
+  `SchemaColumnConvertNotSupportedException`. Spark 4.0+ produces a single-level chain, matching
+  vanilla Spark. See [#4354](https://github.com/apache/datafusion-comet/issues/4354).
 
 ## `native_iceberg_compat` Limitations
 
