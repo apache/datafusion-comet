@@ -124,7 +124,7 @@ behavior.
   `SparkException` whose cause is `SchemaColumnConvertNotSupportedException` (matching what Spark would
   throw); on Spark 3.x the executor / task error handling re-wraps this once more on the way back to
   the driver, producing a two-level chain (`SparkException → SparkException →
-  SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark's own vectorized
+SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark's own vectorized
   reader produces. Code that catches `SparkException` and inspects only the immediate cause via
   `e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException]` will see the inner
   `SparkException` instead. Walk the cause chain to recover the
