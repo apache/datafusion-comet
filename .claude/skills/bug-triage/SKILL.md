@@ -65,9 +65,14 @@ For each issue, review the title and body and determine:
 2. **Area labels** (zero or more): from the area table in the guide
    (`area:writer`, `area:shuffle`, `area:aggregation`, `area:scan`,
    `area:expressions`, `area:ffi`, `area:ci`) plus the pre-existing area
-   indicators (`native_datafusion`, `native_iceberg_compat`, `spark 4`,
+   indicators (`native_datafusion`, `native_iceberg_compat`,
    `spark sql tests`).
-3. **Escalation note**: if the issue matches an escalation trigger from the
+3. **Spark version label** (zero or more): apply `spark 4.0`, `spark 4.1`,
+   and/or `spark 4.2` only when the bug is specific to that Spark version
+   (e.g., the reporter says it only reproduces on 4.1, the stack trace names a
+   4.1-only API, or the issue title/body explicitly scopes it to one version).
+   Do not apply a version label to version-agnostic bugs.
+4. **Escalation note**: if the issue matches an escalation trigger from the
    guide (e.g., a `priority:high` crash that may also produce wrong results),
    note it in the summary.
 
@@ -93,14 +98,14 @@ For each issue you classified in Step 3, apply the labels and remove
 ```bash
 gh issue edit <NUMBER> \
   --repo apache/datafusion-comet \
-  --add-label "priority:high,area:expressions" \
+  --add-label "priority:high,area:expressions,spark 4.1" \
   --remove-label "requires-triage"
 ```
 
 Notes:
 
 - Pass the labels as a single comma-separated string (no spaces around commas).
-- Quote labels that contain spaces (e.g., `"spark 4"`).
+- Quote labels that contain spaces (e.g., `"spark 4.1"`).
 - Only add labels that already exist in the repo. If a label from the guide is
   missing in the repo, skip it for that issue and record a note in the summary
   rather than creating new labels.
@@ -139,11 +144,13 @@ Body: a markdown report with these sections, in this order:
 
    - <issue title> ([#1234](https://github.com/apache/datafusion-comet/issues/1234))
      - Area labels: `area:expressions`, `area:scan`
+     - Spark version labels: `spark 4.1`
      - Rationale: one sentence tying the call to the guide
    ```
 
    The issue number (not the title) is the link target. The title is plain
-   text. If there are no area labels, write `Area labels: none`.
+   text. If there are no area labels, write `Area labels: none`. Omit the
+   `Spark version labels` line if no version label was applied.
 
 3. **Escalations to consider** (omit section if empty) — bullet per issue with
    the same `<title> ([#N](url))` form, plus a sub-bullet explaining the

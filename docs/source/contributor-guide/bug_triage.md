@@ -74,7 +74,22 @@ help contributors find bugs in their area of expertise.
 | `area:ci`          | CI/CD, GitHub Actions, build tooling      |
 
 The following pre-existing labels also serve as area indicators: `native_datafusion`,
-`native_iceberg_compat`, `spark 4`, `spark sql tests`.
+`native_iceberg_compat`, `spark sql tests`.
+
+## Spark Version Labels
+
+If a bug only reproduces on (or is otherwise specific to) a particular Spark version, apply the
+matching version label so the issue surfaces in version-specific queries. A bug may have multiple
+version labels if it affects more than one supported version.
+
+| Label       | Use when                                       |
+| ----------- | ---------------------------------------------- |
+| `spark 4.0` | Issue is specific to Spark 4.0                 |
+| `spark 4.1` | Issue is specific to Spark 4.1                 |
+| `spark 4.2` | Issue is specific to Spark 4.2                 |
+
+Do not apply a Spark version label to bugs that reproduce on every supported version: they belong
+to general triage, not version-specific tracking.
 
 ## Triage Process
 
@@ -92,8 +107,10 @@ When a new bug is filed:
    is more important than whether it crashes.
 3. **Apply a priority label** using the decision tree above.
 4. **Apply area labels** to indicate the affected subsystem(s).
-5. **Apply `good first issue`** if the fix is likely straightforward and well-scoped.
-6. **Remove the `requires-triage` label** to indicate triage is complete.
+5. **Apply a Spark version label** (e.g., `spark 4.1`) if the bug is specific to one or more
+   supported Spark versions.
+6. **Apply `good first issue`** if the fix is likely straightforward and well-scoped.
+7. **Remove the `requires-triage` label** to indicate triage is complete.
 
 ### For Existing Bugs
 
