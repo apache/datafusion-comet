@@ -1217,10 +1217,9 @@ mod test {
     /// `DecimalLogicalTypeAnnotation`. See #4351.
     #[tokio::test]
     async fn parquet_binary_read_as_decimal_errors() -> Result<(), DataFusionError> {
-        let file_schema =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Binary, false)]));
-        let values = Arc::new(BinaryArray::from_vec(vec![b"1.2", b"3.4"]))
-            as Arc<dyn arrow::array::Array>;
+        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Binary, false)]));
+        let values =
+            Arc::new(BinaryArray::from_vec(vec![b"1.2", b"3.4"])) as Arc<dyn arrow::array::Array>;
         let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
 
         let required_schema = Arc::new(Schema::new(vec![Field::new(
