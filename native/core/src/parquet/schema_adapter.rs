@@ -237,9 +237,8 @@ fn remap_physical_schema(
     Ok((Arc::new(Schema::new(remapped_fields)), name_map))
 }
 
-/// Format an Arrow `DataType` as Spark's catalog string (e.g. `Int64` -> `bigint`).
-/// Used so the SchemaColumnConvertNotSupportedException error message matches
-/// the format produced by Spark's own vectorized Parquet reader.
+/// Format an Arrow `DataType` as Spark's catalog string (e.g. `Int64` -> `bigint`),
+/// so SchemaColumnConvertNotSupportedException messages match Spark's vectorized reader.
 fn spark_catalog_name(dt: &DataType) -> String {
     match dt {
         DataType::Boolean => "boolean".to_string(),
@@ -291,6 +290,47 @@ fn parquet_primitive_name(dt: &DataType) -> &'static str {
         }
         _ => "UNKNOWN",
     }
+}
+
+fn is_string_or_binary(dt: &DataType) -> bool {
+    matches!(
+        dt,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+    )
+}
+
+/// Build a Spark-shaped `SchemaColumnConvertNotSupportedException` carrier for a
+/// rejected Parquet -> Spark conversion. The bracketed column wrapping mirrors
+/// `Arrays.toString(descriptor.getPath())` in Spark's vectorized reader.
+fn parquet_schema_convert_err(
+    field_name: &str,
+    physical_type: &DataType,
+    target_type: &DataType,
+) -> DataFusionError {
+    DataFusionError::External(Box::new(SparkError::ParquetSchemaConvert {
+        file_path: String::new(),
+        column: format!("[{}]", field_name),
+        physical_type: parquet_primitive_name(physical_type).to_string(),
+        spark_type: spark_catalog_name(target_type),
+    }))
+}
+
+/// Build a `RejectOnNonEmpty` expr wrapping `child`. The rejection fires only
+/// when the input batch is non-empty (mirrors Spark's per-row-group check).
+fn reject_on_non_empty_expr(
+    child: Arc<dyn PhysicalExpr>,
+    target_field: &FieldRef,
+    field_name: &str,
+    physical_type: &DataType,
+    target_type: &DataType,
+) -> Arc<dyn PhysicalExpr> {
+    Arc::new(RejectOnNonEmpty {
+        child,
+        target_field: Arc::clone(target_field),
+        column: format!("[{}]", field_name),
+        physical_type: parquet_primitive_name(physical_type).to_string(),
+        spark_type: spark_catalog_name(target_type),
+    })
 }
 
 /// Check if a specific column name has duplicate matches in the physical schema
@@ -548,37 +588,19 @@ impl SparkPhysicalExprAdapter {
                     };
 
                     if logical_field.data_type() != physical_field.data_type() {
-                        // Reject string/binary -> non-string/binary at planning
-                        // time. Mirrors the same check in `replace_with_spark_cast`;
-                        // applies here because the default adapter rejected the
-                        // cast and we'd otherwise fall through to a CometCastColumnExpr
-                        // that can't actually convert (e.g. BINARY -> DECIMAL with
-                        // no `DecimalLogicalTypeAnnotation` on the file column).
-                        // See #4088 and #4351.
+                        // Mirror the same string/binary -> non-string/binary rejection in
+                        // `replace_with_spark_cast`; this branch is reached when the default
+                        // adapter rejected the cast and we'd otherwise build a CometCastColumnExpr
+                        // that can't actually convert (e.g. BINARY -> DECIMAL with no
+                        // `DecimalLogicalTypeAnnotation`). See #4088 and #4351.
                         let physical_type = physical_field.data_type();
                         let target_type = logical_field.data_type();
-                        if matches!(
-                            physical_type,
-                            DataType::Utf8
-                                | DataType::LargeUtf8
-                                | DataType::Binary
-                                | DataType::LargeBinary
-                        ) && !matches!(
-                            target_type,
-                            DataType::Utf8
-                                | DataType::LargeUtf8
-                                | DataType::Binary
-                                | DataType::LargeBinary
-                        ) {
-                            return Err(DataFusionError::External(Box::new(
-                                SparkError::ParquetSchemaConvert {
-                                    file_path: String::new(),
-                                    column: format!("[{}]", physical_field.name()),
-                                    physical_type: parquet_primitive_name(physical_type)
-                                        .to_string(),
-                                    spark_type: spark_catalog_name(target_type),
-                                },
-                            )));
+                        if is_string_or_binary(physical_type) && !is_string_or_binary(target_type) {
+                            return Err(parquet_schema_convert_err(
+                                physical_field.name(),
+                                physical_type,
+                                target_type,
+                            ));
                         }
 
                         let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(
@@ -616,56 +638,25 @@ impl SparkPhysicalExprAdapter {
             let physical_type = cast.input_field().data_type();
             let target_type = cast.target_field().data_type();
 
-            // Reject reading a string/binary Parquet column as anything other
-            // than string or binary. Mirrors Spark's
-            // `ParquetVectorUpdaterFactory.getUpdater` `BINARY` case
-            // (lines 199-205): a Parquet BINARY (or UTF8-annotated BINARY)
-            // column is readable as StringType / BinaryType, or as DecimalType
-            // only when the column carries a `DecimalLogicalTypeAnnotation`
-            // (`canReadAsDecimal` / `canReadAsBinaryDecimal`). Arrow already
-            // surfaces decimal-annotated BINARY as `DataType::Decimal128`, so
-            // observing `physical_type == Binary` here unambiguously means a
-            // non-decimal source — which Spark rejects with
-            // `SchemaColumnConvertNotSupportedException`.
-            //
-            // Without this guard, Spark's Cast below (in is_adapting_schema
-            // mode) falls through to DataFusion's cast, which silently parses
-            // the bytes (returning nulls for non-numeric strings, parsing
-            // date/timestamp/boolean strings, or in some paths reinterpreting
-            // raw bytes). For numeric / decimal targets the cast can't run at
-            // all and Arrow's `RecordBatch::try_new` raises a generic
-            // `column types must match schema types` error instead of the
-            // Spark-equivalent `SchemaColumnConvertNotSupportedException`.
-            // See issues #4088 and #4351.
-            if matches!(
-                physical_type,
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-            ) && !matches!(
-                target_type,
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-            ) {
-                return Err(DataFusionError::External(Box::new(
-                    SparkError::ParquetSchemaConvert {
-                        file_path: String::new(),
-                        column: format!("[{}]", cast.input_field().name()),
-                        physical_type: parquet_primitive_name(physical_type).to_string(),
-                        spark_type: spark_catalog_name(target_type),
-                    },
-                )));
+            // Reject reading a string/binary Parquet column as anything else. Spark's
+            // `ParquetVectorUpdaterFactory.getUpdater` BINARY case allows StringType /
+            // BinaryType, or DecimalType only when the column carries a
+            // `DecimalLogicalTypeAnnotation` (which arrow-rs surfaces as `Decimal128`,
+            // not `Binary`). Without this guard, runtime cast paths silently return
+            // nulls, parse strings, or surface as a generic Arrow type-mismatch error.
+            // See #4088 and #4351.
+            if is_string_or_binary(physical_type) && !is_string_or_binary(target_type) {
+                return Err(parquet_schema_convert_err(
+                    cast.input_field().name(),
+                    physical_type,
+                    target_type,
+                ));
             }
 
-            // Reject reading a BOOLEAN/INT/FLOAT/DOUBLE Parquet column as
-            // StringType/BinaryType. Spark's `ParquetVectorUpdaterFactory.getUpdater`
-            // has no `int -> string` etc. updater for these primitive cases,
-            // and without this guard Spark's Cast below silently produces
-            // string values from the numeric column. FIXED_LEN_BYTE_ARRAY,
-            // dictionary-encoded, and decimal-typed physical columns are NOT
-            // rejected here because Spark either allows the read or it falls
-            // outside the documented mismatch set.
-            //
-            // Deferred to runtime via `RejectOnNonEmpty` so files with no row
-            // groups pass silently (matching Spark's per-row-group check) and
-            // the JVM shim translates the error to
+            // Reject reading a primitive numeric Parquet column as StringType /
+            // BinaryType. Spark has no `int -> string` etc. updater. Defer to
+            // runtime via `RejectOnNonEmpty` so empty Parquet files (SPARK-26709)
+            // pass and the JVM shim translates to
             // `SchemaColumnConvertNotSupportedException`.
             let physical_is_primitive_numeric = matches!(
                 physical_type,
@@ -677,77 +668,40 @@ impl SparkPhysicalExprAdapter {
                     | DataType::Float32
                     | DataType::Float64
             );
-            if physical_is_primitive_numeric
-                && matches!(
-                    target_type,
-                    DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-                )
-            {
-                let rejection: Arc<dyn PhysicalExpr> = Arc::new(RejectOnNonEmpty {
+            if physical_is_primitive_numeric && is_string_or_binary(target_type) {
+                let rejection = reject_on_non_empty_expr(
                     child,
-                    target_field: Arc::clone(cast.target_field()),
-                    column: format!("[{}]", cast.input_field().name()),
-                    physical_type: parquet_primitive_name(physical_type).to_string(),
-                    spark_type: spark_catalog_name(target_type),
-                });
+                    cast.target_field(),
+                    cast.input_field().name(),
+                    physical_type,
+                    target_type,
+                );
                 return Ok(Transformed::yes(rejection));
             }
 
-            // Decimal-to-decimal narrowing check.
-            // Reject reads where the requested decimal type cannot represent
-            // every value in the file's decimal column. Spark's vectorized
-            // reader rejects this in `ParquetVectorUpdaterFactory.canReadAsDecimal`
-            // -> `isDecimalTypeMatched` (the `DecimalLogicalTypeAnnotation`
-            // branch): the read is allowed only when `scaleIncrease >= 0` AND
-            // `precisionIncrease >= scaleIncrease`. Equivalently:
-            //   - `dst_scale >= src_scale` (no scale narrowing)
-            //   - `dst_precision - dst_scale >= src_precision - src_scale`
-            //     (no integer-precision narrowing)
-            // Either condition's failure means the cast would silently drop
-            // fractional digits or overflow on integer-side magnitude. See
-            // issues #4089 and #4343.
-            //
-            // Scale widening that exceeds available precision (e.g.
-            // Decimal(5, 2) -> Decimal(5, 3): scaleIncrease=1,
-            // precisionIncrease=0) is also rejected by the second condition,
-            // because it would shift integer digits into the fractional part
-            // and lose the most-significant digit.
+            // Decimal-to-decimal narrowing. Spark's `isDecimalTypeMatched` (the
+            // `DecimalLogicalTypeAnnotation` branch) allows the read only when
+            //   `dst_scale >= src_scale` AND
+            //   `dst_precision - dst_scale >= src_precision - src_scale`.
+            // Either failure means silently dropping fractional digits or losing
+            // integer-side magnitude. See #4089 and #4343.
             if let (DataType::Decimal128(src_p, src_s), DataType::Decimal128(dst_p, dst_s)) =
                 (physical_type, target_type)
             {
                 let src_int_precision = i32::from(*src_p) - i32::from(*src_s);
                 let dst_int_precision = i32::from(*dst_p) - i32::from(*dst_s);
                 if dst_s < src_s || dst_int_precision < src_int_precision {
-                    return Err(DataFusionError::External(Box::new(
-                        SparkError::ParquetSchemaConvert {
-                            file_path: String::new(),
-                            column: format!("[{}]", cast.input_field().name()),
-                            physical_type: parquet_primitive_name(physical_type).to_string(),
-                            spark_type: spark_catalog_name(target_type),
-                        },
-                    )));
+                    return Err(parquet_schema_convert_err(
+                        cast.input_field().name(),
+                        physical_type,
+                        target_type,
+                    ));
                 }
             }
 
-            // Integer-to-decimal narrowing check.
-            // Reject reads where the requested decimal type cannot represent
-            // every value of the integer Parquet column. Spark's vectorized
-            // reader rejects this in `ParquetVectorUpdaterFactory.canReadAsDecimal`
-            // (via `isDecimalTypeMatched`'s integer branch): for an INT32
-            // column the requested decimal must satisfy
-            // `precision - scale >= 10` (matching `DecimalType.IntDecimal`),
-            // and for INT64 `precision - scale >= 20` (matching
-            // `DecimalType.LongDecimal`). Without this guard the cast silently
-            // truncates (e.g. INT32 -> Decimal(5, 0) for a value of 100000)
-            // or rescales values to fit, producing wrong answers. See #4344.
-            //
-            // Unlike the type-promotion check below, this rejection is
-            // unconditional in Spark across all supported versions, so we
-            // reject at plan time (no `allow_type_promotion` gating). Empty
-            // Parquet files do not exercise this path because the cast is
-            // only constructed when the file's column has a different type
-            // than the requested schema; there is no SPARK-26709-style
-            // empty-file scenario for integer-to-decimal that we know of.
+            // Integer-to-decimal narrowing. Spark's `canReadAsDecimal` requires
+            // `precision - scale >= 10` for an INT32 source and `>= 20` for INT64.
+            // Unconditional in all Spark versions, so reject at plan time. See #4344.
             let int_decimal_min_int_precision = match physical_type {
                 DataType::Int8 | DataType::Int16 | DataType::Int32 => Some(10i32),
                 DataType::Int64 => Some(20i32),
@@ -761,31 +715,20 @@ impl SparkPhysicalExprAdapter {
                 if let Some((dst_p, dst_s)) = dst_precision_scale {
                     let dst_int_precision = i32::from(dst_p) - i32::from(dst_s);
                     if dst_int_precision < min_int_precision {
-                        return Err(DataFusionError::External(Box::new(
-                            SparkError::ParquetSchemaConvert {
-                                file_path: String::new(),
-                                column: format!("[{}]", cast.input_field().name()),
-                                physical_type: parquet_primitive_name(physical_type).to_string(),
-                                spark_type: spark_catalog_name(target_type),
-                            },
-                        )));
+                        return Err(parquet_schema_convert_err(
+                            cast.input_field().name(),
+                            physical_type,
+                            target_type,
+                        ));
                     }
                 }
             }
 
-            // Type promotion (widening) check.
-            // When allow_type_promotion is false, reject the three widenings
-            // (INT32→INT64, FLOAT→DOUBLE, INT32→DOUBLE) that Spark 3.x's
-            // vectorized reader rejects. The flag is set from Comet's
-            // per-Spark-version constant in ShimCometConf (false on 3.x,
-            // true on 4.x). The companion check below handles conversions
-            // Spark rejects on every supported version.
-            //
-            // The rejection is deferred to runtime via `RejectOnNonEmpty` so
-            // that files with no row groups (e.g. an empty DataFrame written
-            // to Parquet) pass through unaffected, matching Spark's
-            // per-row-group `ParquetVectorUpdaterFactory.getUpdater` check
-            // (SPARK-26709).
+            // Type promotion (widening). When `allow_type_promotion` is false,
+            // reject the three widenings (INT32→INT64, FLOAT→DOUBLE, INT32→DOUBLE)
+            // that Spark 3.x's vectorized reader rejects. The flag tracks Comet's
+            // per-Spark-version constant in ShimCometConf. Deferred to runtime so
+            // empty files (SPARK-26709) pass.
             if !self.parquet_options.allow_type_promotion {
                 let is_disallowed_promotion = matches!(
                     (physical_type, target_type),
@@ -794,41 +737,31 @@ impl SparkPhysicalExprAdapter {
                         | (DataType::Int32, DataType::Float64)
                 );
                 if is_disallowed_promotion {
-                    let rejection: Arc<dyn PhysicalExpr> = Arc::new(RejectOnNonEmpty {
-                        child: Arc::clone(&child),
-                        target_field: Arc::clone(cast.target_field()),
-                        column: format!("[{}]", cast.input_field().name()),
-                        physical_type: parquet_primitive_name(physical_type).to_string(),
-                        spark_type: spark_catalog_name(target_type),
-                    });
+                    let rejection = reject_on_non_empty_expr(
+                        Arc::clone(&child),
+                        cast.target_field(),
+                        cast.input_field().name(),
+                        physical_type,
+                        target_type,
+                    );
                     return Ok(Transformed::yes(rejection));
                 }
             }
 
-            // Reject primitive Parquet conversions that Spark's vectorized
-            // reader rejects on every supported version (i.e. cases that have
-            // no matching branch in `ParquetVectorUpdaterFactory.getUpdater`).
-            // Without this guard the `Cast` below silently truncates,
-            // overflows, or reinterprets values:
+            // Reject primitive Parquet conversions Spark's vectorized reader rejects
+            // on every supported version (no matching branch in
+            // `ParquetVectorUpdaterFactory.getUpdater`):
             //
-            //   - `INT64 -> Int*` truncates to the lower bits.
+            //   - `INT64 -> Int*` truncates lower bits.
             //   - `INT64 -> Float*` and `INT32 -> Float32` lose precision.
             //   - `Float* -> Int*` and `Float64 -> Float32` truncate / overflow.
-            //   - `INT32 -> Timestamp` reinterprets the int as epoch seconds
-            //     (only DATE-annotated INT32 reaches Arrow as `Date32`, so a
-            //     raw `Int32 -> Timestamp` here means there was no DATE
-            //     annotation and Spark would reject).
-            //   - `INT64 -> Date32` / `INT64 -> Timestamp` similarly: timestamp-
-            //     and date-annotated INT64 columns surface as Arrow
-            //     `Timestamp` / `Date32`, so a raw `Int64` source means no
-            //     annotation.
-            //   - `Date32 -> Timestamp(_, Some(_))` (LTZ): Spark only allows
-            //     `Date -> TimestampNTZ` via `DateToTimestampNTZUpdater`.
-            //   - `Timestamp -> Date32`: no Timestamp updater branches into
-            //     Date target.
+            //   - `INT32 -> Timestamp` / `INT64 -> Date32` / `INT64 -> Timestamp`:
+            //     date/timestamp-annotated columns surface as Date32 / Timestamp,
+            //     so reaching this branch means the column was un-annotated.
+            //   - `Date32 -> Timestamp(LTZ)`: Spark only allows Date -> TimestampNTZ.
+            //   - `Timestamp -> Date32`: no Timestamp updater branches into Date.
             //
-            // Mirror the type-promotion check above and defer to runtime so
-            // empty Parquet files pass through (SPARK-26709). See #4297.
+            // Deferred to runtime (SPARK-26709). See #4297.
             let is_spark_rejected_conversion = matches!(
                 (physical_type, target_type),
                 // Long -> narrower int.
@@ -864,39 +797,21 @@ impl SparkPhysicalExprAdapter {
                 | (DataType::Timestamp(_, _), DataType::Date32)
             );
             if is_spark_rejected_conversion {
-                let rejection: Arc<dyn PhysicalExpr> = Arc::new(RejectOnNonEmpty {
+                let rejection = reject_on_non_empty_expr(
                     child,
-                    target_field: Arc::clone(cast.target_field()),
-                    column: format!("[{}]", cast.input_field().name()),
-                    physical_type: parquet_primitive_name(physical_type).to_string(),
-                    spark_type: spark_catalog_name(target_type),
-                });
+                    cast.target_field(),
+                    cast.input_field().name(),
+                    physical_type,
+                    target_type,
+                );
                 return Ok(Transformed::yes(rejection));
             }
 
-            // For complex nested types (Struct, List, Map), Timestamp timezone
-            // mismatches, and Timestamp→Int64 (nanosAsLong), use CometCastColumnExpr
-            // with spark_parquet_convert which handles field-name-based selection,
-            // reordering, nested type casting, metadata-only timestamp timezone
-            // relabeling, and raw value reinterpretation correctly.
-            //
-            // Timestamp mismatches (e.g., Timestamp(us, None) -> Timestamp(us, Some("UTC")))
-            // occur when INT96 Parquet timestamps are coerced to Timestamp(us, None) by
-            // DataFusion but the logical schema expects Timestamp(us, Some("UTC")).
-            // Using Spark's Cast here would incorrectly treat the None-timezone values as
-            // local time (TimestampNTZ) and apply a timezone conversion, but the values are
-            // already in UTC. spark_parquet_convert handles this as a metadata-only change.
-            //
-            // Timestamp→Int64 occurs when Spark's `nanosAsLong` config converts
-            // TIMESTAMP(NANOS) to LongType. Spark's Cast would divide by MICROS_PER_SECOND
-            // (assuming microseconds), but the values are nanoseconds. Arrow cast correctly
-            // reinterprets the raw i64 value without conversion.
-            // Reject scalar/complex mismatches at planning time. Spark's
-            // vectorized reader rejects e.g. reading a TIMESTAMP column as
-            // ARRAY<TIMESTAMP> with SchemaColumnConvertNotSupportedException
-            // (see SPARK-45604). Without this guard the runtime cast would
-            // raise a less-specific Arrow CastError. Same-complex-type pairs
-            // and timestamp→timestamp / timestamp→int64 are handled below.
+            // Scalar/complex mismatch (e.g. TIMESTAMP read as ARRAY<TIMESTAMP>):
+            // Spark's vectorized reader rejects with
+            // SchemaColumnConvertNotSupportedException (SPARK-45604). Same-shape
+            // complex pairs and timestamp→timestamp / timestamp→int64 fall through
+            // to CometCastColumnExpr below.
             let is_complex = |t: &DataType| {
                 matches!(
                     t,
@@ -904,16 +819,18 @@ impl SparkPhysicalExprAdapter {
                 )
             };
             if is_complex(physical_type) != is_complex(target_type) {
-                return Err(DataFusionError::External(Box::new(
-                    SparkError::ParquetSchemaConvert {
-                        file_path: String::new(),
-                        column: cast.input_field().name().to_string(),
-                        physical_type: physical_type.to_string(),
-                        spark_type: target_type.to_string(),
-                    },
-                )));
+                return Err(parquet_schema_convert_err(
+                    cast.input_field().name(),
+                    physical_type,
+                    target_type,
+                ));
             }
 
+            // Same-shape complex casts, timestamp tz relabel (e.g. Timestamp(us, None)
+            // -> Timestamp(us, Some("UTC")) for INT96 reads), and Timestamp -> Int64
+            // (Spark's `nanosAsLong`) need spark_parquet_convert: it handles nested
+            // field selection, metadata-only tz changes, and raw-value reinterpretation
+            // that Spark's Cast would otherwise convert incorrectly.
             if matches!(
                 (physical_type, target_type),
                 (DataType::Struct(_), DataType::Struct(_))
@@ -1166,16 +1083,13 @@ mod test {
     /// (`ParquetVectorUpdaterFactory.getUpdater` has no INT32 -> string updater).
     #[tokio::test]
     async fn parquet_int_read_as_string_errors() -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let values = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
-        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
-
-        let required_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
-
-        let err = roundtrip(&batch, required_schema)
-            .await
-            .expect_err("expected ParquetSchemaConvert error for INT32 -> string");
-        let msg = err.to_string();
+        let msg = assert_rejected_conversion(
+            Field::new("a", DataType::Int32, false),
+            values,
+            DataType::Utf8,
+        )
+        .await?;
         assert!(
             msg.contains("Column: [[a]]")
                 && msg.contains("Expected: string")
@@ -1189,17 +1103,14 @@ mod test {
     /// same Spark-compatible error.
     #[tokio::test]
     async fn parquet_string_read_as_int_errors() -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
         let values =
             Arc::new(StringArray::from(vec!["bcd", "efg"])) as Arc<dyn arrow::array::Array>;
-        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
-
-        let required_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-
-        let err = roundtrip(&batch, required_schema)
-            .await
-            .expect_err("expected ParquetSchemaConvert error for BINARY -> int");
-        let msg = err.to_string();
+        let msg = assert_rejected_conversion(
+            Field::new("a", DataType::Utf8, false),
+            values,
+            DataType::Int32,
+        )
+        .await?;
         assert!(
             msg.contains("Column: [[a]]")
                 && msg.contains("Expected: int")
@@ -1211,27 +1122,18 @@ mod test {
 
     /// Reading a plain BINARY Parquet column (no `DecimalLogicalTypeAnnotation`)
     /// as `DecimalType` must raise a Spark-compatible `ParquetSchemaConvert`
-    /// error. Spark's `ParquetVectorUpdaterFactory.getUpdater` BINARY case
-    /// only allows the read when `canReadAsDecimal` / `canReadAsBinaryDecimal`
-    /// returns true, both of which require the column to carry a
-    /// `DecimalLogicalTypeAnnotation`. See #4351.
+    /// error. Spark's `canReadAsDecimal` / `canReadAsBinaryDecimal` both require
+    /// the column to carry a `DecimalLogicalTypeAnnotation`. See #4351.
     #[tokio::test]
     async fn parquet_binary_read_as_decimal_errors() -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Binary, false)]));
         let values =
             Arc::new(BinaryArray::from_vec(vec![b"1.2", b"3.4"])) as Arc<dyn arrow::array::Array>;
-        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
-
-        let required_schema = Arc::new(Schema::new(vec![Field::new(
-            "a",
+        let msg = assert_rejected_conversion(
+            Field::new("a", DataType::Binary, false),
+            values,
             DataType::Decimal128(37, 1),
-            false,
-        )]));
-
-        let err = roundtrip(&batch, required_schema)
-            .await
-            .expect_err("expected ParquetSchemaConvert error for BINARY -> decimal");
-        let msg = err.to_string();
+        )
+        .await?;
         assert!(
             msg.contains("Column: [[a]]")
                 && msg.contains("Expected: decimal(37,1)")
@@ -1241,29 +1143,17 @@ mod test {
         Ok(())
     }
 
-    /// Reading an INT32 Parquet column as a DECIMAL whose integer-precision
-    /// (`precision - scale`) cannot represent the full INT32 range must raise
-    /// a Spark-compatible `ParquetSchemaConvert` error. Spark's
-    /// `ParquetVectorUpdaterFactory.canReadAsDecimal` requires
-    /// `precision - scale >= 10` (matching `DecimalType.IntDecimal.precision`).
-    /// See #4344.
+    /// INT32 -> Decimal where `precision - scale < 10` (the minimum that can
+    /// represent the full INT32 range). See #4344.
     #[tokio::test]
     async fn parquet_int32_read_as_narrow_decimal_errors() -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let values = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
-        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
-
-        // Decimal(9, 0): integer-precision = 9, below the 10 required for INT32.
-        let required_schema = Arc::new(Schema::new(vec![Field::new(
-            "a",
+        let msg = assert_rejected_conversion(
+            Field::new("a", DataType::Int32, false),
+            values,
             DataType::Decimal128(9, 0),
-            false,
-        )]));
-
-        let err = roundtrip(&batch, required_schema)
-            .await
-            .expect_err("expected ParquetSchemaConvert error for INT32 -> Decimal(9, 0)");
-        let msg = err.to_string();
+        )
+        .await?;
         assert!(
             msg.contains("Column: [[a]]")
                 && msg.contains("Expected: decimal")
@@ -1273,45 +1163,31 @@ mod test {
         Ok(())
     }
 
-    /// Reading an INT32 Parquet column as a DECIMAL whose integer-precision is
-    /// at least 10 must succeed.
+    /// INT32 -> Decimal where `precision - scale >= 10` is allowed.
     #[tokio::test]
     async fn parquet_int32_read_as_wide_decimal_succeeds() -> Result<(), DataFusionError> {
         let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let values = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
         let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
-
-        // Decimal(10, 0): integer-precision = 10, exactly the minimum for INT32.
         let required_schema = Arc::new(Schema::new(vec![Field::new(
             "a",
             DataType::Decimal128(10, 0),
             false,
         )]));
-
         let _ = roundtrip(&batch, required_schema).await?;
         Ok(())
     }
 
-    /// Reading an INT64 Parquet column as a DECIMAL whose integer-precision
-    /// is below the 20 required for INT64 must raise the Spark-compatible
-    /// error. See #4344.
+    /// INT64 -> Decimal where `precision - scale < 20`. See #4344.
     #[tokio::test]
     async fn parquet_int64_read_as_narrow_decimal_errors() -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
         let values = Arc::new(Int64Array::from(vec![1i64, 2, 3])) as Arc<dyn arrow::array::Array>;
-        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
-
-        // Decimal(19, 0): integer-precision = 19, below the 20 required for INT64.
-        let required_schema = Arc::new(Schema::new(vec![Field::new(
-            "a",
+        let msg = assert_rejected_conversion(
+            Field::new("a", DataType::Int64, false),
+            values,
             DataType::Decimal128(19, 0),
-            false,
-        )]));
-
-        let err = roundtrip(&batch, required_schema)
-            .await
-            .expect_err("expected ParquetSchemaConvert error for INT64 -> Decimal(19, 0)");
-        let msg = err.to_string();
+        )
+        .await?;
         assert!(
             msg.contains("Column: [[a]]")
                 && msg.contains("Expected: decimal")
@@ -1321,24 +1197,17 @@ mod test {
         Ok(())
     }
 
-    /// Non-zero scale is rejected when `precision - scale` falls below the
-    /// integer minimum. INT32 -> Decimal(10, 1) has integer-precision 9.
+    /// Non-zero scale that pushes `precision - scale` below the integer minimum
+    /// (INT32 -> Decimal(10, 1) leaves int-precision 9).
     #[tokio::test]
     async fn parquet_int32_read_as_decimal_with_scale_errors() -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let values = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
-        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
-
-        let required_schema = Arc::new(Schema::new(vec![Field::new(
-            "a",
+        let msg = assert_rejected_conversion(
+            Field::new("a", DataType::Int32, false),
+            values,
             DataType::Decimal128(10, 1),
-            false,
-        )]));
-
-        let err = roundtrip(&batch, required_schema)
-            .await
-            .expect_err("expected ParquetSchemaConvert error for INT32 -> Decimal(10, 1)");
-        let msg = err.to_string();
+        )
+        .await?;
         assert!(
             msg.contains("Column: [[a]]")
                 && msg.contains("Expected: decimal")

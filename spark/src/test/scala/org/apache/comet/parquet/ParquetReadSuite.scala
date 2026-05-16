@@ -1012,80 +1012,49 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("native_datafusion rejects BINARY (no decimal annotation) read as DecimalType") {
-    // Regression guard for https://github.com/apache/datafusion-comet/issues/4351.
-    // Mirrors the BINARY -> DECIMAL(37, 1) iteration in Spark's `SPARK-34212
-    // Parquet should read decimals correctly` (ParquetQuerySuite). Spark's
-    // `ParquetVectorUpdaterFactory.getUpdater` rejects this with
-    // `SchemaColumnConvertNotSupportedException` because `canReadAsDecimal` /
-    // `canReadAsBinaryDecimal` both require a `DecimalLogicalTypeAnnotation`
-    // on the file column. The native_datafusion adapter must mirror that;
-    // before #4351 it let the cast fall through and Arrow's record-batch
-    // validation surfaced a generic `column types must match schema types`
-    // error as `CometNativeException`.
+    // Regression guard for https://github.com/apache/datafusion-comet/issues/4351,
+    // mirroring the BINARY -> DECIMAL(37, 1) iteration in SPARK-34212.
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
       withTempPath { dir =>
         val path = dir.getCanonicalPath
-        // CAST('1.2' AS BINARY) writes a plain BYTE_ARRAY column with no
-        // decimal annotation, matching the SPARK-34212 setup.
+        // CAST('1.2' AS BINARY) writes BYTE_ARRAY with no decimal annotation.
         sql("SELECT CAST('1.2' AS BINARY) c").write.parquet(path)
         Seq("DECIMAL(3, 2)", "DECIMAL(18, 1)", "DECIMAL(37, 1)").foreach { schema =>
           val outer = intercept[SparkException] {
             spark.read.schema(s"c $schema").parquet(path).collect()
           }
-          // Walk the cause chain because Spark's task error handling can wrap
-          // the shim's SparkException once more on the way back to the driver.
-          // Spark's own vectorized reader throws
-          // SchemaColumnConvertNotSupportedException directly from
-          // `ParquetVectorUpdaterFactory.getUpdater`, which yields a single
-          // outer SparkException; Comet's shim produces an extra layer on
-          // some Spark versions (notably 3.x). Either chain is correct as
-          // long as `SchemaColumnConvertNotSupportedException` shows up.
-          var cur: Throwable = outer
-          var found = false
-          while (cur != null && !found) {
-            if (cur.isInstanceOf[org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]) {
-              found = true
-            } else {
-              cur = cur.getCause
-            }
-          }
+          // Walk the cause chain: Comet's shim adds an extra SparkException
+          // wrap on Spark 3.x compared to vanilla Spark.
+          val chain = Iterator
+            .iterate[Throwable](outer)(_.getCause)
+            .takeWhile(_ != null)
+            .toSeq
           assert(
-            found,
-            "expected SchemaColumnConvertNotSupportedException somewhere in cause chain " +
-              s"for $schema; chain was:\n" +
-              Iterator
-                .iterate[Throwable](outer)(_.getCause)
-                .takeWhile(_ != null)
-                .map(t => s"  ${t.getClass.getName}: ${t.getMessage}")
-                .mkString("\n"))
+            chain.exists(_.isInstanceOf[
+              org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
+            s"expected SchemaColumnConvertNotSupportedException for $schema; chain was:\n" +
+              chain.map(t => s"  ${t.getClass.getName}: ${t.getMessage}").mkString("\n"))
         }
       }
     }
   }
 
   test("native_datafusion rejects incompatible decimal precision/scale") {
-    // Regression guard for https://github.com/apache/datafusion-comet/issues/4089
-    // and https://github.com/apache/datafusion-comet/issues/4343.
-    // Spark's `ParquetVectorUpdaterFactory.isDecimalTypeMatched` accepts a
-    // decimal-to-decimal read only when `scaleIncrease >= 0` AND
-    // `precisionIncrease >= scaleIncrease`. The native_datafusion scan must
-    // reject all other cases in its schema adapter rather than letting Spark
-    // Cast silently rescale, truncate, or overflow.
+    // Regression guard for #4089 and #4343. Spark's `isDecimalTypeMatched`
+    // accepts decimal-to-decimal only when `scaleIncrease >= 0` AND
+    // `precisionIncrease >= scaleIncrease`.
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
-      // (file precision, file scale, read precision, read scale) -> reason rejected.
       val cases = Seq(
-        // Original #4089: scale narrows below file scale.
-        (10, 2, 5, 0),
-        // Precision-only narrowing (same scale): Decimal(10, 2) -> Decimal(5, 2).
-        (10, 2, 5, 2),
-        // Integer-precision narrowing: Decimal(10, 4) (int-prec 6) -> Decimal(5, 2) (int-prec 3).
-        (10, 4, 5, 2),
-        // Scale widening that overflows the integer side: Decimal(5, 2) -> Decimal(5, 3).
-        (5, 2, 5, 3))
+        // (file_p, file_s, read_p, read_s)
+        (10, 2, 5, 0), // #4089: scale narrows.
+        (10, 2, 5, 2), // precision-only narrowing.
+        (10, 4, 5, 2), // integer-precision narrowing (int-prec 6 -> 3).
+        (5, 2, 5, 3)
+      ) // scale widening overflows the integer side.
       cases.foreach { case (filePrec, fileScale, readPrec, readScale) =>
         withTempPath { dir =>
           val path = dir.getCanonicalPath
@@ -1102,13 +1071,8 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("native_datafusion rejects integer read as too-narrow decimal") {
-    // Regression guard for https://github.com/apache/datafusion-comet/issues/4344.
-    // Reading an INT32 (Byte/Short/Int) Parquet column as DECIMAL(p, s) where
-    // `p - s < 10` cannot represent the full INT32 range; reading INT64 (Long)
-    // as DECIMAL where `p - s < 20` cannot represent the full INT64 range.
-    // Spark's `ParquetVectorUpdaterFactory.canReadAsDecimal` rejects both. The
-    // native_datafusion scan must do the same rather than letting Spark Cast
-    // silently truncate or rescale.
+    // Regression guard for #4344. Spark's `canReadAsDecimal` requires
+    // `precision - scale >= 10` for INT32 sources and `>= 20` for INT64.
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
@@ -1117,7 +1081,6 @@ abstract class ParquetReadSuite extends CometTestBase {
         withTempPath { dir =>
           val path = dir.getCanonicalPath
           spark.range(1, 4).selectExpr(s"cast(id as $writeType) as c").write.parquet(path)
-          // Decimal(9, 0): integer-precision = 9, below the 10 needed for INT32.
           val df = spark.read.schema("c decimal(9, 0)").parquet(path)
           assertThrows[SparkException](df.collect())
         }
@@ -1126,7 +1089,6 @@ abstract class ParquetReadSuite extends CometTestBase {
       withTempPath { dir =>
         val path = dir.getCanonicalPath
         spark.range(1, 4).selectExpr("cast(id as long) as c").write.parquet(path)
-        // Decimal(19, 0): integer-precision = 19, below the 20 needed for INT64.
         val df = spark.read.schema("c decimal(19, 0)").parquet(path)
         assertThrows[SparkException](df.collect())
       }
@@ -1134,28 +1096,23 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("native_datafusion rejects primitive Parquet conversions Spark rejects") {
-    // Regression guard for https://github.com/apache/datafusion-comet/issues/4297.
-    // `ParquetVectorUpdaterFactory.getUpdater` has no branch for these
-    // (write_sql_type, read_sql_type) pairs, so Spark's vectorized reader
-    // throws `SchemaColumnConvertNotSupportedException`. The native_datafusion
-    // scan must do the same rather than letting Spark Cast silently truncate,
-    // overflow, or reinterpret values.
+    // Regression guard for #4297. `getUpdater` has no branch for these
+    // (write_type, read_type) pairs.
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
       val cases = Seq(
-        // (write SQL type, source value, read SQL type)
-        ("bigint", "8589934592", "int"), // long -> int (overflow)
-        ("double", "1e40", "float"), // double -> float (overflow)
-        ("float", "1.5", "bigint"), // float -> bigint (truncation)
-        ("bigint", "1", "double"), // long -> double (precision loss)
-        ("int", "33554433", "float"), // int -> float (precision loss past 2^24)
-        ("int", "1", "timestamp"), // int -> timestamp (epoch-seconds reinterpretation)
-        ("int", "1", "timestamp_ntz"), // int -> timestamp_ntz
-        ("bigint", "1", "date"), // long -> date
-        ("double", "1.0", "bigint"), // double -> bigint (truncation)
-        ("date", "DATE'2020-01-01'", "timestamp"), // date -> ltz timestamp
-        ("timestamp", "TIMESTAMP'2020-01-01 00:00:00'", "date"), // timestamp -> date
+        ("bigint", "8589934592", "int"),
+        ("double", "1e40", "float"),
+        ("float", "1.5", "bigint"),
+        ("bigint", "1", "double"),
+        ("int", "33554433", "float"),
+        ("int", "1", "timestamp"),
+        ("int", "1", "timestamp_ntz"),
+        ("bigint", "1", "date"),
+        ("double", "1.0", "bigint"),
+        ("date", "DATE'2020-01-01'", "timestamp"),
+        ("timestamp", "TIMESTAMP'2020-01-01 00:00:00'", "date"),
         ("timestamp_ntz", "TIMESTAMP_NTZ'2020-01-01 00:00:00'", "date"))
       cases.foreach { case (writeType, sourceLiteral, readType) =>
         withTempPath { dir =>
