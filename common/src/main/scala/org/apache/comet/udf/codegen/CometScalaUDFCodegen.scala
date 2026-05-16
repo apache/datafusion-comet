@@ -55,6 +55,24 @@ import org.apache.comet.udf.CometUDF
  *   - Per-partition: [[activeKernel]] for kernel mutable state (`Rand`'s `XORShiftRandom`,
  *     `MonotonicallyIncreasingID`'s counter) that advances across batches in one partition and
  *     resets across partitions.
+ *
+ * Concurrency: [[evaluate]] takes `this.synchronized` for the cache lookup + kernel allocation +
+ * `process` call. A single Spark task can have multiple concurrent JNI callers into this
+ * dispatcher because DataFusion operators like `HashJoinExec` pipeline build/probe via
+ * `OnceAsync` (`tokio::spawn`) regardless of `target_partitions=1`, so different Tokio worker
+ * threads poll sub-streams within one task and each calls back into Java. The generated kernel
+ * keeps per-batch state (`col0`, `rowIdx`) in instance fields, so concurrent `process` calls on a
+ * shared kernel would race; the lock serializes them.
+ *
+ * Performance: Spark's `BufferedRowIterator` is single-threaded per task by construction, so
+ * Spark has no intra-task UDF parallelism to begin with. The lock gives up the intra-task
+ * pipelining DataFusion would otherwise allow, but probe-side work (the bulk of UDF eval) is
+ * serial in either model. Per-task throughput matches Spark's; cross-task parallelism is
+ * unchanged.
+ *
+ * TODO(udf-codegen-pool): if intra-task UDF parallelism shows up as a bottleneck (e.g. large
+ * build sides with heavy UDFs), replace the single `activeKernel` with a per-key pool of
+ * instances and externalize per-partition stateful expression counters into the dispatcher.
  */
 class CometScalaUDFCodegen extends CometUDF {
 
@@ -65,13 +83,15 @@ class CometScalaUDFCodegen extends CometUDF {
    * across concurrent tasks running the same query. Compile work itself stays deduped JVM-wide
    * via `CodeGenerator.compile`'s internal source cache, so identical Janino source shares
    * bytecode across tasks; only the `boundExpr` Java object is per-task.
+   *
+   * Guarded by `this.synchronized` in [[evaluate]]; see the class-level Concurrency note.
    */
   private val kernelCache
       : mutable.Map[CometScalaUDFCodegen.CacheKey, CometScalaUDFCodegen.CacheEntry] =
     mutable.HashMap.empty
 
-  // Plain `var`s: this instance is per-task, Spark drives one partition per task, so
-  // [[ensureKernel]] is never concurrent.
+  // Active kernel state. Guarded by `this.synchronized` in [[evaluate]]; see the class-level
+  // Concurrency note.
   private var activeKernel: CometBatchKernel = _
   private var activeKey: CometScalaUDFCodegen.CacheKey = _
   private var activePartition: Int = -1
@@ -105,26 +125,31 @@ class CometScalaUDFCodegen extends CometUDF {
     val specsSeq = specs.toIndexedSeq
 
     val key = CometScalaUDFCodegen.CacheKey(ByteBuffer.wrap(bytes), specsSeq)
-    val entry = lookupOrCompile(key, bytes, specsSeq)
 
-    val partitionId = CometScalaUDFCodegen.currentPartitionIndex()
-    val kernel = ensureKernel(entry.compiled, key, partitionId)
+    // Cache lookup, kernel allocation, and `process` run under one lock: the generated kernel
+    // keeps per-batch state (`col0`, `rowIdx`) in instance fields, so concurrent callers would
+    // race. See the class-level Concurrency note.
+    this.synchronized {
+      val entry = lookupOrCompile(key, bytes, specsSeq)
+      val partitionId = CometScalaUDFCodegen.currentPartitionIndex()
+      val kernel = ensureKernel(entry.compiled, key, partitionId)
 
-    val out = CometBatchKernelCodegen.allocateOutput(
-      entry.outputField,
-      n,
-      estimatedOutputBytes(entry.outputType, dataCols))
-    try {
-      kernel.process(dataCols, out, n)
-      out.setValueCount(n)
-      out
-    } catch {
-      case t: Throwable =>
-        try out.close()
-        catch {
-          case _: Throwable => ()
-        }
-        throw t
+      val out = CometBatchKernelCodegen.allocateOutput(
+        entry.outputField,
+        n,
+        estimatedOutputBytes(entry.outputType, dataCols))
+      try {
+        kernel.process(dataCols, out, n)
+        out.setValueCount(n)
+        out
+      } catch {
+        case t: Throwable =>
+          try out.close()
+          catch {
+            case _: Throwable => ()
+          }
+          throw t
+      }
     }
   }
 
