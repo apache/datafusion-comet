@@ -27,7 +27,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
@@ -139,10 +139,14 @@ trait CometExprShim extends CommonStringExprs {
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
-            exprToProtoInternal(
-              StructsToJson(evaluator.options, child, evaluator.timeZoneId),
-              inputs,
-              binding)
+            val toJson = StructsToJson(evaluator.options, child, evaluator.timeZoneId)
+            val exprProto = exprToProtoInternal(toJson, inputs, binding)
+            if (exprProto.isEmpty) {
+              toJson
+                .getTagValue(CometExplainInfo.EXTENSION_INFO)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+            }
+            exprProto
           case _ => None
         }
 
