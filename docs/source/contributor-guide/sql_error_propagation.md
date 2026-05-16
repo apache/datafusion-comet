@@ -398,8 +398,9 @@ def convertToSparkException(e: CometQueryExecutionException): Throwable = {
 
 ### `ShimSparkErrorConverter` calls the real Spark API
 
-Because Spark's `QueryExecutionErrors` API changes between Spark versions (3.4, 3.5, 4.0),
-there is a separate implementation per version (in `spark-3.4/`, `spark-3.5/`, `spark-4.0/`).
+Because Spark's `QueryExecutionErrors` API changes between Spark versions (3.4, 3.5, and the 4.x line),
+there is a separate implementation per branch (in `spark-3.4/`, `spark-3.5/`, and `spark-4.x/`, which is
+shared by Spark 4.0, 4.1, and 4.2).
 
 ![Shim pattern for per-version Spark API bridging](./shim_pattern.svg)
 

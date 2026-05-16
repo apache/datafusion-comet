@@ -127,7 +127,10 @@ class CometExecIterator(
       memoryConfig.memoryLimitPerTask,
       taskAttemptId,
       taskCPUs,
-      keyUnwrapper)
+      keyUnwrapper,
+      // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
+      // TaskContext. See CometUdfBridge.evaluate.
+      TaskContext.get())
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
