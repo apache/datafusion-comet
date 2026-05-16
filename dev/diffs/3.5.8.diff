@@ -2118,7 +2118,7 @@ index 8ed9ef1630e..eed2a6f5ad5 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index f6472ba3d9d..0d54d2f0410 100644
+index f6472ba3d9d..b62ff2975e6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -185,7 +185,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
@@ -2147,7 +2147,7 @@ index f6472ba3d9d..0d54d2f0410 100644
  
 -  test("SPARK-34212 Parquet should read decimals correctly") {
 +  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4354")) {
      def readParquet(schema: String, path: File): DataFrame = {
        spark.read.schema(schema).parquet(path.toString)
      }
@@ -2177,7 +2177,7 @@ index f6472ba3d9d..0d54d2f0410 100644
  
 -  test("row group skipping doesn't overflow when reading into larger type") {
 +  test("row group skipping doesn't overflow when reading into larger type",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4354")) {
      withTempPath { path =>
        Seq(0).toDF("a").write.parquet(path.toString)
        // The vectorized and non-vectorized readers will produce different exceptions, we don't need

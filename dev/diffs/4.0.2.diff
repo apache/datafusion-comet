@@ -2711,18 +2711,10 @@ index 4474ec1fd42..97910c4fc3a 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index bba71f1c48d..f3a203caa85 100644
+index bba71f1c48d..38c60ee2584 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-@@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
- 
- import org.apache.spark.{DebugFilesystem, SparkConf, SparkException}
- import org.apache.spark.sql._
-+import org.apache.spark.sql.IgnoreCometNativeDataFusion
- import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
- import org.apache.spark.sql.catalyst.expressions.SpecificInternalRow
- import org.apache.spark.sql.catalyst.util.ArrayData
-@@ -996,7 +997,11 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -996,7 +996,11 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          Seq(Some("A"), Some("A"), None).toDF().repartition(1)
            .write.parquet(path.getAbsolutePath)
          val df = spark.read.parquet(path.getAbsolutePath)
@@ -2735,17 +2727,7 @@ index bba71f1c48d..f3a203caa85 100644
        }
      }
    }
-@@ -1042,7 +1047,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
-     testMigration(fromTsType = "TIMESTAMP_MICROS", toTsType = "INT96")
-   }
- 
--  test("SPARK-34212 Parquet should read decimals correctly") {
-+  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
-     def readParquet(schema: String, path: File): DataFrame = {
-       spark.read.schema(schema).parquet(path.toString)
-     }
-@@ -1060,7 +1066,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1060,7 +1064,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          checkAnswer(readParquet(schema2, path), df)
        }
  
@@ -2755,7 +2737,7 @@ index bba71f1c48d..f3a203caa85 100644
          val schema1 = "a DECIMAL(3, 2), b DECIMAL(18, 3), c DECIMAL(37, 3)"
          checkAnswer(readParquet(schema1, path), df)
          val schema2 = "a DECIMAL(3, 0), b DECIMAL(18, 1), c DECIMAL(37, 1)"
-@@ -1084,7 +1091,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1084,7 +1089,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
        val df = sql(s"SELECT 1 a, 123456 b, ${Int.MaxValue.toLong * 10} c, CAST('1.2' AS BINARY) d")
        df.write.parquet(path.toString)
  
@@ -2895,7 +2877,7 @@ index 0acb21f3e6f..e7c65429119 100644
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..dd7b39573a2 100644
+index 09ed6955a51..82924c83eb5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 @@ -24,7 +24,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter
@@ -2943,7 +2925,7 @@ index 09ed6955a51..dd7b39573a2 100644
    }
 -  test(s"unsupported parquet conversion $fromType -> $toType") {
 +  test(s"unsupported parquet conversion $fromType -> $toType",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4352")) {
      checkAllParquetReaders(values, fromType, toType, expectError = true)
    }
  
@@ -2953,7 +2935,7 @@ index 09ed6955a51..dd7b39573a2 100644
    }
 -  test(s"unsupported parquet conversion $fromType -> $toType") {
 +  test(s"unsupported parquet conversion $fromType -> $toType",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4352")) {
      checkAllParquetReaders(values, fromType, toType,
        expectError =
        // parquet-mr allows reading decimals into a smaller precision decimal type without
@@ -2963,7 +2945,7 @@ index 09ed6955a51..dd7b39573a2 100644
    }
 -  test(s"unsupported parquet timestamp conversion $fromType ($outputTimestampType) -> $toType") {
 +  test(s"unsupported parquet timestamp conversion $fromType ($outputTimestampType) -> $toType",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4352")) {
      withSQLConf(
        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> LegacyBehaviorPolicy.CORRECTED.toString
@@ -2973,7 +2955,7 @@ index 09ed6955a51..dd7b39573a2 100644
    test(
 -    s"parquet decimal precision change Decimal($fromPrecision, 2) -> Decimal($toPrecision, 2)") {
 +    s"parquet decimal precision change Decimal($fromPrecision, 2) -> Decimal($toPrecision, 2)",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4352")) {
      checkAllParquetReaders(
        values = Seq("1.23", "10.34"),
        fromType = DecimalType(fromPrecision, 2),
@@ -2983,7 +2965,7 @@ index 09ed6955a51..dd7b39573a2 100644
    test(s"parquet decimal precision and scale change Decimal($fromPrecision, $fromScale) -> " +
 -    s"Decimal($toPrecision, $toScale)"
 +    s"Decimal($toPrecision, $toScale)",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4352")
    ) {
      checkAllParquetReaders(
        values = Seq("1.23", "10.34"),
