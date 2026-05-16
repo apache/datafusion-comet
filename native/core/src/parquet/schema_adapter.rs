@@ -548,6 +548,39 @@ impl SparkPhysicalExprAdapter {
                     };
 
                     if logical_field.data_type() != physical_field.data_type() {
+                        // Reject string/binary -> non-string/binary at planning
+                        // time. Mirrors the same check in `replace_with_spark_cast`;
+                        // applies here because the default adapter rejected the
+                        // cast and we'd otherwise fall through to a CometCastColumnExpr
+                        // that can't actually convert (e.g. BINARY -> DECIMAL with
+                        // no `DecimalLogicalTypeAnnotation` on the file column).
+                        // See #4088 and #4351.
+                        let physical_type = physical_field.data_type();
+                        let target_type = logical_field.data_type();
+                        if matches!(
+                            physical_type,
+                            DataType::Utf8
+                                | DataType::LargeUtf8
+                                | DataType::Binary
+                                | DataType::LargeBinary
+                        ) && !matches!(
+                            target_type,
+                            DataType::Utf8
+                                | DataType::LargeUtf8
+                                | DataType::Binary
+                                | DataType::LargeBinary
+                        ) {
+                            return Err(DataFusionError::External(Box::new(
+                                SparkError::ParquetSchemaConvert {
+                                    file_path: String::new(),
+                                    column: format!("[{}]", physical_field.name()),
+                                    physical_type: parquet_primitive_name(physical_type)
+                                        .to_string(),
+                                    spark_type: spark_catalog_name(target_type),
+                                },
+                            )));
+                        }
+
                         let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(
                             CometCastColumnExpr::new(
                                 remapped,
@@ -584,29 +617,32 @@ impl SparkPhysicalExprAdapter {
             let target_type = cast.target_field().data_type();
 
             // Reject reading a string/binary Parquet column as anything other
-            // than string, binary, or a binary-encoded decimal. This mirrors
-            // Spark's TypeUtil.checkParquetType for the BINARY case (lines
-            // 208-221): a BINARY (or UTF8-annotated BINARY) physical column is
-            // only readable as StringType, BinaryType, or a binary-encoded
-            // decimal; every other target type (numeric, boolean, date,
-            // timestamp, ...) raises SchemaColumnConvertNotSupportedException.
+            // than string or binary. Mirrors Spark's
+            // `ParquetVectorUpdaterFactory.getUpdater` `BINARY` case
+            // (lines 199-205): a Parquet BINARY (or UTF8-annotated BINARY)
+            // column is readable as StringType / BinaryType, or as DecimalType
+            // only when the column carries a `DecimalLogicalTypeAnnotation`
+            // (`canReadAsDecimal` / `canReadAsBinaryDecimal`). Arrow already
+            // surfaces decimal-annotated BINARY as `DataType::Decimal128`, so
+            // observing `physical_type == Binary` here unambiguously means a
+            // non-decimal source — which Spark rejects with
+            // `SchemaColumnConvertNotSupportedException`.
             //
             // Without this guard, Spark's Cast below (in is_adapting_schema
             // mode) falls through to DataFusion's cast, which silently parses
             // the bytes (returning nulls for non-numeric strings, parsing
             // date/timestamp/boolean strings, or in some paths reinterpreting
-            // raw bytes). See issue #4088.
+            // raw bytes). For numeric / decimal targets the cast can't run at
+            // all and Arrow's `RecordBatch::try_new` raises a generic
+            // `column types must match schema types` error instead of the
+            // Spark-equivalent `SchemaColumnConvertNotSupportedException`.
+            // See issues #4088 and #4351.
             if matches!(
                 physical_type,
                 DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
             ) && !matches!(
                 target_type,
-                DataType::Utf8
-                    | DataType::LargeUtf8
-                    | DataType::Binary
-                    | DataType::LargeBinary
-                    | DataType::Decimal128(_, _)
-                    | DataType::Decimal256(_, _)
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
             ) {
                 return Err(DataFusionError::External(Box::new(
                     SparkError::ParquetSchemaConvert {
@@ -1104,8 +1140,8 @@ mod test {
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use arrow::array::UInt32Array;
     use arrow::array::{
-        Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array,
-        StringArray, TimestampMicrosecondArray,
+        BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
+        Int64Array, StringArray, TimestampMicrosecondArray,
     };
     use arrow::datatypes::SchemaRef;
     use arrow::datatypes::{DataType, Field, Schema};
@@ -1167,6 +1203,39 @@ mod test {
         assert!(
             msg.contains("Column: [[a]]")
                 && msg.contains("Expected: int")
+                && msg.contains("Found: BINARY"),
+            "unexpected error: {msg}"
+        );
+        Ok(())
+    }
+
+    /// Reading a plain BINARY Parquet column (no `DecimalLogicalTypeAnnotation`)
+    /// as `DecimalType` must raise a Spark-compatible `ParquetSchemaConvert`
+    /// error. Spark's `ParquetVectorUpdaterFactory.getUpdater` BINARY case
+    /// only allows the read when `canReadAsDecimal` / `canReadAsBinaryDecimal`
+    /// returns true, both of which require the column to carry a
+    /// `DecimalLogicalTypeAnnotation`. See #4351.
+    #[tokio::test]
+    async fn parquet_binary_read_as_decimal_errors() -> Result<(), DataFusionError> {
+        let file_schema =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Binary, false)]));
+        let values = Arc::new(BinaryArray::from_vec(vec![b"1.2", b"3.4"]))
+            as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
+
+        let required_schema = Arc::new(Schema::new(vec![Field::new(
+            "a",
+            DataType::Decimal128(37, 1),
+            false,
+        )]));
+
+        let err = roundtrip(&batch, required_schema)
+            .await
+            .expect_err("expected ParquetSchemaConvert error for BINARY -> decimal");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Column: [[a]]")
+                && msg.contains("Expected: decimal(37,1)")
                 && msg.contains("Found: BINARY"),
             "unexpected error: {msg}"
         );

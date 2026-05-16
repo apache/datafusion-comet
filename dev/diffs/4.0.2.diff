@@ -2895,7 +2895,7 @@ index 0acb21f3e6f..e7c65429119 100644
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..5cd856ff7b6 100644
+index 09ed6955a51..dd7b39573a2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 @@ -24,7 +24,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter
@@ -2987,6 +2987,16 @@ index 09ed6955a51..5cd856ff7b6 100644
    ) {
      checkAllParquetReaders(
        values = Seq("1.23", "10.34"),
+@@ -336,7 +344,8 @@ class ParquetTypeWideningSuite
+     )
+   }
+ 
+-  test("parquet decimal type change Decimal(5, 2) -> Decimal(3, 2) overflows with parquet-mr") {
++  test("parquet decimal type change Decimal(5, 2) -> Decimal(3, 2) overflows with parquet-mr",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4352")) {
+     withTempDir { dir =>
+       withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false") {
+         writeParquetFiles(
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index b8f3ea3c6f3..bbd44221288 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala

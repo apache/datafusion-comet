@@ -91,6 +91,36 @@ without falling back to Spark:
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's behavior.
   See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
 
+### Schema Mismatch Handling
+
+The issues in this subsection apply only when the requested read schema differs from the schema written
+to the Parquet file. They do **not** affect a plain `spark.read.parquet(path)` that infers the schema
+from file metadata, because in that case the requested schema and file schema match by construction.
+Schema mismatch happens in two real-world scenarios:
+
+1. The user provides an explicit read schema: `spark.read.schema(<schema>).parquet(path)` (or the
+   equivalent DataFrame API).
+2. **Schema evolution / partitioned reads** where files in a single dataset were written at different
+   times with different types, or a table-format catalog (Iceberg, Delta) records a logical schema
+   that has evolved past one or more underlying Parquet files. Spark coerces the file types to the
+   table types at read time.
+
+Spark's vectorized Parquet reader fully validates these conversions in `ParquetVectorUpdaterFactory.getUpdater`
+and throws `SchemaColumnConvertNotSupportedException` for unsupported pairs. `native_datafusion` mirrors
+that validation in its schema adapter; the entries below are the remaining gaps.
+
+Note that the exact set of accepted conversions has changed between Spark versions
+(for example, Spark 3.x's `schemaEvolution.enabled` flag gates `INT32 → INT64`, `FLOAT → DOUBLE`,
+and `INT32 → DOUBLE` widening that Spark 4.0+ accepts unconditionally; `TimestampLTZ → TimestampNTZ`
+is rejected by Spark 3.x but accepted by Spark 4.0+). Comet aims to follow the per-version Spark
+behavior.
+
+- **`ParquetSchemaConvert` errors do not include the file path**. The mismatch itself is detected and
+  rejected correctly, but the resulting Spark error message reads
+  `Encountered error while reading file . Data type mismatches…` (note the empty path). Behavior is
+  consistent across Spark versions. See
+  [#4316](https://github.com/apache/datafusion-comet/issues/4316).
+
 ## `native_iceberg_compat` Limitations
 
 The `native_iceberg_compat` scan has the following additional limitation that may produce incorrect results
