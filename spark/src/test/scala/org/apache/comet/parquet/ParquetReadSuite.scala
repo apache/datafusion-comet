@@ -1011,6 +1011,60 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native_datafusion rejects BINARY (no decimal annotation) read as DecimalType") {
+    // Regression guard for https://github.com/apache/datafusion-comet/issues/4351.
+    // Mirrors the BINARY -> DECIMAL(37, 1) iteration in Spark's `SPARK-34212
+    // Parquet should read decimals correctly` (ParquetQuerySuite). Spark's
+    // `ParquetVectorUpdaterFactory.getUpdater` rejects this with
+    // `SchemaColumnConvertNotSupportedException` because `canReadAsDecimal` /
+    // `canReadAsBinaryDecimal` both require a `DecimalLogicalTypeAnnotation`
+    // on the file column. The native_datafusion adapter must mirror that;
+    // before #4351 it let the cast fall through and Arrow's record-batch
+    // validation surfaced a generic `column types must match schema types`
+    // error as `CometNativeException`.
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        // CAST('1.2' AS BINARY) writes a plain BYTE_ARRAY column with no
+        // decimal annotation, matching the SPARK-34212 setup.
+        sql("SELECT CAST('1.2' AS BINARY) c").write.parquet(path)
+        Seq("DECIMAL(3, 2)", "DECIMAL(18, 1)", "DECIMAL(37, 1)").foreach { schema =>
+          val outer = intercept[SparkException] {
+            spark.read.schema(s"c $schema").parquet(path).collect()
+          }
+          // Walk the cause chain because Spark's task error handling can wrap
+          // the shim's SparkException once more on the way back to the driver.
+          // Spark's own vectorized reader throws
+          // SchemaColumnConvertNotSupportedException directly from
+          // `ParquetVectorUpdaterFactory.getUpdater`, which yields a single
+          // outer SparkException; Comet's shim produces an extra layer on
+          // some Spark versions (notably 3.x). Either chain is correct as
+          // long as `SchemaColumnConvertNotSupportedException` shows up.
+          var cur: Throwable = outer
+          var found = false
+          while (cur != null && !found) {
+            if (cur.isInstanceOf[org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]) {
+              found = true
+            } else {
+              cur = cur.getCause
+            }
+          }
+          assert(
+            found,
+            s"expected SchemaColumnConvertNotSupportedException somewhere in cause chain " +
+              s"for $schema; chain was:\n" +
+              Iterator
+                .iterate[Throwable](outer)(_.getCause)
+                .takeWhile(_ != null)
+                .map(t => s"  ${t.getClass.getName}: ${t.getMessage}")
+                .mkString("\n"))
+        }
+      }
+    }
+  }
+
   test("native_datafusion rejects incompatible decimal precision/scale") {
     // Regression guard for https://github.com/apache/datafusion-comet/issues/4089
     // and https://github.com/apache/datafusion-comet/issues/4343.
