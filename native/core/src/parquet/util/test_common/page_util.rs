@@ -25,7 +25,7 @@ use parquet::{
     data_type::DataType,
     encodings::{
         encoding::{get_encoder, DictEncoder, Encoder},
-        levels::{max_buffer_size, LevelEncoder},
+        levels::LevelEncoder,
     },
     errors::Result,
     schema::types::ColumnDescPtr,
@@ -79,9 +79,8 @@ impl DataPageBuilderImpl {
         if max_level <= 0 {
             return 0;
         }
-        let size = max_buffer_size(Encoding::RLE, max_level, levels.len());
-        let mut level_encoder = LevelEncoder::v1(Encoding::RLE, max_level, size);
-        level_encoder.put(levels);
+        let mut level_encoder = LevelEncoder::v1_streaming(max_level);
+        level_encoder.put_with_observer(levels, |_, _| {});
         let encoded_levels = level_encoder.consume();
         // Actual encoded bytes (without length offset)
         let encoded_bytes = &encoded_levels[mem::size_of::<i32>()..];

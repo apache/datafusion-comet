@@ -30,7 +30,6 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
-      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/**"
@@ -43,7 +42,6 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
-      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/**"
@@ -66,7 +64,6 @@ jobs:
   # Build native library once and share with all test jobs
   build-native:
     name: Build Native Library
-    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.labels.*.name, 'skip-ci') && !contains(github.event.pull_request.title, '[skip ci]')) }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
