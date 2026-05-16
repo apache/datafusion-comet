@@ -222,8 +222,8 @@ mod test {
             unreachable!()
         };
         // HALF_UP: 125.2345 rounds DOWN to 100, 150 ties round AWAY from zero to 200
-        let expected = Decimal128Array::from(vec![100, -100, 200, -200, 0])
-            .with_precision_and_scale(6, 0)?;
+        let expected =
+            Decimal128Array::from(vec![100, -100, 200, -200, 0]).with_precision_and_scale(6, 0)?;
         let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(actual, &expected);
         Ok(())
