@@ -1686,8 +1686,9 @@ impl PhysicalPlanner {
                 }
 
                 let array_input_index = if explode.position {
-                    // pos is non-nullable since outer=true is rejected at planning time.
-                    output_fields.push(Field::new("pos", DataType::Int32, false));
+                    // With outer=true, UnnestExec preserves rows whose array is empty or NULL
+                    // and emits a NULL position for them, so pos must be nullable in that case.
+                    output_fields.push(Field::new("pos", DataType::Int32, explode.outer));
                     projections.len() + 1
                 } else {
                     projections.len()
