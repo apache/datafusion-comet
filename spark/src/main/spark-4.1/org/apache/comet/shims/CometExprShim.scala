@@ -30,14 +30,14 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
+import org.apache.comet.serde.{Compatible, ExprOuterClass, Incompatible, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends ShimCometExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -91,6 +91,19 @@ trait CometExprShim extends CommonStringExprs {
               BooleanType) =>
         val Seq(bin, charset, _, _) = s.arguments
         stringDecode(expr, charset, bin, inputs, binding)
+
+      case s: StaticInvoke
+          if s.staticObject == classOf[Encode] &&
+            s.dataType.isInstanceOf[BinaryType] &&
+            s.functionName == "encode" &&
+            s.arguments.size == 4 &&
+            s.inputTypes == Seq(
+              StringTypeWithCollation(supportsTrimCollation = true),
+              StringTypeWithCollation(supportsTrimCollation = true),
+              BooleanType,
+              BooleanType) =>
+        val Seq(value, charset, _, _) = s.arguments
+        stringEncode(expr, charset, value, inputs, binding)
 
       case expr @ ToPrettyString(child, timeZoneId) =>
         val castSupported = CometCast.isSupported(
@@ -168,7 +181,7 @@ trait CometExprShim extends CommonStringExprs {
           optExprWithInfo(mapSortExpr, ms, ms.child)
         }
 
-      case _ => None
+      case _ => sparkExprToProto(expr, inputs, binding)
     }
   }
 }
