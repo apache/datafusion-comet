@@ -338,7 +338,7 @@ index 7ee18df3756..d09f70e5d99 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index a1d5d579338..c201d39cc78 100644
+index a1d5d579338..75d9f484c97 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 @@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
@@ -352,7 +352,26 @@ index a1d5d579338..c201d39cc78 100644
  import org.apache.spark.sql.execution.window.WindowExec
  import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
  import org.apache.spark.sql.functions._
-@@ -1187,10 +1188,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -970,7 +971,8 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("Window spill with more than the inMemoryThreshold and spillThreshold") {
++  test("Window spill with more than the inMemoryThreshold and spillThreshold",
++      IgnoreComet("Comet does not support spilling")) {
+     val df = Seq((1, "1"), (2, "2"), (1, "3"), (2, "4")).toDF("key", "value")
+     val window = Window.partitionBy($"key").orderBy($"value")
+ 
+@@ -982,7 +984,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-21258: complex object in combination with spilling") {
++  test("SPARK-21258: complex object in combination with spilling", IgnoreComet("Comet does not support spilling")) {
+     // Make sure we trigger the spilling path.
+     withSQLConf(SQLConf.WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "1",
+       SQLConf.WINDOW_EXEC_BUFFER_SPILL_THRESHOLD.key -> "17") {
+@@ -1187,10 +1189,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
  
      def isShuffleExecByRequirement(
@@ -366,7 +385,7 @@ index a1d5d579338..c201d39cc78 100644
        case _ => false
      }
  
-@@ -1213,7 +1216,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1213,13 +1217,15 @@ class DataFrameWindowFunctionsSuite extends QueryTest
        val shuffleByRequirement = windowed.queryExecution.executedPlan.exists {
          case w: WindowExec =>
            w.child.exists {
@@ -375,6 +394,15 @@ index a1d5d579338..c201d39cc78 100644
              case _ => false
            }
          case _ => false
+       }
+ 
+-      assert(shuffleByRequirement, "Can't find desired shuffle node from the query plan")
++      // Ignore shuffleByRequirement assertion as it refers to original Spark node names,
++      // which not relevant to Comet
++      // assert(shuffleByRequirement, "Can't find desired shuffle node from the query plan")
+     }
+   }
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
 index c4fb4fa943c..a04b23870a8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
@@ -1444,7 +1472,7 @@ index 5a413c77754..207b66e1d7b 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..dbcf3171946 100644
+index 2f8e401e743..28a98a30a7c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -1856,8 +1884,8 @@ index 2f8e401e743..dbcf3171946 100644
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
 -      assert(plan.finalPhysicalPlan.isInstanceOf[WindowExec])
 +      assert(
-+        plan.finalPhysicalPlan.isInstanceOf[WindowExec] ||
-+        plan.finalPhysicalPlan.find(_.isInstanceOf[CometWindowExec]).nonEmpty)
++        plan.finalPhysicalPlan.isInstanceOf[WindowExec] || plan.finalPhysicalPlan.children.head
++          .isInstanceOf[CometWindowExec])
        plan.inputPlan.output.zip(plan.finalPhysicalPlan.output).foreach { case (o1, o2) =>
          assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
        }

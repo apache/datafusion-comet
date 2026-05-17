@@ -21,31 +21,28 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, FrameLessOffsetWindowFunction, Lag, Lead, NamedExpression, RangeFrame, RowFrame, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Max, Min, Sum}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.types.{DateType, DecimalType, LongType, NumericType}
+import org.apache.spark.sql.types.Decimal
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{AggSerde, CometOperatorSerde, LiteralOuterClass, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto, serializeDataType}
 
 object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WINDOW_ENABLED)
-
-  override def getSupportLevel(op: WindowExec): SupportLevel = {
-    Incompatible(Some("Native WindowExec has known correctness issues"))
-  }
 
   override def convert(
       op: WindowExec,
@@ -53,34 +50,13 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val output = op.child.output
 
-    val winExprs: Array[WindowExpression] = op.windowExpression.flatMap { expr =>
-      expr match {
-        case alias: Alias =>
-          alias.child match {
-            case winExpr: WindowExpression =>
-              Some(winExpr)
-            case _ =>
-              None
-          }
-        case _ =>
-          None
-      }
+    val winExprs: Array[WindowExpression] = op.windowExpression.map {
+      case Alias(w: WindowExpression, _) => w
+      case Alias(MakeDecimal(w: WindowExpression, _, _, _), _) => w
+      case other =>
+        withInfo(op, s"Unsupported window expression: $other", other)
+        return None
     }.toArray
-
-    if (winExprs.length != op.windowExpression.length) {
-      withInfo(op, "Unsupported window expression(s)")
-      return None
-    }
-
-    // Offset window functions (LAG, LEAD) support arbitrary partition and order specs, so skip
-    // the validatePartitionAndSortSpecsForWindowFunc check which requires partition columns to
-    // equal order columns. That stricter check is only needed for aggregate window functions.
-    val hasOnlyOffsetFunctions = winExprs.nonEmpty &&
-      winExprs.forall(e => e.windowFunction.isInstanceOf[FrameLessOffsetWindowFunction])
-    if (!hasOnlyOffsetFunctions && op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty &&
-      !validatePartitionAndSortSpecsForWindowFunc(op.partitionSpec, op.orderSpec, op)) {
-      return None
-    }
 
     val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
     val partitionExprs = op.partitionSpec.map(exprToProto(_, op.child.output))
@@ -95,9 +71,16 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
       Some(builder.setWindow(windowBuilder).build())
     } else {
+      // Roll up reasons already attached to per-expression nodes so the Window
+      // operator itself carries a fallback attribution. Without this, the plan
+      // prints a bare `Window` and the real reason lives on a sub-expression
+      // that isn't obvious in the standard explain output.
+      val failing = winExprs.toSeq.zip(windowExprProto).collect { case (we, None) => we } ++
+        op.partitionSpec.zip(partitionExprs).collect { case (e, None) => e } ++
+        op.orderSpec.zip(sortOrders).collect { case (e, None) => e }
+      withInfo(op, failing: _*)
       None
     }
-
   }
 
   private def windowExprToProto(
@@ -126,13 +109,23 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                 None
               }
             case s: Sum =>
-              if (AggSerde.sumDataTypeSupported(s.dataType) && !s.dataType
-                  .isInstanceOf[DecimalType]) {
+              if (AggSerde.sumDataTypeSupported(s.dataType)) {
                 Some(agg)
               } else {
                 withInfo(windowExpr, s"datatype ${s.dataType} is not supported", expr)
                 None
               }
+            case a: Average =>
+              if (AggSerde.avgDataTypeSupported(a.dataType)) {
+                Some(agg)
+              } else {
+                withInfo(windowExpr, s"datatype ${a.dataType} is not supported", expr)
+                None
+              }
+            case _: First =>
+              Some(agg)
+            case _: Last =>
+              Some(agg)
             case _ =>
               withInfo(
                 windowExpr,
@@ -146,26 +139,83 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       }
     }.toArray
 
+    // If the window function is itself an (unsupported) AggregateExpression the
+    // filter above already recorded a specific reason on `windowExpr`. Short-circuit
+    // here to avoid the fallthrough `exprToProto` path tagging an additional generic
+    // "aggregateexpression is not supported" message.
+    if (aggregateExpressions.isEmpty &&
+      windowExpr.windowFunction.isInstanceOf[AggregateExpression]) {
+      return None
+    }
+
     val (aggExpr, builtinFunc, ignoreNulls) = if (aggregateExpressions.nonEmpty) {
       val modes = aggregateExpressions.map(_.mode).distinct
       assert(modes.size == 1 && modes.head == Complete)
-      (aggExprToProto(aggregateExpressions.head, output, true, conf), None, false)
+      val agg = aggregateExpressions.head
+      val ignoreNulls = agg.aggregateFunction match {
+        case f: First => f.ignoreNulls
+        case l: Last => l.ignoreNulls
+        case _ => false
+      }
+      (aggExprToProto(agg, output, true, conf), None, ignoreNulls)
     } else {
       windowExpr.windowFunction match {
+        case lag: Lag if !lag.default.isInstanceOf[Literal] =>
+          // https://github.com/apache/datafusion-comet/issues/4268
+          withInfo(windowExpr, "Lag default value must be a literal", lag.default)
+          (None, None, false)
         case lag: Lag =>
           val inputExpr = exprToProto(lag.input, output)
           val offsetExpr = exprToProto(lag.inputOffset, output)
           val defaultExpr = exprToProto(lag.default, output)
           val func = scalarFunctionExprToProto("lag", inputExpr, offsetExpr, defaultExpr)
           (None, func, lag.ignoreNulls)
+        case lead: Lead if !lead.default.isInstanceOf[Literal] =>
+          // https://github.com/apache/datafusion-comet/issues/4268
+          withInfo(windowExpr, "Lead default value must be a literal", lead.default)
+          (None, None, false)
         case lead: Lead =>
           val inputExpr = exprToProto(lead.input, output)
           val offsetExpr = exprToProto(lead.offset, output)
           val defaultExpr = exprToProto(lead.default, output)
           val func = scalarFunctionExprToProto("lead", inputExpr, offsetExpr, defaultExpr)
           (None, func, lead.ignoreNulls)
-        case _ =>
-          (None, exprToProto(windowExpr.windowFunction, output), false)
+        case _: RowNumber =>
+          (None, scalarFunctionExprToProto("row_number"), false)
+        case _: Rank =>
+          (None, scalarFunctionExprToProto("rank"), false)
+        case _: DenseRank =>
+          (None, scalarFunctionExprToProto("dense_rank"), false)
+        case _: PercentRank =>
+          (None, scalarFunctionExprToProto("percent_rank"), false)
+        case _: CumeDist =>
+          (None, scalarFunctionExprToProto("cume_dist"), false)
+        case nt: NTile =>
+          // Known correctness bug: Comet's NTILE produces different bucket
+          // assignments than Spark; tracked in #4255. Fall back to Spark.
+          withInfo(windowExpr, "NTILE has a correctness bug in Comet tracked in #4255", nt)
+          (None, None, false)
+        case nv: NthValue =>
+          val inputExpr = exprToProto(nv.input, output)
+
+          val offsetExpr = nv.offset.eval() match {
+            case n: Number =>
+              exprToProto(Literal(n.longValue(), LongType), output)
+            case _ =>
+              withInfo(
+                windowExpr,
+                s"Unsupported NTH_VALUE offset: ${nv.offset} (${nv.offset.dataType})")
+              None
+          }
+          val func = scalarFunctionExprToProto("nth_value", inputExpr, offsetExpr)
+          (None, func, nv.ignoreNulls)
+
+        case other =>
+          withInfo(
+            windowExpr,
+            s"window function ${other.getClass.getSimpleName} is not supported",
+            other)
+          (None, None, false)
       }
     }
 
@@ -174,6 +224,37 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     val f = windowExpr.windowSpec.frameSpecification
+
+    // Comet's native window planner ships RANGE frame offsets as
+    // ScalarValue::Int64, but a couple of ORDER BY types don't tolerate that:
+    //   - DATE: arrow-arith requires an Interval RHS for Date32 arithmetic,
+    //     so execution fails with
+    //       Invalid date arithmetic operation: Date32 + Int32
+    //   - DECIMAL: Spark decimal arithmetic widens precision on +/-, so the
+    //     computed boundary (e.g. Decimal(11,0)) doesn't match the current
+    //     value's precision (e.g. Decimal(10,0)) and the comparator fails
+    //     with "Uncomparable values".
+    // Fall back to Spark for those shapes. UNBOUNDED / CURRENT ROW bounds
+    // don't evaluate the offending arithmetic and stay native.
+    f match {
+      case SpecifiedWindowFrame(RangeFrame, lb, ub)
+          if !lb.isInstanceOf[SpecialFrameBoundary] ||
+            !ub.isInstanceOf[SpecialFrameBoundary] =>
+        windowExpr.windowSpec.orderSpec.headOption.map(_.dataType) match {
+          case Some(DateType) =>
+            withInfo(
+              windowExpr,
+              "RANGE frame with explicit offset on DATE ORDER BY is not supported")
+            return None
+          case Some(_: DecimalType) =>
+            withInfo(
+              windowExpr,
+              "RANGE frame with explicit offset on DECIMAL ORDER BY is not supported")
+            return None
+          case _ =>
+        }
+      case _ =>
+    }
 
     val (frameType, lowerBound, upperBound) = f match {
       case SpecifiedWindowFrame(frameType, lBound, uBound) =>
@@ -197,7 +278,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
             val offset = e.eval() match {
               case i: Integer => i.toLong
               case l: Long => l
-              case _ => return None
+              case _ =>
+                withInfo(windowExpr, s"Unsupported ROWS frame lower offset: $e (${e.dataType})")
+                return None
             }
             OperatorOuterClass.LowerWindowFrameBound
               .newBuilder()
@@ -207,9 +290,25 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                   .setOffset(offset)
                   .build())
               .build()
-          case _ =>
-            // TODO add support for numeric and temporal RANGE BETWEEN expressions
-            // see https://github.com/apache/datafusion-comet/issues/1246
+          case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
+            rangeBoundLiteral(e, isLower = true, output) match {
+              case Some(lit) =>
+                OperatorOuterClass.LowerWindowFrameBound
+                  .newBuilder()
+                  .setPreceding(
+                    OperatorOuterClass.Preceding
+                      .newBuilder()
+                      .setRangeOffset(lit)
+                      .build())
+                  .build()
+              case None =>
+                withInfo(windowExpr, s"Unsupported RANGE frame lower offset: $e")
+                return None
+            }
+          case e =>
+            withInfo(
+              windowExpr,
+              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
             return None
         }
 
@@ -228,7 +327,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
             val offset = e.eval() match {
               case i: Integer => i.toLong
               case l: Long => l
-              case _ => return None
+              case _ =>
+                withInfo(windowExpr, s"Unsupported ROWS frame upper offset: $e (${e.dataType})")
+                return None
             }
             OperatorOuterClass.UpperWindowFrameBound
               .newBuilder()
@@ -238,9 +339,25 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                   .setOffset(offset)
                   .build())
               .build()
-          case _ =>
-            // TODO add support for numeric and temporal RANGE BETWEEN expressions
-            // see https://github.com/apache/datafusion-comet/issues/1246
+          case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
+            rangeBoundLiteral(e, isLower = false, output) match {
+              case Some(lit) =>
+                OperatorOuterClass.UpperWindowFrameBound
+                  .newBuilder()
+                  .setFollowing(
+                    OperatorOuterClass.Following
+                      .newBuilder()
+                      .setRangeOffset(lit)
+                      .build())
+                  .build()
+              case None =>
+                withInfo(windowExpr, s"Unsupported RANGE frame upper offset: $e")
+                return None
+            }
+          case e =>
+            withInfo(
+              windowExpr,
+              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
             return None
         }
 
@@ -268,21 +385,24 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     val spec =
       OperatorOuterClass.WindowSpecDefinition.newBuilder().setFrameSpecification(frame).build()
 
+    val resultTypeProto = serializeDataType(windowExpr.dataType)
+
     if (builtinFunc.isDefined) {
-      Some(
-        OperatorOuterClass.WindowExpr
-          .newBuilder()
-          .setBuiltInWindowFunction(builtinFunc.get)
-          .setSpec(spec)
-          .setIgnoreNulls(ignoreNulls)
-          .build())
+      val b = OperatorOuterClass.WindowExpr
+        .newBuilder()
+        .setBuiltInWindowFunction(builtinFunc.get)
+        .setSpec(spec)
+        .setIgnoreNulls(ignoreNulls)
+      resultTypeProto.foreach(b.setResultType)
+      Some(b.build())
     } else if (aggExpr.isDefined) {
-      Some(
-        OperatorOuterClass.WindowExpr
-          .newBuilder()
-          .setAggFunc(aggExpr.get)
-          .setSpec(spec)
-          .build())
+      val b = OperatorOuterClass.WindowExpr
+        .newBuilder()
+        .setAggFunc(aggExpr.get)
+        .setSpec(spec)
+        .setIgnoreNulls(ignoreNulls)
+      resultTypeProto.foreach(b.setResultType)
+      Some(b.build())
     } else {
       None
     }
@@ -300,38 +420,56 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       SerializedPlan(None))
   }
 
-  private def validatePartitionAndSortSpecsForWindowFunc(
-      partitionSpec: Seq[Expression],
-      orderSpec: Seq[SortOrder],
-      op: SparkPlan): Boolean = {
-    if (partitionSpec.length != orderSpec.length) {
-      return false
-    }
-
-    val partitionColumnNames = partitionSpec.collect {
-      case a: AttributeReference => a.name
-      case other =>
-        withInfo(op, s"Unsupported partition expression: ${other.getClass.getSimpleName}")
-        return false
-    }
-
-    val orderColumnNames = orderSpec.collect { case s: SortOrder =>
-      s.child match {
-        case a: AttributeReference => a.name
-        case other =>
-          withInfo(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
-          return false
+  // Folds a RANGE frame bound expression to a constant and serializes its
+  // magnitude as a typed Literal proto. Spark encodes PRECEDING/FOLLOWING via
+  // the sign of the literal (negative => PRECEDING, positive => FOLLOWING),
+  // but the proto only carries magnitude with direction implied by Lower vs
+  // Upper position. So we reject lower=positive (FOLLOWING) and upper=negative
+  // (PRECEDING) by returning None.
+  private def rangeBoundLiteral(
+      bound: Expression,
+      isLower: Boolean,
+      output: Seq[Attribute]): Option[LiteralOuterClass.Literal] = {
+    val rawValue =
+      try {
+        bound.eval()
+      } catch {
+        case _: Exception => return None
       }
+    if (rawValue == null) {
+      return None
     }
-
-    if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
-        partCol != orderCol
-      }) {
-      withInfo(op, "Partitioning and sorting specifications must be the same.")
-      return false
+    // Taking the absolute value of the narrow signed MIN_VALUE constants
+    // overflows silently (Math.abs(Byte.MinValue).toByte == Byte.MinValue),
+    // which would flip the sign and produce an incorrect frame bound. Reject
+    // those pathological inputs up front.
+    val (signum, absValue): (Int, Any) = rawValue match {
+      case b: java.lang.Byte =>
+        if (b.byteValue() == Byte.MinValue) return None
+        (Integer.signum(b.intValue()), java.lang.Byte.valueOf(Math.abs(b.intValue()).toByte))
+      case s: java.lang.Short =>
+        if (s.shortValue() == Short.MinValue) return None
+        (Integer.signum(s.intValue()), java.lang.Short.valueOf(Math.abs(s.intValue()).toShort))
+      case i: java.lang.Integer =>
+        if (i.intValue() == Int.MinValue) return None
+        (Integer.signum(i.intValue()), java.lang.Integer.valueOf(Math.abs(i.intValue())))
+      case l: java.lang.Long =>
+        if (l.longValue() == Long.MinValue) return None
+        (java.lang.Long.signum(l.longValue()), java.lang.Long.valueOf(Math.abs(l.longValue())))
+      case f: java.lang.Float =>
+        (Math.signum(f.doubleValue()).toInt, java.lang.Float.valueOf(Math.abs(f.floatValue())))
+      case d: java.lang.Double =>
+        (Math.signum(d.doubleValue()).toInt, java.lang.Double.valueOf(Math.abs(d.doubleValue())))
+      case d: Decimal =>
+        (d.toBigDecimal.signum, d.abs)
+      case _ => return None
     }
+    if (isLower && signum > 0) return None
+    if (!isLower && signum < 0) return None
 
-    true
+    exprToProto(Literal(absValue, bound.dataType), output).flatMap { exprProto =>
+      if (exprProto.hasLiteral) Some(exprProto.getLiteral) else None
+    }
   }
 
 }
