@@ -130,7 +130,15 @@ under the License.
     </dependency>
     <!-- We shade & relocate Arrow dependencies in comet-common, so comet-spark module no longer
          depends on Arrow. However, when running `mvn test` we still need Arrow classes in the
-         classpath, since the Maven shading happens in 'package' phase which is after 'test' -->
+         classpath, since the Maven shading happens in 'package' phase which is after 'test'.
+         arrow-vector is listed as provided (not test) so that Scala sees the full
+         org.apache.arrow.vector package during compile; without it, the partial
+         org/apache/arrow/c/ tree in common/target/classes masks the package. -->
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-vector</artifactId>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>org.apache.arrow</groupId>
       <artifactId>arrow-memory-unsafe</artifactId>

@@ -311,6 +311,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_PYARROW_UDF_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.pyarrowUdf.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: whether to enable optimized execution of PyArrow UDFs " +
+          "(mapInArrow/mapInPandas). When enabled, Comet passes Arrow columnar data " +
+          "directly to Python UDFs without the intermediate Arrow-to-Row-to-Arrow " +
+          "conversion that Spark normally performs. Disabled by default while the " +
+          "feature stabilizes.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
     .category(CATEGORY_TUNING)
     .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")

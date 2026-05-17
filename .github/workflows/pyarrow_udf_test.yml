@@ -1,0 +1,112 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: PyArrow UDF Tests
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - main
+    paths: &feature-paths
+      - "pom.xml"
+      - "common/pom.xml"
+      - "common/src/main/scala/org/apache/comet/CometConf.scala"
+      - "spark/pom.xml"
+      - "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala"
+      - "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala"
+      - "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala"
+      - "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala"
+      - "spark/src/test/resources/pyspark/conftest.py"
+      - "spark/src/test/resources/pyspark/test_pyarrow_udf.py"
+      - "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
+      - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
+      - ".github/workflows/pyarrow_udf_test.yml"
+  pull_request:
+    paths: *feature-paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
+
+jobs:
+  pyarrow-udf:
+    name: PyArrow UDF (Spark 4.0, JDK 17, Python 3.11)
+    runs-on: ubuntu-latest
+    container:
+      # Pinned to the Debian 12 (bookworm) base so the system `python3` is 3.11. The default
+      # `amd64/rust` image is Debian 13 (trixie) which ships Python 3.13 and no python3.11 apt
+      # package, breaking `apt-get install python3.11`.
+      image: rust:bookworm
+      env:
+        JAVA_TOOL_OPTIONS: "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-pyarrow-udf
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Build Comet (debug, Spark 4.0 / Scala 2.13)
+        run: |
+          cd native && cargo build
+          cd .. && ./mvnw -B install -DskipTests -Pspark-4.0 -Pscala-2.13
+
+      - name: Install Python 3.11 and pip
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3 python3-venv python3-pip
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --upgrade pip
+          /tmp/venv/bin/pip install "pyspark==4.0.1" "pyarrow>=14" pandas pytest
+
+      - name: Run PyArrow UDF pytest
+        env:
+          # Spark launches Python workers in a fresh subprocess and looks up `python3`
+          # on PATH unless PYSPARK_PYTHON is set. Without this, workers use the system
+          # python which has no pyarrow installed and UDF execution fails with
+          # ModuleNotFoundError.
+          PYSPARK_PYTHON: /tmp/venv/bin/python
+          PYSPARK_DRIVER_PYTHON: /tmp/venv/bin/python
+        run: |
+          /tmp/venv/bin/python -m pytest -v \
+            spark/src/test/resources/pyspark/test_pyarrow_udf.py

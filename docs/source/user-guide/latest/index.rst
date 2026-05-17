@@ -48,5 +48,6 @@ to read more.
    Understanding Comet Plans <understanding-comet-plans>
    Tuning Guide <tuning>
    Metrics Guide <metrics>
+   PyArrow UDF Acceleration <pyarrow-udfs>
    Iceberg Guide <iceberg>
    Kubernetes Guide <kubernetes>
