@@ -91,6 +91,7 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
             }
             _ => unreachable!(),
         },
+        DataTypeId::DurationMicrosecond => ArrowDataType::Duration(TimeUnit::Microsecond),
         DataTypeId::Timestamp => {
             ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".to_string().into()))
         }

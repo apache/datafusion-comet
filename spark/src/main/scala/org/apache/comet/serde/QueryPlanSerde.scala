@@ -228,6 +228,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[LastDay] -> CometLastDay,
       classOf[Hour] -> CometHour,
       classOf[MakeDate] -> CometMakeDate,
+      classOf[MakeDTInterval] -> CometMakeDTInterval,
       classOf[Minute] -> CometMinute,
       classOf[NextDay] -> CometNextDay,
       classOf[Second] -> CometSecond,
@@ -362,7 +363,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-        _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
+        _: DecimalType | _: DateType | _: DayTimeIntervalType | _: BooleanType | _: NullType =>
       true
     case s: StructType if allowComplex =>
       s.fields.nonEmpty && s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
@@ -398,6 +399,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: ArrayType => 14
       case _: MapType => 15
       case _: StructType => 16
+      case _: DayTimeIntervalType => 17
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None
