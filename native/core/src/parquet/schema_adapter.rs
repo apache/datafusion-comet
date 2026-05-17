@@ -826,7 +826,10 @@ impl SparkPhysicalExprAdapter {
             if !self.parquet_options.allow_timestamp_ltz_to_ntz
                 && matches!(
                     (physical_type, target_type),
-                    (DataType::Timestamp(_, Some(_)), DataType::Timestamp(_, None))
+                    (
+                        DataType::Timestamp(_, Some(_)),
+                        DataType::Timestamp(_, None)
+                    )
                 )
             {
                 let rejection = reject_on_non_empty_expr(
