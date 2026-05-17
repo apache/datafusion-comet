@@ -87,7 +87,42 @@ message Expr {
     EmptyExpr monotonically_increasing_id = 64;
     UnixTimestamp unix_timestamp = 65;
     FromJson from_json = 66;
+    ToCsv to_csv = 67;
+    HoursTransform hours_transform = 68;
+    ArraysZip arrays_zip = 69;
+    JvmScalarUdf jvm_scalar_udf = 70;
   }
+
+  // Optional QueryContext for error reporting (contains SQL text and position)
+  optional QueryContext query_context = 90;
+
+  // Unique expression ID for context lookup during error creation
+  optional uint64 expr_id = 91;
+}
+
+// QueryContext provides SQL query context for error messages.
+// Mirrors Spark's SQLQueryContext for rich error reporting.
+message QueryContext {
+  // Full SQL query text
+  string sql_text = 1;
+
+  // Character offset where expression starts (0-based)
+  int32 start_index = 2;
+
+  // Character offset where expression ends (0-based, inclusive)
+  int32 stop_index = 3;
+
+  // Type of SQL object (e.g., "VIEW", "Project", "Filter")
+  optional string object_type = 4;
+
+  // Name of object (e.g., view name, column name)
+  optional string object_name = 5;
+
+  // Line number in SQL query (1-based)
+  int32 line = 6;
+
+  // Column position within the line (0-based)
+  int32 start_position = 7;
 }
 
 message AggExpr {
@@ -107,7 +142,18 @@ message AggExpr {
     Stddev stddev = 14;
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
+    CollectSet collectSet = 17;
   }
+
+  // Optional filter expression for SQL FILTER (WHERE ...) clause.
+  // Only set in Partial aggregation mode; absent in Final/PartialMerge.
+  optional Expr filter = 89;
+
+  // Optional QueryContext for error reporting (contains SQL text and position)
+  optional QueryContext query_context = 90;
+
+  // Unique expression ID for context lookup during error creation
+  optional uint64 expr_id = 91;
 }
 
 enum StatisticsType {
@@ -203,6 +249,22 @@ message BloomFilterAgg {
   Expr numItems = 2;
   Expr numBits = 3;
   DataType datatype = 4;
+  // Output serialization version. Spark 4.0 and earlier always wrote V1; Spark
+  // 4.1+ defaults to V2 (different bit-scattering algorithm and a `seed` field
+  // in the binary format). The JVM serde sets this to the matching version so
+  // Comet's aggregate output is byte-equivalent with Spark's.
+  BloomFilterVersion version = 5;
+}
+
+enum BloomFilterVersion {
+  BLOOM_FILTER_VERSION_UNSPECIFIED = 0;
+  BLOOM_FILTER_VERSION_V1 = 1;
+  BLOOM_FILTER_VERSION_V2 = 2;
+}
+
+message CollectSet {
+  Expr child = 1;
+  DataType datatype = 2;
 }
 
 enum EvalMode {
@@ -224,6 +286,9 @@ message Cast {
   string timezone = 3;
   EvalMode eval_mode = 4;
   bool allow_incompat = 5;
+  // True when running against Spark 4.0+. Controls version-specific cast behaviour
+  // such as the handling of leading whitespace before T-prefixed time-only strings.
+  bool is_spark4_plus = 6;
 }
 
 message BinaryExpr {
@@ -276,6 +341,22 @@ message FromJson {
   string timezone = 3;
 }
 
+message ToCsv {
+  Expr child = 1;
+  CsvWriteOptions options = 2;
+}
+
+message CsvWriteOptions {
+  string delimiter = 1;
+  string quote = 2;
+  string escape = 3;
+  string null_value = 4;
+  bool quote_all = 5;
+  bool ignore_leading_white_space = 6;
+  bool ignore_trailing_white_space = 7;
+  string timezone = 8;
+}
+
 enum BinaryOutputStyle {
   UTF8 = 0;
   BASIC = 1;
@@ -293,6 +374,10 @@ message ToPrettyString {
 message Hour {
   Expr child = 1;
   string timezone = 2;
+}
+
+message HoursTransform {
+  Expr child = 1;
 }
 
 message Minute {
@@ -422,4 +507,26 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+// Spark's ArraysZip takes children: Seq[Expression] and names: Seq[Expression]
+// https://github.com/apache/spark/blob/branch-4.1/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L296
+message ArraysZip {
+  repeated Expr values = 1;
+  repeated string names = 2;
+}
+
+// Scalar UDF dispatched to the JVM via JNI. Native side exports input arrays
+// through Arrow C Data Interface, calls CometUdfBridge.evaluate, and imports
+// the result.
+message JvmScalarUdf {
+  // Fully-qualified Java/Scala class name implementing
+  // org.apache.comet.udf.CometUDF (must have a public no-arg constructor).
+  string class_name = 1;
+  // Argument expressions, evaluated by the native side before invocation.
+  repeated Expr args = 2;
+  // Expected return type. Used to import the result FFI_ArrowArray.
+  DataType return_type = 3;
+  // Whether the result column may contain nulls.
+  bool return_nullable = 4;
 }

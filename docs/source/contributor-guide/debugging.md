@@ -33,8 +33,14 @@ _Caveat: The steps here have only been tested with JDK 11_ on Mac (M1)
 
 ## Debugging for Advanced Developers
 
-Add a `.lldbinit` to comet/core. This is not strictly necessary but will be useful if you want to
-use advanced `lldb` debugging.
+Add a `.lldbinit` to comet/native. This is not strictly necessary but will be useful if you want to
+use advanced `lldb` debugging. For example, we can ignore some exceptions and signals that are not relevant
+to our debugging and would otherwise cause the debugger to stop.
+
+```
+settings set platform.plugin.darwin.ignored-exceptions EXC_BAD_ACCESS|EXC_BAD_INSTRUCTION
+process handle -n true -p true -s false SIGBUS SIGSEGV SIGILL
+```
 
 ### In IntelliJ
 
@@ -127,10 +133,10 @@ To build Comet with this feature enabled:
 make release COMET_FEATURES=backtrace
 ```
 
-Start Comet with `RUST_BACKTRACE=1`
+Set `RUST_BACKTRACE=1` for the Spark worker/executor process, or for `spark-submit` if running in local mode.
 
 ```console
-RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
+RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark4.1_2.13-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
 ```
 
 Get the expanded exception details
@@ -188,3 +194,99 @@ This produces output like the following:
 
 Additionally, you can place a `log4rs.yaml` configuration file inside the Comet configuration directory specified by the `COMET_CONF_DIR` environment variable to enable more advanced logging configurations. This file uses the [log4rs YAML configuration format](https://docs.rs/log4rs/latest/log4rs/#configuration-via-a-yaml-file).
 For example, see: [log4rs.yaml](https://github.com/apache/datafusion-comet/blob/main/conf/log4rs.yaml).
+
+### Debugging Memory Reservations
+
+Set `spark.comet.debug.memory=true` to log all calls that grow or shrink memory reservations.
+
+Example log output:
+
+```
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(256232960) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(256375168) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(256899456) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(257296128) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(257820416) returning Err
+[Task 486] MemoryPool[ExternalSorterMerge[6]].shrink(10485760)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(150464)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(146688)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(137856)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(141952)
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(524288)
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(68928) returning Ok
+```
+
+When backtraces are enabled (see earlier section) then backtraces will be included for failed allocations.
+
+### Dumping native stream output with the `debug` module
+
+The `native/core/src/debug/` module ships small wrappers that print every
+`RecordBatch` (and, at expression granularity, every `ColumnarValue`) flowing
+through a node. They are gated behind `#[cfg(debug_assertions)]` in
+`native/core/src/lib.rs`, so they exist in every `cargo check` / `cargo test`
+/ `make core` build but are stripped from `make release`. CI builds them on
+every run, so the wrappers cannot bitrot.
+
+Two types are exposed:
+
+- `DebugExecutionDataStream` — wraps an `Arc<dyn ExecutionPlan>`, prints each batch it
+  produces.
+- `DebugExecutionDataPhyExpr` — wraps an `Arc<dyn PhysicalExpr>`, prints the input
+  batch and output `ColumnarValue` for every `evaluate()` call.
+
+Output is `eprintln!` + `dbg!`, i.e. plain stderr of the executor process — the
+same place `rust-gdb` / `dbg!` output lands. It is not routed through `log4rs`,
+so `spark.comet.debug.enabled` and `COMET_LOG_LEVEL` do not affect it.
+
+#### Example: dumping window operator output
+
+In `PhysicalPlanner::create_plan` in `native/core/src/execution/planner.rs`,
+the `OpStruct::Window` arm builds a `BoundedWindowAggExec` and hands it to
+`SparkPlan::new`. Wrap the node between those two steps:
+
+```rust
+let window_agg = Arc::new(BoundedWindowAggExec::try_new(
+    window_expr?,
+    Arc::clone(&child.native_plan),
+    InputOrderMode::Sorted,
+    !partition_exprs.is_empty(),
+)?);
+
+#[cfg(debug_assertions)]
+let window_agg: Arc<dyn datafusion::physical_plan::ExecutionPlan> = {
+    use crate::debug::DebugExecutionDataStream;
+    Arc::new(DebugExecutionDataStream::new("window-output", window_agg))
+};
+
+Ok((
+    scans,
+    shuffle_scans,
+    Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
+))
+```
+
+The `let` rebinding keeps the original `window_agg` typed concretely on release
+builds (where the `cfg` block is compiled out) and re-binds it to
+`Arc<dyn ExecutionPlan>` when the debug module is active. No annotation is
+needed on the first `let` because release builds use the original binding
+directly.
+
+Rebuild with `make core` and run a window test, for example:
+
+```sh
+./mvnw test -Dsuites="org.apache.comet.exec.CometWindowExecSuite window query with rangeBetween" -Dtest=none
+```
+
+Sample stderr excerpt (abbreviated):
+
+```text
+[comet-debug] DebugExecutionDataStream[window-output] execute(partition=0)
+[core/src/debug/debug_batch_stream.rs:30] batch = RecordBatch { columns: [...], row_count: 4 }
+[core/src/debug/debug_batch_stream.rs:37] col_idx = 0
+[core/src/debug/debug_batch_stream.rs:37] column = PrimitiveArray<Int32> [1, 1, 2, 2]
+[core/src/debug/debug_batch_stream.rs:37] column.nulls() = None
+...
+```

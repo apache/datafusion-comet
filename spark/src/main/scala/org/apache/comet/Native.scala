@@ -21,7 +21,7 @@ package org.apache.comet
 
 import java.nio.ByteBuffer
 
-import org.apache.spark.CometTaskMemoryManager
+import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
 import org.apache.comet.parquet.CometFileKeyUnwrapper
@@ -54,7 +54,7 @@ class Native extends NativeBase {
   // scalastyle:off
   @native def createPlan(
       id: Long,
-      iterators: Array[CometBatchIterator],
+      iterators: Array[Object],
       plan: Array[Byte],
       configMapProto: Array[Byte],
       partitionCount: Int,
@@ -69,7 +69,8 @@ class Native extends NativeBase {
       memoryLimitPerTask: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
-      keyUnwrapper: CometFileKeyUnwrapper): Long
+      keyUnwrapper: CometFileKeyUnwrapper,
+      taskContext: TaskContext): Long
   // scalastyle:on
 
   /**
@@ -202,6 +203,11 @@ class Native extends NativeBase {
    *   Number of bytes in use
    */
   @native def logMemoryUsage(name: String, memoryUsageBytes: Long): Unit
+
+  /**
+   * Returns the Rust thread ID for the current thread.
+   */
+  @native def getRustThreadId(): Long
 
   // Native Columnar to Row conversion methods
 

@@ -98,6 +98,14 @@ public class RESTCatalogAdapter implements RESTClient {
   private final SupportsNamespaces asNamespaceCatalog;
   private final ViewCatalog asViewCatalog;
 
+  // Optional credentials to inject into loadTable responses, simulating REST catalog
+  // credential vending. When non-empty, these are added to LoadTableResponse.config().
+  private Map<String, String> vendedCredentials = ImmutableMap.of();
+
+  public void setVendedCredentials(Map<String, String> credentials) {
+    this.vendedCredentials = credentials;
+  }
+
   public RESTCatalogAdapter(Catalog catalog) {
     this.catalog = catalog;
     this.asNamespaceCatalog =
@@ -278,6 +286,26 @@ public class RESTCatalogAdapter implements RESTClient {
 
   @SuppressWarnings({"MethodLength", "checkstyle:CyclomaticComplexity"})
   public <T extends RESTResponse> T handleRequest(
+      Route route, Map<String, String> vars, Object body, Class<T> responseType) {
+    T response = doHandleRequest(route, vars, body, responseType);
+    // Inject vended credentials into any LoadTableResponse, simulating REST catalog
+    // credential vending. This covers CREATE_TABLE, LOAD_TABLE, UPDATE_TABLE, etc.
+    if (!vendedCredentials.isEmpty() && response instanceof LoadTableResponse) {
+      LoadTableResponse original = (LoadTableResponse) response;
+      @SuppressWarnings("unchecked")
+      T withCreds =
+          (T)
+              LoadTableResponse.builder()
+                  .withTableMetadata(original.tableMetadata())
+                  .addAllConfig(original.config())
+                  .addAllConfig(vendedCredentials)
+                  .build();
+      return withCreds;
+    }
+    return response;
+  }
+
+  private <T extends RESTResponse> T doHandleRequest(
       Route route, Map<String, String> vars, Object body, Class<T> responseType) {
     switch (route) {
       case TOKENS:

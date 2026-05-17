@@ -23,21 +23,43 @@ concurrency:
 
 on:
   push:
-    paths-ignore:
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+    branches:
+      - main
+    paths:
+      - "native/**/src/**"
+      - "native/**/Cargo.toml"
+      - "native/Cargo.lock"
+      - "!native/hdfs/**"
+      - "!native/fs-hdfs/**"
+      - "common/src/main/**"
+      - "common/pom.xml"
+      - "spark/src/main/**"
+      - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "spark/pom.xml"
+      - "dev/diffs/**"
+      - "pom.xml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/spark_sql_test.yml"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-spark-builder/**"
   pull_request:
-    paths-ignore:
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+    paths:
+      - "native/**/src/**"
+      - "native/**/Cargo.toml"
+      - "native/Cargo.lock"
+      - "!native/hdfs/**"
+      - "!native/fs-hdfs/**"
+      - "common/src/main/**"
+      - "common/pom.xml"
+      - "spark/src/main/**"
+      - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "spark/pom.xml"
+      - "dev/diffs/**"
+      - "pom.xml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/spark_sql_test.yml"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-spark-builder/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -50,6 +72,11 @@ on:
 
 env:
   RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
 
 jobs:
 
@@ -75,17 +102,19 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-ci-
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
 
       - name: Build native library (CI profile)
         run: |
           cd native
           cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
@@ -99,39 +128,30 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   spark-sql-test:
     needs: build-native
     strategy:
       matrix:
-        os: [ubuntu-24.04]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
-          - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
+          - {name: "sql_core-1", args1: "", args2: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"}
           - {name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
           - {name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"}
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
-        # Test combinations:
-        # - auto scan: all Spark versions (3.4, 3.5, 4.0)
-        # - native_comet: Spark 3.4, 3.5
-        # - native_iceberg_compat: Spark 3.5 only
+        # Since 4f5eaf0, auto mode uses native_datafusion for V1 scans,
+        # so we only need to test with auto.
         config:
-          - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto', scan-env: ''}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto', scan-env: ''}
-          - {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto', scan-env: ''}
-          - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'native_comet', scan-env: 'COMET_PARQUET_SCAN_IMPL=native_comet'}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'native_comet', scan-env: 'COMET_PARQUET_SCAN_IMPL=native_comet'}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'native_iceberg_compat', scan-env: 'COMET_PARQUET_SCAN_IMPL=native_iceberg_compat'}
-        # Skip sql_hive-1 for Spark 4.0 due to https://github.com/apache/datafusion-comet/issues/2946
-        exclude:
-          - config: {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto', scan-env: ''}
-            module: {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
+          - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
+          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
+          - {spark-short: '4.0', spark-full: '4.0.2', java: 21, scan-impl: 'auto'}
+          - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
       fail-fast: false
-    name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
-    runs-on: ${{ matrix.os }}
+    name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
@@ -142,7 +162,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.config.java }}
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -156,18 +176,32 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ${{ matrix.config.scan-env }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
-            build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
+            build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
           fi
         env:
           LC_ALL: "C.UTF-8"
+          # Standard GitHub runners have 7 GB RAM; cap SBT heap so forked test
+          # JVMs fit alongside it.
+          SBT_MEM: "3072"
+          # Disable parallel test execution to reduce peak memory usage —
+          # mirrors what apache/spark does on GitHub Actions.
+          SERIAL_SBT_TESTS: "1"
+          # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
+          # build_java21.yml and build_java25.yml set this same env var to
+          # process-isolate the V1/V2 Parquet and Orc source suites because
+          # they exhibit cross-suite resource interactions (file-stream and
+          # thread leaks) under the newer JDKs. project/SparkBuild.scala
+          # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
+          # listed suite. Empty value is a safe no-op.
+          DEDICATED_JVM_SBT_TESTS: ${{ matrix.config.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
-          name: fallback-log-spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}
+          name: fallback-log-spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
           path: "**/fallback.log"
 
   merge-fallback-logs:
@@ -177,14 +211,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download fallback log artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: fallback-logs/
       - name: Merge fallback logs
         run: |
           find ./fallback-logs/ -type f -name "fallback.log" -print0 | xargs -0 cat | sort -u > all_fallback.log
       - name: Upload merged fallback log
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: all-fallback-log
           path: all_fallback.log

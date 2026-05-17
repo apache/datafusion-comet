@@ -1,0 +1,48 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[engine]
+name = "comet-iceberg-hashjoin"
+
+[env]
+required = ["COMET_JAR", "ICEBERG_JAR", "ICEBERG_WAREHOUSE"]
+
+[env.defaults]
+ICEBERG_CATALOG = "local"
+
+[spark_submit]
+jars = ["$COMET_JAR", "$ICEBERG_JAR"]
+driver_class_path = ["$COMET_JAR", "$ICEBERG_JAR"]
+
+[spark_conf]
+"spark.driver.extraClassPath" = "$COMET_JAR:$ICEBERG_JAR"
+"spark.executor.extraClassPath" = "$COMET_JAR:$ICEBERG_JAR"
+"spark.plugins" = "org.apache.spark.CometPlugin"
+"spark.shuffle.manager" = "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+"spark.comet.exec.replaceSortMergeJoin" = "true"
+"spark.comet.expression.Cast.allowIncompatible" = "true"
+"spark.comet.enabled" = "true"
+"spark.comet.exec.enabled" = "true"
+"spark.comet.scan.icebergNative.enabled" = "true"
+"spark.comet.explainFallback.enabled" = "true"
+"spark.sql.catalog.${ICEBERG_CATALOG}" = "org.apache.iceberg.spark.SparkCatalog"
+"spark.sql.catalog.${ICEBERG_CATALOG}.type" = "hadoop"
+"spark.sql.catalog.${ICEBERG_CATALOG}.warehouse" = "$ICEBERG_WAREHOUSE"
+"spark.sql.defaultCatalog" = "${ICEBERG_CATALOG}"
+
+[tpcbench_args]
+use_iceberg = true

@@ -20,7 +20,6 @@
 package org.apache.comet.parquet;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,14 +41,15 @@ import org.apache.parquet.column.page.PageReader;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.spark.sql.types.DataType;
 
-import org.apache.comet.CometConf;
 import org.apache.comet.CometSchemaImporter;
+import org.apache.comet.IcebergApi;
 import org.apache.comet.vector.CometDecodedVector;
 import org.apache.comet.vector.CometDictionary;
 import org.apache.comet.vector.CometDictionaryVector;
 import org.apache.comet.vector.CometPlainVector;
 import org.apache.comet.vector.CometVector;
 
+@IcebergApi
 public class ColumnReader extends AbstractColumnReader {
   protected static final Logger LOG = LoggerFactory.getLogger(ColumnReader.class);
   protected final BufferAllocator ALLOCATOR = new RootAllocator();
@@ -111,9 +111,9 @@ public class ColumnReader extends AbstractColumnReader {
    * Set the page reader for a new column chunk to read. Expects to call `readBatch` after this.
    *
    * @param pageReader the page reader for the new column chunk
-   * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public void setPageReader(PageReader pageReader) throws IOException {
     this.pageReader = pageReader;
 
@@ -129,6 +129,7 @@ public class ColumnReader extends AbstractColumnReader {
   }
 
   /** This method is called from Apache Iceberg. */
+  @IcebergApi
   public void setRowGroupReader(RowGroupReader rowGroupReader, ParquetColumnSpec columnSpec)
       throws IOException {
     ColumnDescriptor descriptor = Utils.buildColumnDescriptor(columnSpec);
@@ -268,17 +269,9 @@ public class ColumnReader extends AbstractColumnReader {
                   "Unsupported value encoding: " + dataPageV1.getValueEncoding());
             }
             try {
-              boolean useDirectBuffer =
-                  (Boolean) CometConf.COMET_PARQUET_ENABLE_DIRECT_BUFFER().get();
-              if (useDirectBuffer) {
-                ByteBuffer buffer = dataPageV1.getBytes().toByteBuffer();
-                Native.setPageBufferV1(
-                    nativeHandle, pageValueCount, buffer, dataPageV1.getValueEncoding().ordinal());
-              } else {
-                byte[] array = dataPageV1.getBytes().toByteArray();
-                Native.setPageV1(
-                    nativeHandle, pageValueCount, array, dataPageV1.getValueEncoding().ordinal());
-              }
+              byte[] array = dataPageV1.getBytes().toByteArray();
+              Native.setPageV1(
+                  nativeHandle, pageValueCount, array, dataPageV1.getValueEncoding().ordinal());
             } catch (IOException e) {
               throw new RuntimeException(e);
             }

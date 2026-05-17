@@ -1,0 +1,39 @@
+-- Licensed to the Apache Software Foundation (ASF) under one
+-- or more contributor license agreements.  See the NOTICE file
+-- distributed with this work for additional information
+-- regarding copyright ownership.  The ASF licenses this file
+-- to you under the Apache License, Version 2.0 (the
+-- "License"); you may not use this file except in compliance
+-- with the License.  You may obtain a copy of the License at
+--
+--   http://www.apache.org/licenses/LICENSE-2.0
+--
+-- Unless required by applicable law or agreed to in writing,
+-- software distributed under the License is distributed on an
+-- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+-- KIND, either express or implied.  See the License for the
+-- specific language governing permissions and limitations
+-- under the License.
+
+
+statement
+CREATE TABLE test_corr(x double, y double, grp string) USING parquet
+
+statement
+INSERT INTO test_corr VALUES (1.0, 2.0, 'a'), (2.0, 4.0, 'a'), (3.0, 6.0, 'a'), (1.0, 1.0, 'b'), (2.0, 3.0, 'b'), (NULL, 1.0, 'b')
+
+query tolerance=1e-6
+SELECT corr(x, y) FROM test_corr
+
+query tolerance=1e-6
+SELECT grp, corr(x, y) FROM test_corr GROUP BY grp ORDER BY grp
+
+-- Test permutations of NULL and NaN
+statement
+CREATE TABLE test_corr_nan(x double, y double, grp string) USING parquet
+
+statement
+INSERT INTO test_corr_nan VALUES (cast('NaN' as double), cast('NaN' as double), 'both_nan'), (cast('NaN' as double), 1.0, 'nan_val'), (1.0, cast('NaN' as double), 'val_nan'), (NULL, cast('NaN' as double), 'null_nan'), (cast('NaN' as double), NULL, 'nan_null'), (NULL, NULL, 'both_null'), (NULL, 1.0, 'null_val'), (1.0, NULL, 'val_null'), (cast('NaN' as double), cast('NaN' as double), 'mixed'), (1.0, 2.0, 'mixed'), (3.0, 4.0, 'mixed'), (cast('NaN' as double), cast('NaN' as double), 'multi_nan'), (cast('NaN' as double), cast('NaN' as double), 'multi_nan'), (cast('NaN' as double), cast('NaN' as double), 'multi_nan')
+
+query tolerance=1e-6
+SELECT grp, corr(x, y) FROM test_corr_nan GROUP BY grp ORDER BY grp

@@ -26,13 +26,17 @@ import java.lang.reflect.Method;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.SeekableInputStream;
 
+import org.apache.comet.IcebergApi;
+
 /**
  * Wraps an Object that possibly implements the methods of a Parquet InputFile (but is not a Parquet
  * InputFile). Such an object` exists, for instance, in Iceberg's InputFile
  */
+@IcebergApi
 public class WrappedInputFile implements InputFile {
   Object wrapped;
 
+  @IcebergApi
   public WrappedInputFile(Object inputFile) {
     this.wrapped = inputFile;
   }

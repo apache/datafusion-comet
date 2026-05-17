@@ -9,12 +9,12 @@ TakeOrderedAndProject
       :     :     :  +- Project
       :     :     :     +- Filter
       :     :     :        +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-      :     :     :           +- CometColumnarToRow
+      :     :     :           +- CometNativeColumnarToRow
       :     :     :              +- CometSort
       :     :     :                 +- CometExchange
       :     :     :                    +- CometFilter
       :     :     :                       :  +- Subquery
-      :     :     :                       :     +- CometColumnarToRow
+      :     :     :                       :     +- CometNativeColumnarToRow
       :     :     :                       :        +- CometHashAggregate
       :     :     :                       :           +- CometExchange
       :     :     :                       :              +- CometHashAggregate
@@ -31,12 +31,12 @@ TakeOrderedAndProject
       :     :        +- Project
       :     :           +- Filter
       :     :              +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-      :     :                 +- CometColumnarToRow
+      :     :                 +- CometNativeColumnarToRow
       :     :                    +- CometSort
       :     :                       +- CometExchange
       :     :                          +- CometFilter
       :     :                             :  +- Subquery
-      :     :                             :     +- CometColumnarToRow
+      :     :                             :     +- CometNativeColumnarToRow
       :     :                             :        +- CometHashAggregate
       :     :                             :           +- CometExchange
       :     :                             :              +- CometHashAggregate
@@ -50,12 +50,12 @@ TakeOrderedAndProject
       :     :                                         +- CometFilter
       :     :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
       :     +- BroadcastExchange
-      :        +- CometColumnarToRow
+      :        +- CometNativeColumnarToRow
       :           +- CometProject
       :              +- CometFilter
       :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
       +- BroadcastExchange
-         +- CometColumnarToRow
+         +- CometNativeColumnarToRow
             +- CometProject
                +- CometFilter
                   +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item

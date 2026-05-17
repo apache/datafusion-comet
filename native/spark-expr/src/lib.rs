@@ -20,6 +20,7 @@
 #![deny(clippy::clone_on_ref_ptr)]
 
 mod error;
+mod query_context;
 
 pub mod kernels;
 pub use kernels::temporal::date_trunc_dyn;
@@ -29,6 +30,7 @@ pub use static_invoke::*;
 mod struct_funcs;
 pub use struct_funcs::{CreateNamedStruct, GetStructField};
 
+mod csv_funcs;
 mod json_funcs;
 pub mod test_common;
 pub mod timezone;
@@ -40,7 +42,6 @@ pub use predicate_funcs::{spark_isnan, RLike};
 
 mod agg_funcs;
 mod array_funcs;
-mod bitwise_funcs;
 mod comet_scalar_funcs;
 pub mod hash_funcs;
 
@@ -52,15 +53,18 @@ pub use agg_funcs::*;
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 
 mod bloom_filter;
-pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
+pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain, SparkBloomFilterVersion};
+
+pub mod jvm_udf;
 
 mod conditional_funcs;
 mod conversion_funcs;
+mod map_funcs;
+pub use map_funcs::spark_map_sort;
 mod math_funcs;
 mod nondetermenistic_funcs;
 
 pub use array_funcs::*;
-pub use bitwise_funcs::*;
 pub use conditional_funcs::*;
 pub use conversion_funcs::*;
 pub use nondetermenistic_funcs::*;
@@ -69,18 +73,22 @@ pub use comet_scalar_funcs::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
     register_all_comet_functions,
 };
+pub use csv_funcs::*;
 pub use datetime_funcs::{
-    SparkDateDiff, SparkDateTrunc, SparkHour, SparkMinute, SparkSecond, SparkUnixTimestamp,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkHour, SparkHoursTransform,
+    SparkMakeDate, SparkMinute, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp,
     TimestampTruncExpr,
 };
-pub use error::{SparkError, SparkResult};
+pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
     create_modulo_expr, create_negate_expr, spark_ceil, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_make_decimal, spark_round, spark_unhex,
-    spark_unscaled_value, CheckOverflow, NegativeExpr, NormalizeNaNAndZero,
+    spark_decimal_integral_div, spark_floor, spark_log, spark_make_decimal, spark_round,
+    spark_unhex, spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
+    NormalizeNaNAndZero, WideDecimalBinaryExpr, WideDecimalOp,
 };
+pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use string_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
@@ -117,6 +125,16 @@ pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     }
 }
 
+pub(crate) fn decimal_sum_overflow_error(function_name: &str) -> SparkError {
+    SparkError::DecimalSumOverflow {
+        function_name: function_name.to_string(),
+    }
+}
+
 pub(crate) fn divide_by_zero_error() -> SparkError {
     SparkError::DivideByZero
+}
+
+pub(crate) fn remainder_by_zero_error() -> SparkError {
+    SparkError::RemainderByZero
 }

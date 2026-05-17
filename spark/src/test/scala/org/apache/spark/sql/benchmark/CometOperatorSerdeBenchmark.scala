@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 
 import org.apache.comet.CometConf
+import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometIcebergNativeScan
 
@@ -301,8 +302,71 @@ object CometOperatorSerdeBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * Benchmarks CometScanRule.apply() on Iceberg BatchScanExec plans.
+   *
+   * This measures the validation overhead when converting Spark Iceberg scans to Comet scans.
+   */
+  def icebergScanRuleBenchmark(numPartitions: Int): Unit = {
+    if (!icebergAvailable) {
+      // scalastyle:off println
+      println("Iceberg not available in classpath, skipping benchmark")
+      // scalastyle:on println
+      return
+    }
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.bench_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.bench_cat.type" -> "hadoop",
+        "spark.sql.catalog.bench_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create the partitioned table
+        createPartitionedIcebergTable(warehouseDir, numPartitions)
+
+        val fullTableName = "bench_cat.db.serde_bench_table"
+
+        // Get the sparkPlan (before post-hoc rules like CometScanRule)
+        val df = spark.sql(s"SELECT * FROM $fullTableName")
+        val sparkPlan = df.queryExecution.sparkPlan
+
+        // scalastyle:off println
+        println(s"SparkPlan class: ${sparkPlan.getClass.getSimpleName}")
+        // scalastyle:on println
+
+        val rule = CometScanRule(spark)
+        val iterations = 100
+
+        val benchmark = new Benchmark(
+          s"CometScanRule apply ($numPartitions partitions)",
+          iterations,
+          output = output)
+
+        benchmark.addCase("CometScanRule.apply(sparkPlan)") { _ =>
+          var i = 0
+          while (i < iterations) {
+            rule.apply(sparkPlan)
+            i += 1
+          }
+        }
+
+        benchmark.run()
+
+        // Cleanup
+        spark.sql(s"DROP TABLE IF EXISTS $fullTableName")
+      }
+    }
+  }
+
   override def runCometBenchmark(args: Array[String]): Unit = {
     val numPartitions = if (args.nonEmpty) args(0).toInt else 30000
+
+    runBenchmark("CometScanRule Benchmark") {
+      icebergScanRuleBenchmark(numPartitions)
+    }
 
     runBenchmark("IcebergScan Operator Serde Benchmark") {
       icebergScanSerdeBenchmark(numPartitions)

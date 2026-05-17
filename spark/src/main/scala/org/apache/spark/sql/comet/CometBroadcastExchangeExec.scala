@@ -35,8 +35,7 @@ import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, BroadcastPar
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -45,7 +44,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometRuntimeException, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
@@ -77,7 +76,13 @@ case class CometBroadcastExchangeExec(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "collectTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to collect"),
     "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
-    "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
+    "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"),
+    "numCoalescedBatches" -> SQLMetrics.createMetric(
+      sparkContext,
+      "number of coalesced batches for broadcast"),
+    "numCoalescedRows" -> SQLMetrics.createMetric(
+      sparkContext,
+      "number of coalesced rows for broadcast"))
 
   override def doCanonicalize(): SparkPlan = {
     CometBroadcastExchangeExec(null, null, mode, child.canonicalized)
@@ -104,6 +109,12 @@ case class CometBroadcastExchangeExec(
   @transient
   private lazy val maxBroadcastRows = 512000000
 
+  private def getByteArrayRdd(plan: SparkPlan): RDD[(Long, ChunkedByteBuffer)] = {
+    plan.executeColumnar().mapPartitionsInternal { iter =>
+      Utils.serializeBatches(iter)
+    }
+  }
+
   def getNumPartitions(): Int = {
     child.executeColumnar().getNumPartitions
   }
@@ -117,30 +128,7 @@ case class CometBroadcastExchangeExec(
         setJobGroupOrTag(sparkContext, this)
         val beforeCollect = System.nanoTime()
 
-        val countsAndBytes = child match {
-          case c: CometPlan => CometExec.getByteArrayRdd(c).collect()
-          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _)
-              if s.plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
-          case s: ShuffleQueryStageExec if s.plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(s.plan.asInstanceOf[CometPlan]).collect()
-          case ReusedExchangeExec(_, plan) if plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case AQEShuffleReadExec(ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _), _)
-              if plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case ShuffleQueryStageExec(_, ReusedExchangeExec(_, plan), _)
-              if plan.isInstanceOf[CometPlan] =>
-            CometExec.getByteArrayRdd(plan.asInstanceOf[CometPlan]).collect()
-          case AQEShuffleReadExec(s: ShuffleQueryStageExec, _) =>
-            throw new CometRuntimeException(
-              "Child of CometBroadcastExchangeExec should be CometExec, " +
-                s"but got: ${s.plan.getClass}")
-          case _ =>
-            throw new CometRuntimeException(
-              "Child of CometBroadcastExchangeExec should be CometExec, " +
-                s"but got: ${child.getClass}")
-        }
+        val countsAndBytes = getByteArrayRdd(child).collect()
 
         val numRows = countsAndBytes.map(_._1).sum
         val input = countsAndBytes.iterator.map(countAndBytes => countAndBytes._2)
@@ -155,7 +143,14 @@ case class CometBroadcastExchangeExec(
         val beforeBuild = System.nanoTime()
         longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
 
-        val batches = input.toArray
+        // Coalesce the many small per-shuffle-block buffers into a single buffer.
+        // Without this, each consumer task deserializes one Arrow IPC stream per
+        // shuffle block (one per writer task per partition), which is very expensive
+        // when there are hundreds of writer tasks and partitions. See the scaladoc
+        // on coalesceBroadcastBatches for details.
+        val (batches, coalescedBatches, coalescedRows) = Utils.coalesceBroadcastBatches(input)
+        longMetric("numCoalescedBatches") += coalescedBatches
+        longMetric("numCoalescedRows") += coalescedRows
 
         val dataSize = batches.map(_.size).sum
 
@@ -265,13 +260,6 @@ case class CometBroadcastExchangeExec(
 }
 
 object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
-
-  /**
-   * Exchange data is FFI safe because there is no use of mutable buffers involved.
-   *
-   * Source of broadcast exchange batches is ArrowStreamReader.
-   */
-  override def isFfiSafe: Boolean = true
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED)

@@ -23,6 +23,7 @@ mod tests {
     use datafusion::execution::FunctionRegistry;
     use datafusion::prelude::SessionContext;
     use datafusion_comet_spark_expr::create_comet_physical_fun;
+    use datafusion_comet_spark_expr::register_all_comet_functions;
 
     #[tokio::test]
     async fn test_udf_registration() -> Result<()> {
@@ -45,6 +46,48 @@ mod tests {
 
         // 3. Ensure results are returned, i.e UDF is registered. no need to validate the actual value
         assert!(!results.is_empty(), "Results should not be empty");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_make_date_returns_null_for_invalid_input() -> Result<()> {
+        // Setup session with all Comet functions registered
+        let mut ctx = SessionContext::new();
+        register_all_comet_functions(&mut ctx)?;
+
+        // Test that make_date returns NULL for invalid month (0)
+        // DataFusion's built-in make_date would throw an error
+        let df = ctx.sql("SELECT make_date(2023, 0, 15)").await?;
+        let results = df.collect().await?;
+
+        // Should return one row with NULL
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 1);
+
+        // The result should be NULL for invalid input
+        let column = results[0].column(0);
+        assert!(column.is_null(0), "Expected NULL for invalid month");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_make_date_valid_input() -> Result<()> {
+        // Setup session with all Comet functions registered
+        let mut ctx = SessionContext::new();
+        register_all_comet_functions(&mut ctx)?;
+
+        // Test that make_date works for valid input
+        let df = ctx.sql("SELECT make_date(1970, 1, 1)").await?;
+        let results = df.collect().await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 1);
+
+        // Should return epoch date (1970-01-01 = day 0)
+        let column = results[0].column(0);
+        assert!(!column.is_null(0), "Expected valid date for epoch");
 
         Ok(())
     }

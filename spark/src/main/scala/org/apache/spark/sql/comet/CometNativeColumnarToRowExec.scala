@@ -45,8 +45,8 @@ import org.apache.comet.{CometConf, NativeColumnarToRowConverter}
  * Native implementation of ColumnarToRowExec that converts Arrow columnar data to Spark UnsafeRow
  * format using Rust.
  *
- * This is an experimental feature that can be enabled by setting
- * `spark.comet.columnarToRow.native.enabled=true`.
+ * This feature is enabled by default and can be disabled by setting
+ * `spark.comet.exec.columnarToRow.native.enabled=false`.
  *
  * Benefits over the JVM implementation:
  *   - Zero-copy for variable-length types (strings, binary)
@@ -231,11 +231,6 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
 }
 
 object CometNativeColumnarToRowExec {
-
-  /**
-   * Checks if native columnar to row conversion is enabled.
-   */
-  def isEnabled: Boolean = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get()
 
   /**
    * Checks if the given schema is supported by native columnar to row conversion.

@@ -30,6 +30,7 @@ import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.IcebergApi;
 
 import static org.apache.comet.parquet.Utils.descriptorToParquetColumnSpec;
 
@@ -38,9 +39,9 @@ public class TypeUtil {
   /**
    * Converts the input Spark 'field' into a Parquet column descriptor.
    *
-   * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public static ColumnDescriptor convertToParquet(StructField field) {
     Type.Repetition repetition;
     int maxDefinitionLevel;
@@ -56,9 +57,8 @@ public class TypeUtil {
     DataType type = field.dataType();
 
     Types.PrimitiveBuilder<PrimitiveType> builder = null;
-    // Only partition column can be `NullType`, which also uses `ConstantColumnReader`. Here we
-    // piggy-back onto Parquet boolean type for constant vector of null values, we don't really
-    // care what Parquet type it is.
+    // Only partition column can be `NullType`. Here we piggy-back onto Parquet boolean type
+    // for constant vector of null values, we don't really care what Parquet type it is.
     if (type == DataTypes.BooleanType || type == DataTypes.NullType) {
       builder = Types.primitive(PrimitiveType.PrimitiveTypeName.BOOLEAN, repetition);
     } else if (type == DataTypes.IntegerType || type instanceof YearMonthIntervalType) {
@@ -130,7 +130,7 @@ public class TypeUtil {
     PrimitiveType.PrimitiveTypeName typeName = descriptor.getPrimitiveType().getPrimitiveTypeName();
     LogicalTypeAnnotation logicalTypeAnnotation =
         descriptor.getPrimitiveType().getLogicalTypeAnnotation();
-    boolean allowTypePromotion = (boolean) CometConf.COMET_SCHEMA_EVOLUTION_ENABLED().get();
+    boolean allowTypePromotion = CometConf.COMET_SCHEMA_EVOLUTION_ENABLED();
 
     if (sparkType instanceof NullType) {
       return;
@@ -150,8 +150,8 @@ public class TypeUtil {
           // fallbacks. We read them as long values.
           return;
         } else if (sparkType == DataTypes.LongType && allowTypePromotion) {
-          // In Comet we allow schema evolution from int to long, if
-          // `spark.comet.schemaEvolution.enabled` is enabled.
+          // INT32 -> LONG widening is allowed when Comet's per-Spark-version
+          // type-promotion default permits it (Spark 4.x). See ShimCometConf.
           return;
         } else if (sparkType == DataTypes.ByteType || sparkType == DataTypes.ShortType) {
           return;
@@ -198,8 +198,8 @@ public class TypeUtil {
         break;
       case FLOAT:
         if (sparkType == DataTypes.FloatType) return;
-        // In Comet we allow schema evolution from float to double, if
-        // `spark.comet.schemaEvolution.enabled` is enabled.
+        // FLOAT -> DOUBLE widening is allowed when Comet's per-Spark-version
+        // type-promotion default permits it (Spark 4.x). See ShimCometConf.
         if (sparkType == DataTypes.DoubleType && allowTypePromotion) return;
         break;
       case DOUBLE:

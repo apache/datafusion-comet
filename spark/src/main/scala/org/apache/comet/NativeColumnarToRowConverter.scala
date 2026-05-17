@@ -139,6 +139,6 @@ private class NativeRowIterator(info: NativeColumnarToRowInfo, unsafeRow: Unsafe
     unsafeRow.pointTo(null, rowAddress, rowSize)
     currentIdx += 1
 
-    unsafeRow
+    unsafeRow.copy()
   }
 }

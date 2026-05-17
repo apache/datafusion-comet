@@ -17,7 +17,7 @@
 
 use rand::{
     distr::{uniform::SampleUniform, Distribution, StandardUniform},
-    rng, Rng,
+    rng, RngExt,
 };
 
 pub fn random_bytes(n: usize) -> Vec<u8> {

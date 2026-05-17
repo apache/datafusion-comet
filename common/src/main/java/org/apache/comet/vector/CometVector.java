@@ -39,7 +39,10 @@ import org.apache.spark.sql.vectorized.ColumnarMap;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.UTF8String;
 
+import org.apache.comet.IcebergApi;
+
 /** Base class for all Comet column vector implementations. */
+@IcebergApi
 public abstract class CometVector extends ColumnVector {
   private static final int DECIMAL_BYTE_WIDTH = 16;
   private final byte[] DECIMAL_BYTES = new byte[DECIMAL_BYTE_WIDTH];
@@ -58,7 +61,8 @@ public abstract class CometVector extends ColumnVector {
     }
   }
 
-  protected CometVector(DataType type, boolean useDecimal128) {
+  @IcebergApi
+  public CometVector(DataType type, boolean useDecimal128) {
     super(type);
     this.useDecimal128 = useDecimal128;
   }
@@ -67,15 +71,18 @@ public abstract class CometVector extends ColumnVector {
    * Sets the number of nulls in this vector to be 'numNulls'. This is used when the vector is
    * reused across batches.
    */
+  @IcebergApi
   public abstract void setNumNulls(int numNulls);
 
   /**
    * Sets the number of values (including both nulls and non-nulls) in this vector to be
    * 'numValues'. This is used when the vector is reused across batches.
    */
+  @IcebergApi
   public abstract void setNumValues(int numValues);
 
   /** Returns the number of values in this vector. */
+  @IcebergApi
   public abstract int numValues();
 
   /** Whether the elements of this vector are of fixed length. */
@@ -215,6 +222,7 @@ public abstract class CometVector extends ColumnVector {
     throw new UnsupportedOperationException("Not implemented");
   }
 
+  @IcebergApi
   public abstract ValueVector getValueVector();
 
   /**
@@ -224,6 +232,7 @@ public abstract class CometVector extends ColumnVector {
    * @param length the length of the new vector
    * @return the new vector
    */
+  @IcebergApi
   public abstract CometVector slice(int offset, int length);
 
   /**

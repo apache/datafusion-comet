@@ -89,7 +89,7 @@ import static scala.jdk.javaapi.CollectionConverters.asJava;
  * <p>Example of how to use this:
  *
  * <pre>
- *   BatchReader reader = new BatchReader(parquetFile, batchSize);
+ *   NativeBatchReader reader = new NativeBatchReader(parquetFile, batchSize);
  *   try {
  *     reader.init();
  *     while (reader.readBatch()) {
@@ -159,6 +159,11 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   protected boolean isCaseSensitive;
   protected boolean useFieldId;
   protected boolean ignoreMissingIds;
+  // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+  // missing in the Parquet file, true returns the entire struct as null (legacy
+  // pre-4.1 behavior); false preserves the parent struct's nullness from the file
+  // so non-null parents materialize as a struct of all-null fields.
+  protected boolean returnNullStructIfAllFieldsMissing = true;
   protected StructType partitionSchema;
   protected InternalRow partitionValues;
   protected PartitionedFile file;
@@ -278,6 +283,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       boolean useFieldId,
       boolean ignoreMissingIds,
       boolean useLegacyDateTimestamp,
+      boolean returnNullStructIfAllFieldsMissing,
       StructType partitionSchema,
       InternalRow partitionValues,
       Map<String, SQLMetric> metrics,
@@ -290,6 +296,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.useFieldId = useFieldId;
     this.ignoreMissingIds = ignoreMissingIds;
     this.useLegacyDateTimestamp = useLegacyDateTimestamp;
+    this.returnNullStructIfAllFieldsMissing = returnNullStructIfAllFieldsMissing;
     this.partitionSchema = partitionSchema;
     this.partitionValues = partitionValues;
     this.file = inputSplit;
@@ -448,7 +455,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
           // TODO(SPARK-40059): Allow users to include columns named
           //                    FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME in their schemas.
           long[] rowIndices = FileReader.getRowIndices(blocks);
-          columnReaders[i] = new RowIndexColumnReader(nonPartitionFields[i], capacity, rowIndices);
+          columnReaders[i] =
+              new ArrowRowIndexColumnReader(nonPartitionFields[i], capacity, rowIndices);
           hasRowIndexColumn = true;
           missingColumns[i] = true;
         } else if (optFileField.isPresent()) {
@@ -473,8 +481,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
                       + filePath);
             }
             if (field.isPrimitive()) {
-              ConstantColumnReader reader =
-                  new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
+              ArrowConstantColumnReader reader =
+                  new ArrowConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
               columnReaders[i] = reader;
               missingColumns[i] = true;
             } else {
@@ -492,8 +500,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         for (int i = fields.size(); i < columnReaders.length; i++) {
           int fieldIndex = i - fields.size();
           StructField field = partitionFields[fieldIndex];
-          ConstantColumnReader reader =
-              new ConstantColumnReader(field, capacity, partitionValues, fieldIndex, useDecimal128);
+          ArrowConstantColumnReader reader =
+              new ArrowConstantColumnReader(
+                  field, capacity, partitionValues, fieldIndex, useDecimal128);
           columnReaders[i] = reader;
         }
       }
@@ -576,6 +585,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               timeZoneId,
               batchSize,
               caseSensitive,
+              returnNullStructIfAllFieldsMissing,
               objectStoreOptions,
               keyUnwrapper,
               metricsNode);

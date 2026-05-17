@@ -28,6 +28,147 @@ under the License.
 ├── spark      <- Spark integration
 ```
 
+## Threading Architecture
+
+Comet's native execution runs on a shared tokio multi-threaded runtime. Understanding this
+architecture is important because it affects how you write native operators and JVM callbacks.
+
+### How execution works
+
+Spark calls into native code via JNI from an **executor task thread**. There are two execution
+paths depending on whether the plan reads data from the JVM:
+
+**Async I/O path (no JVM data sources, e.g. Iceberg scans):** The DataFusion stream is spawned
+onto a tokio worker thread and batches are delivered to the executor thread via an `mpsc` channel.
+The executor thread parks in `blocking_recv()` until the next batch is ready. This avoids
+busy-polling on I/O-bound workloads.
+
+**JVM data source path (ScanExec present):** The executor thread calls `block_on()` and polls the
+DataFusion stream directly, interleaving `pull_input_batches()` calls on `Poll::Pending` to feed
+data from the JVM into ScanExec operators.
+
+In both cases, DataFusion operators execute on **tokio worker threads**, not on the Spark executor
+task thread. All Spark tasks on an executor share one tokio runtime.
+
+### Rules for native code
+
+**Do not use `thread_local!` or assume thread identity.** Tokio may run your operator's `poll`
+method on any worker thread, and may move it between threads across polls. Any state must live
+in the operator struct or be shared via `Arc`.
+
+**JNI calls work from any thread, but have overhead.** `JVMClasses::get_env()` calls
+`AttachCurrentThread`, which acquires JVM internal locks. The `AttachGuard` detaches the thread
+when dropped. Repeated attach/detach cycles on tokio workers add overhead, so avoid calling
+into the JVM on hot paths during stream execution.
+
+**Do not call `TaskContext.get()` from JVM callbacks during execution.** Spark's `TaskContext` is
+a `ThreadLocal` on the executor task thread. JVM methods invoked from tokio worker threads will
+see `null`. If you need task metadata, capture it at construction time (in `createPlan` or
+operator setup) and store it in the operator. See `CometTaskMemoryManager` for an example — it
+captures `TaskContext.get().taskMemoryManager()` in its constructor and uses the stored reference
+thereafter.
+
+**Memory pool operations call into the JVM.** `CometUnifiedMemoryPool` and `CometFairMemoryPool`
+call `acquireMemory()` / `releaseMemory()` via JNI whenever DataFusion operators grow or shrink
+memory reservations. This happens on whatever thread the operator is executing on. These calls
+are thread-safe (they use stored `GlobalRef`s, not thread-locals), but they do trigger
+`AttachCurrentThread`.
+
+**Scalar subqueries call into the JVM.** `Subquery::evaluate()` calls static methods on
+`CometScalarSubquery` via JNI. These use a static `HashMap`, not thread-locals, so they are
+safe from any thread.
+
+**Parquet encryption calls into the JVM.** `CometKeyRetriever::retrieve_key()` calls the JVM
+to unwrap decryption keys during Parquet reads. It uses a stored `GlobalRef` and a cached
+`JMethodID`, so it is safe from any thread.
+
+### The tokio runtime
+
+The runtime is created once per executor JVM in a `Lazy<Runtime>` static:
+
+- **Worker threads:** `num_cpus` by default, configurable via `COMET_WORKER_THREADS`
+- **Max blocking threads:** 512 by default, configurable via `COMET_MAX_BLOCKING_THREADS`
+- All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures
+
+### Summary of what is safe and what is not
+
+| Pattern                                   | Safe?  | Notes                                    |
+| ----------------------------------------- | ------ | ---------------------------------------- |
+| `Arc<T>` shared across operators          | Yes    | Standard Rust thread safety              |
+| `JVMClasses::get_env()` from tokio worker | Yes    | Attaches thread to JVM automatically     |
+| `thread_local!` in operator code          | **No** | Tokio moves tasks between threads        |
+| `TaskContext.get()` in JVM callback       | **No** | Returns `null` on non-executor threads   |
+| Storing `JNIEnv` in an operator           | **No** | `JNIEnv` is thread-specific              |
+| Capturing state at plan creation time     | Yes    | Runs on executor thread, store in struct |
+
+## Global singletons
+
+Comet code runs in both the driver and executor JVM processes, and different parts of the
+codebase run in each. Global singletons have **process lifetime** — they are created once and
+never dropped until the JVM exits. Since multiple Spark jobs, queries, and tasks share the same
+process, this makes it difficult to reason about what state a singleton holds and whether it is
+still valid.
+
+### How to recognize them
+
+**Rust:** `static` variables using `OnceLock`, `LazyLock`, `OnceCell`, `Lazy`, or `lazy_static!`:
+
+```rust
+static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, PerTaskMemoryPool>>> = Lazy::new(..);
+```
+
+**Java:** `static` fields, especially mutable collections:
+
+```java
+private static final HashMap<Long, HashMap<Long, ScalarSubquery>> subqueryMap = new HashMap<>();
+```
+
+**Scala:** `object` declarations (companion objects are JVM singletons) holding mutable state:
+
+```scala
+object MyCache {
+  private val cache = new ConcurrentHashMap[String, Value]()
+}
+```
+
+### Why they are dangerous
+
+- **Credential staleness.** A singleton caching an authenticated client will hold stale
+  credentials after token rotation, causing silent failures mid-job.
+- **Unbounded growth.** A cache keyed by file path or configuration grows with every query
+  but never shrinks. Over hours of process uptime this becomes a memory leak.
+- **Cross-job contamination.** Different Spark jobs on the same process may use different
+  configurations. A singleton initialized by the first job silently serves wrong state to
+  subsequent jobs.
+- **Testing difficulty.** Global state persists across test cases, making tests
+  order-dependent.
+
+### When a singleton is acceptable
+
+Some state genuinely has process lifetime:
+
+| Singleton                                     | Why it is safe                                      |
+| --------------------------------------------- | --------------------------------------------------- |
+| `TOKIO_RUNTIME`                               | One runtime per executor, no configuration variance |
+| `JAVA_VM` / `JVM_CLASSES`                     | One JVM per process, set once at JNI load           |
+| `OperatorRegistry` / `ExpressionRegistry`     | Immutable after initialization                      |
+| Compiled `Regex` patterns (`LazyLock<Regex>`) | Stateless and immutable                             |
+
+### When to avoid a singleton
+
+If any of these apply, do **not** use a global singleton:
+
+- The state depends on configuration that can vary between jobs or queries
+- The state holds credentials or authenticated connections that will not expire or invalidate appropriately
+- The state grows proportionally to the number of queries or files processed
+- The state needs cleanup or refresh during process lifetime
+
+Instead, scope state to the plan or task by adding the cache as a field in an existing session or context object.
+
+If a singleton is truly needed, add a comment explaining why `static` is the right lifetime,
+whether the cache is bounded, and how credential refresh is handled (if applicable).
+
 ## Development Setup
 
 1. Make sure `JAVA_HOME` is set and point to JDK using [support matrix](../user-guide/latest/installation.md)
@@ -89,32 +230,130 @@ cd native && cargo test
 
 Alternatively, use `make test-rust` which handles the JVM compilation dependency automatically.
 
-### Avoid Using `-pl` to Select Modules
+### Never Use `-pl` to Select Modules
 
-When running Maven tests, avoid using `-pl spark` to select only the spark module. This can cause
-Maven to pick up the `common` module from your local Maven repository instead of using the current
-codebase, leading to inconsistent test results:
+Do not use `-pl spark` (or any other `-pl <module>`) when running Maven goals. With `-pl`, Maven
+does not rebuild sibling modules in the reactor and instead resolves them from your local Maven
+repository (`~/.m2/repository`). This leads to two failure modes:
+
+- **Stale code.** Tests run against the last `mvn install`ed version of `common` (or
+  `spark-shims`), not against your current edits. You can chase a "failing" test for hours that
+  is actually green in your working tree.
+- **Cross-worktree corruption.** If you have multiple worktrees open and run `mvn install` in one
+  while running `mvn test -pl spark` in another, the second worktree picks up the first
+  worktree's artifacts from the shared `~/.m2/repository`. Builds and tests then mix code from
+  different branches non-deterministically.
+
+Always run Maven from the repo root without `-pl`. Maven's reactor will compile only what is
+needed:
 
 ```sh
-# Avoid this - may use stale common module from local repo
+# Wrong: resolves sibling modules from ~/.m2, breaks under concurrent worktrees
 ./mvnw test -pl spark -Dsuites="..."
 
-# Do this instead - builds and tests with current code
+# Right: reactor build, always uses current source
 ./mvnw test -Dsuites="..."
 ```
 
-### Use `wildcardSuites` for Running Tests
+### Running a Specific ScalaTest Suite
 
-When running specific test suites, use `wildcardSuites` instead of `suites` for more flexible
-matching. The `wildcardSuites` parameter allows partial matching of suite names:
+To run a single suite (and only that suite), use `-Dsuites=` with the **fully qualified class name**
+and `-Dtest=none`:
 
 ```sh
-# Run all suites containing "CometCast"
-./mvnw test -DwildcardSuites="CometCast"
+# Run exactly one suite
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometArrayExpressionSuite"
 
-# Run specific suite with filter
-./mvnw test -Dsuites="org.apache.comet.CometCastSuite valid"
+# Run multiple suites (comma-separated, fully qualified)
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite,org.apache.comet.CometArrayExpressionSuite"
+
+# Run only tests whose name contains "valid" inside one suite
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite valid"
 ```
+
+`-Dtest=none` tells the Surefire (JUnit) plugin to skip its tests; without it, Surefire still
+runs the JUnit `*Test.java` matchers in addition to your selected ScalaTest suite.
+
+#### Pitfall: `-DwildcardSuites=""` runs everything
+
+A common mistake is to combine `-Dsuites=...` with `-DwildcardSuites=""`:
+
+```sh
+# WRONG: runs every suite in the project, takes ~1 hour
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometArrayExpressionSuite" -DwildcardSuites=""
+```
+
+`wildcardSuites` does substring matching, and the empty string is a substring of every suite
+name, so it expands to "run all suites" and overrides the narrower `-Dsuites=` selection. If you
+want to run a single suite, omit `-DwildcardSuites` entirely. If you want substring matching,
+pass a non-empty pattern:
+
+```sh
+# Run every suite whose fully qualified name contains "CometCast"
+./mvnw test -Dtest=none -DwildcardSuites="CometCast"
+```
+
+#### Pitfall: line breaks silently truncate the command
+
+A bare newline ends a shell command. If the command is split across lines without a trailing
+backslash, the shell only runs the first line and treats the rest as separate (failed)
+commands:
+
+```sh
+# WRONG: shell runs only the first line, which omits -Dsuites and runs every suite
+./mvnw test -Dtest=none
+  -Dsuites="org.apache.comet.CometArrayExpressionSuite" -DfailIfNoTests=false
+```
+
+The first line `./mvnw test -Dtest=none` runs every ScalaTest suite in the module (about 1800
+tests). The second line errors out trying to execute `-Dsuites=...` as a program, but by then
+the test run is already in progress. Symptom: you asked for one suite and ScalaTest reports
+"Expected test count is: 1797" starting at an alphabetically earlier suite.
+
+Either keep the command on one line, or use a trailing backslash on every continued line:
+
+```sh
+./mvnw test -Dtest=none \
+  -Dsuites="org.apache.comet.CometArrayExpressionSuite" \
+  -DfailIfNoTests=false
+```
+
+This is a common trap when copy-pasting commands from chat windows or terminals that wrap text
+without inserting the backslash.
+
+#### Pitfall: a "successful" run does not mean your suite ran
+
+Maven exits with status `0` whenever the build phases it executed completed without error, even
+when no ScalaTest suite matched your filter or a different suite ran than the one you intended.
+This is especially misleading for automated agents that key off the exit code: an empty or
+mistyped `-Dsuites=` value can produce a green run that tested nothing, or a wrong-but-matching
+suite name can run a much larger set than you wanted.
+
+Always check the output, not just the exit code. ScalaTest prints a summary line near the end:
+
+```text
+Run completed in 12 seconds, 345 milliseconds.
+Total number of tests run: 42
+Suites: completed 1, aborted 0
+Tests: succeeded 42, failed 0, canceled 0, ignored 0, pending 0
+All tests passed.
+```
+
+Confirm both that the **suite count** matches what you asked for (typically `1`) and that the
+**test count** is in the expected range for that suite. A run that reports `Total number of
+tests run: 0` or one that reports thousands of tests when you asked for a single suite is a
+filter problem, not a successful run.
+
+### Skip Scalastyle When Iterating
+
+The `scalastyle:check` goal runs in every Maven test invocation and re-scans every Scala source
+file even when nothing relevant changed. When iterating on a single test, skip it:
+
+```sh
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometArrayExpressionSuite" -Dscalastyle.skip=true
+```
+
+CI still enforces scalastyle, so this is purely a local iteration shortcut.
 
 ## Development Environment
 
@@ -135,10 +374,92 @@ Comet uses generated source files that are too large for IntelliJ's default size
 by going to `Help -> Edit Custom Properties...`. For example, adding `idea.max.intellisense.filesize=16384` increases the file
 size limit to 16 MB.
 
+#### Working with Spark 4.x profiles in IntelliJ IDEA
+
+Spark 4.x requires JDK 17 and Scala 2.13. When switching an existing IntelliJ project from the
+default Spark 3.x setup to a Spark 4.x profile, it is usually best to re-import the Maven project
+from a clean IntelliJ configuration:
+
+1. Close the IntelliJ project.
+2. Delete the `.idea` directory from the repository root.
+3. Make sure `protoc` is available. On macOS, install it with `brew install protobuf`; on Linux,
+   install `protobuf-compiler` or the equivalent package for your distribution.
+4. Make sure `JAVA_HOME` points to JDK 17. On macOS, you can select it with:
+
+   ```sh
+   export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+   export PATH="$JAVA_HOME/bin:$PATH"
+   ```
+
+   On Apple Silicon, the selected JDK architecture must match the native Rust target. Verify that
+   `file "$JAVA_HOME/lib/server/libjvm.dylib"` reports `arm64`.
+
+5. Build the profile once from the command line so generated sources and native artifacts are in
+   place:
+
+   ```sh
+   PROFILES="-Pspark-4.0" make release
+   ```
+
+   The `spark-4.0` profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
+   `PROFILES="-Pspark-4.0 -Pscala-2.13 -Pjdk17" make release`.
+
+   The Maven profile is named `jdk17` in this project.
+
+   If the native build previously used a different JDK, clear Cargo's cached JNI link path before
+   rebuilding:
+
+   ```sh
+   cd native && cargo clean
+   ```
+
+6. Open the repository root as a new project in IntelliJ IDEA.
+7. In the Maven tool window, enable the `spark-4.0` and `jdk17` profiles. Disable conflicting Spark
+   version profiles such as `spark-3.4` or `spark-3.5` if IntelliJ selected them.
+8. Re-import or reload the Maven project.
+9. Build the project in IntelliJ.
+
+When running tests from IntelliJ on JDK 17, add the same VM options that Maven uses through the
+root `pom.xml`'s `extraJavaTestArgs` property:
+
+```text
+-XX:+IgnoreUnrecognizedVMOptions
+--add-opens=java.base/java.lang=ALL-UNNAMED
+--add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+--add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+--add-opens=java.base/java.io=ALL-UNNAMED
+--add-opens=java.base/java.net=ALL-UNNAMED
+--add-opens=java.base/java.nio=ALL-UNNAMED
+--add-opens=java.base/java.util=ALL-UNNAMED
+--add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED
+--add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+--add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+--add-opens=java.base/sun.security.action=ALL-UNNAMED
+--add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+-Djdk.reflect.useDirectMethodHandle=false
+```
+
+If IntelliJ still resolves Spark 3.x dependencies or reports shim source errors after switching
+profiles, repeat the clean import steps above. Maven profile state is cached in the IntelliJ
+project files, and stale profile selections are a common cause of mixed Spark 3.x and Spark 4.x
+source roots.
+
 ### CLion
 
 First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
 After that you can open the project in CLion. The IDE should automatically detect the project structure and import as a Cargo project.
+
+### Comet SQL Tests (recommended for expressions)
+
+For testing expressions and operators, prefer using Comet SQL Tests over writing Comet Scala
+Tests. Comet SQL Tests are plain `.sql` files that are automatically discovered and executed:
+no Scala code to write, and no recompilation needed when tests change. This makes it easy to
+iterate quickly and to get good coverage of edge cases and argument combinations.
+
+See the [Comet SQL Tests](sql-file-tests) guide for the full documentation on how to write
+and run these tests.
 
 ### Running Tests in IDEA
 
@@ -147,15 +468,18 @@ However if the tests is related to the native side. Please make sure to run `mak
 
 ### Running Tests from command line
 
-It is possible to specify which ScalaTest suites you want to run from the CLI using the `suites`
-argument, for example if you only want to execute the test cases that contains _valid_
-in their name in `org.apache.comet.CometCastSuite` you can use
+Specify which ScalaTest suites to run with the `suites` argument and disable Surefire's JUnit
+discovery with `-Dtest=none`. For example, to run only the test cases containing _valid_ in
+their name from `org.apache.comet.CometCastSuite`:
 
 ```sh
 ./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite valid"
 ```
 
-Other options for selecting specific suites are described in the [ScalaTest Maven Plugin documentation](https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin)
+See [Running a Specific ScalaTest Suite](#running-a-specific-scalatest-suite) above for the full
+list of common patterns and pitfalls (including why `-DwildcardSuites=""` silently runs every
+suite). Other options for selecting specific suites are described in the
+[ScalaTest Maven Plugin documentation](https://www.scalatest.org/user_guide/using_the_scalatest_maven_plugin).
 
 ## Plan Stability Testing
 
@@ -181,33 +505,24 @@ Spark version, and runs the plan stability tests with `SPARK_GENERATE_GOLDEN_FIL
 
 Alternatively, you can run the tests manually using the following commands.
 
-First, Comet needs to be installed for each Spark version to be tested:
-
-```sh
-./mvnw install -DskipTests -Pspark-3.4
-./mvnw install -DskipTests -Pspark-3.5
-# note that Spark 4.0 requires JDK 17 or later
-./mvnw install -DskipTests -Pspark-4.0
-```
-
 Note that the output files get written to `$SPARK_HOME`.
 
 The tests can be run with:
 
 ```sh
 export SPARK_HOME=`pwd`
-./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.4 -nsu test
-./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.5 -nsu test
-./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-4.0 -nsu test
+./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.4 -nsu test
+./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.5 -nsu test
+./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
 
 and
 
 ```sh
 export SPARK_HOME=`pwd`
-./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
-./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.5 -nsu test
-./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
+./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
+./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.5 -nsu test
+./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
 
 If your pull request changes the query plans generated by Comet, you should regenerate the golden files.
@@ -215,18 +530,18 @@ To regenerate the golden files, you can run the following commands.
 
 ```sh
 export SPARK_HOME=`pwd`
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.4 -nsu test
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.5 -nsu test
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-4.0 -nsu test
+SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.4 -nsu test
+SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.5 -nsu test
+SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
 
 and
 
 ```sh
 export SPARK_HOME=`pwd`
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.5 -nsu test
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
+SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
+SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.5 -nsu test
+SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
 
 ## Benchmark
@@ -295,6 +610,47 @@ make test-rust
 # Or run only JVM tests (native must be built first)
 make test-jvm
 ```
+
+### 5. Register New Test Suites in CI
+
+Comet's CI does not automatically discover test suites. Instead, test suites are explicitly listed
+in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
+jobs. This reduces overall CI time.
+
+If you add a new Comet Scala Test suite, you must add it to the `suite` matrix in **both** workflow files:
+
+- `.github/workflows/pr_build_linux.yml`
+- `.github/workflows/pr_build_macos.yml`
+
+Each file contains a `suite` matrix with named groups such as `fuzz`, `shuffle`, `parquet`, `csv`,
+`exec`, `expressions`, and `sql`. Add your new suite's fully qualified class name to the
+appropriate group. For example, if you add a new expression test suite, add it to the
+`expressions` group:
+
+```yaml
+- name: "expressions"
+  value: |
+    org.apache.comet.CometExpressionSuite
+    # ... existing suites ...
+    org.apache.comet.YourNewExpressionSuite  # <-- add here
+```
+
+Choose the group that best matches the area your test covers:
+
+| Group         | Covers                                                     |
+| ------------- | ---------------------------------------------------------- |
+| `fuzz`        | Fuzz testing and data generation                           |
+| `shuffle`     | Shuffle operators and related exchange behavior            |
+| `parquet`     | Parquet read/write and native reader tests                 |
+| `csv`         | CSV native read tests                                      |
+| `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\* |
+| `expressions` | Expression evaluation, casts, and Comet SQL Tests          |
+| `sql`         | SQL-level behavior tests                                   |
+
+**Important:** The suite lists in both workflow files must stay in sync. A separate CI check
+(`.github/workflows/pr_missing_suites.yml`) runs `dev/ci/check-suites.py` on every pull request.
+It scans for all `*Suite.scala` files in the repository and verifies that each one appears in both
+workflow files. If any suite is missing, this check will fail and block the PR.
 
 ### Pre-PR Summary
 

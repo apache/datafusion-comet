@@ -15,8 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod string_space;
+mod contains;
+mod get_json_object;
+mod split;
 mod substring;
 
-pub use string_space::SparkStringSpace;
+pub use contains::SparkContains;
+pub use get_json_object::spark_get_json_object;
+pub use split::spark_split;
 pub use substring::SubstringExpr;

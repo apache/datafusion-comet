@@ -32,7 +32,7 @@ import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, NativeColumnarToRowConverter}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -467,6 +467,70 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
         assertNativeC2RPresent(parquetDf)
         checkSparkAnswer(parquetDf)
       }
+    }
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/3308
+  // Native columnar-to-row returns UnsafeRow pointing into a Rust-owned buffer that is
+  // cleared/reused on each convert() call. This test directly exercises the converter:
+  // it converts multiple batches and holds row references from earlier batches, then
+  // verifies they still contain correct data. Without a fix (e.g., copying rows),
+  // rows from earlier batches will contain corrupted data from buffer reuse.
+  test("rows from earlier batches are not corrupted by subsequent convert() calls") {
+    import org.apache.spark.sql.catalyst.InternalRow
+    import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
+    import org.apache.spark.unsafe.types.UTF8String
+
+    import scala.collection.mutable.ArrayBuffer
+
+    val schema = new StructType().add("id", IntegerType).add("str", StringType)
+
+    // Create multiple small batches using CometArrowConverters
+    val numBatches = 10
+    val rowsPerBatch = 5
+    val totalRows = numBatches * rowsPerBatch
+
+    val rows = (0 until totalRows).map { i =>
+      InternalRow(i, UTF8String.fromString(s"value_$i"))
+    }
+
+    // Create batches using rowToArrowBatchIter which handles shading internally
+    val batchIter = CometArrowConverters
+      .rowToArrowBatchIter(rows.iterator, schema, rowsPerBatch, "UTC", null)
+
+    val converter = new NativeColumnarToRowConverter(schema, rowsPerBatch)
+    try {
+      // Collect all rows from all batches into a single array
+      // The converter returns rows that should be independent copies
+      val allRows = new ArrayBuffer[InternalRow]()
+      var batchCount = 0
+
+      while (batchIter.hasNext) {
+        val batch = batchIter.next()
+        batchCount += 1
+        // Convert this batch and collect all rows
+        val rowIter = converter.convert(batch)
+        while (rowIter.hasNext) {
+          allRows += rowIter.next()
+        }
+        batch.close()
+      }
+
+      assert(batchCount == numBatches, s"Expected $numBatches batches, got $batchCount")
+      assert(allRows.length == totalRows, s"Expected $totalRows rows, got ${allRows.length}")
+
+      // Verify that reading through held references produces all expected
+      // distinct values. If rows weren't copied, all entries would point
+      // to the same reused UnsafeRow object with stale data.
+      val distinctIds = allRows.map(_.getInt(0)).toSet
+      assert(
+        distinctIds.size == totalRows,
+        s"UnsafeRow reuse bug: expected $totalRows distinct row IDs but got " +
+          s"${distinctIds.size} (values: ${distinctIds.toSeq.sorted.mkString(", ")}). " +
+          "This means rows were not copied and all references point to the same " +
+          "reused UnsafeRow object.")
+    } finally {
+      converter.close()
     }
   }
 

@@ -997,7 +997,7 @@ mod tests {
 
     use rand::{
         distr::{Distribution, StandardUniform},
-        Rng,
+        RngExt,
     };
     use std::fmt::Debug;
 

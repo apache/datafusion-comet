@@ -22,7 +22,7 @@
 # Usage: ./dev/regenerate-golden-files.sh [--spark-version <version>]
 #
 # Options:
-#   --spark-version <version>  Only regenerate for specified Spark version (3.4, 3.5, or 4.0)
+#   --spark-version <version>  Only regenerate for specified Spark version (3.4, 3.5, 4.0, 4.1, or 4.2)
 #                              If not specified, regenerates for all versions.
 #
 # Examples:
@@ -74,17 +74,11 @@ build_native() {
     cd native && cargo build && cd ..
 }
 
-# Install Comet for a specific Spark version
-install_for_spark_version() {
-    local spark_version=$1
-    echo ""
-    echo "=============================================="
-    echo "[INFO] Installing Comet for Spark $spark_version"
-    echo "=============================================="
-    ./mvnw install -DskipTests -Pspark-$spark_version
-}
-
-# Regenerate golden files for a specific Spark version
+# Regenerate golden files for a specific Spark version. CometPlanStabilitySuite's
+# afterAll() prunes any query directory whose contents match what its fallback
+# chain resolves to, so each version-suffixed directory ends up with only the
+# queries whose plans diverge from the previous tier. The base (3.4) profile has
+# no fallback chain, so the prune is a no-op there.
 regenerate_golden_files() {
     local spark_version=$1
 
@@ -94,12 +88,12 @@ regenerate_golden_files() {
     echo "=============================================="
 
     echo "[INFO] Running CometTPCDSV1_4_PlanStabilitySuite..."
-    SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark \
+    SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw \
         -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" \
         -Pspark-$spark_version -nsu test
 
     echo "[INFO] Running CometTPCDSV2_7_PlanStabilitySuite..."
-    SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark \
+    SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw \
         -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" \
         -Pspark-$spark_version -nsu test
 }
@@ -119,7 +113,7 @@ main() {
                 echo "Usage: $0 [--spark-version <version>]"
                 echo ""
                 echo "Options:"
-                echo "  --spark-version <version>  Only regenerate for specified Spark version (3.4, 3.5, or 4.0)"
+                echo "  --spark-version <version>  Only regenerate for specified Spark version (3.4, 3.5, 4.0, 4.1, or 4.2)"
                 echo "                             If not specified, regenerates for all versions."
                 exit 0
                 ;;
@@ -133,9 +127,9 @@ main() {
 
     # Validate target version if specified
     if [ -n "$target_version" ]; then
-        if [[ ! "$target_version" =~ ^(3\.4|3\.5|4\.0)$ ]]; then
+        if [[ ! "$target_version" =~ ^(3\.4|3\.5|4\.0|4\.1|4\.2)$ ]]; then
             echo "[ERROR] Invalid Spark version: $target_version"
-            echo "[ERROR] Supported versions: 3.4, 3.5, 4.0"
+            echo "[ERROR] Supported versions: 3.4, 3.5, 4.0, 4.1, 4.2"
             exit 1
         fi
     fi
@@ -155,12 +149,11 @@ main() {
     if [ -n "$target_version" ]; then
         versions=("$target_version")
     else
-        versions=("3.4" "3.5" "4.0")
+        versions=("3.4" "3.5" "4.0" "4.1" "4.2")
     fi
 
-    # Install and regenerate for each version
+    # Regenerate for each version
     for version in "${versions[@]}"; do
-        install_for_spark_version "$version"
         regenerate_golden_files "$version"
     done
 

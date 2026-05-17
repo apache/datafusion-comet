@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometProject
       +- CometBroadcastHashJoin
@@ -12,15 +12,15 @@ CometColumnarToRow
          :     :     :        +- Filter
          :     :     :           +- Window
          :     :     :              +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-         :     :     :                 +- CometColumnarToRow
+         :     :     :                 +- CometNativeColumnarToRow
          :     :     :                    +- CometSort
          :     :     :                       +- CometColumnarExchange
          :     :     :                          +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-         :     :     :                             +- CometColumnarToRow
+         :     :     :                             +- CometNativeColumnarToRow
          :     :     :                                +- CometSort
          :     :     :                                   +- CometFilter
          :     :     :                                      :  +- Subquery
-         :     :     :                                      :     +- CometColumnarToRow
+         :     :     :                                      :     +- CometNativeColumnarToRow
          :     :     :                                      :        +- CometHashAggregate
          :     :     :                                      :           +- CometExchange
          :     :     :                                      :              +- CometHashAggregate
@@ -39,11 +39,11 @@ CometColumnarToRow
          :     :              +- Filter
          :     :                 +- Window
          :     :                    +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-         :     :                       +- CometColumnarToRow
+         :     :                       +- CometNativeColumnarToRow
          :     :                          +- CometSort
          :     :                             +- CometColumnarExchange
          :     :                                +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-         :     :                                   +- CometColumnarToRow
+         :     :                                   +- CometNativeColumnarToRow
          :     :                                      +- CometSort
          :     :                                         +- CometFilter
          :     :                                            :  +- ReusedSubquery

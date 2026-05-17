@@ -26,7 +26,22 @@ import java.nio.file.Files
 trait RESTCatalogHelper {
 
   /** Helper to set up REST catalog with embedded Jetty server (Spark 3.x / Jetty 9.4) */
-  def withRESTCatalog(f: (String, org.eclipse.jetty.server.Server, File) => Unit): Unit = {
+  def withRESTCatalog(f: (String, org.eclipse.jetty.server.Server, File) => Unit): Unit =
+    withRESTCatalog()(f)
+
+  /**
+   * Helper to set up REST catalog with optional credential vending.
+   *
+   * @param vendedCredentials
+   *   Storage credentials to inject into loadTable responses, simulating REST catalog credential
+   *   vending. When non-empty, these are added to every LoadTableResponse.config().
+   * @param warehouseLocation
+   *   Override the warehouse location (e.g., for S3). Defaults to a local temp directory.
+   */
+  def withRESTCatalog(
+      vendedCredentials: Map[String, String] = Map.empty,
+      warehouseLocation: Option[String] = None)(
+      f: (String, org.eclipse.jetty.server.Server, File) => Unit): Unit = {
     import org.apache.iceberg.inmemory.InMemoryCatalog
     import org.apache.iceberg.CatalogProperties
     import org.apache.iceberg.rest.{RESTCatalogAdapter, RESTCatalogServlet}
@@ -35,12 +50,18 @@ trait RESTCatalogHelper {
     import org.eclipse.jetty.server.handler.gzip.GzipHandler
 
     val warehouseDir = Files.createTempDirectory("comet-rest-catalog-test").toFile
+    val effectiveWarehouse = warehouseLocation.getOrElse(warehouseDir.getAbsolutePath)
+
     val backendCatalog = new InMemoryCatalog()
     backendCatalog.initialize(
       "in-memory",
-      java.util.Map.of(CatalogProperties.WAREHOUSE_LOCATION, warehouseDir.getAbsolutePath))
+      java.util.Map.of(CatalogProperties.WAREHOUSE_LOCATION, effectiveWarehouse))
 
     val adapter = new RESTCatalogAdapter(backendCatalog)
+    if (vendedCredentials.nonEmpty) {
+      import scala.jdk.CollectionConverters._
+      adapter.setVendedCredentials(vendedCredentials.asJava)
+    }
     val servlet = new RESTCatalogServlet(adapter)
 
     val servletContext = new ServletContextHandler(ServletContextHandler.NO_SESSIONS)

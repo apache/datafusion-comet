@@ -52,6 +52,7 @@ message Operator {
     ParquetWriter parquet_writer = 113;
     Explode explode = 114;
     CsvScan csv_scan = 115;
+    ShuffleScan shuffle_scan = 116;
   }
 }
 
@@ -73,6 +74,9 @@ message SparkStructField {
   string name = 1;
   spark.spark_expression.DataType data_type = 2;
   bool nullable = 3;
+  // Spark field metadata. Currently used to carry parquet.field.id through
+  // to the native side. Empty when not needed.
+  map<string, string> metadata = 4;
 }
 
 message Scan {
@@ -85,30 +89,52 @@ message Scan {
   bool arrow_ffi_safe = 3;
 }
 
-message NativeScan {
+message ShuffleScan {
   repeated spark.spark_expression.DataType fields = 1;
-  // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
-  // is purely for informational purposes when viewing native query plans in
-  // debug mode.
+  // Informational label for debug output (e.g., "CometShuffleExchangeExec [id=5]")
   string source = 2;
-  repeated SparkStructField required_schema = 3;
-  repeated SparkStructField data_schema = 4;
-  repeated SparkStructField partition_schema = 5;
-  repeated spark.spark_expression.Expr data_filters = 6;
-  repeated SparkFilePartition file_partitions = 7;
-  repeated int64 projection_vector = 8;
-  string session_timezone = 9;
-  repeated spark.spark_expression.Expr default_values = 10;
-  repeated int64 default_values_indexes = 11;
-  bool case_sensitive = 12;
-  // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
-  // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
-  // stores.
-  // The configuration values have hadoop. or spark.hadoop. prefix trimmed. For instance, the
-  // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
-  // the map.
-  map<string, string> object_store_options = 13;
-  bool encryption_enabled = 14;
+}
+
+// Common data shared by all partitions in split mode (sent once at planning)
+message NativeScanCommon {
+  repeated SparkStructField required_schema = 1;
+  repeated SparkStructField data_schema = 2;
+  repeated SparkStructField partition_schema = 3;
+  repeated spark.spark_expression.Expr data_filters = 4;
+  repeated int64 projection_vector = 5;
+  string session_timezone = 6;
+  repeated spark.spark_expression.Expr default_values = 7;
+  repeated int64 default_values_indexes = 8;
+  bool case_sensitive = 9;
+  map<string, string> object_store_options = 10;
+  bool encryption_enabled = 11;
+  string source = 12;
+  repeated spark.spark_expression.DataType fields = 13;
+  // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+  // missing in the Parquet file, true returns the entire struct as null (legacy
+  // pre-4.1 behavior); false preserves the parent struct's nullness from the file
+  // so non-null parents return a struct of all-null fields.
+  bool return_null_struct_if_all_fields_missing = 14;
+  // True when spark.sql.parquet.fieldId.read.enabled is set and the requested
+  // schema actually carries parquet.field.id metadata. When false the native
+  // scan keeps its existing name-based path with no extra work.
+  bool use_field_id = 15;
+  // True when spark.sql.parquet.fieldId.read.ignoreMissing is set.
+  bool ignore_missing_field_id = 16;
+  // Whether widening type promotion is allowed (e.g. INT32 -> INT64,
+  // FLOAT -> DOUBLE). Set from Comet's per-Spark-version constant in
+  // ShimCometConf (false on 3.x, true on 4.x). When false, reading a column
+  // with a disallowed promoted type throws an error matching Spark's
+  // SchemaColumnConvertNotSupportedException behavior.
+  bool allow_type_promotion = 17;
+}
+
+message NativeScan {
+  // Common data shared across partitions (schemas, filters, projections, config)
+  NativeScanCommon common = 1;
+
+  // Single partition's file list (injected at execution time)
+  SparkFilePartition file_partition = 2;
 }
 
 message CsvScan {
@@ -156,28 +182,37 @@ message PartitionData {
   repeated PartitionValue values = 1;
 }
 
-message IcebergScan {
-  // Schema to read
-  repeated SparkStructField required_schema = 1;
-
+// Common data shared by all partitions in split mode (sent once, captured in closure)
+message IcebergScanCommon {
   // Catalog-specific configuration for FileIO (credentials, S3/GCS config, etc.)
-  map<string, string> catalog_properties = 2;
-
-  // Pre-planned file scan tasks grouped by Spark partition
-  repeated IcebergFilePartition file_partitions = 3;
+  map<string, string> catalog_properties = 1;
 
   // Table metadata file path for FileIO initialization
-  string metadata_location = 4;
+  string metadata_location = 2;
 
-  // Deduplication pools - shared data referenced by index from tasks
-  repeated string schema_pool = 5;
-  repeated string partition_type_pool = 6;
-  repeated string partition_spec_pool = 7;
-  repeated string name_mapping_pool = 8;
-  repeated ProjectFieldIdList project_field_ids_pool = 9;
-  repeated PartitionData partition_data_pool = 10;
-  repeated DeleteFileList delete_files_pool = 11;
-  repeated spark.spark_expression.Expr residual_pool = 12;
+  // Schema to read
+  repeated SparkStructField required_schema = 3;
+
+  // Deduplication pools (must contain all entries for cross-partition deduplication)
+  repeated string schema_pool = 4;
+  repeated string partition_type_pool = 5;
+  repeated string partition_spec_pool = 6;
+  repeated string name_mapping_pool = 7;
+  repeated ProjectFieldIdList project_field_ids_pool = 8;
+  repeated PartitionData partition_data_pool = 9;
+  repeated DeleteFileList delete_files_pool = 10;
+  repeated spark.spark_expression.Expr residual_pool = 11;
+
+  // Number of data files to read concurrently within a single task
+  uint32 data_file_concurrency_limit = 12;
+}
+
+message IcebergScan {
+  // Common data shared across partitions (pools, metadata, catalog props)
+  IcebergScanCommon common = 1;
+
+  // Single partition's file scan tasks
+  repeated IcebergFileScanTask file_scan_tasks = 2;
 }
 
 // Helper message for deduplicating field ID lists
@@ -188,11 +223,6 @@ message ProjectFieldIdList {
 // Helper message for deduplicating delete file lists
 message DeleteFileList {
   repeated IcebergDeleteFile delete_files = 1;
-}
-
-// Groups FileScanTasks for a single Spark partition
-message IcebergFilePartition {
-  repeated IcebergFileScanTask file_scan_tasks = 1;
 }
 
 // Iceberg FileScanTask containing data file, delete files, and residual filter
@@ -206,6 +236,9 @@ message IcebergFileScanTask {
 
   // Record count if reading entire file
   optional uint64 record_count = 4;
+
+  // Total file size from the manifest entry, used to skip stat/HEAD calls
+  uint64 file_size_in_bytes = 5;
 
   // Indices into IcebergScan deduplication pools
   uint32 schema_idx = 15;
@@ -233,6 +266,9 @@ message IcebergDeleteFile {
 
   // Equality field IDs (empty for positional deletes)
   repeated int32 equality_ids = 4;
+
+  // // Total file size from the manifest entry, used to skip stat/HEAD calls
+  uint64 file_size_in_bytes = 5;
 }
 
 message Projection {
@@ -254,6 +290,13 @@ message HashAggregate {
   repeated spark.spark_expression.AggExpr agg_exprs = 2;
   repeated spark.spark_expression.Expr result_exprs = 3;
   AggregateMode mode = 5;
+  // Per-expression modes for mixed-mode aggregates (e.g., PartialMerge + Partial).
+  // When set, each entry corresponds to agg_exprs at the same index.
+  // When empty, all expressions use the `mode` field.
+  repeated AggregateMode expr_modes = 6;
+  // Offset in the child's output where aggregate buffer attributes start.
+  // Used by PartialMerge to locate state fields in the input.
+  int32 initial_input_buffer_offset = 7;
 }
 
 message Limit {
@@ -306,6 +349,7 @@ message ParquetWriter {
 enum AggregateMode {
   Partial = 0;
   Final = 1;
+  PartialMerge = 2;
 }
 
 message Expand {
@@ -328,6 +372,9 @@ message HashJoin {
   JoinType join_type = 3;
   optional spark.spark_expression.Expr condition = 4;
   BuildSide build_side = 5;
+  // True for BroadcastHashJoinExec null-aware anti-joins (NOT IN subquery semantics).
+  // When true, any null in the build side suppresses all left rows.
+  bool null_aware_anti_join = 6;
 }
 
 message SortMergeJoin {
@@ -356,6 +403,7 @@ message WindowExpr {
   spark.spark_expression.Expr built_in_window_function = 1;
   spark.spark_expression.AggExpr agg_func = 2;
   WindowSpecDefinition spec = 3;
+  bool ignore_nulls = 4;
 }
 
 enum WindowFrameType {
