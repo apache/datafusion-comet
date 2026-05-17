@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometExchange
@@ -10,7 +10,7 @@ CometColumnarToRow
                :        +- CometUnion
                :           :- CometFilter
                :           :  :  +- Subquery
-               :           :  :     +- CometColumnarToRow
+               :           :  :     +- CometNativeColumnarToRow
                :           :  :        +- CometHashAggregate
                :           :  :           +- CometExchange
                :           :  :              +- CometHashAggregate
@@ -479,7 +479,7 @@ CometColumnarToRow
                :                 +- CometUnion
                :                    :- CometFilter
                :                    :  :  +- Subquery
-               :                    :  :     +- CometColumnarToRow
+               :                    :  :     +- CometNativeColumnarToRow
                :                    :  :        +- CometHashAggregate
                :                    :  :           +- CometExchange
                :                    :  :              +- CometHashAggregate
@@ -948,7 +948,7 @@ CometColumnarToRow
                :                 +- CometUnion
                :                    :- CometFilter
                :                    :  :  +- Subquery
-               :                    :  :     +- CometColumnarToRow
+               :                    :  :     +- CometNativeColumnarToRow
                :                    :  :        +- CometHashAggregate
                :                    :  :           +- CometExchange
                :                    :  :              +- CometHashAggregate
@@ -1417,7 +1417,7 @@ CometColumnarToRow
                :                 +- CometUnion
                :                    :- CometFilter
                :                    :  :  +- Subquery
-               :                    :  :     +- CometColumnarToRow
+               :                    :  :     +- CometNativeColumnarToRow
                :                    :  :        +- CometHashAggregate
                :                    :  :           +- CometExchange
                :                    :  :              +- CometHashAggregate
@@ -1886,7 +1886,7 @@ CometColumnarToRow
                                  +- CometUnion
                                     :- CometFilter
                                     :  :  +- Subquery
-                                    :  :     +- CometColumnarToRow
+                                    :  :     +- CometNativeColumnarToRow
                                     :  :        +- CometHashAggregate
                                     :  :           +- CometExchange
                                     :  :              +- CometHashAggregate

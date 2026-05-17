@@ -26,6 +26,7 @@ import java.util.LinkedList;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicLong;
 
 import scala.reflect.ClassTag;
 import scala.reflect.ClassTag$;
@@ -125,6 +126,16 @@ public final class CometDiskBlockWriter {
   private long outputRecords = 0;
 
   private long insertRecords = 0;
+
+  /**
+   * Shared accumulator for encode + compression time across all ArrowIPCWriter instances. Each
+   * ArrowIPCWriter (active or spilling) adds to this same AtomicLong via SpillWriter's mechanism.
+   */
+  private final AtomicLong encodeNanos = new AtomicLong(0);
+
+  public long getEncodeNanos() {
+    return encodeNanos.get();
+  }
 
   CometDiskBlockWriter(
       File file,
@@ -355,6 +366,10 @@ public final class CometDiskBlockWriter {
 
       this.nativeLib = CometDiskBlockWriter.this.nativeLib;
       this.dataTypes = serializeSchema(schema);
+
+      // Share the writer-level AtomicLong so all ArrowIPCWriter instances
+      // (including async spilling ones) accumulate into the same counter.
+      this.setEncodeNanosAccumulator(CometDiskBlockWriter.this.encodeNanos);
     }
 
     /** Inserts a record into current allocated page. */

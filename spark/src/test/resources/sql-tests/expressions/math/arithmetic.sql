@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 -- negative
 statement
 CREATE TABLE test_neg(col1 int) USING parquet

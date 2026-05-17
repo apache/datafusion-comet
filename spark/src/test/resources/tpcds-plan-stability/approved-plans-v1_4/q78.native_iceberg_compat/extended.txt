@@ -1,6 +1,6 @@
 TakeOrderedAndProject
 +-  Project [COMET: Comet does not support Spark's BigDecimal rounding]
-   +- CometColumnarToRow
+   +- CometNativeColumnarToRow
       +- CometSortMergeJoin
          :- CometProject
          :  +- CometSortMergeJoin

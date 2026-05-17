@@ -192,6 +192,25 @@ class CometCoverageStats {
   }
 }
 
+object CometCoverageStats {
+
+  /**
+   * Compute coverage stats for a plan without generating explain string.
+   */
+  def forPlan(plan: SparkPlan): CometCoverageStats = {
+    val stats = new CometCoverageStats()
+    val explainInfo = new ExtendedExplainInfo()
+    explainInfo.generateTreeString(
+      CometExplainInfo.getActualPlan(plan),
+      0,
+      Seq(),
+      0,
+      new StringBuilder(),
+      stats)
+    stats
+  }
+}
+
 object CometExplainInfo {
   val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
 

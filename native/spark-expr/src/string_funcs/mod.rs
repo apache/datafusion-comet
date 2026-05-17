@@ -16,9 +16,11 @@
 // under the License.
 
 mod contains;
+mod get_json_object;
 mod split;
 mod substring;
 
 pub use contains::SparkContains;
+pub use get_json_object::spark_get_json_object;
 pub use split::spark_split;
 pub use substring::SubstringExpr;

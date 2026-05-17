@@ -90,7 +90,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               }
             } catch {
               case e: Exception =>
-                throw new RuntimeException(s"Error executing SQL '$sql'", e)
+                throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
             }
           case SqlQuery(sql, mode, line) =>
             try {
@@ -102,7 +102,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   case SparkAnswerOnly =>
                     checkSparkAnswer(sql)
                   case WithTolerance(tol) =>
-                    checkSparkAnswerWithTolerance(sql, tol)
+                    checkSparkAnswerAndOperatorWithTolerance(sql, tol)
                   case ExpectFallback(reason) =>
                     checkSparkAnswerAndFallbackReason(sql, reason)
                   case Ignore(reason) =>
@@ -126,7 +126,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
             } catch {
               case e: Exception =>
-                throw new RuntimeException(s"Error executing SQL '$sql'", e)
+                throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
             }
         }
       }

@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffledBatchRDD
 import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
@@ -64,7 +65,8 @@ private[spark] class CometExecRDD(
     nativeMetrics: CometMetricNode,
     subqueries: Seq[ScalarSubquery],
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
-    encryptedFilePaths: Seq[String] = Seq.empty)
+    encryptedFilePaths: Seq[String] = Seq.empty,
+    shuffleScanIndices: Set[Int] = Set.empty)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -109,6 +111,15 @@ private[spark] class CometExecRDD(
       serializedPlan
     }
 
+    // Create shuffle block iterators for inputs that are CometShuffledBatchRDD
+    val shuffleBlockIters = shuffleScanIndices.flatMap { idx =>
+      inputRDDs(idx) match {
+        case rdd: CometShuffledBatchRDD =>
+          Some(idx -> rdd.computeAsShuffleBlockIterator(partition.inputPartitions(idx), context))
+        case _ => None
+      }
+    }.toMap
+
     val it = new CometExecIterator(
       CometExec.newIterId,
       inputs,
@@ -118,14 +129,14 @@ private[spark] class CometExecRDD(
       numPartitions,
       partition.index,
       broadcastedHadoopConfForEncryption,
-      encryptedFilePaths)
+      encryptedFilePaths,
+      shuffleBlockIters)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
 
     Option(context).foreach { ctx =>
       ctx.addTaskCompletionListener[Unit] { _ =>
-        it.close()
         subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
       }
     }
@@ -167,7 +178,8 @@ object CometExecRDD {
       nativeMetrics: CometMetricNode,
       subqueries: Seq[ScalarSubquery],
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
-      encryptedFilePaths: Seq[String] = Seq.empty): CometExecRDD = {
+      encryptedFilePaths: Seq[String] = Seq.empty,
+      shuffleScanIndices: Set[Int] = Set.empty): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -181,6 +193,7 @@ object CometExecRDD {
       nativeMetrics,
       subqueries,
       broadcastedHadoopConfForEncryption,
-      encryptedFilePaths)
+      encryptedFilePaths,
+      shuffleScanIndices)
   }
 }

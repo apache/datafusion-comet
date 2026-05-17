@@ -153,6 +153,18 @@ class CometBlockStoreShuffleReader[K, C](
     }
   }
 
+  /**
+   * Returns the raw concatenated InputStream of all shuffle blocks, bypassing the decode step.
+   * Used by ShuffleScan direct read path.
+   */
+  def readAsRawStream(): InputStream = {
+    val streams = fetchIterator.map(_._2)
+    new java.io.SequenceInputStream(new java.util.Enumeration[InputStream] {
+      override def hasMoreElements: Boolean = streams.hasNext
+      override def nextElement(): InputStream = streams.next()
+    })
+  }
+
   private def fetchContinuousBlocksInBatch: Boolean = {
     val conf = SparkEnv.get.conf
     val serializerRelocatable = dep.serializer.supportsRelocationOfSerializedObjects

@@ -150,13 +150,28 @@ example generates a change log of all changes between the previous version and t
 
 ```shell
 export GITHUB_TOKEN=<your-token-here>
-python3 generate-changelog.py 0.12.0 HEAD 0.13.0 > ../changelog/0.13.0.md
+python3 generate-changelog.py 0.12.0 HEAD 0.13.0 > ../../docs/source/changelog/0.13.0.md
 ```
 
 Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
 commit into the release branch.
 
 ### Build the jars
+
+#### A note on workspace cleanliness
+
+The `common/pom.xml` resource configuration unconditionally bundles
+`native/target/{x86_64,aarch64}-apple-darwin/release/libcomet.dylib` into the
+`common` jar when those files exist on disk. Maven's `clean` removes
+`common/target` but does not touch Cargo's `native/target` directory, so a
+stale dylib left over from a prior local `make release` or `make release-linux`
+on the release manager's workstation can silently end up in a release jar
+(see [#2232](https://github.com/apache/datafusion-comet/issues/2232) for the
+incident in 0.9.1).
+
+The `build-release-comet.sh` script now runs `cargo clean` for you, but as a
+defensive measure, prefer running the release build from a fresh clone of the
+repository rather than your day-to-day working tree.
 
 #### Setup to do the build
 
@@ -302,8 +317,13 @@ Creating Nexus staging repository
 In the Nexus repository UI (https://repository.apache.org/) locate and verify the artifacts in
 staging (https://central.sonatype.org/publish/release/#locate-and-examine-your-staging-repository).
 
-If the artifacts appear to be correct, then close and release the repository so it is made visible (this should
-actually happen automatically when running the script).
+The script closes the staging repository but does not release it. Releasing to Maven Central is a manual step
+performed only after the vote passes (see [Publishing Maven Artifacts](#publishing-maven-artifacts) below).
+
+Note that the Maven artifacts are always published under the final release version (e.g. `0.13.0`), not the RC
+version — the `-rc1` / `-rc2` suffix only appears in the git tag and the source tarball in SVN. Because the script
+creates a new staging repository on each run, re-staging the same version for a subsequent RC is supported as long
+as no staging repository for that version has been released to Maven Central.
 
 ### Create the Release Candidate Tarball
 
@@ -344,6 +364,13 @@ Voters can also use the `dev/release/verify-release-candidate.sh` script to assi
 If the vote does not pass, address the issues raised, increment the release candidate number, and repeat from
 the [Tag the Release Candidate](#tag-the-release-candidate) step. For example, the next attempt would be tagged
 `0.13.0-rc2`.
+
+Before staging the next RC, drop the previous RC's staging repository in the
+[Nexus UI](https://repository.apache.org/#stagingRepositories) by selecting it and clicking "Drop". This avoids
+leaving multiple closed staging repositories for the same version and prevents accidentally releasing the wrong
+one when the vote eventually passes. The Maven version (e.g. `0.13.0`) is shared across all RCs, so each run of
+`publish-to-maven.sh` creates a new staging repository for the same GAV — only one of them should ever be
+released to Maven Central.
 
 ## Publishing Binary Releases
 

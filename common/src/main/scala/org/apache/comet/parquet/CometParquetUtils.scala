@@ -29,6 +29,12 @@ object CometParquetUtils {
   private val PARQUET_FIELD_ID_READ_ENABLED = "spark.sql.parquet.fieldId.read.enabled"
   private val IGNORE_MISSING_PARQUET_FIELD_ID = "spark.sql.parquet.fieldId.read.ignoreMissing"
 
+  // Field-metadata key arrow-rs writes when it lifts Parquet field IDs into the Arrow schema
+  // (`parquet::arrow::PARQUET_FIELD_ID_META_KEY`). Spark's local key for the same concept is
+  // `parquet.field.id` (`ParquetUtils.FIELD_ID_METADATA_KEY`). The serde translates at the proto
+  // boundary so the native side can match the same key it gets from arrow-rs.
+  val PARQUET_FIELD_ID_META_KEY = "PARQUET:field_id"
+
   // Map of encryption configuration key-value pairs that, if present, are only supported with
   // these specific values. Generally, these are the default values that won't be present,
   // but if they are present we want to check them.

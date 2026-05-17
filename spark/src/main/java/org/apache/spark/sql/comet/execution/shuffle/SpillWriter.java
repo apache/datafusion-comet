@@ -24,6 +24,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.LinkedList;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.Nullable;
 
 import org.slf4j.Logger;
@@ -68,9 +69,20 @@ public abstract class SpillWriter {
 
   protected byte[][] dataTypes;
 
-  // 0: CRC32, 1: Adler32. Spark uses Adler32 by default.
+  // 0: CRC32, 1: Adler32, or 2: CRC32C. Spark uses Adler32 by default.
   protected int checksumAlgo = 1;
   protected long checksum = -1;
+
+  /**
+   * Optional shared accumulator for encode + compression time in nanoseconds. When set, every
+   * doSpilling() call adds the native encode time (results[2]) to this accumulator. Multiple
+   * SpillWriter instances can share the same AtomicLong so their times aggregate correctly.
+   */
+  @Nullable private AtomicLong encodeNanosAcc = null;
+
+  public void setEncodeNanosAccumulator(AtomicLong acc) {
+    this.encodeNanosAcc = acc;
+  }
 
   /** Serialize row schema to byte array. */
   protected byte[][] serializeSchema(StructType schema) {
@@ -98,6 +110,8 @@ public abstract class SpillWriter {
       this.checksumAlgo = 0;
     } else if (algo.equals("adler32")) {
       this.checksumAlgo = 1;
+    } else if (algo.equals("crc32c")) {
+      this.checksumAlgo = 2;
     } else {
       throw new UnsupportedOperationException(
           "Unsupported shuffle checksum algorithm: " + checksumAlgo);
@@ -200,6 +214,10 @@ public abstract class SpillWriter {
 
     long written = results[0];
     checksum = results[1];
+    // results[2] = encode + compression time in nanoseconds (measured by native code)
+    if (encodeNanosAcc != null) {
+      encodeNanosAcc.addAndGet(results[2]);
+    }
 
     rowPartition.reset();
 

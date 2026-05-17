@@ -22,16 +22,23 @@ package org.apache.comet.exec
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetWriter
+import org.apache.parquet.hadoop.api.WriteSupport
+import org.apache.parquet.hadoop.api.WriteSupport.WriteContext
+import org.apache.parquet.io.api.RecordConsumer
+import org.apache.parquet.schema.MessageTypeParser
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.{IntegerType, LongType, NullType, StringType, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-  import org.apache.spark.sql.catalyst.expressions.GetArrayItem
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
@@ -42,8 +49,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan,
-          CometConf.getExprAllowIncompatConfigKey(classOf[GetArrayItem]) -> "true") {
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
           testFun
         }
       })
@@ -60,6 +66,42 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           checkSparkAnswer(df)
         }
       }
+    }
+  }
+
+  test("native reader duplicate fields in case-insensitive mode") {
+    withTempPath { path =>
+      // Write parquet with columns A, B, b (B and b are duplicates case-insensitively)
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        spark
+          .range(5)
+          .selectExpr("id as A", "id as B", "id as b")
+          .write
+          .mode("overwrite")
+          .parquet(path.toString)
+      }
+      val tbl = s"dup_fields_${System.currentTimeMillis()}"
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        sql(s"create table $tbl (A long, B long) using parquet options (path '${path}')")
+      }
+      // In case-insensitive mode, selecting B should fail because both B and b match
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+        val e = intercept[Exception] {
+          sql(s"select B from $tbl").collect()
+        }
+        assert(
+          e.getMessage.contains("duplicate field") ||
+            e.getMessage.contains("Found duplicate field") ||
+            (e.getCause != null && e.getCause.getMessage.contains("duplicate field")) ||
+            (e.getCause != null && e.getCause.getMessage.contains("Found duplicate field")),
+          s"Expected duplicate field error, got: ${e.getMessage}")
+      }
+      // In case-sensitive mode, selecting B should work fine
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        val df = sql(s"select A from $tbl")
+        assert(df.collect().length == 5)
+      }
+      sql(s"drop table if exists $tbl")
     }
   }
 
@@ -259,8 +301,8 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   test("native reader - read a STRUCT subfield - field from second") {
     testSingleLineQuery(
       """
-          |select 1 a, named_struct('a', 1, 'b', 'n') c0
-          |""".stripMargin,
+        |select 1 a, named_struct('a', 1, 'b', 'n') c0
+        |""".stripMargin,
       "select c0.b from tbl")
   }
 
@@ -564,8 +606,213 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   test("native reader - support ARRAY literal nested ARRAY fields") {
     testSingleLineQuery(
       """
-          |select 1 a
-          |""".stripMargin,
+        |select 1 a
+        |""".stripMargin,
       "select array(array(1, 2, null), array(), array(10), null, array(null)) from tbl")
   }
+
+  // Regression test found during DataFusion 53 upgrade (PR #3629).
+  // Spark's SchemaPruningSuite tests (e.g. "select a single complex field array
+  // and in clause", "select explode of nested field of array of struct") were
+  // failing because wrap_all_type_mismatches in Comet's schema adapter looked up
+  // the logical field by column index instead of by name. Filter expressions
+  // built against the pruned required_schema had "friends" at index 0, but the
+  // full logical_file_schema had "id: Int32" at index 0.
+  test("native reader - nested schema pruning with array of struct and filter") {
+    testSingleLineQuery(
+      """
+        |select
+        |  0 as id,
+        |  named_struct('first', 'Jane', 'middle', 'X.', 'last', 'Doe') as name,
+        |  '123 Main Street' as address,
+        |  1 as pets,
+        |  array(
+        |    named_struct('first', 'Susan', 'middle', 'Z.', 'last', 'Smith')
+        |  ) as friends
+        |union all
+        |select
+        |  1 as id,
+        |  named_struct('first', 'John', 'middle', 'Y.', 'last', 'Doe') as name,
+        |  '321 Wall Street' as address,
+        |  3 as pets,
+        |  array(
+        |    named_struct('first', 'Alice', 'middle', 'A.', 'last', 'Jones')
+        |  ) as friends
+        |""".stripMargin,
+      "select friends.middle from tbl where friends.first[0] = 'Susan'")
+  }
+
+  // SPARK-39393: bare "repeated int32" (protobuf-style, no wrapping list group)
+  // should be readable without crashing on missing def levels.
+  // SPARK-39393: Parquet does not support predicate pushdown on repeated columns.
+  // A bare "repeated int32 f" (protobuf-style, no wrapping LIST group) must not
+  // have IsNotNull pushed into the Parquet reader. Comet filters these out in
+  // CometScanExec.supportedDataFilters so the predicate is evaluated after
+  // reading. Without that, DataFusion's list predicate pushdown would push
+  // IsNotNull as a RowFilter, triggering an arrow-rs ListArrayReader crash.
+  test("native reader - read bare repeated primitive field") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "protobuf-parquet").toString
+      val schema =
+        """message protobuf_style {
+          |  repeated int32 f;
+          |}
+        """.stripMargin
+
+      writeDirect(
+        path,
+        schema,
+        { rc =>
+          rc.startMessage()
+          rc.startField("f", 0)
+          rc.addInteger(1)
+          rc.addInteger(2)
+          rc.endField("f", 0)
+          rc.endMessage()
+        })
+
+      // Read without filter
+      checkAnswer(spark.read.parquet(dir.getCanonicalPath), Seq(Row(Seq(1, 2))))
+
+      // Read with isnotnull filter — the filter should not be pushed down into
+      // the Parquet reader for repeated primitive fields (SPARK-39393), but the
+      // query should still return correct results by evaluating the filter after
+      // reading.
+      checkAnswer(
+        spark.read.parquet(dir.getCanonicalPath).filter("isnotnull(f)"),
+        Seq(Row(Seq(1, 2))))
+    }
+  }
+
+  test("issue #4136: struct with all requested fields missing in file") {
+    // SPARK-53535 (Spark 4.1) added LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING.
+    // With the new default (false), Spark's vectorized reader appends a "marker" leaf field to
+    // the Parquet read schema so it can distinguish a null parent row from a non-null parent
+    // whose requested fields are all missing from the file, then truncates the marker out of
+    // the ColumnarBatch. Comet's native scans don't implement this, so they conflate the two
+    // cases and return Row(null) for non-null parents.
+    assume(
+      isSpark41Plus,
+      "LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING was introduced in Spark 4.1")
+
+    val tableSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_1", IntegerType)
+        .add("_2", StringType),
+      nullable = true)
+
+    // Read schema requests _3, _4 — fields that don't exist in the file's _1 struct.
+    val readSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_3", IntegerType, nullable = true)
+        .add("_4", LongType, nullable = true),
+      nullable = true)
+
+    val data = java.util.Arrays.asList(
+      Row(Row(1, "a")), // non-null parent, requested fields missing in file
+      Row(Row(2, null)), // non-null parent, requested fields missing in file
+      Row(null) // null parent
+    )
+
+    withTempPath { path =>
+      spark
+        .createDataFrame(data, tableSchema)
+        .write
+        .parquet(path.getCanonicalPath)
+
+      // Mirror the toggles in Spark's `vectorized reader: missing all struct fields` test in
+      // ParquetIOSuite, including off-heap on/off and the explicit nested-column vectorized
+      // reader flag. We've seen CI fail on the off-heap branch when the on-heap branch passes.
+      for {
+        offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
+      } withSQLConf(
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
+        "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
+        val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("issue #4136: struct with only NullType fields in file (SPARK-54220)") {
+    // The upstream SPARK-54220 test writes `Tuple1((null, null))` which is inferred as a struct
+    // of NullType fields on disk; reading with a schema that asks for Int/String on top of
+    // NullType fails at parquet decode time because Spark encodes NullType as
+    // `BOOLEAN + LogicalType::Unknown` but parquet-rs only accepts `INT32 + Unknown`. See
+    // #4199 for the upstream compatibility gap.
+    assume(
+      false,
+      "Skipped until parquet-rs accepts BOOLEAN + Unknown for NullType " +
+        "(https://github.com/apache/datafusion-comet/issues/4199)")
+
+    val tableSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_1", NullType)
+        .add("_2", NullType),
+      nullable = true)
+
+    val readSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_3", IntegerType, nullable = true)
+        .add("_4", StringType, nullable = true),
+      nullable = true)
+
+    val data =
+      java.util.Arrays.asList(Row(Row(null, null)), Row(Row(null, null)), Row(null))
+
+    withTempPath { path =>
+      spark
+        .createDataFrame(data, tableSchema)
+        .write
+        .parquet(path.getCanonicalPath)
+
+      for {
+        offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
+      } withSQLConf(
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
+        "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
+        val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  /** Write a Parquet file using a raw RecordConsumer for full schema control. */
+  private def writeDirect(
+      path: String,
+      schema: String,
+      recordWriters: (RecordConsumer => Unit)*): Unit = {
+    val messageType = MessageTypeParser.parseMessageType(schema)
+    val writeSupport = new DirectWriteSupport(messageType)
+    class Builder extends ParquetWriter.Builder[RecordConsumer => Unit, Builder](new Path(path)) {
+      override def getWriteSupport(conf: Configuration): WriteSupport[RecordConsumer => Unit] =
+        writeSupport
+      override def self(): Builder = this
+    }
+    val writer = new Builder().build()
+    try recordWriters.foreach(writer.write)
+    finally writer.close()
+  }
+}
+
+private class DirectWriteSupport(schema: org.apache.parquet.schema.MessageType)
+    extends WriteSupport[RecordConsumer => Unit] {
+  private var recordConsumer: RecordConsumer = _
+
+  override def init(configuration: Configuration): WriteContext =
+    new WriteContext(schema, java.util.Collections.emptyMap())
+
+  override def write(recordWriter: RecordConsumer => Unit): Unit =
+    recordWriter(recordConsumer)
+
+  override def prepareForWrite(rc: RecordConsumer): Unit =
+    this.recordConsumer = rc
 }
