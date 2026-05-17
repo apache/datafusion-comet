@@ -820,9 +820,11 @@ impl SparkPhysicalExprAdapter {
             // ShimCometConf. Deferred to runtime so empty files (SPARK-26709)
             // still pass. See #4219.
             //
-            // INT96 columns surface as `Timestamp(_, None)` after `coerce_int96`
-            // strips the timezone, so this pattern only catches TIMESTAMP_MICROS
-            // / TIMESTAMP_MILLIS reads. INT96 -> TimestampNTZ is handled elsewhere.
+            // This catches all LTZ physical encodings: TIMESTAMP_MICROS /
+            // TIMESTAMP_MILLIS arrive as `Timestamp(_, Some(_))` directly, and
+            // INT96 arrives as `Timestamp(_, Some("UTC"))` because `coerce_int96_tz`
+            // attaches the UTC timezone (see `get_options`) instead of letting
+            // `coerce_int96` strip it to a timezone-free `Timestamp(_, None)`.
             if !self.parquet_options.allow_timestamp_ltz_to_ntz
                 && matches!(
                     (physical_type, target_type),
@@ -835,7 +837,7 @@ impl SparkPhysicalExprAdapter {
                 let rejection = reject_on_non_empty_expr(
                     Arc::clone(&child),
                     cast.target_field(),
-                    cast.input_field().name(),
+                    input_field.name(),
                     physical_type,
                     target_type,
                 );
