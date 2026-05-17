@@ -83,12 +83,18 @@ requires `spark.comet.exec.enabled=true` because the scan node must be wrapped b
 The following `native_datafusion` limitations may produce incorrect results on Spark versions prior to 4.0
 without falling back to Spark:
 
-- Reading `TimestampLTZ` as `TimestampNTZ`. On Spark 3.x, Spark raises an error per
-  [SPARK-36182](https://issues.apache.org/jira/browse/SPARK-36182) because LTZ encodes UTC-adjusted instants
-  that cannot be safely reinterpreted as timezone-free values. Comet does not raise this error and instead
-  returns the raw UTC instant as a `TimestampNTZ` value. This applies to all LTZ physical encodings (INT96,
-  TIMESTAMP_MICROS, TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
-  ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's behavior.
+- Reading Parquet `INT96` as `TimestampNTZ` on Spark 3.x. Spark raises
+  `SchemaColumnConvertNotSupportedException` for this read per
+  [SPARK-36182](https://issues.apache.org/jira/browse/SPARK-36182); Comet does not, and silently
+  returns the column's UTC instant as the `TimestampNTZ` value (the Spark 4.0+ semantics from
+  [SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)). This is a correctness
+  divergence on Spark 3.x: queries that Spark would have failed instead return values, and those
+  values reflect UTC rather than the session-local wall clock a `TimestampNTZ` is normally
+  understood as, so downstream filters, joins, and aggregations on the column may produce
+  different results than running the same query without Comet. The annotated LTZ encodings
+  (`TIMESTAMP_MICROS`, `TIMESTAMP_MILLIS` with `isAdjustedToUTC=true`) are rejected correctly.
+  INT96 is a gap because DataFusion's `coerce_int96` strips the source timezone before Comet's
+  schema adapter runs, leaving INT96 indistinguishable from a true `TIMESTAMP_NTZ` source.
   See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
 
 ### Schema Mismatch Handling

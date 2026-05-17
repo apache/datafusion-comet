@@ -127,6 +127,11 @@ message NativeScanCommon {
   // with a disallowed promoted type throws an error matching Spark's
   // SchemaColumnConvertNotSupportedException behavior.
   bool allow_type_promotion = 17;
+  // When true, reading a Parquet TimestampLTZ column as TimestampNTZ is
+  // permitted (Spark 4.0+, SPARK-47447); when false, it is rejected with
+  // SchemaColumnConvertNotSupportedException (Spark 3.x, SPARK-36182). Set
+  // from Comet's per-Spark-version constant in ShimCometConf.
+  bool allow_timestamp_ltz_to_ntz = 18;
 }
 
 message NativeScan {

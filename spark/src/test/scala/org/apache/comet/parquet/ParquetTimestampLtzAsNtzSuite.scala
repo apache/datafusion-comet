@@ -42,22 +42,23 @@ class ParquetTimestampLtzAsNtzSuite extends CometTestBase {
 
   private val tsTypes = Seq("INT96", "TIMESTAMP_MICROS", "TIMESTAMP_MILLIS")
 
-  tsTypes.foreach { tsType =>
-    test(s"read TimestampLTZ ($tsType) as TimestampNTZ throws pre-Spark 4") {
-      assume(!isSpark40Plus, "Spark 4.0+ allows reading TimestampLTZ as TimestampNTZ")
+  private val scanImpls =
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
 
-      val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-      assume(
-        scanImpl != CometConf.SCAN_AUTO && scanImpl != CometConf.SCAN_NATIVE_DATAFUSION,
-        s"https://github.com/apache/datafusion-comet/issues/4219 ($scanImpl scan does not " +
-          "reject TimestampLTZ read as TimestampNTZ)")
+  for {
+    tsType <- tsTypes
+    scanImpl <- scanImpls
+  } {
+    test(s"read TimestampLTZ ($tsType) as TimestampNTZ throws pre-Spark 4 ($scanImpl)") {
+      assume(!isSpark40Plus, "Spark 4.0+ allows reading TimestampLTZ as TimestampNTZ")
 
       val sessionTz = "America/Los_Angeles"
 
       withSQLConf(
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> sessionTz,
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> tsType,
-        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
         withTempPath { dir =>
           val path = dir.getCanonicalPath
           Seq(Timestamp.valueOf("2020-01-01 12:00:00")).toDF("ts").write.parquet(path)
