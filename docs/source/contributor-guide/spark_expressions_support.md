@@ -241,7 +241,7 @@
 - [ ] from_utc_timestamp
 - [x] hour
 - [x] last_day
-- [ ] localtimestamp
+- [x] localtimestamp
 - [x] make_date
 - [ ] make_dt_interval
 - [ ] make_interval
