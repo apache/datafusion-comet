@@ -51,12 +51,6 @@ class ParquetTimestampLtzAsNtzSuite extends CometTestBase {
   } {
     test(s"read TimestampLTZ ($tsType) as TimestampNTZ throws pre-Spark 4 ($scanImpl)") {
       assume(!isSpark40Plus, "Spark 4.0+ allows reading TimestampLTZ as TimestampNTZ")
-      // INT96 cannot be detected on the native_datafusion path: DataFusion's coerce_int96
-      // strips the timezone, so by the time Comet's schema adapter runs, an INT96 column is
-      // indistinguishable from a TIMESTAMP_NTZ_MICROS column. Tracked separately under #4219.
-      assume(
-        !(tsType == "INT96" && scanImpl == CometConf.SCAN_NATIVE_DATAFUSION),
-        "https://github.com/apache/datafusion-comet/issues/4219 (INT96 + native_datafusion)")
 
       val sessionTz = "America/Los_Angeles"
 

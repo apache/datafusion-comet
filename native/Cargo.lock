@@ -1860,8 +1860,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93db0e623840612f7f2cd757f7e8a8922064192363732c88692e0870016e141b"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -1877,18 +1876,18 @@ dependencies = [
  "datafusion-datasource-csv",
  "datafusion-datasource-json",
  "datafusion-datasource-parquet",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-nested",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-aggregate 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-nested 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-functions-table",
  "datafusion-functions-window",
  "datafusion-optimizer",
- "datafusion-physical-expr",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-optimizer",
  "datafusion-physical-plan",
  "datafusion-session",
@@ -1911,8 +1910,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37cefde60b26a7f4ff61e9d2ff2833322f91df2b568d7238afe67bde5bdffb66"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1920,9 +1918,9 @@ dependencies = [
  "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1936,19 +1934,18 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog-listing"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17e112307715d6a7a331111a4c2330ff54bc237183511c319e3708a4cff431fb"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
  "datafusion-common",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "futures",
  "itertools 0.14.0",
@@ -1975,7 +1972,7 @@ dependencies = [
  "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
  "datafusion-datasource",
- "datafusion-functions-nested",
+ "datafusion-functions-nested 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "datafusion-physical-expr-adapter",
  "datafusion-spark",
  "futures",
@@ -2132,8 +2129,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d72a11ca44a95e1081870d3abb80c717496e8a7acb467a1d3e932bb636af5cc2"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "ahash",
  "arrow",
@@ -2157,8 +2153,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89f4afaed29670ec4fd6053643adc749fe3f4bc9d1ce1b8c5679b22c67d12def"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "futures",
  "log",
@@ -2168,8 +2163,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9fb386e1691355355a96419978a0022b7947b44d4a24a6ea99f00b6b485cbb6"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "async-compression",
@@ -2179,11 +2173,11 @@ dependencies = [
  "chrono",
  "datafusion-common",
  "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "datafusion-session",
  "flate2",
@@ -2203,8 +2197,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-arrow"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffa6c52cfed0734c5f93754d1c0175f558175248bf686c944fb05c373e5fc096"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -2213,9 +2206,9 @@ dependencies = [
  "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -2227,8 +2220,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-csv"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "503f29e0582c1fc189578d665ff57d9300da1f80c282777d7eb67bb79fb8cdca"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2236,9 +2228,9 @@ dependencies = [
  "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -2250,8 +2242,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-json"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e33804749abc8d0c8cb7473228483cb8070e524c6f6086ee1b85a64debe2b3d2"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2259,9 +2250,9 @@ dependencies = [
  "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -2274,8 +2265,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-parquet"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a8e0365e0e08e8ff94d912f0ababcf9065a1a304018ba90b1fc83c855b4997"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2283,12 +2273,12 @@ dependencies = [
  "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-aggregate-common",
- "datafusion-physical-expr",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-aggregate-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "datafusion-pruning",
  "datafusion-session",
@@ -2308,6 +2298,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8de6ac0df1662b9148ad3c987978b32cbec7c772f199b1d53520c8fa764a87ee"
 
 [[package]]
+name = "datafusion-doc"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+
+[[package]]
 name = "datafusion-execution"
 version = "53.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2319,8 +2314,30 @@ dependencies = [
  "chrono",
  "dashmap",
  "datafusion-common",
- "datafusion-expr",
- "datafusion-physical-expr-common",
+ "datafusion-expr 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures",
+ "log",
+ "object_store",
+ "parking_lot",
+ "rand 0.9.4",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "datafusion-execution"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "arrow",
+ "arrow-buffer",
+ "async-trait",
+ "chrono",
+ "dashmap",
+ "datafusion-common",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "futures",
  "log",
  "object_store",
@@ -2341,11 +2358,32 @@ dependencies = [
  "async-trait",
  "chrono",
  "datafusion-common",
- "datafusion-doc",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-functions-window-common",
- "datafusion-physical-expr-common",
+ "datafusion-doc 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-window-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "indexmap 2.14.0",
+ "itertools 0.14.0",
+ "paste",
+ "serde_json",
+ "sqlparser",
+]
+
+[[package]]
+name = "datafusion-expr"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "chrono",
+ "datafusion-common",
+ "datafusion-doc 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-aggregate-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-window-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "indexmap 2.14.0",
  "itertools 0.14.0",
  "paste",
@@ -2367,10 +2405,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-expr-common"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "arrow",
+ "datafusion-common",
+ "indexmap 2.14.0",
+ "itertools 0.14.0",
+ "paste",
+]
+
+[[package]]
 name = "datafusion-functions"
 version = "53.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f28aa4e10384e782774b10e72aca4d93ef7b31aa653095d9d4536b0a3dbc51b6"
+dependencies = [
+ "arrow",
+ "arrow-buffer",
+ "base64",
+ "chrono",
+ "chrono-tz",
+ "datafusion-common",
+ "datafusion-doc 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-macros 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hex",
+ "itertools 0.14.0",
+ "log",
+ "memchr",
+ "num-traits",
+ "rand 0.9.4",
+ "regex",
+ "unicode-segmentation",
+ "uuid",
+]
+
+[[package]]
+name = "datafusion-functions"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -2380,11 +2457,11 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-macros",
+ "datafusion-doc 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-macros 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "hex",
  "itertools 0.14.0",
  "log",
@@ -2407,13 +2484,34 @@ dependencies = [
  "ahash",
  "arrow",
  "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-aggregate-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-doc 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-macros 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "half",
+ "log",
+ "num-traits",
+ "paste",
+]
+
+[[package]]
+name = "datafusion-functions-aggregate"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common",
+ "datafusion-doc 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-aggregate-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-macros 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "half",
  "log",
  "num-traits",
@@ -2429,8 +2527,20 @@ dependencies = [
  "ahash",
  "arrow",
  "datafusion-common",
- "datafusion-expr-common",
- "datafusion-physical-expr-common",
+ "datafusion-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "datafusion-functions-aggregate-common"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
 ]
 
 [[package]]
@@ -2442,15 +2552,39 @@ dependencies = [
  "arrow",
  "arrow-ord",
  "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-aggregate-common",
- "datafusion-macros",
- "datafusion-physical-expr-common",
+ "datafusion-doc 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-macros 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hashbrown 0.16.1",
+ "itertools 0.14.0",
+ "itoa",
+ "log",
+ "paste",
+]
+
+[[package]]
+name = "datafusion-functions-nested"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "arrow",
+ "arrow-ord",
+ "datafusion-common",
+ "datafusion-doc 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-aggregate 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-aggregate-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-macros 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "hashbrown 0.16.1",
  "itertools 0.14.0",
  "itoa",
@@ -2461,14 +2595,13 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b40d3f5bbb3905f9ccb1ce9485a9595c77b69758a7c24d3ba79e334ff51e7e"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
  "datafusion-common",
- "datafusion-expr",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "parking_lot",
  "paste",
@@ -2477,17 +2610,16 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4e88ec9d57c9b685d02f58bfee7be62d72610430ddcedb82a08e5d9925dbfb6"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "datafusion-common",
- "datafusion-doc",
- "datafusion-expr",
- "datafusion-functions-window-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-doc 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-window-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-macros 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "log",
  "paste",
 ]
@@ -2499,7 +2631,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8307bb93519b1a91913723a1130cfafeee3f72200d870d88e91a6fc5470ede5c"
 dependencies = [
  "datafusion-common",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "datafusion-functions-window-common"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "datafusion-common",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
 ]
 
 [[package]]
@@ -2508,7 +2649,17 @@ version = "53.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e367e6a71051d0ebdd29b2f85d12059b38b1d1f172c6906e80016da662226bd"
 dependencies = [
- "datafusion-doc",
+ "datafusion-doc 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "datafusion-macros"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "datafusion-doc 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "quote",
  "syn 2.0.117",
 ]
@@ -2516,15 +2667,14 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e929015451a67f77d9d8b727b2bf3a40c4445fdef6cdc53281d7d97c76888ace"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "chrono",
  "datafusion-common",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-physical-expr",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "indexmap 2.14.0",
  "itertools 0.14.0",
  "log",
@@ -2541,10 +2691,32 @@ dependencies = [
  "ahash",
  "arrow",
  "datafusion-common",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-physical-expr-common",
+ "datafusion-expr 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "half",
+ "hashbrown 0.16.1",
+ "indexmap 2.14.0",
+ "itertools 0.14.0",
+ "parking_lot",
+ "paste",
+ "petgraph",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-physical-expr"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-aggregate-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "half",
  "hashbrown 0.16.1",
  "indexmap 2.14.0",
@@ -2558,15 +2730,14 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-adapter"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea22315f33cf2e0adc104e8ec42e285f6ed93998d565c65e82fec6a9ee9f9db4"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "datafusion-common",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "itertools 0.14.0",
 ]
 
@@ -2580,7 +2751,23 @@ dependencies = [
  "arrow",
  "chrono",
  "datafusion-common",
- "datafusion-expr-common",
+ "datafusion-expr-common 53.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hashbrown 0.16.1",
+ "indexmap 2.14.0",
+ "itertools 0.14.0",
+ "parking_lot",
+]
+
+[[package]]
+name = "datafusion-physical-expr-common"
+version = "53.1.0"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
+dependencies = [
+ "ahash",
+ "arrow",
+ "chrono",
+ "datafusion-common",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "hashbrown 0.16.1",
  "indexmap 2.14.0",
  "itertools 0.14.0",
@@ -2590,16 +2777,15 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cb13397809a425918f608dfe8653f332015a3e330004ab191b4404187238b95"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "datafusion-pruning",
  "itertools 0.14.0",
@@ -2608,8 +2794,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5edc023675791af9d5fb4cc4c24abf5f7bd3bd4dcf9e5bd90ea1eff6976dcc79"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "ahash",
  "arrow",
@@ -2618,13 +2803,13 @@ dependencies = [
  "async-trait",
  "datafusion-common",
  "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-functions-aggregate-common",
- "datafusion-functions-window-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-aggregate-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-window-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "futures",
  "half",
  "hashbrown 0.16.1",
@@ -2640,15 +2825,14 @@ dependencies = [
 [[package]]
 name = "datafusion-pruning"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac8c76860e355616555081cab5968cec1af7a80701ff374510860bcd567e365a"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "datafusion-common",
  "datafusion-datasource",
- "datafusion-expr-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-physical-expr-common 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "itertools 0.14.0",
  "log",
@@ -2657,13 +2841,12 @@ dependencies = [
 [[package]]
 name = "datafusion-session"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5412111aa48e2424ba926112e192f7a6b7e4ccb450145d25ce5ede9f19dc491e"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "async-trait",
  "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "datafusion-physical-plan",
  "parking_lot",
 ]
@@ -2671,8 +2854,7 @@ dependencies = [
 [[package]]
 name = "datafusion-spark"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e059dcf8544da0d6598d0235be3cc29c209094a5976b2e4822e4a2cf91c2b5c5"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "bigdecimal",
@@ -2681,11 +2863,11 @@ dependencies = [
  "datafusion",
  "datafusion-catalog",
  "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-nested",
+ "datafusion-execution 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-aggregate 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-nested 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "log",
  "percent-encoding",
  "rand 0.9.4",
@@ -2698,15 +2880,14 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "53.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa0d133ddf8b9b3b872acac900157f783e7b879fe9a6bccf389abebbfac45ec1"
+source = "git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0#f15bc843e1605bf3f2c9baa39fe2b0cb9526d009"
 dependencies = [
  "arrow",
  "bigdecimal",
  "chrono",
  "datafusion-common",
- "datafusion-expr",
- "datafusion-functions-nested",
+ "datafusion-expr 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
+ "datafusion-functions-nested 53.1.0 (git+https://github.com/andygrove/datafusion?branch=coerce-int96-timezone-on-53.1.0)",
  "indexmap 2.14.0",
  "log",
  "regex",

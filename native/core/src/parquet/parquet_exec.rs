@@ -210,6 +210,11 @@ fn get_options(
     table_parquet_options.global.pushdown_filters = true;
     table_parquet_options.global.reorder_filters = true;
     table_parquet_options.global.coerce_int96 = Some("us".to_string());
+    // INT96 columns encode UTC-adjusted instants; attaching the UTC timezone
+    // preserves that signal at the Arrow level so the schema adapter can
+    // distinguish INT96-derived TimestampLTZ from a true TimestampNTZ source
+    // and apply the pre-Spark-4 SPARK-36182 rejection (#4219).
+    table_parquet_options.global.coerce_int96_tz = Some("UTC".to_string());
     let mut spark_parquet_options =
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
