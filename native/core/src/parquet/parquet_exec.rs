@@ -71,6 +71,7 @@ pub(crate) fn init_datasource_exec(
     case_sensitive: bool,
     return_null_struct_if_all_fields_missing: bool,
     allow_type_promotion: bool,
+    allow_timestamp_ltz_to_ntz: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
@@ -81,6 +82,7 @@ pub(crate) fn init_datasource_exec(
         case_sensitive,
         return_null_struct_if_all_fields_missing,
         allow_type_promotion,
+        allow_timestamp_ltz_to_ntz,
         &object_store_url,
         encryption_enabled,
     );
@@ -200,6 +202,7 @@ fn get_options(
     case_sensitive: bool,
     return_null_struct_if_all_fields_missing: bool,
     allow_type_promotion: bool,
+    allow_timestamp_ltz_to_ntz: bool,
     object_store_url: &ObjectStoreUrl,
     encryption_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
@@ -214,6 +217,7 @@ fn get_options(
     spark_parquet_options.return_null_struct_if_all_fields_missing =
         return_null_struct_if_all_fields_missing;
     spark_parquet_options.allow_type_promotion = allow_type_promotion;
+    spark_parquet_options.allow_timestamp_ltz_to_ntz = allow_timestamp_ltz_to_ntz;
 
     if encryption_enabled {
         table_parquet_options.crypto.configure_factory(
