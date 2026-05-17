@@ -211,6 +211,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.setIgnoreMissingFieldId(
         scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
 
+      commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
+
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState
         .newHadoopConfWithOptions(scan.relation.options)
