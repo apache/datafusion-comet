@@ -132,7 +132,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .newBuilder()
         .setOutputPath(outputPath)
         .setCompression(codec)
-        .addAllColumnNames(cmd.query.output.map(_.name).asJava)
+        .addAllColumnNames(cmd.outputColumnNames.asJava)
       // Note: work_dir, job_id, and task_attempt_id will be set at execution time
       // in CometNativeWriteExec, as they depend on the Spark task context
 
@@ -201,7 +201,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
       }
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
+    CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId, cmd.catalogTable)
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
