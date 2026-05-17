@@ -74,6 +74,9 @@ message SparkStructField {
   string name = 1;
   spark.spark_expression.DataType data_type = 2;
   bool nullable = 3;
+  // Spark field metadata. Currently used to carry parquet.field.id through
+  // to the native side. Empty when not needed.
+  map<string, string> metadata = 4;
 }
 
 message Scan {
@@ -107,6 +110,23 @@ message NativeScanCommon {
   bool encryption_enabled = 11;
   string source = 12;
   repeated spark.spark_expression.DataType fields = 13;
+  // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+  // missing in the Parquet file, true returns the entire struct as null (legacy
+  // pre-4.1 behavior); false preserves the parent struct's nullness from the file
+  // so non-null parents return a struct of all-null fields.
+  bool return_null_struct_if_all_fields_missing = 14;
+  // True when spark.sql.parquet.fieldId.read.enabled is set and the requested
+  // schema actually carries parquet.field.id metadata. When false the native
+  // scan keeps its existing name-based path with no extra work.
+  bool use_field_id = 15;
+  // True when spark.sql.parquet.fieldId.read.ignoreMissing is set.
+  bool ignore_missing_field_id = 16;
+  // Whether widening type promotion is allowed (e.g. INT32 -> INT64,
+  // FLOAT -> DOUBLE). Set from Comet's per-Spark-version constant in
+  // ShimCometConf (false on 3.x, true on 4.x). When false, reading a column
+  // with a disallowed promoted type throws an error matching Spark's
+  // SchemaColumnConvertNotSupportedException behavior.
+  bool allow_type_promotion = 17;
 }
 
 message NativeScan {
