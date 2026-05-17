@@ -20,22 +20,22 @@
 package org.apache.spark.comet
 
 import org.apache.spark.TaskContext
+import org.apache.spark.memory.TaskMemoryManager
 
 /**
- * Package-private access shim for `TaskContext.setTaskContext` / `TaskContext.unset`.
+ * Package-private access shim for Spark APIs that are `protected[spark]` or `private[spark]`.
  *
- * Both methods are declared `protected[spark]` on Spark's `TaskContext` companion, so they are
- * reachable from code inside the `org.apache.spark` package tree but not from `org.apache.comet`.
- * The Comet JVM UDF bridge needs to set the thread-local `TaskContext` on its caller thread (a
- * Tokio worker thread with no `TaskContext`) so the user's UDF body and any partition-sensitive
- * built-ins (`Rand`, `Uuid`, `MonotonicallyIncreasingID`, etc.) see the driving Spark task's
- * `TaskContext`. This shim lives in `org.apache.spark.comet` so it can call through to the
- * protected methods, and exposes plain public forwarders the bridge (which lives in
- * `org.apache.comet.udf`) can use.
+ * `TaskContext.setTaskContext` / `TaskContext.unset` are `protected[spark]` on the companion;
+ * `TaskContext.taskMemoryManager()` is `private[spark]` on the instance. Code outside the
+ * `org.apache.spark` package tree (e.g. `org.apache.comet.udf`) cannot call them directly. This
+ * shim lives in `org.apache.spark.comet` so it can forward through.
  */
 object CometTaskContextShim {
 
   def set(taskContext: TaskContext): Unit = TaskContext.setTaskContext(taskContext)
 
   def unset(): Unit = TaskContext.unset()
+
+  def taskMemoryManager(taskContext: TaskContext): TaskMemoryManager =
+    taskContext.taskMemoryManager()
 }

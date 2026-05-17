@@ -20,6 +20,10 @@
 package org.apache.comet.udf;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
@@ -71,6 +75,10 @@ public class CometUdfBridge {
 
   /** Sentinel key for calls that carry no {@link TaskContext} (unit tests, direct driver). */
   private static final long NO_TASK_ID = -1L;
+
+  private static final Logger LOG = LoggerFactory.getLogger(CometUdfBridge.class);
+
+  private static final AtomicBoolean WARNED_NO_TASK_CONTEXT = new AtomicBoolean(false);
 
   /**
    * Called from native via JNI.
@@ -189,7 +197,7 @@ public class CometUdfBridge {
             });
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
-    BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
+    BufferAllocator allocator = resolveAllocator();
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
     ValueVector result = null;
@@ -200,7 +208,7 @@ public class CometUdfBridge {
         inputs[i] = Data.importVector(allocator, inArr, inSch, null);
       }
 
-      result = udf.evaluate(inputs, numRows);
+      result = udf.evaluate(allocator, inputs, numRows);
       if (!(result instanceof FieldVector)) {
         throw new RuntimeException(
             "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());
@@ -233,5 +241,19 @@ public class CometUdfBridge {
         }
       }
     }
+  }
+
+  private static BufferAllocator resolveAllocator() {
+    TaskContext ctx = TaskContext.get();
+    if (ctx != null) {
+      return CometUdfAllocator.acquire(ctx);
+    }
+    if (WARNED_NO_TASK_CONTEXT.compareAndSet(false, true)) {
+      LOG.warn(
+          "CometUdfBridge invoked with no TaskContext on the calling thread; falling back to the "
+              + "unaccounted root allocator. UDF off-heap memory will not be charged to Spark's "
+              + "task memory manager.");
+    }
+    return org.apache.comet.package$.MODULE$.CometArrowAllocator();
   }
 }
