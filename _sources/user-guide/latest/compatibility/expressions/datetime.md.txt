@@ -77,6 +77,12 @@ The following cases are not supported by Comet:
   - `yyyyMM`
   - `yyyyMMdd`
 
+## FromUTCTimestamp
+
+The following incompatibilities cause `FromUTCTimestamp` to fall back to Spark by default. Set `spark.comet.expression.FromUTCTimestamp.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like `PST`; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.
+
 ## FromUnixTime
 
 The following incompatibilities cause `FromUnixTime` to fall back to Spark by default. Set `spark.comet.expression.FromUnixTime.allowIncompatible=true` to enable Comet acceleration despite these differences.
@@ -100,6 +106,12 @@ The following incompatibilities cause `Minute` to fall back to Spark by default.
 The following incompatibilities cause `Second` to fall back to Spark by default. Set `spark.comet.expression.Second.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
+
+## ToUTCTimestamp
+
+The following incompatibilities cause `ToUTCTimestamp` to fall back to Spark by default. Set `spark.comet.expression.ToUTCTimestamp.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like `PST`; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.
 
 ## TruncDate
 

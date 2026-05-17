@@ -576,6 +576,13 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 </li>
 </ul>
 </section>
+<section id="fromutctimestamp">
+<h2>FromUTCTimestamp<a class="headerlink" href="#fromutctimestamp" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">FromUTCTimestamp</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUTCTimestamp.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed offsets in <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> form. Spark also accepts forms such as <code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, or three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.</p></li>
+</ul>
+</section>
 <section id="fromunixtime">
 <h2>FromUnixTime<a class="headerlink" href="#fromunixtime" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">FromUnixTime</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
@@ -602,6 +609,13 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Second</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Second.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
+</ul>
+</section>
+<section id="toutctimestamp">
+<h2>ToUTCTimestamp<a class="headerlink" href="#toutctimestamp" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ToUTCTimestamp</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ToUTCTimestamp.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed offsets in <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> form. Spark also accepts forms such as <code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, or three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.</p></li>
 </ul>
 </section>
 <section id="truncdate">

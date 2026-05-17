@@ -744,7 +744,14 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> dayofyear</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> extract</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> from_unixtime</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> from_utc_timestamp</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> from_utc_timestamp</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-12): baseline.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-12): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code>; behaviour unchanged for ASCII timezone strings.</p></li>
+<li><p>Known divergence: Comet’s native timezone parser does not accept Spark’s legacy zone forms (<code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>). Such timezones throw a native parse error at execution.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> hour</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> last_day</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> localtimestamp</p></li>
@@ -776,7 +783,14 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_timestamp_ltz</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_timestamp_ntz</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_unix_timestamp</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_utc_timestamp</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> to_utc_timestamp</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-12): baseline.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-12): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code>; behaviour unchanged for ASCII timezone strings.</p></li>
+<li><p>Known divergence: Comet’s native timezone parser does not accept Spark’s legacy zone forms (<code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>). Such timezones throw a native parse error at execution.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> trunc</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_make_interval</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_make_timestamp</p></li>
