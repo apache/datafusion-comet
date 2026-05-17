@@ -91,10 +91,45 @@ without falling back to Spark:
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's behavior.
   See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
 
-- Unsupported Parquet type conversions. Spark raises schema incompatibility errors for certain conversions
-  (e.g., reading INT32 as BIGINT, reading BINARY as TIMESTAMP, unsupported decimal precision changes).
-  The `native_datafusion` scan may not detect these mismatches and could return unexpected values instead
-  of raising an error. See [#3720](https://github.com/apache/datafusion-comet/issues/3720).
+### Schema Mismatch Handling
+
+The issues in this subsection apply only when the requested read schema differs from the schema written
+to the Parquet file. They do **not** affect a plain `spark.read.parquet(path)` that infers the schema
+from file metadata, because in that case the requested schema and file schema match by construction.
+Schema mismatch happens in two real-world scenarios:
+
+1. The user provides an explicit read schema: `spark.read.schema(<schema>).parquet(path)` (or the
+   equivalent DataFrame API).
+2. **Schema evolution / partitioned reads** where files in a single dataset were written at different
+   times with different types, or a table-format catalog (Iceberg, Delta) records a logical schema
+   that has evolved past one or more underlying Parquet files. Spark coerces the file types to the
+   table types at read time.
+
+Spark's vectorized Parquet reader fully validates these conversions in `ParquetVectorUpdaterFactory.getUpdater`
+and throws `SchemaColumnConvertNotSupportedException` for unsupported pairs. `native_datafusion` mirrors
+that validation in its schema adapter; the entries below are the remaining gaps.
+
+Note that the exact set of accepted conversions has changed between Spark versions
+(for example, Spark 3.x's `schemaEvolution.enabled` flag gates `INT32 → INT64`, `FLOAT → DOUBLE`,
+and `INT32 → DOUBLE` widening that Spark 4.0+ accepts unconditionally; `TimestampLTZ → TimestampNTZ`
+is rejected by Spark 3.x but accepted by Spark 4.0+). Comet aims to follow the per-version Spark
+behavior.
+
+- **`ParquetSchemaConvert` errors do not include the file path**. The mismatch itself is detected and
+  rejected correctly, but the resulting Spark error message reads
+  `Encountered error while reading file . Data type mismatches…` (note the empty path). Behavior is
+  consistent across Spark versions. See
+  [#4316](https://github.com/apache/datafusion-comet/issues/4316).
+- **Spark 3.x: extra `SparkException` layer in the cause chain**. The native error is translated to a
+  `SparkException` whose cause is `SchemaColumnConvertNotSupportedException` (matching what Spark would
+  throw); on Spark 3.x the executor / task error handling re-wraps this once more on the way back to
+  the driver, producing a two-level chain (`SparkException → SparkException →
+SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark's own vectorized
+  reader produces. Code that catches `SparkException` and inspects only the immediate cause via
+  `e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException]` will see the inner
+  `SparkException` instead. Walk the cause chain to recover the
+  `SchemaColumnConvertNotSupportedException`. Spark 4.0+ produces a single-level chain, matching
+  vanilla Spark. See [#4354](https://github.com/apache/datafusion-comet/issues/4354).
 
 ## `native_iceberg_compat` Limitations
 

@@ -593,11 +593,46 @@ returns the raw UTC instant as a <code class="docutils literal notranslate"><spa
 TIMESTAMP_MICROS, TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
 (<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-47447">SPARK-47447</a>) and Comet matches Spark’s behavior.
 See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4219">#4219</a>.</p></li>
-<li><p>Unsupported Parquet type conversions. Spark raises schema incompatibility errors for certain conversions
-(e.g., reading INT32 as BIGINT, reading BINARY as TIMESTAMP, unsupported decimal precision changes).
-The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan may not detect these mismatches and could return unexpected values instead
-of raising an error. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3720">#3720</a>.</p></li>
 </ul>
+<section id="schema-mismatch-handling">
+<h3>Schema Mismatch Handling<a class="headerlink" href="#schema-mismatch-handling" title="Link to this heading">#</a></h3>
+<p>The issues in this subsection apply only when the requested read schema differs from the schema written
+to the Parquet file. They do <strong>not</strong> affect a plain <code class="docutils literal notranslate"><span class="pre">spark.read.parquet(path)</span></code> that infers the schema
+from file metadata, because in that case the requested schema and file schema match by construction.
+Schema mismatch happens in two real-world scenarios:</p>
+<ol class="arabic simple">
+<li><p>The user provides an explicit read schema: <code class="docutils literal notranslate"><span class="pre">spark.read.schema(&lt;schema&gt;).parquet(path)</span></code> (or the
+equivalent DataFrame API).</p></li>
+<li><p><strong>Schema evolution / partitioned reads</strong> where files in a single dataset were written at different
+times with different types, or a table-format catalog (Iceberg, Delta) records a logical schema
+that has evolved past one or more underlying Parquet files. Spark coerces the file types to the
+table types at read time.</p></li>
+</ol>
+<p>Spark’s vectorized Parquet reader fully validates these conversions in <code class="docutils literal notranslate"><span class="pre">ParquetVectorUpdaterFactory.getUpdater</span></code>
+and throws <code class="docutils literal notranslate"><span class="pre">SchemaColumnConvertNotSupportedException</span></code> for unsupported pairs. <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> mirrors
+that validation in its schema adapter; the entries below are the remaining gaps.</p>
+<p>Note that the exact set of accepted conversions has changed between Spark versions
+(for example, Spark 3.x’s <code class="docutils literal notranslate"><span class="pre">schemaEvolution.enabled</span></code> flag gates <code class="docutils literal notranslate"><span class="pre">INT32</span> <span class="pre">→</span> <span class="pre">INT64</span></code>, <code class="docutils literal notranslate"><span class="pre">FLOAT</span> <span class="pre">→</span> <span class="pre">DOUBLE</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">INT32</span> <span class="pre">→</span> <span class="pre">DOUBLE</span></code> widening that Spark 4.0+ accepts unconditionally; <code class="docutils literal notranslate"><span class="pre">TimestampLTZ</span> <span class="pre">→</span> <span class="pre">TimestampNTZ</span></code>
+is rejected by Spark 3.x but accepted by Spark 4.0+). Comet aims to follow the per-version Spark
+behavior.</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ParquetSchemaConvert</span></code> errors do not include the file path</strong>. The mismatch itself is detected and
+rejected correctly, but the resulting Spark error message reads
+<code class="docutils literal notranslate"><span class="pre">Encountered</span> <span class="pre">error</span> <span class="pre">while</span> <span class="pre">reading</span> <span class="pre">file</span> <span class="pre">.</span> <span class="pre">Data</span> <span class="pre">type</span> <span class="pre">mismatches…</span></code> (note the empty path). Behavior is
+consistent across Spark versions. See
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4316">#4316</a>.</p></li>
+<li><p><strong>Spark 3.x: extra <code class="docutils literal notranslate"><span class="pre">SparkException</span></code> layer in the cause chain</strong>. The native error is translated to a
+<code class="docutils literal notranslate"><span class="pre">SparkException</span></code> whose cause is <code class="docutils literal notranslate"><span class="pre">SchemaColumnConvertNotSupportedException</span></code> (matching what Spark would
+throw); on Spark 3.x the executor / task error handling re-wraps this once more on the way back to
+the driver, producing a two-level chain (<code class="docutils literal notranslate"><span class="pre">SparkException</span> <span class="pre">→</span> <span class="pre">SparkException</span> <span class="pre">→</span> <span class="pre">SchemaColumnConvertNotSupportedException</span></code>) instead of the one-level chain Spark’s own vectorized
+reader produces. Code that catches <code class="docutils literal notranslate"><span class="pre">SparkException</span></code> and inspects only the immediate cause via
+<code class="docutils literal notranslate"><span class="pre">e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException]</span></code> will see the inner
+<code class="docutils literal notranslate"><span class="pre">SparkException</span></code> instead. Walk the cause chain to recover the
+<code class="docutils literal notranslate"><span class="pre">SchemaColumnConvertNotSupportedException</span></code>. Spark 4.0+ produces a single-level chain, matching
+vanilla Spark. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4354">#4354</a>.</p></li>
+</ul>
+</section>
 </section>
 <section id="native-iceberg-compat-limitations">
 <h2><code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> Limitations<a class="headerlink" href="#native-iceberg-compat-limitations" title="Link to this heading">#</a></h2>
