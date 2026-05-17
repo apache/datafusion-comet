@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, Murmur3Hash, Sha1, Sha2, XxHash64}
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -73,6 +73,12 @@ object CometSha2 extends CometExpressionSerde[Sha2] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!HashUtils.isSupportedType(expr)) {
+      return None
+    }
+
+    // Fall back to Spark for literal input to avoid native engine crash (#3340)
+    if (expr.left.isInstanceOf[Literal]) {
+      withInfo(expr, "Sha2 with literal input falls back to Spark")
       return None
     }
 
