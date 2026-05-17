@@ -80,6 +80,10 @@ public class ArrowConstantColumnReader extends AbstractColumnReader {
 
   @Override
   public void readBatch(int total) {
+    if (total <= 0) {
+      throw new IllegalArgumentException(
+          "ArrowConstantColumnReader.readBatch requires total > 0, got " + total);
+    }
     if (total != currentSize) {
       close();
       initVector(value, total);
