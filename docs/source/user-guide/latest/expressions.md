@@ -63,6 +63,7 @@ of expressions that be disabled.
 | Concat          |
 | ConcatWs        |
 | Contains        |
+| Decode          |
 | EndsWith        |
 | InitCap         |
 | Left            |
@@ -100,6 +101,7 @@ of expressions that be disabled.
 
 | Expression       | SQL                          |
 | ---------------- | ---------------------------- |
+| CurrentTimeZone  | `current_timezone`           |
 | DateAdd          | `date_add`                   |
 | DateDiff         | `datediff`                   |
 | DateFormat       | `date_format`                |
@@ -111,6 +113,7 @@ of expressions that be disabled.
 | FromUnixTime     | `from_unixtime`              |
 | Hour             | `hour`                       |
 | LastDay          | `last_day`                   |
+| LocalTimestamp   | `localtimestamp`             |
 | MakeDate         | `make_date`                  |
 | Minute           | `minute`                     |
 | NextDay          | `next_day`                   |
@@ -149,6 +152,7 @@ of expressions that be disabled.
 | Cos            | `cos`          |
 | Cosh           | `cosh`         |
 | Cot            | `cot`          |
+| Csc            | `csc`          |
 | Divide         | `/`            |
 | Exp            | `exp`          |
 | Expm1          | `expm1`        |

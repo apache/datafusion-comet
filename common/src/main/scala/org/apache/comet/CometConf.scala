@@ -728,16 +728,6 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
-  val COMET_SCHEMA_EVOLUTION_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.schemaEvolution.enabled")
-      .internal()
-      .category(CATEGORY_SCAN)
-      .doc("Whether to enable schema evolution in Comet. For instance, promoting a integer " +
-        "column to a long column, a float column to a double column, etc. This is automatically" +
-        "enabled when reading from Iceberg tables.")
-      .booleanConf
-      .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
-
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
       .internal()
