@@ -20,5 +20,12 @@
 package org.apache.comet.shims
 
 trait ShimCometConf {
-  protected val COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT = false
+
+  /**
+   * Whether Comet's Parquet scan paths allow widening type promotions (e.g. INT32 → INT64, FLOAT
+   * → DOUBLE). Spark 3.x's vectorized reader rejects these on read, so Comet matches by
+   * defaulting to false on 3.x. Reads from the deprecated `spark.comet.schemaEvolution.enabled`
+   * SQL conf were removed in favor of this per-version constant; see #4298.
+   */
+  val COMET_SCHEMA_EVOLUTION_ENABLED: Boolean = false
 }

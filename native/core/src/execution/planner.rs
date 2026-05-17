@@ -184,6 +184,9 @@ pub struct PhysicalPlanner {
     partition: i32,
     session_ctx: Arc<SessionContext>,
     query_context_registry: Arc<datafusion_comet_spark_expr::QueryContextMap>,
+    /// Captured at `createPlan` time on `ExecutionContext`; see that struct for the
+    /// propagation rationale. `None` when no driving Spark task is available.
+    task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl Default for PhysicalPlanner {
@@ -199,16 +202,24 @@ impl PhysicalPlanner {
             session_ctx,
             partition,
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
+            task_context: None,
         }
     }
 
-    pub fn with_exec_id(self, exec_context_id: i64) -> Self {
-        Self {
-            exec_context_id,
-            partition: self.partition,
-            session_ctx: Arc::clone(&self.session_ctx),
-            query_context_registry: Arc::clone(&self.query_context_registry),
-        }
+    pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
+        self.exec_context_id = exec_context_id;
+        self
+    }
+
+    /// Attach the Spark `TaskContext` global reference captured at `createPlan` time. Cloned
+    /// into every `JvmScalarUdfExpr` the planner builds so the JNI bridge can install it as
+    /// the thread-local on the Tokio worker driving the UDF.
+    pub fn with_task_context(
+        mut self,
+        task_context: Option<Arc<Global<JObject<'static>>>>,
+    ) -> Self {
+        self.task_context = task_context;
+        self
     }
 
     /// Return session context of this planner.
@@ -736,6 +747,7 @@ impl PhysicalPlanner {
                     args,
                     return_type,
                     udf.return_nullable,
+                    self.task_context.clone(),
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
@@ -1361,6 +1373,7 @@ impl PhysicalPlanner {
                     common.session_timezone.as_str(),
                     common.case_sensitive,
                     common.return_null_struct_if_all_fields_missing,
+                    common.allow_type_promotion,
                     self.session_ctx(),
                     common.encryption_enabled,
                     common.use_field_id,
