@@ -416,7 +416,8 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
       s"spark.sql.catalog.$catalog.warehouse" -> warehouseDir.getAbsolutePath,
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true")(body)
+      CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true")(body)
 
   /** Creates an Iceberg table with `numFiles` separate appends, each producing one data file. */
   private def createMultiFileTable(table: String, numFiles: Int): Unit = {

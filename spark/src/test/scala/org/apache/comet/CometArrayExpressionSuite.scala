@@ -236,12 +236,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("ArrayInsertUnsupportedArgs") {
     // This test checks that the else branch in ArrayInsert
     // mapping to the comet is valid and fallback to spark is working fine.
-    // Disable the codegen dispatcher so the `idx` ScalaUDF child returns None from its serde,
-    // which is what drives ArrayInsert's "unsupported arguments" branch. With the dispatcher
-    // enabled, ScalaUDF routes through codegen and the whole plan runs native.
-    withSQLConf(
-      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
-      CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 10000)
@@ -252,7 +247,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
         checkSparkAnswerAndFallbackReasons(
           df.select("arrUnsupportedArgs"),
-          Set("ScalaUDF has no native path", "unsupported arguments for ArrayInsert"))
+          Set("scalaudf is not supported", "unsupported arguments for ArrayInsert"))
       }
     }
   }
