@@ -235,7 +235,7 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
                     json.push_str("\":");
                     // value
                     let string_value = string_arrays[col_index].value(row_index);
-                    if is_string[col_index] {
+                    if is_string[col_index] || is_infinity(string_value) || is_nan(string_value) {
                         json.push('"');
                         json.push_str(&escape_string(string_value));
                         json.push('"');
@@ -250,6 +250,14 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
         }
     }
     Ok(Arc::new(builder.finish()))
+}
+
+fn is_infinity(input: &str) -> bool {
+    input == "Infinity" || input == "-Infinity"
+}
+
+fn is_nan(input: &str) -> bool {
+    input == "NaN"
 }
 
 #[cfg(test)]
