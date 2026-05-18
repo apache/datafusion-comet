@@ -55,7 +55,10 @@ private[codegen] object CometBatchKernelCodegenOutput {
         val child = children.head
         val renamedChild = renameForArrowRustFfi(
           new Field("item", child.getFieldType, child.getChildren))
-        new Field(field.getName, field.getFieldType, java.util.List.of(renamedChild))
+        new Field(
+          field.getName,
+          field.getFieldType,
+          java.util.Collections.singletonList(renamedChild))
       case _ =>
         val renamedChildren = children.map(renameForArrowRustFfi).toList.asJava
         new Field(field.getName, field.getFieldType, renamedChildren)
