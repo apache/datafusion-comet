@@ -113,6 +113,7 @@ of expressions that be disabled.
 | FromUnixTime     | `from_unixtime`              |
 | Hour             | `hour`                       |
 | LastDay          | `last_day`                   |
+| LocalTimestamp   | `localtimestamp`             |
 | MakeDate         | `make_date`                  |
 | Minute           | `minute`                     |
 | NextDay          | `next_day`                   |
