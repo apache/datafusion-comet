@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst._
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
+import org.apache.spark.sql.comet.shims.{ShimFileSourceScanExec, ShimStreamSourceAwareSparkPlan}
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery, _}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -69,7 +69,6 @@ case class CometNativeScanExec(
     disableBucketedScan: Boolean = false,
     originalPlan: FileSourceScanExec,
     override val serializedPlanOpt: SerializedPlan,
-    @transient scan: CometScanExec, // Lazy access to file partitions without serializing with plan
     sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
     extends CometLeafExec
     with DataSourceScanExec
@@ -114,24 +113,38 @@ case class CometNativeScanExec(
   override lazy val outputPartitioning: Partitioning = {
     if (bucketedScan) {
       originalPlan.outputPartitioning
+    } else if (hasUnresolvableDpp(partitionFilters)) {
+      // DPP resolution requires executing a subquery via InSubqueryExec.updateResult().
+      // If any DPP filter's plan is a CometSubqueryAdaptiveBroadcastExec (AQE DPP wrapper
+      // that's not executable until CometPlanAdaptiveDynamicPruningFilters converts it),
+      // we cannot resolve DPP yet. Use a pre-DPP upper bound so EnsureRequirements
+      // (which calls child.outputPartitioning during AQE stage optimization) doesn't
+      // crash with "CSAB.doExecute" - our DPP rule runs later and does the real
+      // conversion. Post-DPP pruning still happens at execution time.
+      //
+      // This mirrors Spark's own FileSourceScanExec, which uses UnknownPartitioning(0)
+      // for non-bucketed scans. We do slightly better by reporting a pre-DPP partition
+      // count as a cardinality hint.
+      UnknownPartitioning(ShimFileSourceScanExec.selectedPartitionCount(originalPlan))
     } else {
-      // Use perPartitionData.length instead of originalPlan.inputRDD.getNumPartitions.
-      //
-      // originalPlan.inputRDD triggers FileSourceScanExec's full scan pipeline including
-      // codegen on partition filter expressions. With DPP, this calls
-      // InSubqueryExec.doGenCode which requires the subquery to have finished - but
-      // outputPartitioning can be accessed before prepare() runs (e.g., by
-      // ValidateRequirements during plan validation).
-      //
-      // perPartitionData goes through serializedPartitionData, which explicitly resolves
-      // DPP subqueries (via updateResult()) before accessing file partitions. This is the
-      // same pattern CometIcebergNativeScanExec uses.
-      //
-      // This is also more correct: perPartitionData.length reflects the post-DPP partition
-      // count, matching what CometExecRDD actually uses in doExecuteColumnar().
+      // DPP is resolvable (non-AQE DPP, or AQE DPP already converted). perPartitionData
+      // triggers serializedPartitionData which explicitly resolves DPP via updateResult().
+      // The resulting length matches what CometExecRDD's per-partition arrays will see
+      // at execution time, so firstNonBroadcastPlanNumPartitions (operators.scala:515)
+      // stays consistent with perPartitionByKey array lengths.
       UnknownPartitioning(perPartitionData.length)
     }
   }
+
+  private def hasUnresolvableDpp(filters: Seq[Expression]): Boolean =
+    filters.exists(_.exists {
+      case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+        // Any BaseSubqueryExec whose doExecute() throws (like
+        // CometSubqueryAdaptiveBroadcastExec before its rule runs) cannot be resolved.
+        // Class-name match avoids an upward import dependency on the CSAB class.
+        e.plan.getClass.getSimpleName == "CometSubqueryAdaptiveBroadcastExec"
+      case _ => false
+    })
 
   override lazy val outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
@@ -157,21 +170,20 @@ case class CometNativeScanExec(
    * partition's files (lazily, as tasks are scheduled).
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    // Outer partitionFilters (wrapper) DPP is resolved by Spark's standard
-    // prepare -> waitForSubqueries lifecycle, triggered explicitly via
-    // CometLeafExec.ensureSubqueriesResolved called from
-    // CometNativeExec.findAllPlanData before commonData is read.
+    // originalPlan.partitionFilters holds InSubqueryExec instances Spark's expressions walk does
+    // not see (originalPlan is @transient and not a sibling expression). DPP must be resolved
+    // before CometFilePartitionHelper computes dynamicallySelectedPartitions, which evaluates
+    // bound predicates against partition values. updateResult is a no-op if already resolved.
     //
-    // Inner scan.partitionFilters holds a SEPARATE InSubqueryExec instance that
-    // Spark's expressions walk does not see (scan is @transient and not a sibling
-    // expression). It still needs explicit resolution because
-    // CometScanExec.dynamicallySelectedPartitions evaluates its own partitionFilters.
-    // updateResult is a no-op if already resolved.
-    if (scan != null) {
-      scan.partitionFilters.foreach {
+    // Outer wrapper partitionFilters DPP is resolved separately by Spark's standard
+    // prepare -> waitForSubqueries lifecycle, triggered explicitly via
+    // CometLeafExec.ensureSubqueriesResolved called from CometNativeExec.findAllPlanData
+    // before commonData is read.
+    if (originalPlan != null) {
+      originalPlan.partitionFilters.foreach {
         case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
           logDebug(
-            "Resolving CometScanExec DPP subquery: " +
+            "Resolving originalPlan DPP subquery: " +
               s"plan=${e.plan.getClass.getSimpleName}")
           e.updateResult()
         case _ =>
@@ -212,8 +224,12 @@ case class CometNativeScanExec(
       }
     }
 
-    // Get file partitions from CometScanExec (handles bucketing, etc.)
-    val filePartitions = scan.getFilePartitions()
+    // Compute file partitions without going through originalPlan.inputRDD. inputRDD would
+    // build a Parquet reader closure (and broadcast a Hadoop conf) we never invoke, and would
+    // walk pushedDownFilters which calls ScalarSubquery.toLiteral on originalPlan.dataFilters
+    // -- those instances are separate from this wrapper's dataFilters resolved above and are
+    // not reached by Spark's prepare lifecycle (originalPlan is @transient).
+    val filePartitions = CometFilePartitionHelper(originalPlan).getFilePartitions()
 
     // Serialize each partition's files
     import org.apache.comet.serde.operator.partition2Proto
@@ -301,7 +317,6 @@ case class CometNativeScanExec(
       disableBucketedScan,
       canonOriginal,
       SerializedPlan(None),
-      null, // Transient scan not needed for canonicalization
       ""
     ) // sourceKey not needed for canonicalization
   }
@@ -340,7 +355,7 @@ case class CometNativeScanExec(
       case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
       case None => nativeMetrics
     }
-    withAlias ++ scan.metrics.filterKeys(driverMetricKeys)
+    withAlias ++ originalPlan.metrics.filterKeys(driverMetricKeys)
   }
 
   /**
@@ -353,8 +368,7 @@ object CometNativeScanExec {
   def apply(
       nativeOp: Operator,
       scanExec: FileSourceScanExec,
-      session: SparkSession,
-      scan: CometScanExec): CometNativeScanExec = {
+      session: SparkSession): CometNativeScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
       val arr = Array.ofDim[B](product.productArity)
@@ -404,7 +418,6 @@ object CometNativeScanExec {
       wrapped.disableBucketedScan,
       wrapped,
       SerializedPlan(None),
-      scan,
       sourceKey)
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec

@@ -28,6 +28,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.FileScanRDD
 import org.apache.spark.sql.functions.{col, sum}
 
 import org.apache.comet.CometConf
@@ -66,8 +67,8 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
       p
     }
     assert(scans.size == 1)
-    // File partitions are now accessed from the scan field, not from the protobuf
-    val filePartitions = scans.head.scan.getFilePartitions()
+    val filePartitions =
+      scans.head.originalPlan.inputRDD.asInstanceOf[FileScanRDD].filePartitions
     assert(filePartitions.nonEmpty)
     assert(
       filePartitions.head.files.head.filePath.toString
