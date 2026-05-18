@@ -171,7 +171,9 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::Operator as DataFusionOperator;
 use datafusion_comet_proto::spark_expression::Expr;
-use datafusion_comet_spark_expr::{create_modulo_expr, create_negate_expr, EvalMode};
+use datafusion_comet_spark_expr::{
+    create_modulo_expr, create_negate_expr, create_pmod_expr, EvalMode,
+};
 
 use crate::execution::{
     expressions::extract_expr,
@@ -241,6 +243,36 @@ impl ExpressionBuilder for RemainderBuilder {
         let right = planner.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
 
         let result = create_modulo_expr(
+            left,
+            right,
+            expr.return_type
+                .as_ref()
+                .map(crate::execution::serde::to_arrow_datatype)
+                .unwrap(),
+            input_schema,
+            eval_mode == EvalMode::Ansi,
+            &planner.session_ctx().state(),
+        );
+        result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
+    }
+}
+
+/// Builder for Pmod expressions (uses special pmod function)
+pub struct PmodBuilder;
+
+impl ExpressionBuilder for PmodBuilder {
+    fn build(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+        planner: &PhysicalPlanner,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let expr = extract_expr!(spark_expr, Pmod);
+        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+
+        let result = create_pmod_expr(
             left,
             right,
             expr.return_type

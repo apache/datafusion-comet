@@ -399,7 +399,7 @@
 - [x] mod
 - [x] negative
 - [x] pi
-- [ ] pmod
+- [x] pmod
 - [x] positive
 - [x] pow
 - [x] power

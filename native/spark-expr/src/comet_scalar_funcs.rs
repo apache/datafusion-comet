@@ -20,7 +20,7 @@ use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::log::spark_log;
-use crate::math_funcs::modulo_expr::spark_modulo;
+use crate::math_funcs::modulo_expr::{spark_modulo, spark_pmod};
 use crate::{
     spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_isnan,
     spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
@@ -175,6 +175,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "spark_modulo" => {
             let func = Arc::new(spark_modulo);
             make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
+        }
+        "spark_pmod" => {
+            let func = Arc::new(spark_pmod);
+            make_comet_scalar_udf!("spark_pmod", func, without data_type, fail_on_error)
         }
         "abs" => {
             let func = Arc::new(abs);

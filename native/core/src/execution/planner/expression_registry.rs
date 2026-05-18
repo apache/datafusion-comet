@@ -47,6 +47,7 @@ pub enum ExpressionType {
     Divide,
     IntegralDivide,
     Remainder,
+    Pmod,
     UnaryMinus,
 
     // Comparison expressions
@@ -213,6 +214,8 @@ impl ExpressionRegistry {
         self.builders
             .insert(ExpressionType::Remainder, Box::new(RemainderBuilder));
         self.builders
+            .insert(ExpressionType::Pmod, Box::new(PmodBuilder));
+        self.builders
             .insert(ExpressionType::UnaryMinus, Box::new(UnaryMinusBuilder));
     }
 
@@ -327,6 +330,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::Divide(_)) => Ok(ExpressionType::Divide),
             Some(ExprStruct::IntegralDivide(_)) => Ok(ExpressionType::IntegralDivide),
             Some(ExprStruct::Remainder(_)) => Ok(ExpressionType::Remainder),
+            Some(ExprStruct::Pmod(_)) => Ok(ExpressionType::Pmod),
             Some(ExprStruct::UnaryMinus(_)) => Ok(ExpressionType::UnaryMinus),
 
             Some(ExprStruct::Eq(_)) => Ok(ExpressionType::Eq),

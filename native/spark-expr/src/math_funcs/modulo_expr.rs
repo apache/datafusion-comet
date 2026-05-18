@@ -17,6 +17,7 @@
 
 use crate::{create_comet_physical_fun, IfExpr};
 use crate::{remainder_by_zero_error, Cast, EvalMode, SparkCastOptions};
+use arrow::array::ArrayRef;
 use arrow::compute::kernels::numeric::rem;
 use arrow::datatypes::*;
 use datafusion::common::{exec_err, internal_err, DataFusionError, Result, ScalarValue};
@@ -60,6 +61,115 @@ pub fn spark_modulo(args: &[ColumnarValue], fail_on_error: bool) -> Result<Colum
             Err(remainder_by_zero_error().into())
         }
         Err(e) => Err(e),
+    }
+}
+
+/// Spark-compliant pmod (positive modulo) function. Returns the positive remainder of division.
+/// If `fail_on_error` is true, returns an error on division by zero; otherwise returns `NULL`.
+pub fn spark_pmod(args: &[ColumnarValue], fail_on_error: bool) -> Result<ColumnarValue> {
+    if args.len() != 2 {
+        return exec_err!("pmod expects exactly two arguments");
+    }
+
+    let lhs = &args[0];
+    let rhs = &args[1];
+
+    let left_data_type = lhs.data_type();
+    let right_data_type = rhs.data_type();
+
+    if left_data_type.is_nested() {
+        if right_data_type != left_data_type {
+            return internal_err!("Type mismatch for spark pmod operation");
+        }
+        return apply_cmp_for_nested(Operator::Modulo, lhs, rhs);
+    }
+
+    let arrays = ColumnarValue::values_to_arrays(args)?;
+    let left = &arrays[0];
+    let right = &arrays[1];
+
+    match (|| -> std::result::Result<ArrayRef, arrow::error::ArrowError> {
+        let zero = ScalarValue::new_zero(&left_data_type)
+            .map_err(|e| arrow::error::ArrowError::ComputeError(e.to_string()))?
+            .to_array_of_size(left.len())
+            .map_err(|e| arrow::error::ArrowError::ComputeError(e.to_string()))?;
+        let result = rem(left, right)?;
+        let neg = arrow::compute::kernels::cmp::lt(&result, &zero)?;
+        let plus = arrow::compute::kernels::zip::zip(&neg, right, &zero)?;
+        let result = arrow::compute::kernels::numeric::add(&plus, &result)?;
+        rem(&result, right)
+    })() {
+        Ok(result) => Ok(ColumnarValue::Array(result)),
+        Err(e) if e.to_string().contains("Divide by zero") && fail_on_error => {
+            Err(remainder_by_zero_error().into())
+        }
+        Err(e) => Err(DataFusionError::ArrowError(Box::new(e), None)),
+    }
+}
+
+pub fn create_pmod_expr(
+    left: Arc<dyn PhysicalExpr>,
+    right: Arc<dyn PhysicalExpr>,
+    data_type: DataType,
+    input_schema: SchemaRef,
+    fail_on_error: bool,
+    registry: &dyn FunctionRegistry,
+) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+    let right_non_ansi_safe = if !fail_on_error {
+        null_if_zero_primitive(right, &input_schema)?
+    } else {
+        right
+    };
+
+    match (
+        left.data_type(&input_schema),
+        right_non_ansi_safe.data_type(&input_schema),
+    ) {
+        (Ok(DataType::Decimal128(p1, s1)), Ok(DataType::Decimal128(p2, s2)))
+            if max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8) > DECIMAL128_MAX_PRECISION =>
+        {
+            let left_256 = Arc::new(Cast::new(
+                left,
+                DataType::Decimal256(p1, s1),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
+            ));
+            let right_256 = Arc::new(Cast::new(
+                right_non_ansi_safe,
+                DataType::Decimal256(p2, s2),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
+            ));
+
+            let decimal256_return_type = match &data_type {
+                DataType::Decimal128(p, s) => DataType::Decimal256(*p, *s),
+                other => other.clone(),
+            };
+            let pmod_scalar_func = create_pmod_scalar_function(
+                left_256,
+                right_256,
+                &decimal256_return_type,
+                registry,
+                fail_on_error,
+            )?;
+
+            Ok(Arc::new(Cast::new(
+                pmod_scalar_func,
+                data_type,
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
+            )))
+        }
+        _ => create_pmod_scalar_function(
+            left,
+            right_non_ansi_safe,
+            &data_type,
+            registry,
+            fail_on_error,
+        ),
     }
 }
 
@@ -206,6 +316,25 @@ fn create_modulo_scalar_function(
     Ok(Arc::new(ScalarFunctionExpr::new(
         func_name,
         modulo_expr,
+        vec![left, right],
+        Arc::new(Field::new(func_name, data_type.clone(), true)),
+        Arc::new(ConfigOptions::default()),
+    )))
+}
+
+fn create_pmod_scalar_function(
+    left: Arc<dyn PhysicalExpr>,
+    right: Arc<dyn PhysicalExpr>,
+    data_type: &DataType,
+    registry: &dyn FunctionRegistry,
+    fail_on_error: bool,
+) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+    let func_name = "spark_pmod";
+    let pmod_expr =
+        create_comet_physical_fun(func_name, data_type.clone(), registry, Some(fail_on_error))?;
+    Ok(Arc::new(ScalarFunctionExpr::new(
+        func_name,
+        pmod_expr,
         vec![left, right],
         Arc::new(Field::new(func_name, data_type.clone(), true)),
         Arc::new(ConfigOptions::default()),
