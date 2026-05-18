@@ -139,6 +139,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.write.icebergNative.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to enable native Iceberg writes through iceberg-rust. When enabled, " +
+          "Iceberg V2 writes (INSERT INTO, INSERT OVERWRITE, RewriteDataFiles, copy-on-write " +
+          "MERGE/UPDATE/DELETE) execute through native iceberg-rust writers instead of the " +
+          "JVM-side Iceberg writer. Falls back to Spark when table " +
+          "properties or operation shape are out of scope.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)
