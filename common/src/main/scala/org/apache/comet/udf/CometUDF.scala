@@ -30,12 +30,18 @@ import org.apache.arrow.vector.ValueVector
  *   - The returned vector's length must match `numRows`.
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
- * UDFs that always have at least one batch-length input can derive length from the inputs and
- * ignore `numRows`; UDFs that may be called with zero data columns (e.g. a zero-arg ScalaUDF)
- * need `numRows` to know how many rows to produce.
+ * UDFs that always have at least one batch-length input can read length from it and ignore
+ * `numRows`; UDFs that may be called with zero data columns (e.g. a zero-arg ScalaUDF through the
+ * codegen dispatcher) need `numRows` to know how many rows to produce.
  *
- * Implementations must have a public no-arg constructor and must be stateless: a single instance
- * per class is cached and shared across native worker threads for the lifetime of the JVM.
+ * Implementations must have a public no-arg constructor. A fresh instance is created per Spark
+ * task attempt per class and reused for every call within that task. Instances may hold per-task
+ * state in fields (counters, compiled patterns, scratch buffers); instances are dropped at task
+ * completion. Do not hold state that must persist across tasks.
+ *
+ * At most one thread calls `evaluate` on a given instance at a time: Spark runs one native future
+ * per partition and Tokio polls one future per worker, so the per-task instance is never touched
+ * concurrently even if the task's future migrates between Tokio workers across batches.
  */
 trait CometUDF {
   def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector

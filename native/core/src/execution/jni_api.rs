@@ -48,8 +48,10 @@ use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
+use datafusion_spark::function::datetime::from_utc_timestamp::SparkFromUtcTimestamp;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
 use datafusion_spark::function::datetime::next_day::SparkNextDay;
+use datafusion_spark::function::datetime::to_utc_timestamp::SparkToUtcTimestamp;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
@@ -57,6 +59,7 @@ use datafusion_spark::function::map::map_from_entries::MapFromEntries;
 use datafusion_spark::function::map::str_to_map::SparkStrToMap;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::hex::SparkHex;
+use datafusion_spark::function::math::trigonometry::SparkCsc;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
@@ -573,8 +576,10 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitGet::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFromUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkNextDay::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkToUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
@@ -591,6 +596,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlDecode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryUrlDecode::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCsc::default()));
 }
 
 /// Prepares arrow arrays for output.
