@@ -783,6 +783,19 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.allowDisabledParquetVectorizedReader")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to allow Comet's native scan to replace the Parquet scan when Spark's " +
+          s"${SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key} is set to false. By default " +
+          "(false), Comet falls back to Spark in that case, because Comet's native readers " +
+          "mirror Spark's vectorized reader semantics rather than Spark's parquet-mr " +
+          "(non-vectorized) semantics, which permit silent overflow / null-on-narrowing " +
+          s"that Comet has no equivalent for. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_STRICT_FLOATING_POINT: ConfigEntry[Boolean] =
     conf("spark.comet.exec.strictFloatingPoint")
       .category(CATEGORY_EXEC)

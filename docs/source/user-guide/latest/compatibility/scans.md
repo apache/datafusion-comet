@@ -79,6 +79,12 @@ requires `spark.comet.exec.enabled=true` because the scan node must be wrapped b
 - Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
   are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
   matching Spark's behavior.
+- `spark.sql.parquet.enableVectorizedReader=false`. Disabling the vectorized reader opts into
+  Spark's parquet-mr semantics (silent overflow, null-on-narrowing), which Comet's native reader
+  does not replicate. By default Comet falls back to Spark in this case. Set
+  `spark.comet.scan.allowDisabledParquetVectorizedReader=true` to opt in to running the
+  `native_datafusion` scan regardless. See
+  [#4352](https://github.com/apache/datafusion-comet/issues/4352).
 
 The following `native_datafusion` limitations may produce incorrect results on Spark versions prior to 4.0
 without falling back to Spark:

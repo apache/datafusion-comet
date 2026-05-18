@@ -176,8 +176,24 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          # SERIAL_SBT_TESTS gates SparkParallelTestGrouping in
+          # project/SparkBuild.scala. For Spark 4.0.2 on JDK 21 we
+          # leave it unset so the grouping is installed and
+          # DEDICATED_JVM_SBT_TESTS below actually forks a dedicated
+          # JVM per listed suite, working around the V1/V2 Parquet and
+          # Orc source-suite cross-suite file-stream leak under JDK 21
+          # (issue #4327). For other rows we keep it set to reduce
+          # peak memory on standard 7 GB runners.
+          if [ "${{ matrix.config.spark-short }}" != "4.0" ] || [ "${{ matrix.config.java }}" != "21" ]; then
+            export SERIAL_SBT_TESTS=1
+          fi
+          # Cap parallel forked test JVMs at 1 so that even when
+          # SparkParallelTestGrouping is enabled we don't blow the
+          # 7 GB runner budget (each forked test JVM has -Xmx2g).
           NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
-            build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+            build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
+              'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
+              ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
           fi
@@ -186,9 +202,6 @@ jobs:
           # Standard GitHub runners have 7 GB RAM; cap SBT heap so forked test
           # JVMs fit alongside it.
           SBT_MEM: "3072"
-          # Disable parallel test execution to reduce peak memory usage —
-          # mirrors what apache/spark does on GitHub Actions.
-          SERIAL_SBT_TESTS: "1"
           # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
           # build_java21.yml and build_java25.yml set this same env var to
           # process-isolate the V1/V2 Parquet and Orc source suites because
