@@ -1218,7 +1218,8 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (op.generator.children.length != 1) {
       return Unsupported(Some("generators with multiple inputs are not supported"))
     }
-    if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
+    val nodeName = op.generator.nodeName.toLowerCase(Locale.ROOT)
+    if (nodeName != "explode" && nodeName != "posexplode") {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
     if (op.outer) {
@@ -1262,10 +1263,13 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       return None
     }
 
+    val isPosExplode = op.generator.nodeName.toLowerCase(Locale.ROOT) == "posexplode"
+
     val explodeBuilder = OperatorOuterClass.Explode
       .newBuilder()
       .setChild(childExprProto.get)
       .setOuter(op.outer)
+      .setPosition(isPosExplode)
       .addAllProjectList(projectExprs.map(_.get).asJava)
 
     Some(builder.setExplode(explodeBuilder).build())

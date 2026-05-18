@@ -43,16 +43,26 @@ under the License.
       <groupId>org.apache.datafusion</groupId>
       <artifactId>comet-common-spark${spark.version.short}_${scala.binary.version}</artifactId>
       <version>${project.version}</version>
-      <exclusions>
-        <exclusion>
-          <groupId>org.apache.arrow</groupId>
-          <artifactId>*</artifactId>
-        </exclusion>
-      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-sql_${scala.binary.version}</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.parquet</groupId>
+      <artifactId>parquet-column</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.parquet</groupId>
+      <artifactId>parquet-format-structures</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-vector</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.scala-lang.modules</groupId>
+      <artifactId>scala-collection-compat_${scala.binary.version}</artifactId>
     </dependency>
     <dependency>
       <groupId>org.scala-lang</groupId>
@@ -128,18 +138,16 @@ under the License.
       <!-- Note we don't use test scope for this artifact. This is because it's only needed
          to provide InMemoryKMS class that is shaded below, to make Spark test happy. -->
     </dependency>
-    <!-- We shade & relocate Arrow dependencies in comet-common, so comet-spark module no longer
-         depends on Arrow. However, when running `mvn test` we still need Arrow classes in the
-         classpath, since the Maven shading happens in 'package' phase which is after 'test' -->
+    <!-- Arrow memory + C-data deps required at compile scope. Shading relocates these into
+         org.apache.comet.shaded.arrow during the package phase to avoid colliding with Spark's
+         own Arrow on the executor classpath. -->
     <dependency>
       <groupId>org.apache.arrow</groupId>
       <artifactId>arrow-memory-unsafe</artifactId>
-      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.arrow</groupId>
       <artifactId>arrow-c-data</artifactId>
-      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.hadoop</groupId>
@@ -356,6 +364,31 @@ under the License.
   <build>
     <plugins>
       <plugin>
+        <groupId>io.github.git-commit-id</groupId>
+        <artifactId>git-commit-id-maven-plugin</artifactId>
+        <version>${git-commit-id-maven-plugin.version}</version>
+        <executions>
+          <execution>
+            <id>get-the-git-infos</id>
+            <goals>
+              <goal>revision</goal>
+            </goals>
+            <phase>initialize</phase>
+          </execution>
+        </executions>
+        <configuration>
+          <generateGitPropertiesFile>true</generateGitPropertiesFile>
+          <generateGitPropertiesFilename>${project.build.outputDirectory}/comet-git-info.properties</generateGitPropertiesFilename>
+          <commitIdGenerationMode>full</commitIdGenerationMode>
+          <includeOnlyProperties>
+            <includeOnlyProperty>^git.branch$</includeOnlyProperty>
+            <includeOnlyProperty>^git.build.*$</includeOnlyProperty>
+            <includeOnlyProperty>^git.commit.id.(abbrev|full)$</includeOnlyProperty>
+            <includeOnlyProperty>^git.remote.*$</includeOnlyProperty>
+          </includeOnlyProperties>
+        </configuration>
+      </plugin>
+      <plugin>
         <groupId>com.github.os72</groupId>
         <artifactId>protoc-jar-maven-plugin</artifactId>
         <version>${protoc-jar-maven-plugin.version}</version>
@@ -394,11 +427,13 @@ under the License.
               <createDependencyReducedPom>true</createDependencyReducedPom>
               <artifactSet>
                 <includes>
+                  <!-- Bundle comet-common so the shaded uber-jar is self-contained -->
                   <include>org.apache.datafusion:comet-common-spark${spark.version.short}_${scala.binary.version}</include>
+                  <!-- Shade & relocate Arrow to prevent conflicts with Spark's own Arrow -->
+                  <include>org.apache.arrow:*</include>
                   <!-- Relocate Protobuf since Spark uses 2.5.0 while Comet uses 3.x -->
                   <include>com.google.protobuf:protobuf-java</include>
                   <include>com.google.guava:guava</include>
-                  <include>org.scala-lang.modules:scala-collection-compat_${scala.binary.version}</include>
                 </includes>
               </artifactSet>
               <filters>
@@ -410,7 +445,15 @@ under the License.
                     <exclude>git.properties</exclude>
                     <exclude>log4j.properties</exclude>
                     <exclude>log4j2.properties</exclude>
+                    <exclude>arrow-git.properties</exclude>
                     <exclude>**/SparkFilterApi.*</exclude>
+                  </excludes>
+                </filter>
+                <filter>
+                  <artifact>org.apache.arrow:arrow-vector</artifact>
+                  <excludes>
+                    <!-- Comet doesn't need codegen templates on Arrow -->
+                    <exclude>codegen/**</exclude>
                   </excludes>
                 </filter>
                 <filter>
@@ -422,6 +465,20 @@ under the License.
                 </filter>
               </filters>
               <relocations>
+                <relocation>
+                  <pattern>org.apache.arrow</pattern>
+                  <shadedPattern>${comet.shade.packageName}.arrow</shadedPattern>
+                  <excludes>
+                    <!-- These classes are referenced from Arrow JNI native code and must stay
+                       at their original package paths. They have no extra dependencies so the
+                       exclusion is safe. -->
+                    <exclude>org/apache/arrow/c/jni/JniWrapper</exclude>
+                    <exclude>org/apache/arrow/c/jni/PrivateData</exclude>
+                    <exclude>org/apache/arrow/c/jni/CDataJniException</exclude>
+                    <!-- Also required by JNI per upstream Arrow C++ jni_wrapper.cc -->
+                    <exclude>org/apache/arrow/c/ArrayStreamExporter$ExportedArrayStreamPrivateData</exclude>
+                  </excludes>
+                </relocation>
                 <relocation>
                   <pattern>com.google.protobuf</pattern>
                   <shadedPattern>${comet.shade.packageName}.protobuf</shadedPattern>
@@ -492,6 +549,34 @@ under the License.
         </executions>
       </plugin>
     </plugins>
+    <resources>
+      <resource>
+        <directory>${project.basedir}/src/main/resources</directory>
+      </resource>
+      <resource>
+        <directory>${project.basedir}/../native/target/x86_64-apple-darwin/release</directory>
+        <includes>
+          <include>libcomet.dylib</include>
+        </includes>
+        <targetPath>org/apache/comet/darwin/x86_64</targetPath>
+      </resource>
+      <resource>
+        <directory>${project.basedir}/../native/target/aarch64-apple-darwin/release</directory>
+        <includes>
+          <include>libcomet.dylib</include>
+        </includes>
+        <targetPath>org/apache/comet/darwin/aarch64</targetPath>
+      </resource>
+      <resource>
+        <directory>${jni.dir}</directory>
+        <includes>
+          <include>libcomet.dylib</include>
+          <include>libcomet.so</include>
+          <include>comet.dll</include>
+        </includes>
+        <targetPath>org/apache/comet/${platform}/${arch}</targetPath>
+      </resource>
+    </resources>
   </build>
 
 </project>
