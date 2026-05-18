@@ -172,7 +172,7 @@
 ### collection_funcs
 
 - [ ] array_size
-- [ ] cardinality
+- [x] cardinality
 - [x] concat
 - [x] reverse
 - [x] size
