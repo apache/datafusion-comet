@@ -189,7 +189,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17  # JDK only needed for common module proto generation
+          jdk-version: 17  # JDK only needed for JVM module proto generation
 
       - name: Restore Cargo cache
         uses: actions/cache/restore@v5
