@@ -582,6 +582,12 @@ The <code class="docutils literal notranslate"><span class="pre">native_datafusi
 <li><p>Duplicate field names in case-insensitive mode (e.g., a Parquet file with both <code class="docutils literal notranslate"><span class="pre">B</span></code> and <code class="docutils literal notranslate"><span class="pre">b</span></code> columns)
 are detected at read time and raise a <code class="docutils literal notranslate"><span class="pre">SparkRuntimeException</span></code> with error class <code class="docutils literal notranslate"><span class="pre">_LEGACY_ERROR_TEMP_2093</span></code>,
 matching Spark’s behavior.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.enableVectorizedReader=false</span></code>. Disabling the vectorized reader opts into
+Spark’s parquet-mr semantics (silent overflow, null-on-narrowing), which Comet’s native reader
+does not replicate. By default Comet falls back to Spark in this case. Set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.allowDisabledParquetVectorizedReader=true</span></code> to opt in to running the
+<code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan regardless. See
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4352">#4352</a>.</p></li>
 </ul>
 <p>The following <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> limitations may produce incorrect results on Spark versions prior to 4.0
 without falling back to Spark:</p>
