@@ -70,6 +70,7 @@ pub(crate) fn init_datasource_exec(
     session_timezone: &str,
     case_sensitive: bool,
     return_null_struct_if_all_fields_missing: bool,
+    allow_type_promotion: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
@@ -79,6 +80,7 @@ pub(crate) fn init_datasource_exec(
         session_timezone,
         case_sensitive,
         return_null_struct_if_all_fields_missing,
+        allow_type_promotion,
         &object_store_url,
         encryption_enabled,
     );
@@ -197,6 +199,7 @@ fn get_options(
     session_timezone: &str,
     case_sensitive: bool,
     return_null_struct_if_all_fields_missing: bool,
+    allow_type_promotion: bool,
     object_store_url: &ObjectStoreUrl,
     encryption_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
@@ -210,6 +213,7 @@ fn get_options(
     spark_parquet_options.case_sensitive = case_sensitive;
     spark_parquet_options.return_null_struct_if_all_fields_missing =
         return_null_struct_if_all_fields_missing;
+    spark_parquet_options.allow_type_promotion = allow_type_promotion;
 
     if encryption_enabled {
         table_parquet_options.crypto.configure_factory(
