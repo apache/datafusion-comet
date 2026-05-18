@@ -33,7 +33,10 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * type surface, composed UDF trees, subquery reuse, `TaskContext` propagation, per-task cache
  * isolation, the `maxFields` plan-time gate, and regressions pinned from fuzz.
  */
-class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometCodegenSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
 
   override protected def sparkConf: SparkConf =
     super.sparkConf
@@ -48,57 +51,6 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"INSERT INTO t VALUES $rows")
       f
     }
-  }
-
-  /** Asserts the dispatcher actually ran during `f`, guarding against silent serde fallback. */
-  private def assertCodegenDidWork(f: => Unit): Unit = {
-    CometScalaUDFCodegen.resetStats()
-    f
-    val after = CometScalaUDFCodegen.stats()
-    assert(
-      after.compileCount + after.cacheHitCount >= 1,
-      s"expected codegen dispatcher activity, got $after")
-  }
-
-  /**
-   * Asserts the composed subtree fused into one kernel signature, not N (one per sub-expression).
-   * Uses the JVM-wide signature set rather than `compileCount` because per-task `boundExpr`
-   * isolation makes multi-partition queries trip `compileCount > 1` even when the bytecode is
-   * shared.
-   */
-  private def assertOneKernelForSubtree(f: => Unit): Unit = {
-    CometScalaUDFCodegen.resetStats()
-    val sigsBefore = CometScalaUDFCodegen.snapshotCompiledSignatures()
-    f
-    val sigsAfter = CometScalaUDFCodegen.snapshotCompiledSignatures()
-    val grew = sigsAfter.size - sigsBefore.size
-    assert(
-      grew <= 1,
-      s"expected <= 1 new compiled-kernel signature for the composed subtree, grew by $grew; " +
-        s"new=${sigsAfter -- sigsBefore}")
-    val after = CometScalaUDFCodegen.stats()
-    assert(
-      after.compileCount + after.cacheHitCount >= 1,
-      s"expected codegen dispatcher activity, got $after")
-  }
-
-  /**
-   * Asserts a kernel matching the given input Arrow vector classes and output type sits in the
-   * JVM-wide signature set. Pair with `assertCodegenDidWork` since the set is append-only.
-   * Compares by simple name because `common` shades `org.apache.arrow`.
-   */
-  private def assertKernelSignaturePresent(
-      inputs: Seq[Class[_ <: ValueVector]],
-      output: DataType): Unit = {
-    val sigs = CometScalaUDFCodegen.snapshotCompiledSignatures()
-    val expectedNames = inputs.map(_.getSimpleName).toIndexedSeq
-    val present = sigs.exists { case (cached, dt) =>
-      dt == output && cached.map(_.getSimpleName) == expectedNames
-    }
-    assert(
-      present,
-      s"expected kernel signature $expectedNames -> $output; " +
-        s"cache had ${sigs.map { case (c, d) => (c.map(_.getSimpleName), d) }}")
   }
 
   private def withTwoStringCols(rows: (String, String)*)(f: => Unit): Unit = {
@@ -125,7 +77,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // produces a non-null concatenation.
     spark.udf.register("tag", (s: String) => if (s == null) "N" else s"[${s}]")
     withTwoStringCols(("abc", "123"), ("abc", null), (null, "123"), (null, null), ("zz", "zz")) {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT tag(concat(c1, c2)) FROM t"))
       }
     }
@@ -215,7 +167,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     spark.udf.register("idPassthrough", (id: Long) => id)
     val rows = (0 until 4096).map(i => s"row_$i")
     withSubjects(rows: _*) {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(
           sql("SELECT s, idPassthrough(monotonically_increasing_id()) FROM t"))
       }
@@ -256,7 +208,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("registered string ScalaUDF routes through dispatcher") {
     spark.udf.register("shout", (s: String) => if (s == null) null else s.toUpperCase + "!")
     withSubjects("Abc", "xyz", null, "mixed") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT shout(s) FROM t"))
       }
     }
@@ -274,7 +226,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       },
       IntegerType)
     withSubjects("abc", "hello", null, "x") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT javaLen(s) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
@@ -286,7 +238,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "prepend",
       (prefix: String, s: String) => if (s == null) null else prefix + s)
     withSubjects("one", "two", null) {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT prepend('[', s) FROM t"))
       }
     }
@@ -299,7 +251,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // expression then consumes.
     spark.udf.register("wrap", (s: String) => if (s == null) null else s"|$s|")
     withSubjects("abc", "def", null) {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT length(wrap(s)) FROM t"))
       }
     }
@@ -314,7 +266,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     spark.udf.register("inner", (s: String) => if (s == null) null else s.toUpperCase)
     spark.udf.register("outer", (s: String) => if (s == null) null else s"<$s>")
     withSubjects("abc", null, "xyz", "MiXeD") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT outer(inner(s)) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), StringType)
@@ -327,7 +279,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     spark.udf.register("len", (s: String) => if (s == null) -1 else s.length)
     spark.udf.register("isShort", (i: Int) => i < 5)
     withSubjects("ab", "abcdef", null, "hi") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT isShort(len(s)) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), BooleanType)
@@ -497,7 +449,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     test(s"identity ScalaUDF on ${c.label} routes through dispatcher") {
       c.register()
       withTypedCol(c.sqlType, c.values: _*) {
-        assertCodegenDidWork {
+        assertCodegenRan {
           checkSparkAnswerAndOperator(sql(s"SELECT ${c.udfName}(c) FROM t"))
         }
         assertKernelSignaturePresent(Seq(c.vec), c.output)
@@ -510,39 +462,39 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // the writer can switch types per the UDF's declared return.
     spark.udf.register("codePoint", (s: String) => if (s == null) 0 else s.codePointAt(0))
     withSubjects("abc", "A", null, "!") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT codePoint(s) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
     }
   }
 
-  test("ScalaUDF returning BinaryType (VarBinaryVector output writer)") {
+  test("ScalaUDF returning BinaryType") {
     // Binary output writer path, exercised here by a user UDF for the first time. Before this
     // the writer only had direct-compile unit tests.
     spark.udf.register("bytes", (s: String) => if (s == null) null else s.getBytes("UTF-8"))
     withSubjects("abc", null, "hello") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT bytes(s) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), BinaryType)
     }
   }
 
-  test("ScalaUDF on BinaryType (VarBinaryVector, getBinary)") {
+  test("ScalaUDF on BinaryType") {
     // Binary input getter path: VarBinaryVector with byte[] reads via Spark's `getBinary` getter.
     spark.udf.register("blen", (b: Array[Byte]) => if (b == null) -1 else b.length)
     withTable("t") {
       sql("CREATE TABLE t (b BINARY) USING parquet")
       sql("INSERT INTO t VALUES (CAST('abc' AS BINARY)), (CAST('hello' AS BINARY)), (NULL)")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT blen(b) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarBinaryVector]), IntegerType)
     }
   }
 
-  test("ScalaUDF returning ArrayType(StringType) (ListVector output writer)") {
+  test("ScalaUDF returning ArrayType(StringType)") {
     // First use of the ArrayType output path end-to-end. The UDF returns a `Seq[String]`,
     // which Spark encodes as `ArrayType(StringType, containsNull = true)`. The dispatcher's
     // canHandle accepts it (ArrayType is supported when its element type is supported),
@@ -553,7 +505,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "splitComma",
       (s: String) => if (s == null) null else s.split(",", -1).toSeq)
     withSubjects("a,b,c", "x", null, "", "one,,three") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT splitComma(s) FROM t"))
       }
     }
@@ -566,7 +518,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "asLengths",
       (s: String) => if (s == null) null else s.split(",").map(_.length).toSeq)
     withSubjects("a,bb,ccc", null, "xyzzy") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT asLengths(s) FROM t"))
       }
     }
@@ -581,7 +533,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val alwaysHello = udf(() => "hello").asNondeterministic()
     spark.udf.register("helloU", alwaysHello)
     withSubjects("a", "b", null, "c") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT helloU() FROM t"))
       }
     }
@@ -608,7 +560,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withDecimalTable(
       "DECIMAL(18, 9)",
       Seq("0.000000000", "1.123456789", "-1.123456789", "999999999.999999999", null)) {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT decIdShort(d) FROM t"))
       }
     }
@@ -624,7 +576,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "-1.1234567890",
         "9999999999999999999999999999.0000000000",
         null)) {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT decIdLong(d) FROM t"))
       }
     }
@@ -735,14 +687,14 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("ScalaUDF taking Seq[String] reads through nested ArrayData class") {
+  test("ScalaUDF taking Seq[String] reads element by element") {
     spark.udf.register(
       "headOrNull",
       (arr: Seq[String]) => if (arr == null || arr.isEmpty) null else arr.head)
     withArrayTable(
       "ARRAY<STRING>",
       "(array('a', 'b', 'c')), (array('x')), (null), (array()), (array('alone'))") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT headOrNull(a) FROM t"))
       }
     }
@@ -755,18 +707,18 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withArrayTable(
       "ARRAY<STRING>",
       "(array('one', 'two', 'three')), (array('solo')), (null), (array())") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT concatArr(a) FROM t"))
       }
     }
   }
 
-  test("ScalaUDF taking Seq[Int] hits primitive element getter") {
+  test("ScalaUDF taking Seq[Int] reads primitive elements") {
     spark.udf.register("sumArr", (arr: Seq[Int]) => if (arr == null) -1 else arr.sum)
     withArrayTable(
       "ARRAY<INT>",
       "(array(1, 2, 3)), (array(-5, 5)), (array()), (null), (array(42))") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT sumArr(a) FROM t"))
       }
     }
@@ -789,17 +741,11 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withArrayTable(
       "ARRAY<DECIMAL(10, 2)>",
       "(array(1.23, 4.56)), (array(-9.99)), (null), (array())") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT sumDecArr(a) FROM t"))
       }
     }
   }
-
-  // =============================================================================================
-  // StructType + MapType + nested-composition smoke tests. Source tests prove the emitted Java
-  // is well-shaped; these tests prove Janino compiles it and the runtime roundtrip matches
-  // Spark.
-  // =============================================================================================
 
   test("ScalaUDF composes with struct-field access reading Struct<String, Int>.age") {
     // Keeps the UDF arg scalar (Int) but puts a `GetStructField` under it so the codegen
@@ -812,7 +758,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "(named_struct('name', 'alice', 'age', 30)), " +
           "(named_struct('name', 'bob', 'age', 42)), " +
           "(null)")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT doubleInt(s.age) FROM t"))
       }
     }
@@ -833,7 +779,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "INSERT INTO t VALUES " +
           "(named_struct('name', 'alice', 'age', 30)), " +
           "(named_struct('name', 'bob', 'age', 42))")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT fmtPair(s) FROM t"))
       }
     }
@@ -842,7 +788,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("ScalaUDF returning Struct<String, Int> (case class output)") {
     spark.udf.register("makePair", (i: Int) => NameAgePair(s"n$i", i))
     withTypedCol("INT", "1", "2", "3") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT makePair(c) FROM t"))
       }
     }
@@ -853,7 +799,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable("t") {
       sql("CREATE TABLE t (m MAP<STRING, INT>) USING parquet")
       sql("INSERT INTO t VALUES (map('a', 1, 'b', 2)), (map()), (null)")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT sumMap(m) FROM t"))
       }
     }
@@ -870,7 +816,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable("t") {
       sql("CREATE TABLE t (m MAP<INT, INT>) USING parquet")
       sql("INSERT INTO t VALUES (map(1, 10, 2, 20)), (map()), (null)")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT incValues(m) FROM t"))
       }
     }
@@ -883,7 +829,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable("t") {
       sql("CREATE TABLE t (s STRING, i INT) USING parquet")
       sql("INSERT INTO t VALUES ('a', 1), ('b', 2), (null, 3)")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT singletonMap(s, i) FROM t"))
       }
     }
@@ -900,7 +846,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "(map('a', array(1, 2, 3), 'b', array(10))), " +
           "(map()), " +
           "(null)")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT totalLens(m) FROM t"))
       }
     }
@@ -919,7 +865,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "(array(array(1, 2, 3), array(4, 5))), " +
           "(array(array())), " +
           "(null)")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT reverseRows(a) FROM t"))
       }
     }
@@ -939,7 +885,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "INSERT INTO t VALUES " +
           "(named_struct('name', 'a', 'items', array(1, 2))), " +
           "(named_struct('name', 'b', 'items', array()))")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT growItems(s) FROM t"))
       }
     }
@@ -961,7 +907,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "(map('a', array(3, 1, 2), 'b', array(10))), " +
           "(map()), " +
           "(null)")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT sortValues(m) FROM t"))
       }
     }
@@ -982,17 +928,11 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "INSERT INTO t VALUES " +
           "(map('a', named_struct('x', 1, 'y', 'one'))), " +
           "(map())")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT tagValues(m) FROM t"))
       }
     }
   }
-
-  // =============================================================================================
-  // Regression tests pinning specific kernel bugs first surfaced in CometCodegenDispatchFuzzSuite.
-  // Each is the smallest deterministic input that triggered the bug; kept post-fix as a guard
-  // against future regression.
-  // =============================================================================================
 
   test("array_distinct on Array<Struct<Int, String>> retains element identity across hash set") {
     // Fuzz signal: cardinality(array_distinct(arr_of_struct)) returns 1 where Spark returns 2.
@@ -1008,7 +948,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "(array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'y'))), " +
           "(array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'y'), " +
           "named_struct('a', 1, 'b', 'x')))")
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(
           sql("SELECT idIntDistinct(cardinality(array_distinct(s))) FROM t"))
       }
@@ -1049,25 +989,21 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
         sql(s"INSERT INTO t VALUES ${rows.mkString(", ")}")
-        assertCodegenDidWork {
+        assertCodegenRan {
           checkSparkAnswerAndOperator(sql("SELECT idBinFlat(array_max(flatten(a))) FROM t"))
         }
       }
     }
   }
 
-  // =============================================================================================
-  // Regression tests for nested reference-type getter null-handling. Spark's
-  // `CodeGenerator.setArrayElement` (called from e.g. `Flatten.doGenCode`) only emits an
-  // `isNullAt` check before `array.update(i, getX(j))` when the element is a Java primitive
-  // (`int`/`long`/etc.). For reference-typed elements (Binary, String, Decimal, Struct, Array,
-  // Map) it emits `array.update(i, getX(j))` unconditionally, relying on the source's getter to
-  // return `null` for null positions itself (Spark's own `ColumnarArray.getBinary` does
-  // `if (isNullAt(...)) return null;`). Our nested `InputArray_*.getX` getters do not honor that
-  // contract, so any inner null at a reference-typed position becomes an empty-bytes / empty-
-  // string / garbage-decimal / non-null-shell value in the flattened output. Each test below
-  // pins one reference-type variant so the fix can be verified per type.
-  // =============================================================================================
+  /**
+   * Regressions for nested reference-typed getter null handling. Spark's
+   * `CodeGenerator.setArrayElement` only emits an `isNullAt` check before `array.update(i,
+   * getX(j))` for Java primitives; for reference-typed elements (Binary, String, Decimal, Struct,
+   * Array, Map) it relies on the source's `getX` to return `null` itself, matching
+   * `ColumnarArray.getBinary`. Without that contract, inner nulls become empty bytes / empty
+   * strings / garbage decimals / non-null shells in the flattened output.
+   */
 
   test("array_max(flatten(arr)) on Array<Array<Binary>> with null inner Binary returns null") {
     spark.udf.register("idBin", (b: Array[Byte]) => b)
@@ -1076,7 +1012,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "(array(array(NULL))), " +
         "(array(array(NULL, NULL))), " +
         "(array(array(), array(NULL)))") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT idBin(array_max(flatten(a))) FROM t"))
       }
     }
@@ -1089,7 +1025,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "(array(array(NULL))), " +
         "(array(array(NULL, NULL))), " +
         "(array(array(), array(NULL)))") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT idStr(array_max(flatten(a))) FROM t"))
       }
     }
@@ -1105,7 +1041,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "(array(array(" +
         "CAST(NULL AS DECIMAL(10, 2)), CAST(NULL AS DECIMAL(10, 2))))), " +
         "(array(array(), array(CAST(NULL AS DECIMAL(10, 2)))))") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT idDec10(array_max(flatten(a))) FROM t"))
       }
     }
@@ -1121,7 +1057,7 @@ class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "(array(array(" +
         "CAST(NULL AS DECIMAL(30, 2)), CAST(NULL AS DECIMAL(30, 2))))), " +
         "(array(array(), array(CAST(NULL AS DECIMAL(30, 2)))))") {
-      assertCodegenDidWork {
+      assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT idDec30(array_max(flatten(a))) FROM t"))
       }
     }

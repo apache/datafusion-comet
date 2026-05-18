@@ -33,7 +33,6 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
-import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Randomized end-to-end tests for the Arrow-direct codegen dispatcher: schema-driven coverage of
@@ -42,7 +41,10 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * (not [[CometFuzzTestBase]]) because the base's `shuffle` x `nativeC2R` cross-product is
  * irrelevant for projection-only queries.
  */
-class CometCodegenFuzzSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometCodegenFuzzSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
 
   /** Random schema with primitives plus shallow arrays and structs. No maps, no deep nesting. */
   private var mixedTypesFilename: String = _
@@ -119,20 +121,6 @@ class CometCodegenFuzzSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def sparkConf: SparkConf =
     super.sparkConf
       .set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
-
-  /**
-   * Resets dispatcher stats, runs `f`, then asserts the codegen path actually ran for at least
-   * one batch. Without this, a silent serde fallback would let the fuzz pass trivially because
-   * both Spark and whatever-Comet-ran-instead agree with Spark.
-   */
-  private def assertCodegenRan(f: => Unit): Unit = {
-    CometScalaUDFCodegen.resetStats()
-    f
-    val after = CometScalaUDFCodegen.stats()
-    assert(
-      after.compileCount + after.cacheHitCount >= 1,
-      s"expected at least one codegen dispatcher invocation during this query, got $after")
-  }
 
   /**
    * Identity ScalaUDF for one of the 14 primitive types in

@@ -23,28 +23,29 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.udf.codegen.CometScalaUDFCodegen
-
 /**
  * Higher-order function regression coverage for the codegen dispatcher.
  *
  * Spark's HOFs (`ArrayTransform`, `ArrayFilter`, `ArrayAggregate`, `ArrayExists`, `ZipWith`,
  * `MapFilter`, etc.) all extend `CodegenFallback`. The dispatcher's `canHandle` admits them.
  * `CodegenFallback.doGenCode` emits a single `((Expression) references[N]).eval(row)` call site
- * per HOF; at runtime the kernel dispatches to `Expression.eval(InternalRow)`, which iterates the
- * array, mutates `NamedLambdaVariable.value`'s `AtomicReference` per element, and recursively
- * evaluates the lambda body. Lambda-body leaf reads resolve through the kernel's own typed Arrow
- * getters since the kernel '''is''' an `InternalRow`.
+ * per HOF; the kernel dispatches to `Expression.eval(InternalRow)`, which iterates the array,
+ * mutates `NamedLambdaVariable.value`'s `AtomicReference` per element, and recursively evaluates
+ * the lambda body. Lambda-body leaf reads resolve through the kernel's typed Arrow getters since
+ * the kernel '''is''' an `InternalRow`.
  *
  * Cost model: per-row interpreted-eval inside the HOF subtree. Surrounding native operators stay
  * native; surrounding non-HOF expressions stay codegen.
  *
  * Critical invariant: each Spark task gets its own `boundExpr` Java object. The dispatcher's
  * compile cache lives on the per-task instance, not the companion, so concurrent partitions
- * cannot race on a shared `NamedLambdaVariable.value`. Mirrors Spark's per-task closure-
- * deserialize model. The two-collects test below regresses this.
+ * cannot race on a shared `NamedLambdaVariable.value`. The two-collects test below regresses
+ * this.
  */
-class CometCodegenHOFSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometCodegenHOFSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
 
   override protected def sparkConf: SparkConf =
     super.sparkConf
@@ -56,15 +57,6 @@ class CometCodegenHOFSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"INSERT INTO t VALUES $rows")
       f
     }
-  }
-
-  private def assertCodegenRan(f: => Unit): Unit = {
-    CometScalaUDFCodegen.resetStats()
-    f
-    val after = CometScalaUDFCodegen.stats()
-    assert(
-      after.compileCount + after.cacheHitCount >= 1,
-      s"expected dispatcher activity, got $after")
   }
 
   test("ArrayTransform inside identity ScalaUDF over Array<Int>") {

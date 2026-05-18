@@ -569,13 +569,6 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       s"expected BigDecimal slow path for p>18 element; got:\n$src")
   }
 
-  // ============================================================================================
-  // Nested-type tests. Each case verifies that a complex-within-complex shape emits a full
-  // nested-class tree (outer + inner), wired together through the path-suffix naming
-  // convention: `_e` for array element, `_f${fi}` for struct field fi. Scalar-element / scalar-
-  // field leaves reuse the typed-getter templates already covered by the single-depth tests.
-  // ============================================================================================
-
   private def generate(expr: Expression, specs: IndexedSeq[ArrowColumnSpec]): String =
     CometBatchKernelCodegen.generateSource(expr, specs).body
 
@@ -751,18 +744,16 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     }
   }
 
-  // ============================================================================================
-  // Null-guard emission for nested reference-typed getters. Spark's
-  // `CodeGenerator.setArrayElement` only emits an `isNullAt` check before `update(i, getX(j))`
-  // for primitive elements. For reference types (Decimal / String / Binary / Struct / Array /
-  // Map) it relies on the source's `getX` to return null on null positions itself, matching
-  // `ColumnarArray.getBinary` and friends. The emitter prepends `if (isNullAt(...)) return null;`
-  // to those getters when the element/field is nullable.
-  //
-  // Runtime regressions for the leaf reference types live in `CometCodegenSuite`; complex-type
-  // (Struct/Array/Map) coverage runs through HOFs in `CometCodegenHOFSuite`.
-  // ============================================================================================
-
+  /**
+   * Null-guard emission for nested reference-typed getters. Spark's
+   * `CodeGenerator.setArrayElement` only emits an `isNullAt` check before `update(i, getX(j))`
+   * for primitive elements. For reference types it relies on the source's `getX` to return null
+   * on null positions itself, matching `ColumnarArray.getBinary`. The emitter prepends `if
+   * (isNullAt(...)) return null;` when the element / field is nullable.
+   *
+   * Runtime regressions for the leaf reference types live in `CometCodegenSuite`; complex-type
+   * (Struct/Array/Map) coverage runs through HOFs in `CometCodegenHOFSuite`.
+   */
   private val nullableIntStruct = StructColumnSpec(
     nullable = true,
     fields = Seq(
