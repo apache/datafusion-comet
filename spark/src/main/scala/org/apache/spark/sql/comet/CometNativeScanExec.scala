@@ -170,16 +170,15 @@ case class CometNativeScanExec(
    * partition's files (lazily, as tasks are scheduled).
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    // Outer partitionFilters (wrapper) DPP is resolved by Spark's standard
-    // prepare -> waitForSubqueries lifecycle, triggered explicitly via
-    // CometLeafExec.ensureSubqueriesResolved called from
-    // CometNativeExec.findAllPlanData before commonData is read.
+    // originalPlan.partitionFilters holds InSubqueryExec instances Spark's expressions walk does
+    // not see (originalPlan is @transient and not a sibling expression). DPP must be resolved
+    // before CometFilePartitionHelper computes dynamicallySelectedPartitions, which evaluates
+    // bound predicates against partition values. updateResult is a no-op if already resolved.
     //
-    // Inner originalPlan.partitionFilters holds a SEPARATE InSubqueryExec instance
-    // that Spark's expressions walk does not see (originalPlan is @transient and
-    // not a sibling expression). It still needs explicit resolution because
-    // originalPlan.inputRDD evaluates its own partitionFilters during FileScanRDD
-    // construction. updateResult is a no-op if already resolved.
+    // Outer wrapper partitionFilters DPP is resolved separately by Spark's standard
+    // prepare -> waitForSubqueries lifecycle, triggered explicitly via
+    // CometLeafExec.ensureSubqueriesResolved called from CometNativeExec.findAllPlanData
+    // before commonData is read.
     if (originalPlan != null) {
       originalPlan.partitionFilters.foreach {
         case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
@@ -225,12 +224,12 @@ case class CometNativeScanExec(
       }
     }
 
-    // Delegate FilePartition computation to Spark's FileSourceScanExec. Its inputRDD
-    // builds a FileScanRDD whose filePartitions field exposes the same partitions Comet
-    // would compute itself (bucketing, pruning, splitting). The FileScanRDD's readFile
-    // closure is captured but never invoked because we only consume filePartitions and
-    // serialize them for native execution.
-    val filePartitions = originalPlan.inputRDD.asInstanceOf[FileScanRDD].filePartitions
+    // Compute file partitions without going through originalPlan.inputRDD. inputRDD would
+    // build a Parquet reader closure (and broadcast a Hadoop conf) we never invoke, and would
+    // walk pushedDownFilters which calls ScalarSubquery.toLiteral on originalPlan.dataFilters
+    // -- those instances are separate from this wrapper's dataFilters resolved above and are
+    // not reached by Spark's prepare lifecycle (originalPlan is @transient).
+    val filePartitions = CometFilePartitionHelper(originalPlan).getFilePartitions()
 
     // Serialize each partition's files
     import org.apache.comet.serde.operator.partition2Proto
