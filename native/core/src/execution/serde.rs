@@ -76,8 +76,8 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
         Int64 => ArrowDataType::Int64,
         Float => ArrowDataType::Float32,
         Double => ArrowDataType::Float64,
-        String => ArrowDataType::Utf8,
-        Bytes => ArrowDataType::Binary,
+        String => ArrowDataType::Utf8View,
+        Bytes => ArrowDataType::BinaryView,
         Decimal => match dt_value
             .type_info
             .as_ref()

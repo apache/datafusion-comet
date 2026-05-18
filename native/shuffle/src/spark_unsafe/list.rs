@@ -28,6 +28,7 @@ use arrow::array::{
     },
     MapBuilder,
 };
+use arrow::array::{BinaryViewBuilder, StringViewBuilder};
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion_comet_jni_bridge::errors::CometError;
 
@@ -401,12 +402,28 @@ pub fn append_to_builder<const NULLABLE: bool>(
                 |builder: &mut BinaryBuilder| builder.append_null()
             );
         }
+        DataType::BinaryView => {
+            add_values!(
+                BinaryViewBuilder,
+                |builder: &mut BinaryViewBuilder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_binary(idx)),
+                |builder: &mut BinaryViewBuilder| builder.append_null()
+            );
+        }
         DataType::Utf8 => {
             add_values!(
                 StringBuilder,
                 |builder: &mut StringBuilder, values: &SparkUnsafeArray, idx: usize| builder
                     .append_value(values.get_string(idx)),
                 |builder: &mut StringBuilder| builder.append_null()
+            );
+        }
+        DataType::Utf8View => {
+            add_values!(
+                StringViewBuilder,
+                |builder: &mut StringViewBuilder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_string(idx)),
+                |builder: &mut StringViewBuilder| builder.append_null()
             );
         }
         DataType::List(field) => {

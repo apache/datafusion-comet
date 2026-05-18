@@ -32,7 +32,7 @@ use arrow::array::{
         StructBuilder, TimestampMicrosecondBuilder,
     },
     types::Int32Type,
-    Array, ArrayRef, RecordBatch, RecordBatchOptions,
+    Array, ArrayRef, BinaryViewBuilder, RecordBatch, RecordBatchOptions, StringViewBuilder,
 };
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
@@ -278,8 +278,16 @@ pub(super) fn append_field(
             append_field_to_builder!(BinaryBuilder, |builder: &mut BinaryBuilder| builder
                 .append_value(row.get_binary(idx)));
         }
+        DataType::BinaryView => {
+            append_field_to_builder!(BinaryViewBuilder, |builder: &mut BinaryViewBuilder| builder
+                .append_value(row.get_binary(idx)));
+        }
         DataType::Utf8 => {
             append_field_to_builder!(StringBuilder, |builder: &mut StringBuilder| builder
+                .append_value(row.get_string(idx)));
+        }
+        DataType::Utf8View => {
+            append_field_to_builder!(StringViewBuilder, |builder: &mut StringViewBuilder| builder
                 .append_value(row.get_string(idx)));
         }
         DataType::Decimal128(p, _) => {
@@ -454,8 +462,48 @@ fn append_nested_struct_fields_field_major(
                     }
                 }
             }
+            DataType::BinaryView => {
+                let field_builder =
+                    get_field_builder!(struct_builder, BinaryViewBuilder, field_idx);
+
+                for row_idx in 0..num_rows {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        let row_addr = row_addresses[row_idx];
+                        let row_size = row_sizes[row_idx];
+                        row.point_to(row_addr, row_size);
+
+                        if row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(row.get_binary(field_idx));
+                        }
+                    }
+                }
+            }
             DataType::Utf8 => {
                 let field_builder = get_field_builder!(struct_builder, StringBuilder, field_idx);
+
+                for row_idx in 0..num_rows {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        let row_addr = row_addresses[row_idx];
+                        let row_size = row_sizes[row_idx];
+                        row.point_to(row_addr, row_size);
+
+                        if row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(row.get_string(field_idx));
+                        }
+                    }
+                }
+            }
+            DataType::Utf8View => {
+                let field_builder =
+                    get_field_builder!(struct_builder, StringViewBuilder, field_idx);
 
                 for row_idx in 0..num_rows {
                     if struct_is_null[row_idx] {
@@ -894,8 +942,46 @@ fn append_struct_fields_field_major(
                     }
                 }
             }
+            DataType::BinaryView => {
+                let field_builder =
+                    get_field_builder!(struct_builder, BinaryViewBuilder, field_idx);
+
+                for (row_idx, i) in (row_start..row_end).enumerate() {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
+                        let nested_row = parent_row.get_struct(column_idx, num_fields);
+
+                        if nested_row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(nested_row.get_binary(field_idx));
+                        }
+                    }
+                }
+            }
             DataType::Utf8 => {
                 let field_builder = get_field_builder!(struct_builder, StringBuilder, field_idx);
+
+                for (row_idx, i) in (row_start..row_end).enumerate() {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
+                        let nested_row = parent_row.get_struct(column_idx, num_fields);
+
+                        if nested_row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(nested_row.get_string(field_idx));
+                        }
+                    }
+                }
+            }
+            DataType::Utf8View => {
+                let field_builder =
+                    get_field_builder!(struct_builder, StringViewBuilder, field_idx);
 
                 for (row_idx, i) in (row_start..row_end).enumerate() {
                     if struct_is_null[row_idx] {
@@ -1125,6 +1211,13 @@ fn append_columns(
                 );
             }
         }
+        DataType::Utf8View => {
+            append_column_to_builder!(
+                StringViewBuilder,
+                |builder: &mut StringViewBuilder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_string(idx))
+            );
+        }
         DataType::Binary => {
             if prefer_dictionary_ratio > 1.0 {
                 append_column_to_builder!(
@@ -1140,6 +1233,13 @@ fn append_columns(
                         .append_value(row.get_binary(idx))
                 );
             }
+        }
+        DataType::BinaryView => {
+            append_column_to_builder!(
+                BinaryViewBuilder,
+                |builder: &mut BinaryViewBuilder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_binary(idx))
+            );
         }
         DataType::Date32 => {
             append_column_to_builder!(
@@ -1240,6 +1340,7 @@ fn make_builders(
                 Box::new(StringBuilder::with_capacity(row_num, 1024))
             }
         }
+        DataType::Utf8View => Box::new(StringViewBuilder::with_capacity(row_num)),
         DataType::Binary => {
             if prefer_dictionary_ratio > 1.0 {
                 Box::new(BinaryDictionaryBuilder::<Int32Type>::with_capacity(
@@ -1251,6 +1352,7 @@ fn make_builders(
                 Box::new(BinaryBuilder::with_capacity(row_num, 1024))
             }
         }
+        DataType::BinaryView => Box::new(BinaryViewBuilder::with_capacity(row_num)),
         DataType::Date32 => Box::new(Date32Builder::with_capacity(row_num)),
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))

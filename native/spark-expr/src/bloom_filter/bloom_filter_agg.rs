@@ -60,7 +60,7 @@ impl BloomFilterAgg {
         data_type: DataType,
         version: SparkBloomFilterVersion,
     ) -> Self {
-        assert!(matches!(data_type, DataType::Binary));
+        assert!(matches!(data_type, DataType::BinaryView));
         Self {
             signature: Signature::uniform(
                 1,
@@ -70,6 +70,7 @@ impl BloomFilterAgg {
                     DataType::Int32,
                     DataType::Int64,
                     DataType::Utf8,
+                    DataType::Utf8View,
                 ],
                 Volatility::Immutable,
             ),
@@ -94,7 +95,7 @@ impl AggregateUDFImpl for BloomFilterAgg {
     }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        Ok(DataType::Binary)
+        Ok(DataType::BinaryView)
     }
 
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
@@ -141,6 +142,9 @@ impl Accumulator for SparkBloomFilter {
                 ScalarValue::Utf8(Some(value)) => {
                     self.put_binary(value.as_bytes());
                 }
+                ScalarValue::Utf8View(Some(value)) => {
+                    self.put_binary(value.as_bytes());
+                }
                 _ => {
                     unreachable!()
                 }
@@ -150,7 +154,7 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        Ok(ScalarValue::Binary(Some(self.spark_serialization())))
+        Ok(ScalarValue::BinaryView(Some(self.spark_serialization())))
     }
 
     fn size(&self) -> usize {

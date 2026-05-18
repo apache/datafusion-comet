@@ -15,13 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::Schema;
+use arrow::array::ArrayRef;
+use arrow::array::{
+    Array, AsArray, BinaryViewBuilder, RecordBatch, RecordBatchOptions, StringViewBuilder,
+};
+use arrow::datatypes::{DataType, Schema};
 use arrow::ipc::writer::StreamWriter;
-use datafusion::common::DataFusionError;
+use datafusion::common::{arrow_datafusion_err, DataFusionError};
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
 use std::io::{Cursor, Seek, SeekFrom, Write};
+use std::sync::Arc;
 
 /// Compression algorithm applied to shuffle IPC blocks.
 #[derive(Debug, Clone)]
@@ -79,6 +83,59 @@ impl ShuffleBlockWriter {
         if batch.num_rows() == 0 {
             return Ok(0);
         }
+
+        let compact = batch.columns().iter().any(|column| {
+            matches!(
+                column.data_type(),
+                DataType::BinaryView | DataType::Utf8View
+            ) && column.get_array_memory_size() > 1048576
+        });
+
+        let compact_batch: Option<RecordBatch> = if compact {
+            let vectors = batch
+                .columns()
+                .iter()
+                .map(|v| match v.data_type() {
+                    DataType::BinaryView => {
+                        let array = v.as_binary_view();
+                        let mut builder = BinaryViewBuilder::with_capacity(array.len())
+                            .with_deduplicate_strings();
+
+                        for v in array.iter() {
+                            builder.append_option(v);
+                        }
+
+                        Arc::new(builder.finish()) as ArrayRef
+                    }
+                    DataType::Utf8View => {
+                        let array = v.as_string_view();
+                        let mut builder = StringViewBuilder::with_capacity(array.len())
+                            .with_deduplicate_strings();
+
+                        for v in array.iter() {
+                            builder.append_option(v);
+                        }
+
+                        Arc::new(builder.finish()) as ArrayRef
+                    }
+                    _ => Arc::clone(v),
+                })
+                .collect::<Vec<ArrayRef>>();
+
+            let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+            let maybe_batch =
+                RecordBatch::try_new_with_options(Arc::clone(&batch.schema()), vectors, &options)
+                    .map_err(|e| arrow_datafusion_err!(e))?;
+            Some(maybe_batch)
+        } else {
+            None
+        };
+
+        let batch: &RecordBatch = if let Some(ref cb) = compact_batch {
+            cb
+        } else {
+            batch
+        };
 
         let mut timer = ipc_time.timer();
         let start_pos = output.stream_position()?;
