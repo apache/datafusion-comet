@@ -171,7 +171,8 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             let bridge = JVMClasses::get().comet_udf_bridge.as_ref().ok_or_else(|| {
                 CometError::from(ExecutionError::GeneralError(
                     "JVM UDF bridge unavailable: org.apache.comet.udf.CometUdfBridge \
-                     class was not found on the JVM classpath."
+                     class was not found on the JVM classpath. Set \
+                     spark.comet.exec.regexp.engine=rust to disable this path."
                         .to_string(),
                 ))
             })?;
@@ -237,7 +238,19 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         // exactly once when the Box drops at end of scope.
         let result_data = unsafe { from_ffi(*out_array, &out_schema) }
             .map_err(|e| CometError::Arrow { source: e })?;
-        Ok(ColumnarValue::Array(make_array(result_data)))
+        let result_array = make_array(result_data);
+
+        // The JVM may produce arrays with different field names (e.g. Arrow Java's
+        // ListVector uses "$data$" for child fields) than what DataFusion expects
+        // (e.g. "item"). Cast to the declared return_type to normalize schema.
+        let result_array = if result_array.data_type() != &self.return_type {
+            arrow::compute::cast(&result_array, &self.return_type)
+                .map_err(|e| CometError::Arrow { source: e })?
+        } else {
+            result_array
+        };
+
+        Ok(ColumnarValue::Array(result_array))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {

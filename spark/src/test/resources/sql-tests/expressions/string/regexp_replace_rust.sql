@@ -14,18 +14,17 @@
 -- KIND, either express or implied.  See the License for the
 -- specific language governing permissions and limitations
 -- under the License.
+-- Test regexp_replace with Rust regexp engine (patterns expected to fallback)
+-- Config: spark.comet.exec.regexp.engine=rust
 
 statement
-CREATE TABLE test_rlike(s string) USING parquet
+CREATE TABLE test_regexp_replace(s string) USING parquet
 
 statement
-INSERT INTO test_rlike VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
+INSERT INTO test_regexp_replace VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[0-9]+$' FROM test_rlike
+query expect_fallback(is not fully compatible with Spark)
+SELECT regexp_replace(s, '(\\d+)', 'X') FROM test_regexp_replace
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[a-z]+$' FROM test_rlike
-
-query spark_answer_only
-SELECT s RLIKE '' FROM test_rlike
+query expect_fallback(is not fully compatible with Spark)
+SELECT regexp_replace(s, '(\\d+)', 'X', 1) FROM test_regexp_replace

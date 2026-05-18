@@ -15,24 +15,25 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test RLIKE with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.expression.regexp.allowIncompatible=true
+-- Test split with Rust regexp engine and allowIncompatible enabled
+-- Config: spark.comet.exec.regexp.engine=rust
+-- Config: spark.comet.expression.StringSplit.allowIncompatible=true
 
 statement
-CREATE TABLE test_rlike_enabled(s string) USING parquet
+CREATE TABLE test_split_rust_enabled(s string) USING parquet
 
 statement
-INSERT INTO test_rlike_enabled VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
+INSERT INTO test_split_rust_enabled VALUES ('one,two,three'), ('hello'), (''), (NULL), ('a::b::c')
 
 query
-SELECT s RLIKE '^[0-9]+$' FROM test_rlike_enabled
+SELECT split(s, ',', -1) FROM test_split_rust_enabled
 
 query
-SELECT s RLIKE '^[a-z]+$' FROM test_rlike_enabled
+SELECT split(s, ',', 2) FROM test_split_rust_enabled
 
 query
-SELECT s RLIKE '' FROM test_rlike_enabled
+SELECT split(s, '::', -1) FROM test_split_rust_enabled
 
 -- literal arguments
 query
-SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^[a-z]+$', '' RLIKE '', NULL RLIKE 'a'
+SELECT split('a,b,c', ',', -1), split('hello', ',', -1), split(NULL, ',', -1)

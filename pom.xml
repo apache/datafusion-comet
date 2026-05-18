@@ -1153,6 +1153,7 @@ under the License.
             <exclude>native/proto/src/generated/**</exclude>
             <exclude>benchmarks/tpc/queries/**</exclude>
             <exclude>.claude/**</exclude>
+            <exclude>docs/superpowers/**</exclude>
           </excludes>
         </configuration>
       </plugin>

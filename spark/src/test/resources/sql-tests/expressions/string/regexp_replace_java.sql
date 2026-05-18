@@ -15,21 +15,37 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test regexp_replace() with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.expression.regexp.allowIncompatible=true
+-- Test regexp_replace via JVM regex engine
+-- Config: spark.comet.exec.regexp.engine=java
 
 statement
-CREATE TABLE test_regexp_replace_enabled(s string) USING parquet
+CREATE TABLE test_regexp_replace_java(s string) USING parquet
 
 statement
-INSERT INTO test_regexp_replace_enabled VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
+INSERT INTO test_regexp_replace_java VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890'), ('aabbcc')
 
 query
-SELECT regexp_replace(s, '(\d+)', 'X') FROM test_regexp_replace_enabled
+SELECT regexp_replace(s, '\d+', 'X') FROM test_regexp_replace_java
 
 query
-SELECT regexp_replace(s, '(\d+)', 'X', 1) FROM test_regexp_replace_enabled
+SELECT regexp_replace(s, '\d+', 'X', 1) FROM test_regexp_replace_java
 
--- literal + literal + literal
+-- backreference in replacement
+query
+SELECT regexp_replace(s, '(\d+)-(\d+)', '$2-$1') FROM test_regexp_replace_java
+
+-- backreference in pattern (Java-only)
+query
+SELECT regexp_replace(s, '(\w)\1', 'Z') FROM test_regexp_replace_java
+
+-- lookahead (Java-only)
+query
+SELECT regexp_replace(s, '\d+(?=-)', 'X') FROM test_regexp_replace_java
+
+-- embedded flags (Java-only)
+query
+SELECT regexp_replace(s, '(?i)ABC', 'X') FROM test_regexp_replace_java
+
+-- literal arguments
 query
 SELECT regexp_replace('100-200', '(\d+)', 'X'), regexp_replace('abc', '(\d+)', 'X'), regexp_replace(NULL, '(\d+)', 'X')
