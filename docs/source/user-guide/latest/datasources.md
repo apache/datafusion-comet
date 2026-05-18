@@ -23,10 +23,9 @@
 
 ### Parquet
 
-When `spark.comet.scan.enabled` is enabled, Parquet scans will be performed natively by Comet if all data types
-in the schema are supported. When this option is not enabled, the scan will fall back to Spark. In this case,
-enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into Arrow format, allowing native
-execution to happen after that, but the process may not be efficient.
+Parquet scans are performed natively by Comet if all data types in the schema are supported. When the scan
+falls back to Spark, enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into
+Arrow format, allowing native execution to happen after that, but the process may not be efficient.
 
 ### Apache Iceberg
 
@@ -69,12 +68,12 @@ Unlike to native Comet reader the Datafusion reader fully supports nested types 
 To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed
 
 Example:
-Build a Comet for `spark-3.5` provide a JDK path in `JAVA_HOME`
+Build a Comet for `spark-4.1` provide a JDK path in `JAVA_HOME`
 Provide the JRE linker path in `RUSTFLAGS`, the path can vary depending on the system. Typically JRE linker is a part of installed JDK
 
 ```shell
-export JAVA_HOME="/opt/homebrew/opt/openjdk@11"
-make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
+export JAVA_HOME="/opt/homebrew/opt/openjdk@17"
+make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 Start Comet with experimental reader and HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
@@ -149,7 +148,7 @@ docker compose -f kube/local/hdfs-docker-compose.yml up
 - Build a project with HDFS support
 
 ```shell
-JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server"
+JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 - Run local test
@@ -182,7 +181,7 @@ the `object_store` crate's format.
 This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will
 continue to work as long as the configurations are supported and can be translated without loss of functionality.
 
-#### Root CA Certificates
+### Root CA Certificates
 
 One major difference between Spark and Comet is the mechanism for discovering Root
 CA Certificates. Spark uses the JVM to read CA Certificates from the Java Trust Store, but native Comet
@@ -190,7 +189,7 @@ scans use system Root CA Certificates (typically stored
 in `/etc/ssl/certs` on Linux). These scans will not be able to interact with S3 if the Root CA Certificates are not
 installed.
 
-#### Supported Credential Providers
+### Supported Credential Providers
 
 AWS credential providers can be configured using the `fs.s3a.aws.credentials.provider` configuration. The following table shows the supported credential providers and their configuration options:
 
@@ -209,7 +208,7 @@ AWS credential providers can be configured using the `fs.s3a.aws.credentials.pro
 
 Multiple credential providers can be specified in a comma-separated list using the `fs.s3a.aws.credentials.provider` configuration, just as Hadoop AWS supports. If `fs.s3a.aws.credentials.provider` is not configured, Hadoop S3A's default credential provider chain will be used. All configuration options also support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
 
-#### Additional S3 Configuration Options
+### Additional S3 Configuration Options
 
 Beyond credential providers, the `native_datafusion` and `native_iceberg_compat` implementations support additional
 S3 configuration options:
@@ -223,7 +222,7 @@ S3 configuration options:
 
 All configuration options support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
 
-#### Examples
+### Examples
 
 The following examples demonstrate how to configure S3 access with the `native_datafusion` and `native_iceberg_compat`
 Parquet scan implementations using different authentication methods.
@@ -256,7 +255,7 @@ $SPARK_HOME/bin/spark-shell \
 ...
 ```
 
-#### Limitations
+### Limitations
 
 The S3 support of `native_datafusion` and `native_iceberg_compat` has the following limitations:
 

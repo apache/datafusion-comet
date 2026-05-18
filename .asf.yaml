@@ -41,6 +41,7 @@ github:
   features:
     issues: true
     discussions: true
+    projects: true
   protected_branches:
     main:
       required_pull_request_reviews:

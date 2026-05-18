@@ -35,7 +35,6 @@ import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefa
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
-import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
@@ -213,6 +212,19 @@ case class CometScanRule(session: SparkSession)
         s"$SCAN_NATIVE_DATAFUSION scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
       return None
     }
+    // Disabling the vectorized reader opts into parquet-mr's permissive behavior
+    // (silent overflow / null-on-narrowing). Comet has no parquet-mr-equivalent
+    // backend, so by default fall back to Spark. Users can opt in to letting Comet
+    // replace the scan via COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.
+    if (!conf.parquetVectorizedReaderEnabled &&
+      !COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.get()) {
+      withInfo(
+        scanExec,
+        s"$SCAN_NATIVE_DATAFUSION scan is incompatible with " +
+          s"${SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key}=false; set " +
+          s"${COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key}=true to opt in")
+      return None
+    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
@@ -240,11 +252,6 @@ case class CometScanRule(session: SparkSession)
     }
     if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
       withInfo(scanExec, "Native DataFusion scan does not support row index generation")
-      return None
-    }
-    if (session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
-      ParquetUtils.hasFieldIds(scanExec.requiredSchema)) {
-      withInfo(scanExec, "Native DataFusion scan does not support Parquet field ID matching")
       return None
     }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
@@ -312,10 +319,10 @@ case class CometScanRule(session: SparkSession)
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
-      // Iceberg scan - detected by class name
-      case _
-          if scanExec.scan.getClass.getName ==
-            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+      // Iceberg scan - detected by class name. SparkStagedScan covers reads issued by
+      // RewriteDataFiles (and similar maintenance actions) where the planner has already
+      // staged FileScanTasks via ScanTaskSetManager.
+      case _ if IcebergReflection.isIcebergScanClass(scanExec.scan.getClass.getName) =>
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled

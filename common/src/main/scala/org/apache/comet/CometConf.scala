@@ -105,12 +105,9 @@ object CometConf extends ShimCometConf {
     .createWithDefault(true)
 
   val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
-    .category(CATEGORY_SCAN)
-    .doc(
-      "Whether to enable native scans. When this is turned on, Spark will use Comet to " +
-        "read supported data sources (currently only Parquet is supported natively). Note " +
-        "that to enable native vectorized execution, both this config and " +
-        "`spark.comet.exec.enabled` need to be enabled.")
+    .category(CATEGORY_TESTING)
+    .doc("Whether to enable native scans. Intended for use in Comet's own test suites to " +
+      "selectively disable native scans; not intended for production use.")
     .booleanConf
     .createWithDefault(true)
 
@@ -741,16 +738,6 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
-  val COMET_SCHEMA_EVOLUTION_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.schemaEvolution.enabled")
-      .internal()
-      .category(CATEGORY_SCAN)
-      .doc("Whether to enable schema evolution in Comet. For instance, promoting a integer " +
-        "column to a long column, a float column to a double column, etc. This is automatically" +
-        "enabled when reading from Iceberg tables.")
-      .booleanConf
-      .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
-
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
       .internal()
@@ -806,6 +793,19 @@ object CometConf extends ShimCometConf {
           s"from improperly encoded Parquet files. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.allowDisabledParquetVectorizedReader")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to allow Comet's native scan to replace the Parquet scan when Spark's " +
+          s"${SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key} is set to false. By default " +
+          "(false), Comet falls back to Spark in that case, because Comet's native readers " +
+          "mirror Spark's vectorized reader semantics rather than Spark's parquet-mr " +
+          "(non-vectorized) semantics, which permit silent overflow / null-on-narrowing " +
+          s"that Comet has no equivalent for. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_EXEC_STRICT_FLOATING_POINT: ConfigEntry[Boolean] =
     conf("spark.comet.exec.strictFloatingPoint")

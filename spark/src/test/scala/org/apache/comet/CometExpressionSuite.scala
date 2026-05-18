@@ -1982,7 +1982,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("remainder function") {
-    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
@@ -1992,6 +1991,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     def verifyResult(query: String): Unit = {
       // Spark 4.1 introduced REMAINDER_BY_ZERO; older versions raise DIVIDE_BY_ZERO for `%`.
+      // Comet always raises REMAINDER_BY_ZERO natively but the JVM shim maps it to
+      // DIVIDE_BY_ZERO on Spark < 4.1 (where that error class does not exist).
       val expectedError =
         if (isSpark41Plus)
           "[REMAINDER_BY_ZERO] Remainder by zero. Use `try_mod` to tolerate divisor being 0 and return NULL instead."

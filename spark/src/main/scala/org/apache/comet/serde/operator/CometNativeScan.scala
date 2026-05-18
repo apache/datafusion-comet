@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefa
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec}
 import org.apache.spark.sql.comet.shims.ShimFileSourceScanExec
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.ArrayType
 
@@ -220,6 +221,18 @@ object CometNativeScan extends CometOperatorSerde[FileSourceScanExec] with Loggi
       val returnNullStructDefault = if (isSpark41Plus) "false" else "true"
       commonBuilder.setReturnNullStructIfAllFieldsMissing(
         scan.conf.getConfString(returnNullStructConfKey, returnNullStructDefault).toBoolean)
+
+      // Field-ID matching: only ask the native side to do extra work when the conf is on AND
+      // the requested schema actually carries IDs. Spark's ParquetReadSupport applies the same
+      // gate before invoking matchIdField.
+      val useFieldId =
+        scan.conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
+          ParquetUtils.hasFieldIds(scan.requiredSchema)
+      commonBuilder.setUseFieldId(useFieldId)
+      commonBuilder.setIgnoreMissingFieldId(
+        scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
+
+      commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
 
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState
