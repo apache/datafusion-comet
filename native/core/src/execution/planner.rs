@@ -206,20 +206,27 @@ impl PhysicalPlanner {
         }
     }
 
-    pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
-        self.exec_context_id = exec_context_id;
-        self
+    pub fn with_exec_id(self, exec_context_id: i64) -> Self {
+        Self {
+            exec_context_id,
+            partition: self.partition,
+            session_ctx: Arc::clone(&self.session_ctx),
+            query_context_registry: Arc::clone(&self.query_context_registry),
+            task_context: self.task_context,
+        }
     }
 
-    /// Attach the Spark `TaskContext` global reference captured at `createPlan` time. Cloned
-    /// into every `JvmScalarUdfExpr` the planner builds so the JNI bridge can install it as
-    /// the thread-local on the Tokio worker driving the UDF.
-    pub fn with_task_context(
-        mut self,
-        task_context: Option<Arc<Global<JObject<'static>>>>,
-    ) -> Self {
-        self.task_context = task_context;
-        self
+    /// Attach a propagated Spark `TaskContext` global reference. Called by the JNI `executePlan`
+    /// entry with whatever was captured at `createPlan` time. The planner clones this `Option`
+    /// into every `JvmScalarUdfExpr` it builds.
+    pub fn with_task_context(self, task_context: Option<Arc<Global<JObject<'static>>>>) -> Self {
+        Self {
+            exec_context_id: self.exec_context_id,
+            partition: self.partition,
+            session_ctx: self.session_ctx,
+            query_context_registry: self.query_context_registry,
+            task_context,
+        }
     }
 
     /// Return session context of this planner.
@@ -742,6 +749,13 @@ impl PhysicalPlanner {
                     to_arrow_datatype(udf.return_type.as_ref().ok_or_else(|| {
                         GeneralError("JvmScalarUdf missing return_type".to_string())
                     })?);
+                // Invariant: task_context is propagated for every JvmScalarUdfExpr built during
+                // normal execution. The TEST_EXEC_CONTEXT_ID path is the only context in which
+                // task_context may legitimately be None (unit tests, direct native driver runs).
+                debug_assert!(
+                    self.task_context.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
+                    "task_context must be set for non-test execution"
+                );
                 Ok(Arc::new(JvmScalarUdfExpr::new(
                     udf.class_name.clone(),
                     args,

@@ -261,6 +261,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[MakeDecimal] -> CometMakeDecimal,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
     classOf[ScalarSubquery] -> CometScalarSubquery,
+    classOf[ScalaUDF] -> CometScalaUDF,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[SortOrder] -> CometSortOrder,
     classOf[StaticInvoke] -> CometStaticInvoke,
