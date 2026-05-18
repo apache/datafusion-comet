@@ -72,24 +72,50 @@ Note `inputTypes`, `dataType`, `eval` / `nullSafeEval`, ANSI mode branches, `req
 
 ### 2. Find the upstream function
 
-Read the pinned `datafusion-spark` version from `native/Cargo.toml` rather than picking the first cached copy — `head -1` can land on an older release that lacks the function:
+**Prefer a local DataFusion clone if one is available** — check `CLAUDE.md`, project memory, and the user's `~/dev` tree for an existing checkout (e.g. `~/dev/.../rust/datafusion`). The local clone is typically the latest source and avoids cargo-registry version mismatches. If no local clone is found, fall back to the cached registry crate.
+
+Read the pinned `datafusion-spark` version from `native/Cargo.toml` rather than picking the first cached copy — `head -1` can land on an older release that lacks the function. Use a portable regex (BSD `awk` on macOS does not support `\b`):
 
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel)
-DF_SPARK_VER=$(awk -F'"' '/^datafusion-spark\b/ {print $2; exit}' "$REPO_ROOT/native/Cargo.toml")
+DF_SPARK_VER=$(awk -F'"' '/^datafusion-spark[ =]/ {print $2; exit}' "$REPO_ROOT/native/Cargo.toml")
 DF_SPARK=$(ls -d ~/.cargo/registry/src/*/datafusion-spark-${DF_SPARK_VER}/ 2>/dev/null | head -1)
 echo "Using datafusion-spark $DF_SPARK_VER at $DF_SPARK"
 
-DF_FUNCS_VER=$(awk -F'"' '/^datafusion = / {print $2; exit}' "$REPO_ROOT/native/Cargo.toml")
+DF_FUNCS_VER=$(awk -F'"' '/^datafusion[ =]/ {print $2; exit}' "$REPO_ROOT/native/Cargo.toml")
 DF_FUNCS=$(ls -d ~/.cargo/registry/src/*/datafusion-functions-${DF_FUNCS_VER}/ 2>/dev/null | head -1)
 
-grep -rin "fn name" "$DF_SPARK/src/function/" 2>/dev/null | grep -i "$ARGUMENTS"
-grep -rin "fn name" "$DF_FUNCS/src/" 2>/dev/null | grep -i "$ARGUMENTS"
+# Sanity check — empty paths mean the awk match failed or the crate is not cached.
+[ -z "$DF_SPARK" ] && echo "WARNING: datafusion-spark path empty — check Cargo.toml regex and run 'cargo fetch' from native/"
+[ -z "$DF_FUNCS" ] && echo "WARNING: datafusion-functions path empty — check Cargo.toml regex and run 'cargo fetch' from native/"
+
+# Search for the candidate. Replace EXPR with the SQL function name.
+EXPR='$ARGUMENTS'
+grep -rin "fn name" "$DF_SPARK/src/function/" 2>/dev/null | grep -i "$EXPR"
+grep -rin "fn name" "$DF_FUNCS/src/" 2>/dev/null | grep -i "$EXPR"
 ```
+
+If using a local DataFusion clone instead, point the grep at `<datafusion-clone>/datafusion/spark/src/function/` and `<datafusion-clone>/datafusion/functions/src/` respectively.
 
 If the cached crate directory does not exist (fresh checkout), run `cargo fetch` from `native/` first, or fall back to the latest cached version and verify the function exists in the pinned version's git tag before relying on it.
 
-Verify the candidate function's `Signature`, return type, and behavior matches Spark across all relevant edge cases (NULL, overflow, non-finite floats, decimal scale, locale, ANSI mode). If semantics diverge in a way the Scala serde can't bridge with preprocessing or restrictions → **stop and run `implement-comet-expression`** instead.
+### 2a. Decision gate — confirm the source crate with the user
+
+Before wiring, classify the candidate:
+
+- **Found in `datafusion-spark`** → proceed without prompting. This crate is explicitly Spark-compatible.
+- **Found only in `datafusion-functions` (pure DataFusion)** → **STOP and ask the user before proceeding**. Pure DataFusion functions follow standard SQL semantics and frequently diverge from Spark on edge cases (NULL vs error, negative inputs, overflow, return type, NaN handling). Even when the divergences look bridgeable with Pattern C preprocessing, the user should explicitly approve relying on a non-Spark-tuned implementation rather than requesting an upstream `datafusion-spark` port.
+
+  Use `AskUserQuestion`. Surface what you found in both crates and the specific divergences you've already identified, then offer:
+  1. Wire from `datafusion-functions` with bridging preprocessing (Pattern C). List the divergences and the masking/casting that would close them.
+  2. Stop and switch to `implement-comet-expression` so the function can be added to `datafusion-spark` upstream and then wired with Pattern A or B.
+  3. Skip — leave the expression unsupported for now.
+
+  Do not proceed past this gate without an explicit answer.
+
+- **Found in neither** → stop and run `implement-comet-expression`.
+
+Verify the chosen function's `Signature`, return type, and behavior match Spark across all relevant edge cases (NULL, overflow, non-finite floats, decimal scale, locale, ANSI mode). If semantics diverge in a way the Scala serde can't bridge with preprocessing or restrictions → **stop and run `implement-comet-expression`** instead.
 
 For datafusion-spark candidates, also check whether the UDF is already pre-registered: see `register_datafusion_spark_function` in `native/core/src/execution/jni_api.rs`. If listed, you only need Pattern A. If missing, you need Pattern B.
 
