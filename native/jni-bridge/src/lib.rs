@@ -191,12 +191,14 @@ mod comet_exec;
 pub use comet_exec::*;
 mod batch_iterator;
 mod comet_metric_node;
+mod comet_s3_credential_dispatcher;
 mod comet_task_memory_manager;
 mod comet_udf_bridge;
 mod shuffle_block_iterator;
 
 use batch_iterator::CometBatchIterator;
 pub use comet_metric_node::*;
+pub use comet_s3_credential_dispatcher::CometS3CredentialDispatcher;
 pub use comet_task_memory_manager::*;
 use comet_udf_bridge::CometUdfBridge;
 use shuffle_block_iterator::CometShuffleBlockIterator;
@@ -233,6 +235,10 @@ pub struct JVMClasses<'a> {
     /// The CometUdfBridge class used to dispatch JVM scalar UDFs.
     /// `None` if the class is not on the classpath.
     pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
+    /// JNI handles for the CometS3CredentialDispatcher SPI and the CometS3Credentials POJO.
+    /// Always present (the classes ship in `comet-common`); whether a vendor provider is actually
+    /// registered is a separate runtime check.
+    pub comet_s3_credential_dispatcher: CometS3CredentialDispatcher<'a>,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -310,6 +316,7 @@ impl JVMClasses<'_> {
                     }
                     bridge
                 },
+                comet_s3_credential_dispatcher: CometS3CredentialDispatcher::new(env).unwrap(),
             }
         });
     }

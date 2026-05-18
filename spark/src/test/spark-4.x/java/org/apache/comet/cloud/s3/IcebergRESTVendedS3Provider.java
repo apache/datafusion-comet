@@ -1,0 +1,78 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.comet.cloud.s3;
+
+import java.util.Map;
+
+import org.apache.iceberg.aws.s3.VendedCredentialsProvider;
+
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
+
+/**
+ * Example implementation of {@link CometS3CredentialProvider} for Iceberg REST catalogs that vend
+ * AWS credentials. Wraps Iceberg's {@code VendedCredentialsProvider} so caching and
+ * refresh-near-expiry come from its {@code CachedSupplier}; Comet adds only the JNI shape and the
+ * one-shot {@code initialize} call.
+ *
+ * <p>Test scope only, to keep iceberg-aws and AWS SDK v2 off Comet's runtime classpath. Production
+ * users should copy this into their own jar.
+ *
+ * <p>Built only on the Spark 4.x profiles (placed under {@code src/test/spark-4.x}, picked up via
+ * {@code shims.majorVerSrc}). Excluded from Spark 3.4 because {@code iceberg-spark-runtime-3.4_*}
+ * does not expose {@code VendedCredentialsProvider} on its test classpath. Excluded from Spark 3.5
+ * because Comet pins Iceberg 1.8.1 there, and the in-properties short-circuit that the unit test
+ * relies on was added in Iceberg 1.9.0 (apache/iceberg#12504); on 1.8.x {@code refreshCredential}
+ * always issues an HTTP GET against {@code credentials.uri}.
+ *
+ * <p>Test exercised in CI against Iceberg 1.10.0 (the Spark 4.x profile pin).
+ *
+ * <p>Activation: set {@code spark.sql.catalog.<cat>.s3.comet.credential.provider.class =
+ * org.apache.comet.cloud.s3.IcebergRESTVendedS3Provider}. Comet calls {@link #initialize} once per
+ * catalog with the unfiltered FileIO property bag, which carries {@code credentials.uri} and
+ * {@code uri} as required by {@code VendedCredentialsProvider.create}.
+ */
+public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvider {
+
+  private volatile VendedCredentialsProvider provider;
+
+  @Override
+  public void initialize(Map<String, String> catalogProperties) {
+    this.provider = VendedCredentialsProvider.create(catalogProperties);
+  }
+
+  @Override
+  public CometS3Credentials getCredentialsForPath(
+      String bucket, String path, CometS3AccessMode mode) {
+    VendedCredentialsProvider p = provider;
+    if (p == null) {
+      throw new IllegalStateException(
+          "IcebergRESTVendedS3Provider used before initialize(Map) was called; "
+              + "Comet should always invoke initialize before getCredentialsForPath");
+    }
+    AwsCredentials c = p.resolveCredentials();
+    String sessionToken =
+        (c instanceof AwsSessionCredentials) ? ((AwsSessionCredentials) c).sessionToken() : null;
+    // Expiration is owned by VendedCredentialsProvider's CachedSupplier; we publish 0 so the
+    // native bridge applies its conservative floor to opendal's cache while the inner
+    // CachedSupplier handles refresh on its own schedule.
+    return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), sessionToken, 0L);
+  }
+}

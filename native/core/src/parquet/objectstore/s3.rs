@@ -21,6 +21,9 @@ use std::sync::OnceLock;
 use url::Url;
 
 use crate::execution::jni_api::get_runtime;
+use crate::parquet::objectstore::comet_s3_credential_bridge::{
+    AccessMode, CometS3CredentialBridge,
+};
 use async_trait::async_trait;
 use aws_config::{
     ecs::EcsCredentialsProvider, environment::EnvironmentVariableCredentialsProvider,
@@ -78,11 +81,33 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    let credential_provider =
-        get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))?;
-    builder = match credential_provider {
-        Some(provider) => builder.with_credentials(Arc::new(provider)),
-        None => builder.with_skip_signature(true),
+    // Parquet path: dispatch_key = bucket (matches the per-bucket override config namespace);
+    // catalog_properties is empty since vendors on the Parquet path read from Hadoop conf, not
+    // catalog props.
+    let empty_props: HashMap<String, String> = HashMap::new();
+    let bridge = match CometS3CredentialBridge::for_url(
+        url,
+        configs,
+        AccessMode::Read,
+        bucket,
+        &empty_props,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            log::warn!(
+                "Failed to initialize CometS3CredentialBridge for {bucket}: {e}; \
+                 falling back to default credential chain"
+            );
+            None
+        }
+    };
+    builder = if let Some(bridge) = bridge {
+        builder.with_credentials(Arc::new(bridge))
+    } else {
+        match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {
+            Some(provider) => builder.with_credentials(Arc::new(provider)),
+            None => builder.with_skip_signature(true),
+        }
     };
 
     let s3_configs = extract_s3_config_options(configs, bucket);
@@ -287,7 +312,7 @@ fn get_config<'a>(
     })
 }
 
-fn get_config_trimmed<'a>(
+pub(super) fn get_config_trimmed<'a>(
     configs: &'a HashMap<String, String>,
     bucket: &str,
     property: &str,

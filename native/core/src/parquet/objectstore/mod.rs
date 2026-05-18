@@ -15,4 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod comet_s3_credential_bridge;
 pub mod s3;
