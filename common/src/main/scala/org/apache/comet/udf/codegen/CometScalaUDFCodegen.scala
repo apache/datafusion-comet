@@ -175,8 +175,10 @@ class CometScalaUDFCodegen extends CometUDF {
         .deserialize[Expression](ByteBuffer.wrap(bytes), loader)
       val boundExpr = rewriteBoundReferences(rawExpr, specs)
       val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)
-      val outputField =
-        Utils.toArrowField("codegen_result", boundExpr.dataType, nullable = true, "UTC")
+      val outputField = CometBatchKernelCodegen.toFfiArrowField(
+        "codegen_result",
+        boundExpr.dataType,
+        boundExpr.nullable)
       val entry = CometScalaUDFCodegen.CacheEntry(compiled, boundExpr.dataType, outputField)
       kernelCache.put(key, entry)
       CometScalaUDFCodegen.compileCount.incrementAndGet()

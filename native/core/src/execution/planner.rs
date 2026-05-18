@@ -183,11 +183,8 @@ pub struct PhysicalPlanner {
     partition: i32,
     session_ctx: Arc<SessionContext>,
     query_context_registry: Arc<datafusion_comet_spark_expr::QueryContextMap>,
-    /// Spark `TaskContext` captured on the driving Spark task thread and stashed on the
-    /// [`ExecutionContext`] at `createPlan` time. Threaded into every [`JvmScalarUdfExpr`] the
-    /// planner builds so the JNI bridge can install it as the thread-local `TaskContext` on
-    /// the Tokio worker that drives the UDF. `None` when no driving Spark task is available
-    /// (unit tests, direct native driver runs).
+    /// Captured at `createPlan` time on `ExecutionContext`; see that struct for the
+    /// propagation rationale. `None` when no driving Spark task is available.
     task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 

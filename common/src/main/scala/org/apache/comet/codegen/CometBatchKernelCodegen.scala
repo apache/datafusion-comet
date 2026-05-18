@@ -177,19 +177,18 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
-   * Allocate an Arrow output vector matching the expression's `dataType`. Forwards to
+   * Allocate an Arrow output vector from a pre-built `Field`. Forwards to
    * [[CometBatchKernelCodegenOutput.allocateOutput]].
    */
-  def allocateOutput(
-      dataType: DataType,
-      name: String,
-      numRows: Int,
-      estimatedBytes: Int = -1): FieldVector =
-    CometBatchKernelCodegenOutput.allocateOutput(dataType, name, numRows, estimatedBytes)
-
-  /** Variant that takes a pre-computed Arrow `Field`, letting hot-path callers cache it. */
   def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector =
     CometBatchKernelCodegenOutput.allocateOutput(field, numRows, estimatedBytes)
+
+  /**
+   * Spark `DataType` to an Arrow `Field`, resolving mismatches between Arrow Java's default field
+   * labels and what Spark / Arrow Rust expect on the FFI boundary.
+   */
+  def toFfiArrowField(name: String, dataType: DataType, nullable: Boolean): Field =
+    CometBatchKernelCodegenOutput.toFfiArrowField(name, dataType, nullable)
 
   def compile(boundExpr: Expression, inputSchema: Seq[ArrowColumnSpec]): CompiledKernel = {
     val src = generateSource(boundExpr, inputSchema)

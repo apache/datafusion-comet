@@ -19,9 +19,12 @@
 
 package org.apache.comet.codegen
 
+import scala.jdk.CollectionConverters._
+
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
-import org.apache.arrow.vector.types.pojo.Field
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
@@ -36,38 +39,65 @@ import org.apache.comet.CometArrowAllocator
 private[codegen] object CometBatchKernelCodegenOutput {
 
   /**
-   * Allocate an Arrow output vector matching `dataType`. Delegates to [[Utils.toArrowField]] +
-   * `Field.createVector` for the Spark -> Arrow mapping (handles `MapVector`'s non-null-key and
-   * non-null-entries invariants).
+   * Spark `DataType` to an Arrow `Field` with names Comet expects on FFI export. Spark's
+   * `Utils.toArrowField` names list children `"element"`; this rewrites them to `"item"`. Pair
+   * with the [[RenamedListVector]] / [[RenamedMapVector]] / [[RenamedStructVector]] subclasses in
+   * [[allocateOutput]], which pin `getField()` so the cached Field actually reaches export.
+   */
+  def toFfiArrowField(name: String, dataType: DataType, nullable: Boolean): Field =
+    renameForArrowRustFfi(Utils.toArrowField(name, dataType, nullable, "UTC"))
+
+  private def renameForArrowRustFfi(field: Field): Field = {
+    val children = field.getChildren.asScala
+    if (children.isEmpty) return field
+    field.getType match {
+      case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
+        val child = children.head
+        val renamedChild = renameForArrowRustFfi(
+          new Field("item", child.getFieldType, child.getChildren))
+        new Field(field.getName, field.getFieldType, java.util.List.of(renamedChild))
+      case _ =>
+        val renamedChildren = children.map(renameForArrowRustFfi).toList.asJava
+        new Field(field.getName, field.getFieldType, renamedChildren)
+    }
+  }
+
+  /**
+   * Allocate an Arrow output vector from a pre-built `Field`. Callers cache the Field per
+   * `(expression, schema)` and pass it on every batch.
+   *
+   * Complex top-level types route through a [[RenamedListVector]] / [[RenamedMapVector]] /
+   * [[RenamedStructVector]] (see those for the runtime-vs-export naming gap).
    *
    * `estimatedBytes` pre-sizes the data buffer for variable-length scalar outputs; ignored for
-   * non-`BaseVariableWidthVector` roots, and not propagated into nested var-width children (those
-   * get default sizing because the parent's `allocateNew` resets child buffers).
+   * other root types, and not propagated into nested var-width children (their `allocateNew` runs
+   * through the parent's `allocateNew`, which resets child buffers).
    *
-   * TODO(nested-varwidth-sizing): thread the estimate into nested var-width children. Arrow
-   * Java's child-vector hints are allocator-level, so this needs a small recursion or a heuristic
-   * that overshoots root size into known-leaf children.
+   * TODO(nested-varwidth-sizing): thread the estimate into nested var-width children.
    *
-   * TODO(cached-write-buffer-addrs): mirror the input emitter's `_valueAddr` / `_offsetAddr`
-   * caching. Cache buffer addresses at `process` setup and emit `Platform.putByte` /
-   * `Platform.copyMemory` for VarChar / VarBinary / Decimal scalar outputs, bypassing `setSafe`'s
-   * realloc check. Depends on pre-allocated buffers (above).
+   * TODO(cached-write-buffer-addrs): cache buffer addresses at `process` setup and emit
+   * `Platform.putByte` / `Platform.copyMemory` for VarChar / VarBinary / Decimal scalar outputs,
+   * bypassing `setSafe`'s realloc check. Depends on pre-allocated buffers.
    *
    * Closes the vector on any failure so a partially-initialized tree doesn't leak buffers.
    */
-  def allocateOutput(
-      dataType: DataType,
-      name: String,
-      numRows: Int,
-      estimatedBytes: Int = -1): FieldVector =
-    allocateOutput(
-      Utils.toArrowField(name, dataType, nullable = true, "UTC"),
-      numRows,
-      estimatedBytes)
-
-  /** Variant that takes a pre-computed Arrow `Field`, letting hot-path callers cache it. */
   def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector = {
-    val vec = field.createVector(CometArrowAllocator).asInstanceOf[FieldVector]
+    val vec: FieldVector = field.getType match {
+      case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
+        val v = new RenamedListVector(field, CometArrowAllocator)
+        v.initializeChildrenFromFields(field.getChildren)
+        v
+      case _: ArrowType.Map =>
+        val v = new RenamedMapVector(field, CometArrowAllocator)
+        v.initializeChildrenFromFields(field.getChildren)
+        v
+      case _: ArrowType.Struct =>
+        val v = new RenamedStructVector(field, CometArrowAllocator)
+        v.initializeChildrenFromFields(field.getChildren)
+        v
+      case _ =>
+        field.createVector(CometArrowAllocator).asInstanceOf[FieldVector]
+    }
     try {
       vec.setInitialCapacity(numRows)
       vec match {
@@ -85,6 +115,27 @@ private[codegen] object CometBatchKernelCodegenOutput {
         }
         throw t
     }
+  }
+
+  /**
+   * Pin `getField()` to the cached Field so FFI export carries the names Comet expects.
+   * `ListVector.getField` rebuilds child labels from the runtime data vector, which
+   * `addOrGetVector` hardcodes to `"$data$"`. Applied to `MapVector` and `StructVector` too
+   * because their `getField` recurses and can pick up a buried `ListVector`'s `"$data$"`.
+   */
+  private final class RenamedListVector(exportField: Field, allocator: BufferAllocator)
+      extends ListVector(exportField, allocator, null) {
+    override def getField: Field = exportField
+  }
+
+  private final class RenamedMapVector(exportField: Field, allocator: BufferAllocator)
+      extends MapVector(exportField, allocator, null) {
+    override def getField: Field = exportField
+  }
+
+  private final class RenamedStructVector(exportField: Field, allocator: BufferAllocator)
+      extends StructVector(exportField, allocator, null) {
+    override def getField: Field = exportField
   }
 
   /**
