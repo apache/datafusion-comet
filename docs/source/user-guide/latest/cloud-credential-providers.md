@@ -71,7 +71,7 @@ OSS Comet ships no vendor-specific bridges. Get one from the same vendor that su
 With the config set and the JAR on the classpath, executor logs show on first S3 access:
 
 - Info level: `Instantiated CometS3CredentialProvider <fully.qualified.VendorClassName>`
-- Debug level: `Fetching credentials via <class> for bucket=... path=... mode=...`
+- Debug level: `Fetching credentials via <class> (dispatchKey=<key>) for bucket=... path=... mode=...`
 
 Without the config set, no credential-related log lines appear at startup; native readers use the default AWS credential chain.
 
@@ -81,7 +81,9 @@ Without the config set, no credential-related log lines appear at startup; nativ
 
 **`<class> does not implement org.apache.comet.cloud.s3.CometS3CredentialProvider`**. The configured class exists but does not implement the SPI. Double-check the FQCN against the vendor's documentation.
 
-**`<class> must declare a public no-arg constructor`**. Vendor classes are instantiated reflectively with `Class.forName(name).getDeclaredConstructor().newInstance()`. A non-default constructor is not supported; ask the vendor to expose a no-arg form that reads any state it needs from environment or system properties.
+**`<class> must declare a public no-arg constructor`**. Vendor classes are instantiated reflectively with `Class.forName(name).getDeclaredConstructor().newInstance()`. A non-default constructor is not supported; ask the vendor to expose a no-arg form that reads any state it needs from `initialize(Map)` or environment.
+
+**`CometS3CredentialProvider <class> (dispatchKey=...) was not initialized`**. `initialize(Map)` was not called before a credential request. Comet should always invoke `ensureInitialized` synchronously when it builds the bridge at plan time, so this indicates the bridge skipped the init call (a Comet bug) or the vendor's `initialize` threw and the bridge fell through to the default chain.
 
 **`403 AccessDenied` with the bridge configured.** The provider returned credentials but they were rejected by S3. Most often a region mismatch (see Iceberg section below) or expired session token; enable debug logging on the vendor's class to confirm what it returned.
 
@@ -109,12 +111,31 @@ Implement `org.apache.comet.cloud.s3.CometS3CredentialProvider`:
 package org.apache.comet.cloud.s3;
 
 public interface CometS3CredentialProvider {
+    /** Called once per (FQCN, dispatchKey) before any per-request call. Optional. */
+    default void initialize(java.util.Map<String, String> catalogProperties) {}
+
     CometS3Credentials getCredentialsForPath(
         String bucket, String path, CometS3AccessMode mode) throws Exception;
 }
 ```
 
 The class must have a public no-arg constructor. `getCredentialsForPath` may be invoked concurrently from many native tokio worker threads; the implementation must be thread-safe.
+
+### Lifecycle
+
+Comet keys provider instances by `(FQCN, dispatchKey)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the S3 bucket name on the Parquet path. The first time a given key is seen on an executor, Comet reflects the class, calls `initialize(Map)` exactly once, and caches the instance for the JVM lifetime. Two catalogs sharing one provider FQCN therefore get isolated instances with their own `initialize` maps.
+
+`initialize` should be cheap and non-blocking. Defer real credential fetches (REST round-trips, STS calls) to the first `getCredentialsForPath` invocation. On the Iceberg path the supplied `catalogProperties` carries the unfiltered FileIO bag, including REST-vended fields like `credentials.uri`, OAuth tokens, and any vendor-custom keys you set on the catalog config. The map may contain secrets, so do not log it.
+
+### Caching, refresh, and distribution
+
+Comet does not maintain a TTL cache, broadcast catalog state, or schedule refresh. Vendors decide:
+
+- Whether to cache credentials and for how long. Iceberg vendors get `software.amazon.awssdk.utils.cache.CachedSupplier` for free inside `VendedCredentialsProvider`; vendors with custom STS write whatever cache fits.
+- When to refresh: proactive timer, on-demand at expiry, on `403` retry, etc.
+- How to distribute driver-only state. Read it from `initialize`'s `catalogProperties` (which Comet has already serialized through the native plan op), call back to a vendor service from the executor, or run your own Spark broadcast inside the class.
+
+`expirationEpochMillis` on the returned `CometS3Credentials` is metadata pass-through, not a Comet-owned cache. Comet forwards it to `object_store` and opendal, which already have their own credential caches and use the expiry to schedule the next refresh. Publish a real expiry when you have one; return `0` if you do not, and a conservative 5-minute floor is applied so a stale credential cannot live indefinitely.
 
 ### Returned fields
 
@@ -171,6 +192,51 @@ public final class MyCometCredentialProvider implements CometS3CredentialProvide
 ```
 
 Per-bucket Hadoop overrides (`fs.s3a.bucket.<name>.comet.credential.provider.class`) are also available if you prefer to ship multiple vendor classes and pick by bucket in config rather than in code.
+
+For Iceberg deployments where two catalogs share one provider class but need isolated state, configure the same FQCN on both catalogs and read your discriminator from `initialize`'s `catalogProperties`. Each catalog gets its own provider instance because Comet keys by `(FQCN, catalogName)`:
+
+```java
+public final class MyMultiTenantProvider implements CometS3CredentialProvider {
+    private volatile String tenantId;
+
+    @Override
+    public void initialize(Map<String, String> catalogProperties) {
+        this.tenantId = catalogProperties.get("vendor.tenant-id");
+    }
+
+    @Override
+    public CometS3Credentials getCredentialsForPath(
+            String bucket, String path, CometS3AccessMode mode) {
+        return mintForTenant(tenantId, bucket, path, mode);
+    }
+}
+```
+
+### Reference implementation: Iceberg REST vended credentials
+
+For Iceberg REST catalogs that vend AWS credentials (`LoadTableResponse.credentials`), the canonical implementation wraps Iceberg's existing `VendedCredentialsProvider`:
+
+```java
+public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvider {
+    private volatile VendedCredentialsProvider provider;
+
+    @Override
+    public void initialize(Map<String, String> catalogProperties) {
+        this.provider = VendedCredentialsProvider.create(catalogProperties);
+    }
+
+    @Override
+    public CometS3Credentials getCredentialsForPath(
+            String bucket, String path, CometS3AccessMode mode) {
+        AwsCredentials c = provider.resolveCredentials();
+        String token = (c instanceof AwsSessionCredentials)
+            ? ((AwsSessionCredentials) c).sessionToken() : null;
+        return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), token, 0L);
+    }
+}
+```
+
+`VendedCredentialsProvider` reads `credentials.uri`, the catalog endpoint, and OAuth tokens from the supplied map (Comet forwards the unfiltered FileIO bag to `initialize`), and refreshes through its own `CachedSupplier`. Caching, refresh-near-expiry, and the REST round-trip all live in Iceberg, not in Comet. Comet ships a copy of this class under `spark/src/test` for now; promote it to your runtime classpath alongside `iceberg-aws` and AWS SDK v2.
 
 ### Access mode
 

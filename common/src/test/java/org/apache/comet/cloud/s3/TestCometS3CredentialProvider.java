@@ -19,29 +19,42 @@
 
 package org.apache.comet.cloud.s3;
 
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Test-only provider instantiated by the dispatcher when its FQCN is passed across JNI. State is
- * static because the dispatcher caches one instance per class name for the JVM lifetime.
+ * static because the dispatcher caches one instance per (FQCN, dispatchKey) for the JVM lifetime.
  */
 public class TestCometS3CredentialProvider implements CometS3CredentialProvider {
 
+  static final AtomicInteger initCount = new AtomicInteger(0);
   static final AtomicInteger callCount = new AtomicInteger(0);
   static volatile String lastBucket;
   static volatile String lastPath;
   static volatile CometS3AccessMode lastMode;
+  static volatile String lastTenantSeen;
   static volatile RuntimeException throwOnNext;
   static volatile CometS3Credentials nextResult =
       new CometS3Credentials("AKIATEST", "secret", "session-tok", 0L);
 
+  private volatile String tenantId;
+
   static void reset() {
+    initCount.set(0);
     callCount.set(0);
     lastBucket = null;
     lastPath = null;
     lastMode = null;
+    lastTenantSeen = null;
     throwOnNext = null;
     nextResult = new CometS3Credentials("AKIATEST", "secret", "session-tok", 0L);
+  }
+
+  @Override
+  public void initialize(Map<String, String> catalogProperties) {
+    initCount.incrementAndGet();
+    this.tenantId = catalogProperties.get("tenant-id");
   }
 
   @Override
@@ -51,6 +64,7 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
     lastBucket = bucket;
     lastPath = path;
     lastMode = mode;
+    lastTenantSeen = tenantId;
     RuntimeException toThrow = throwOnNext;
     if (toThrow != null) {
       throwOnNext = null;

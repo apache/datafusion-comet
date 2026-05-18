@@ -205,6 +205,12 @@ message IcebergScanCommon {
 
   // Number of data files to read concurrently within a single task
   uint32 data_file_concurrency_limit = 12;
+
+  // Spark V2 catalog name that loaded this table. Forwarded as the dispatchKey to
+  // CometS3CredentialDispatcher.ensureInitialized so two catalogs sharing one provider class get
+  // isolated provider instances. Empty string when the table has no catalog identity (e.g.
+  // HadoopTables loaded by raw path).
+  string catalog_name = 13;
 }
 
 message IcebergScan {

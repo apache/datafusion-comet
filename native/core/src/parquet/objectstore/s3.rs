@@ -81,8 +81,27 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    builder = if let Some(bridge) = CometS3CredentialBridge::for_url(url, configs, AccessMode::Read)
-    {
+    // Parquet path: dispatch_key = bucket (matches the per-bucket override config namespace);
+    // catalog_properties is empty since vendors on the Parquet path read from Hadoop conf, not
+    // catalog props.
+    let empty_props: HashMap<String, String> = HashMap::new();
+    let bridge = match CometS3CredentialBridge::for_url(
+        url,
+        configs,
+        AccessMode::Read,
+        bucket,
+        &empty_props,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            log::warn!(
+                "Failed to initialize CometS3CredentialBridge for {bucket}: {e}; \
+                 falling back to default credential chain"
+            );
+            None
+        }
+    };
+    builder = if let Some(bridge) = bridge {
         builder.with_credentials(Arc::new(bridge))
     } else {
         match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {

@@ -45,7 +45,7 @@ use iceberg_storage_opendal::OpenDalStorageFactory;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::objectstore::comet_s3_credential_bridge::{
-    AccessMode, CometS3CredentialBridge, PROVIDER_CLASS_PROPERTY,
+    AccessMode, CometS3CredentialBridge, ICEBERG_PROVIDER_CLASS_PROPERTY,
 };
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
@@ -56,7 +56,6 @@ use iceberg::scan::FileScanTask;
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
 /// Executes pre-planned FileScanTasks for efficient parallel scanning.
-#[derive(Debug)]
 pub struct IcebergScanExec {
     /// Iceberg table metadata location for FileIO initialization
     metadata_location: String,
@@ -64,8 +63,14 @@ pub struct IcebergScanExec {
     output_schema: SchemaRef,
     /// Cached execution plan properties
     plan_properties: Arc<PlanProperties>,
-    /// Catalog-specific configuration for FileIO
+    /// Catalog-specific configuration for FileIO. Holds the unfiltered FileIO property bag, which
+    /// may contain OAuth tokens, REST `credentials.uri`, and other secrets the credential bridge
+    /// needs. Redacted in `Debug` so plan dumps and tracing do not leak credentials.
     catalog_properties: HashMap<String, String>,
+    /// Spark V2 catalog name; forwarded as dispatchKey to the credential bridge so multiple
+    /// catalogs sharing one provider FQCN get isolated provider instances. Empty when the table
+    /// has no catalog identity.
+    catalog_name: String,
     /// Pre-planned file scan tasks
     tasks: Vec<FileScanTask>,
     /// Number of data files to read concurrently
@@ -79,6 +84,7 @@ impl IcebergScanExec {
         metadata_location: String,
         schema: SchemaRef,
         catalog_properties: HashMap<String, String>,
+        catalog_name: String,
         tasks: Vec<FileScanTask>,
         data_file_concurrency_limit: usize,
     ) -> Result<Self, ExecutionError> {
@@ -92,6 +98,7 @@ impl IcebergScanExec {
             output_schema,
             plan_properties,
             catalog_properties,
+            catalog_name,
             tasks,
             data_file_concurrency_limit,
             metrics,
@@ -158,7 +165,11 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
-        let file_io = Self::load_file_io(&self.catalog_properties, &self.metadata_location)?;
+        let file_io = Self::load_file_io(
+            &self.catalog_properties,
+            &self.metadata_location,
+            &self.catalog_name,
+        )?;
         let batch_size = context.session_config().batch_size();
 
         let metrics = IcebergScanMetrics::new(&self.metrics);
@@ -206,6 +217,7 @@ impl IcebergScanExec {
     fn storage_factory_for(
         path: &str,
         catalog_properties: &HashMap<String, String>,
+        catalog_name: &str,
     ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
         let scheme = if path.contains("://") {
             path.split("://").next().unwrap_or("file")
@@ -216,7 +228,7 @@ impl IcebergScanExec {
             "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
             "s3" | "s3a" => {
                 let customized_credential_load =
-                    build_s3_credential_loader(path, catalog_properties);
+                    build_s3_credential_loader(path, catalog_properties, catalog_name);
                 Ok(Arc::new(OpenDalStorageFactory::S3 {
                     customized_credential_load,
                 }))
@@ -232,17 +244,26 @@ impl IcebergScanExec {
     fn load_file_io(
         catalog_properties: &HashMap<String, String>,
         metadata_location: &str,
+        catalog_name: &str,
     ) -> Result<FileIO, DataFusionError> {
-        let factory = Self::storage_factory_for(metadata_location, catalog_properties)?;
+        let factory =
+            Self::storage_factory_for(metadata_location, catalog_properties, catalog_name)?;
         let mut file_io_builder = FileIOBuilder::new(factory);
 
+        // Narrow to storage-prefix keys before forwarding to iceberg-rust's FileIO. The full
+        // unfiltered bag (catalog URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept
+        // upstream so CometS3CredentialBridge can read whatever the vendor needs.
         for (key, value) in catalog_properties {
-            file_io_builder = file_io_builder.with_prop(key, value);
+            if STORAGE_PROPERTY_PREFIXES.iter().any(|p| key.starts_with(p)) {
+                file_io_builder = file_io_builder.with_prop(key, value);
+            }
         }
 
         Ok(file_io_builder.build())
     }
 }
+
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
 
 /// Wires the configured Comet credential provider into opendal's S3 service for this scan, or
 /// returns `None` so opendal falls back to its default credential chain. Iceberg passes its
@@ -251,16 +272,41 @@ impl IcebergScanExec {
 fn build_s3_credential_loader(
     metadata_location: &str,
     catalog_properties: &HashMap<String, String>,
+    catalog_name: &str,
 ) -> Option<CustomAwsCredentialLoader> {
     let url = url::Url::parse(metadata_location).ok()?;
     let bucket = url.host_str()?;
-    let key = format!("s3.{PROVIDER_CLASS_PROPERTY}");
     let provider_class = catalog_properties
-        .get(&key)
+        .get(ICEBERG_PROVIDER_CLASS_PROPERTY)
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())?;
-    let bridge = CometS3CredentialBridge::new(provider_class, bucket, url.path(), AccessMode::Read);
-    Some(CustomAwsCredentialLoader::new(bridge))
+    // Catalog name scopes provider instances on the JVM dispatcher so two catalogs sharing one
+    // provider class get isolated state. Falls back to the bucket when the table has no catalog
+    // identity (e.g. HadoopTables loaded by raw path), keeping the previous behavior in that
+    // case.
+    let dispatch_key: &str = if catalog_name.is_empty() {
+        bucket
+    } else {
+        catalog_name
+    };
+    let bridge = CometS3CredentialBridge::new(
+        provider_class,
+        dispatch_key,
+        bucket,
+        url.path(),
+        AccessMode::Read,
+        catalog_properties,
+    );
+    match bridge {
+        Ok(b) => Some(CustomAwsCredentialLoader::new(b)),
+        Err(e) => {
+            log::warn!(
+                "Failed to initialize CometS3CredentialBridge for {provider_class}: {e}; \
+                 falling back to default opendal credential chain"
+            );
+            None
+        }
+    }
 }
 
 /// Metrics for IcebergScanExec
@@ -388,6 +434,38 @@ impl DisplayAs for IcebergScanExec {
             self.metadata_location,
             self.tasks.len()
         )
+    }
+}
+
+impl fmt::Debug for IcebergScanExec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IcebergScanExec")
+            .field("metadata_location", &self.metadata_location)
+            .field("catalog_name", &self.catalog_name)
+            .field(
+                "catalog_properties",
+                &RedactedProperties(&self.catalog_properties),
+            )
+            .field("num_tasks", &self.tasks.len())
+            .field(
+                "data_file_concurrency_limit",
+                &self.data_file_concurrency_limit,
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+/// Wraps a property map so `Debug` shows keys but elides values, since the unfiltered FileIO bag
+/// may contain bearer tokens and OAuth secrets.
+struct RedactedProperties<'a>(&'a HashMap<String, String>);
+
+impl fmt::Debug for RedactedProperties<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut m = f.debug_map();
+        for k in self.0.keys() {
+            m.key(k).value(&"<redacted>");
+        }
+        m.finish()
     }
 }
 
