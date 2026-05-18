@@ -1,6 +1,6 @@
-TakeOrderedAndProject
-+-  Project [COMET: Comet does not support Spark's BigDecimal rounding]
-   +- CometNativeColumnarToRow
+CometNativeColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometProject
       +- CometSortMergeJoin
          :- CometProject
          :  +- CometSortMergeJoin
@@ -76,4 +76,4 @@ TakeOrderedAndProject
                                  +- CometFilter
                                     +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 71 out of 76 eligible operators (93%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 73 out of 76 eligible operators (96%). Final plan contains 1 transitions between Spark and Comet.
