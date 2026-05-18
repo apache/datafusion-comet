@@ -93,9 +93,11 @@ of expressions that be disabled.
 
 ## JSON Functions
 
-| Expression    |
-| ------------- |
-| GetJsonObject |
+| Expression    | SQL               |
+| ------------- | ----------------- |
+| GetJsonObject | `get_json_object` |
+| JsonToStructs | `from_json`       |
+| StructsToJson | `to_json`         |
 
 ## Date/Time Functions
 
