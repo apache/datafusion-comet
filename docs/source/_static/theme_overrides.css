@@ -1,121 +1,2136 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * or more contributor license agreements. See the NOTICE file
+ * for licensing details.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Custom theme overrides — Claude API Docs aesthetic
+ * Targets pydata_sphinx_theme 0.16.x
  */
 
+/* ─── Google Fonts ─────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
-/* Customizing with theme CSS variables */
-
+/* ─── Shared tokens ────────────────────────────────────────────────── */
 :root {
-  --pst-color-active-navigation: 215, 70, 51;
-  --pst-color-link-hover: 215, 70, 51;
-  --pst-color-headerlink: 215, 70, 51;
-  /* Use normal text color (like h3, ..) instead of primary color */
-  --pst-color-h1: var(--color-text-base);
-  --pst-color-h2: var(--color-text-base);
-  /* Use softer blue from bootstrap's default info color */
-  --pst-color-info: 23, 162, 184;
-  --pst-content-max-width: 100%; /* center column */
-  --pst-font-size-base: 0.9rem;
+  --comet-accent:      #e8650a;
+  --comet-accent-dim:  rgba(232, 101, 10, 0.10);
+  --comet-accent-lite: #f07830;
+  --comet-radius:      6px;
+  --comet-font:        'Inter', system-ui, -apple-system, sans-serif;
+  --comet-mono:        'JetBrains Mono', 'Fira Code', monospace;
+  --comet-sidebar-w:   280px;
 }
 
-/* Scale down the logo in the top navbar */
+/* ─── PST overrides — LIGHT ────────────────────────────────────────── */
+html[data-theme="light"] {
+  --pst-color-primary:            #e8650a;
+  --pst-color-secondary:          #e8650a;
+  --pst-color-background:         #ffffff;
+  --pst-color-on-background:      #fafafa;
+  --pst-color-surface:            #f5f5f6;
+  --pst-color-on-surface:         #1a1a1a;
+  --pst-color-text-base:          #333333;
+  --pst-color-text-muted:         #666666;
+  --pst-color-border:             #e2e2e6;
+  --pst-color-border-muted:       #ebebee;
+  --pst-color-heading:            #111111;
+  --pst-color-inline-code:        #e8650a;
+  --pst-color-inline-code-links:  #e8650a;
+  --pst-color-link:               #e8650a;
+  --pst-color-link-hover:         #f07830;
+  --pst-font-family-base:         var(--comet-font);
+  --pst-font-family-monospace:    var(--comet-mono);
+  --pst-font-size-base:           0.95rem;
+  --pst-content-max-width:        100%;
+}
+
+/* ─── PST overrides — DARK ─────────────────────────────────────────── */
+html[data-theme="dark"] {
+  --pst-color-primary:            #e8650a;
+  --pst-color-secondary:          #f07830;
+  --pst-color-background:         #0a0a0a;
+  --pst-color-on-background:      #0f0f0f;
+  --pst-color-surface:            #141414;
+  --pst-color-on-surface:         #f0f0f0;
+  --pst-color-text-base:          #c8c8c8;
+  --pst-color-text-muted:         #888888;
+  --pst-color-border:             #282828;
+  --pst-color-border-muted:       #1e1e1e;
+  --pst-color-heading:            #f0f0f0;
+  --pst-color-inline-code:        #f07830;
+  --pst-color-inline-code-links:  #f07830;
+  --pst-color-link:               #e8650a;
+  --pst-color-link-hover:         #f07830;
+  --pst-color-shadow:             rgba(0, 0, 0, 0.5);
+  --pst-color-table:              #c8c8c8;
+  --pst-color-table-inner-border: #282828;
+  --pst-color-table-outer-border: #282828;
+  --pst-color-table-heading-bg:   #141414;
+  --pst-font-family-base:         var(--comet-font);
+  --pst-font-family-monospace:    var(--comet-mono);
+  --pst-font-size-base:           0.95rem;
+  --pst-content-max-width:        100%;
+}
+
+/* ─── Global base ──────────────────────────────────────────────────── */
+body {
+  font-family: var(--comet-font) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── TOP NAVBAR ───────────────────────────────────────────────────── */
+.bd-header.navbar,
+header.bd-header {
+  min-height: 56px !important;
+  padding: 0 24px !important;
+  box-shadow: none !important;
+  border-bottom: 1px solid var(--pst-color-border) !important;
+}
+
+html[data-theme="dark"] .bd-header.navbar {
+  background: rgba(10, 10, 10, 0.96) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+html[data-theme="light"] .bd-header.navbar {
+  background: rgba(255, 255, 255, 0.96) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.bd-header__inner.bd-page-width {
+  padding: 0 !important;
+  max-width: none !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+}
+
+/* Logo */
+.navbar-brand.logo {
+  padding: 0 !important;
+  margin-right: 0 !important;
+}
+
 .bd-header .navbar-brand img.logo__image {
-  height: 40px;
-  width: auto;
-  margin-right: 0.25rem;
+  height: 38px !important;
+  width: auto !important;
+  margin-right: 0 !important;
   vertical-align: middle;
 }
 
-/* --- remove the right (secondary) sidebar entirely --- */
-.bd-sidebar-secondary { display: none !important; }
+/* ── Navbar center: nav links centered ── */
+.col-lg-3.navbar-header-items__start {
+  flex: 0 0 auto !important;
+  width: auto !important;
+}
 
-/* Some versions still reserve the grid column for it — collapse it */
+.col-lg-9.navbar-header-items {
+  flex: 1 !important;
+  display: flex !important;
+  justify-content: center !important;
+}
+
+.navbar-header-items__center {
+  display: flex !important;
+  justify-content: center !important;
+  flex: 1 !important;
+}
+
+.navbar-header-items__end {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  margin-left: auto !important;
+}
+
+/* Top nav links */
+.bd-navbar-elements.navbar-nav {
+  justify-content: center !important;
+  gap: 4px !important;
+}
+
+.bd-navbar-elements.navbar-nav .nav-item .nav-link {
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  padding: 6px 16px !important;
+  border-radius: 0 !important;
+  color: var(--pst-color-text-muted) !important;
+  transition: color 140ms ease !important;
+  border: none !important;
+  border-bottom: 2px solid transparent !important;
+  background: transparent !important;
+  position: relative !important;
+}
+
+.bd-navbar-elements.navbar-nav .nav-item .nav-link:hover {
+  color: var(--pst-color-on-surface) !important;
+  background: transparent !important;
+}
+
+/* Active tab: orange underline — only .active (single tab), not .current (matches ancestors too) */
+.bd-navbar-elements.navbar-nav .nav-item.active > .nav-link,
+.bd-navbar-elements.navbar-nav .nav-item .nav-link[aria-current="page"] {
+  color: var(--pst-color-on-surface) !important;
+  background: transparent !important;
+  border-bottom-color: var(--comet-accent) !important;
+  font-weight: 600 !important;
+}
+
+/* ── Hide search from navbar — it lives in the sidebar now ── */
+.navbar-persistent--container,
+.navbar-item:has(.search-button-field),
+.navbar-persistent--mobile {
+  display: none !important;
+}
+
+/* Theme switcher & icon buttons */
+.pst-navbar-icon,
+.theme-switch-button {
+  padding: 5px 8px !important;
+  border-radius: 5px !important;
+  color: var(--pst-color-text-muted) !important;
+  transition: color 120ms ease, background 120ms ease !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.pst-navbar-icon:hover,
+.theme-switch-button:hover {
+  color: var(--pst-color-on-surface) !important;
+  background: var(--pst-color-surface) !important;
+}
+
+/* ─── SIDEBAR ──────────────────────────────────────────────────────── */
+.bd-sidebar-primary.bd-sidebar {
+  width: var(--comet-sidebar-w) !important;
+  flex: 0 0 var(--comet-sidebar-w) !important;
+  border-right: 1px solid var(--pst-color-border) !important;
+  box-shadow: none !important;
+  padding-top: 0 !important;
+}
+
+html[data-theme="dark"] .bd-sidebar-primary.bd-sidebar {
+  background: #0d0d0d !important;
+}
+
+html[data-theme="light"] .bd-sidebar-primary.bd-sidebar {
+  background: #fafafa !important;
+}
+
+/* ── Sidebar search field — pill style matching screenshot ── */
+.sidebar-primary-items__start {
+  padding: 0 !important;
+}
+
+.bd-sidebar .bd-search,
+.sidebar-primary__section .bd-search {
+  padding: 14px 14px !important;
+  border-bottom: 1px solid var(--pst-color-border) !important;
+  margin: 0 !important;
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+/* The pill container — make the whole form the pill */
+.bd-sidebar form.bd-search {
+  border-radius: 24px !important;
+  border: 1px solid var(--pst-color-border) !important;
+  background: var(--pst-color-surface) !important;
+  padding: 0 14px !important;
+  margin: 12px 14px !important;
+  height: 38px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  transition: border-color 140ms ease !important;
+}
+
+html[data-theme="dark"] .bd-sidebar form.bd-search {
+  background: #1a1a1a !important;
+  border-color: #2e2e2e !important;
+}
+
+.bd-sidebar form.bd-search:focus-within {
+  border-color: var(--comet-accent) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(232, 101, 10, 0.18) !important;
+}
+
+/* Kill default browser/Bootstrap focus rings on the form + input */
+.bd-sidebar form.bd-search,
+.bd-sidebar form.bd-search:focus,
+.bd-sidebar form.bd-search *:focus,
+.bd-sidebar form.bd-search *:focus-visible {
+  outline: none !important;
+}
+
+/* Icon */
+.bd-sidebar .bd-search i.fa-magnifying-glass,
+.bd-sidebar .bd-search .fa-search {
+  color: var(--pst-color-text-muted) !important;
+  font-size: 13px !important;
+  flex-shrink: 0 !important;
+}
+
+/* Input — no border, transparent, fills space */
+.bd-sidebar .bd-search .form-control,
+.sidebar-primary__section input[type="search"] {
+  font-family: var(--comet-font) !important;
+  font-size: 13.5px !important;
+  border: none !important;
+  background: transparent !important;
+  color: var(--pst-color-on-surface) !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  flex: 1 !important;
+  min-width: 0 !important;
+  outline: none !important;
+}
+
+.bd-sidebar .bd-search .form-control:focus {
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+.bd-sidebar .bd-search .form-control::placeholder {
+  color: var(--pst-color-text-muted) !important;
+}
+
+/* ⌘K shortcut badge */
+.bd-sidebar .bd-search .search-button__kbd-shortcut {
+  display: flex !important;
+  align-items: center !important;
+  gap: 2px !important;
+  flex-shrink: 0 !important;
+}
+
+.bd-sidebar .bd-search .search-button__kbd-shortcut kbd {
+  font-family: var(--comet-font) !important;
+  font-size: 11px !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+  border: 1px solid var(--pst-color-border) !important;
+  color: var(--pst-color-text-muted) !important;
+  background: transparent !important;
+  line-height: 1.5 !important;
+}
+
+/* Show ⌘ on Mac; hide "Ctrl+" text visually — use CSS content swap */
+.bd-sidebar .kbd-shortcut__modifier {
+  font-size: 11px !important;
+}
+
+/* ── Sidebar nav section captions (group labels) — hidden since INDEX removed ── */
+.bd-links .caption,
+.bd-toc-item > p.caption {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  color: var(--pst-color-text-muted) !important;
+  padding: 18px 16px 6px !important;
+  margin: 0 !important;
+}
+
+.bd-toc-item:first-child > p.caption {
+  padding-top: 12px !important;
+}
+
+/* ── Nav items ── */
+.bd-links ul {
+  list-style: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.bd-links li a.reference {
+  display: block !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  padding: 10px 16px 10px 20px !important;
+  border-left: 2px solid transparent !important;
+  color: var(--pst-color-text-muted) !important;
+  text-decoration: none !important;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.5 !important;
+}
+
+/* Spacing between sibling nav items — adds vertical rhythm */
+.bd-links li + li {
+  margin-top: 2px !important;
+}
+
+/* Bigger gap above each top-level section */
+.bd-links .toctree-l1 {
+  margin-top: 16px !important;
+}
+
+.bd-links .toctree-l1:first-child {
+  margin-top: 8px !important;
+}
+
+/* Within a current section, give the version groups (l2 with children)
+   a hairline divider above + breathing room — makes the IA snap visually */
+.bd-links .toctree-l1.current > ul > .toctree-l2:has(> ul) {
+  margin-top: 14px !important;
+  padding-top: 14px !important;
+  border-top: 1px solid var(--pst-color-border-muted) !important;
+}
+
+.bd-links .toctree-l1.current > ul > .toctree-l2:has(> ul):first-child {
+  margin-top: 4px !important;
+  padding-top: 4px !important;
+  border-top: none !important;
+}
+
+/* Leaf l2 items (no children) just get a small gap, no rule */
+.bd-links .toctree-l1.current > ul > .toctree-l2:not(:has(> ul)) {
+  margin-top: 6px !important;
+}
+
+.bd-links .toctree-l1.current > ul > .toctree-l2:not(:has(> ul)):first-child {
+  margin-top: 4px !important;
+}
+
+/* Sub-items (the actual page links) sit closer together for a tight cluster */
+.bd-links .toctree-l3 + .toctree-l3 {
+  margin-top: 0 !important;
+}
+
+.bd-links li a.reference:hover {
+  color: var(--pst-color-on-surface) !important;
+  background: var(--pst-color-surface) !important;
+  border-left-color: var(--pst-color-border) !important;
+}
+
+/* ── Section-scoped sidebar ─────────────────────────────────────────── */
+/* The top nav already tells the user which section they're in.
+   The sidebar should show ONLY the contents of the current section,
+   not duplicate the section list. Standard pattern in Stripe/Vercel/Linear docs. */
+
+/* Hide non-active top-level sections — but only when a section is active
+   AND we're not in search-filter mode (which needs cross-section visibility) */
+.bd-links:not(.comet-filtering):has(.toctree-l1.current) .toctree-l1:not(.current) {
+  display: none !important;
+}
+
+/* Hide the active section's own link + toggle ONLY when the section has
+   children to show in its place. Leaf-l1 pages (no nested toctree) keep
+   their link visible so the sidebar isn't empty. */
+.bd-links:not(.comet-filtering):has(.toctree-l1.current) .toctree-l1.current:has(> ul) > a.reference,
+.bd-links:not(.comet-filtering):has(.toctree-l1.current) .toctree-l1.current:has(> ul) > .comet-toggle {
+  display: none !important;
+}
+
+/* Always show the active section's children */
+.bd-links:not(.comet-filtering) .toctree-l1.current > ul {
+  display: block !important;
+}
+
+/* When the active section's children become the new top-level items:
+   - l2 items that are containers (have child <ul>) act as group headers
+     → slightly stronger weight, darker color
+   - l2 items that are leaf pages stay as plain nav links
+     → muted color (matches every other nav link in the sidebar) */
+.bd-links:not(.comet-filtering) .toctree-l1.current > ul > .toctree-l2:has(> ul) > a.reference {
+  font-weight: 500 !important;
+  color: var(--pst-color-on-surface) !important;
+  font-size: 14px !important;
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+}
+
+.bd-links:not(.comet-filtering) .toctree-l1.current > ul > .toctree-l2:not(:has(> ul)) > a.reference {
+  font-weight: 400 !important;
+  color: var(--pst-color-text-muted) !important;
+  font-size: 14px !important;
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+}
+
+/* ── Collapse: hide children of sections that are not explicitly expanded ── */
+/* Visibility is now controlled by the .comet-expanded class (toggled via JS button) */
+.bd-links .toctree-l1:not(.comet-expanded) > ul,
+.bd-links .toctree-l2:not(.comet-expanded) > ul {
+  display: none !important;
+}
+
+/* ── In-sidebar search filter ───────────────────────────────────────── */
+.bd-links.comet-filtering li.comet-filter-hidden {
+  display: none !important;
+}
+
+/* While filtering, force-expand any section that contains a match,
+   overriding the collapsed-by-default rule above */
+.bd-links.comet-filtering .toctree-l1.comet-filter-expanded > ul,
+.bd-links.comet-filtering .toctree-l2.comet-filter-expanded > ul {
+  display: block !important;
+}
+
+/* Sync the toggle arrow to the expanded state during filtering */
+.bd-links.comet-filtering li.comet-filter-expanded > .comet-toggle::before {
+  transform: rotate(90deg) !important;
+  background-color: var(--comet-accent) !important;
+}
+
+/* Highlighted matching characters */
+.bd-links mark.comet-hl {
+  background: var(--comet-accent-dim) !important;
+  color: var(--comet-accent-lite) !important;
+  padding: 0 1px !important;
+  border-radius: 2px !important;
+  font-weight: 700 !important;
+}
+
+html[data-theme="light"] .bd-links mark.comet-hl {
+  color: var(--comet-accent) !important;
+}
+
+/* ── Toggle button — real <button> injected via JS ── */
+.bd-links li {
+  position: relative !important;
+}
+
+.bd-links li > a.reference {
+  padding-right: 36px !important;
+}
+
+.bd-links .comet-toggle {
+  position: absolute !important;
+  right: 6px !important;
+  top: 4px !important;
+  width: 24px !important;
+  height: 24px !important;
+  border: none !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  border-radius: 4px !important;
+  z-index: 5 !important;
+  transition: background 120ms ease !important;
+}
+
+.bd-links .comet-toggle::before {
+  content: '' !important;
+  width: 14px !important;
+  height: 14px !important;
+  background-color: var(--pst-color-text-muted) !important;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='9 18 15 12 9 6'%3E%3C/polyline%3E%3C/svg%3E") !important;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='9 18 15 12 9 6'%3E%3C/polyline%3E%3C/svg%3E") !important;
+  -webkit-mask-repeat: no-repeat !important;
+  mask-repeat: no-repeat !important;
+  -webkit-mask-size: contain !important;
+  mask-size: contain !important;
+  transition: transform 220ms ease, background-color 140ms ease !important;
+}
+
+.bd-links .comet-toggle[aria-expanded="true"]::before {
+  transform: rotate(90deg) !important;
+  background-color: var(--comet-accent) !important;
+}
+
+.bd-links .comet-toggle:hover {
+  background: var(--pst-color-surface) !important;
+}
+
+.bd-links .comet-toggle:hover::before {
+  background-color: var(--pst-color-on-surface) !important;
+}
+
+.bd-links .comet-toggle[aria-expanded="true"]:hover::before {
+  background-color: var(--comet-accent-lite) !important;
+}
+
+/* Adjust button top for l1 items (which have larger padding) */
+.bd-links .toctree-l1 > .comet-toggle {
+  top: 6px !important;
+}
+
+/* ── Top-level nav items act as section headers — bold ── */
+.bd-links .toctree-l1 > a.reference {
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  color: var(--pst-color-on-surface) !important;
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+  letter-spacing: 0.01em !important;
+}
+
+/* ── Active state: ONLY the exact current page (innermost li.current) ── */
+/* pydata_sphinx_theme sets class="current" on the <a> of BOTH the active page
+   AND its ancestor sections. :not(:has(li.current)) targets only the deepest
+   li.current — the one with no nested li.current inside it. */
+.bd-links li.current:not(:has(li.current)) > a.current.reference {
+  color: var(--comet-accent-lite) !important;
+  background: var(--comet-accent-dim) !important;
+  border-left-color: var(--comet-accent) !important;
+  font-weight: 600 !important;
+}
+
+html[data-theme="light"] .bd-links li.current:not(:has(li.current)) > a.current.reference {
+  color: var(--comet-accent) !important;
+}
+
+/* Ancestor li.current items (parents of the active page) — strip highlight */
+.bd-links li.current:has(li.current) > a.current.reference {
+  background: transparent !important;
+  border-left-color: transparent !important;
+  color: var(--pst-color-text-muted) !important;
+  font-weight: 400 !important;
+}
+
+/* Restore bold + on-surface color for l1 section headers that are ancestors */
+.bd-links .toctree-l1.current:has(li.current) > a.current.reference {
+  color: var(--pst-color-on-surface) !important;
+  font-weight: 700 !important;
+}
+
+/* Nested level 2 */
+.bd-links .toctree-l2 a.reference {
+  padding-left: 32px !important;
+  font-size: 13.5px !important;
+  font-weight: 400 !important;
+}
+
+/* Nested level 3 */
+.bd-links .toctree-l3 a.reference {
+  padding-left: 44px !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+}
+
+/* Mobile sidebar nav header */
+.sidebar-header-items {
+  border-bottom: 1px solid var(--pst-color-border) !important;
+  padding: 8px 0 !important;
+}
+
+/* ─── LAYOUT GRID ──────────────────────────────────────────────────── */
+/* Secondary sidebar (right-side in-page TOC) is now enabled.
+   It auto-hides via JS on pages with fewer than 3 H2s (see layout.html). */
+.bd-sidebar-secondary {
+  border-left: 1px solid var(--pst-color-border) !important;
+  padding: 28px 24px !important;
+  width: 240px !important;
+  flex: 0 0 240px !important;
+  background: transparent !important;
+}
+
+/* Hide right TOC when there are no anchors to navigate */
+.bd-sidebar-secondary.comet-toc-empty {
+  display: none !important;
+}
+
 .bd-main {
-  /* left sidebar + content only */
-  grid-template-columns: 20rem minmax(0, 1fr) !important;
+  grid-template-columns: minmax(0, 1fr) !important;
 }
 
-/* --- make the left (primary) sidebar small --- */
-.bd-sidebar-primary {
-  width: 20rem !important;
-  flex: 0 0 20rem !important;
+.bd-container__inner.bd-page-width {
+  max-width: none !important;
+  padding: 0 !important;
 }
 
-/* Optional: make its text a bit tighter */
-.bd-sidebar-primary .bd-sidebar {
-  font-size: 0.9rem;
+/* ── Right-side TOC styling ───────────────────────────────────────── */
+.bd-sidebar-secondary .page-toc,
+.bd-sidebar-secondary .toc-h2,
+.bd-sidebar-secondary .onthispage,
+.bd-sidebar-secondary .page-toc__title {
+  font-family: var(--comet-font) !important;
 }
 
-/* --- let the center content use all remaining width --- */
-.bd-content, .bd-article-container {
-  max-width: none !important;   /* remove internal cap */
+.bd-sidebar-secondary .page-toc__title,
+.bd-sidebar-secondary p.onthispage {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.08em !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 0 12px 0 !important;
+  padding: 0 !important;
 }
 
-
-code {
-  color: rgb(215, 70, 51);
+.bd-sidebar-secondary nav.bd-toc {
+  padding: 0 !important;
 }
 
-.footer {
-  text-align: center;
+.bd-sidebar-secondary ul.visible {
+  list-style: none !important;
+  padding-left: 0 !important;
+  margin: 0 !important;
+  border-left: 1px solid var(--pst-color-border) !important;
 }
 
-/* Ensure the logo is properly displayed */
+.bd-sidebar-secondary nav.bd-toc ul,
+.bd-sidebar-secondary .page-toc ul {
+  list-style: none !important;
+  padding-left: 12px !important;
+  margin: 0 !important;
+}
 
-.navbar-brand {
-  height: auto;
+.bd-sidebar-secondary nav.bd-toc > ul,
+.bd-sidebar-secondary .page-toc > ul {
+  padding-left: 0 !important;
+  border-left: 1px solid var(--pst-color-border) !important;
+}
+
+.bd-sidebar-secondary nav.bd-toc a.reference,
+.bd-sidebar-secondary .page-toc a.reference {
+  display: block !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  line-height: 1.45 !important;
+  padding: 6px 12px !important;
+  margin-left: -1px !important;
+  color: var(--pst-color-text-muted) !important;
+  text-decoration: none !important;
+  border-left: 2px solid transparent !important;
+  transition: color 120ms ease, border-color 120ms ease !important;
+}
+
+.bd-sidebar-secondary nav.bd-toc a.reference:hover,
+.bd-sidebar-secondary .page-toc a.reference:hover {
+  color: var(--pst-color-on-surface) !important;
+}
+
+/* Active section in TOC — orange accent */
+.bd-sidebar-secondary nav.bd-toc a.reference.active,
+.bd-sidebar-secondary .page-toc a.reference.active,
+.bd-sidebar-secondary nav.bd-toc li.active > a.reference,
+.bd-sidebar-secondary .page-toc li.active > a.reference {
+  color: var(--comet-accent) !important;
+  border-left-color: var(--comet-accent) !important;
+  font-weight: 600 !important;
+}
+
+/* Nested TOC entries (h3 under h2) — slight indent */
+.bd-sidebar-secondary ul ul a.reference {
+  padding-left: 28px !important;
+  font-size: 12.5px !important;
+}
+
+/* Hide on narrow viewports (sidebar already takes the width) */
+@media (max-width: 1200px) {
+  .bd-sidebar-secondary { display: none !important; }
+}
+
+/* ─── CONTENT ──────────────────────────────────────────────────────── */
+.bd-content { padding: 0 !important; }
+
+.bd-article-container {
+  max-width: 860px !important;
+  padding: 44px 60px 88px !important;
+  margin: 0 !important;
+}
+
+article.bd-article {
+  font-family: var(--comet-font) !important;
+}
+
+/* Headings */
+article h1 {
+  font-size: 2.1rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.025em !important;
+  line-height: 1.2 !important;
+  margin-top: 0 !important;
+  margin-bottom: 0.5rem !important;
+  color: var(--pst-color-heading) !important;
+}
+
+article h2 {
+  font-size: 1.35rem !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  margin-top: 2.6rem !important;
+  margin-bottom: 0.75rem !important;
+  padding-bottom: 0 !important;
+  border-bottom: none !important;
+  color: var(--pst-color-heading) !important;
+}
+
+article h3 {
+  font-size: 1.05rem !important;
+  font-weight: 600 !important;
+  margin-top: 1.8rem !important;
+  margin-bottom: 0.5rem !important;
+  color: var(--pst-color-heading) !important;
+}
+
+article h4 {
+  font-size: 0.95rem !important;
+  font-weight: 600 !important;
+  color: var(--pst-color-text-base) !important;
+}
+
+/* Anchor links */
+a.headerlink {
+  opacity: 0 !important;
+  transition: opacity 120ms ease !important;
+  font-size: 0.75em !important;
+  margin-left: 4px !important;
+  color: var(--comet-accent) !important;
+}
+*:hover > a.headerlink { opacity: 0.45 !important; }
+a.headerlink:hover { opacity: 1 !important; }
+
+article p, article li {
+  color: var(--pst-color-text-base) !important;
+  line-height: 1.75 !important;
+}
+
+/* Content links */
+article a.reference.external,
+article a.reference.internal {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+  transition: border-color 120ms ease !important;
+}
+
+article a.reference:hover {
+  border-bottom-color: var(--comet-accent) !important;
+}
+
+/* ─── INLINE CODE ──────────────────────────────────────────────────── */
+code.literal,
+p code, li code, td code, th code {
+  font-family: var(--comet-mono) !important;
+  font-size: 13px !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+  border: 1px solid var(--pst-color-border) !important;
+  color: var(--pst-color-inline-code) !important;
+}
+
+html[data-theme="dark"] code.literal,
+html[data-theme="dark"] p code,
+html[data-theme="dark"] li code,
+html[data-theme="dark"] td code {
+  background: #111111 !important;
+}
+
+html[data-theme="light"] code.literal,
+html[data-theme="light"] p code,
+html[data-theme="light"] li code,
+html[data-theme="light"] td code {
+  background: #f5f5f6 !important;
+}
+
+/* ─── CODE BLOCKS ──────────────────────────────────────────────────── */
+div.highlight,
+div[class*="highlight-"] {
+  border-radius: var(--comet-radius) !important;
+  border: 1px solid var(--pst-color-border) !important;
+  overflow: hidden !important;
+  margin: 18px 0 !important;
+}
+
+div.highlight pre,
+div[class*="highlight-"] pre {
+  font-family: var(--comet-mono) !important;
+  font-size: 13.5px !important;
+  line-height: 1.7 !important;
+  padding: 20px 22px !important;
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: #0e0e0e !important;
+  color: #e2e8f0 !important;
+}
+
+div.highlight .k,
+div.highlight .kn,
+div.highlight .kd  { color: #c792ea; }
+div.highlight .s,
+div.highlight .s1,
+div.highlight .s2  { color: #c3e88d; }
+div.highlight .c,
+div.highlight .c1,
+div.highlight .cm  { color: #546e7a; font-style: italic; }
+div.highlight .nf,
+div.highlight .nb  { color: #82aaff; }
+div.highlight .mi,
+div.highlight .mf  { color: #f78c6c; }
+div.highlight .o   { color: #89ddff; }
+div.highlight .nc  { color: #ffcb6b; }
+
+button.copybtn {
+  background: rgba(255,255,255,0.07) !important;
+  border: 1px solid rgba(255,255,255,0.10) !important;
+  border-radius: 4px !important;
+  color: #666 !important;
+  font-family: var(--comet-font) !important;
+  font-size: 11px !important;
+  padding: 3px 8px !important;
+  transition: color 120ms, background 120ms !important;
+}
+button.copybtn:hover {
+  color: #e2e8f0 !important;
+  background: rgba(255,255,255,0.13) !important;
+}
+
+/* ─── TABLES ───────────────────────────────────────────────────────── */
+table.docutils {
+  font-size: 14px !important;
+  border-collapse: collapse !important;
+  width: 100% !important;
+  margin: 18px 0 !important;
+  border-radius: var(--comet-radius) !important;
+  overflow: hidden !important;
+  border: 1px solid var(--pst-color-border) !important;
+}
+
+table.docutils th {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  padding: 11px 15px !important;
+  border-bottom: 1px solid var(--pst-color-border) !important;
+  color: var(--pst-color-text-muted) !important;
+  white-space: normal !important;
+}
+
+html[data-theme="dark"]  table.docutils th { background: #111111 !important; }
+html[data-theme="light"] table.docutils th { background: #f5f5f6 !important; }
+
+table.docutils td {
+  padding: 11px 15px !important;
+  border-bottom: 1px solid var(--pst-color-border) !important;
+  color: var(--pst-color-text-base) !important;
+  white-space: normal !important;
+}
+
+table.docutils tr:last-child td { border-bottom: none !important; }
+
+html[data-theme="dark"]  table.docutils tbody tr:nth-of-type(odd) { background: rgba(255,255,255,0.02) !important; }
+html[data-theme="light"] table.docutils tbody tr:nth-of-type(odd) { background: rgba(0,0,0,0.02) !important; }
+
+/* ─── ADMONITIONS ──────────────────────────────────────────────────── */
+div.admonition {
+  border-radius: var(--comet-radius) !important;
+  border: 1px solid !important;
+  padding: 14px 18px !important;
+  margin: 22px 0 !important;
+  font-size: 14px !important;
+  box-shadow: none !important;
+}
+
+div.admonition p.admonition-title {
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+  margin-bottom: 6px !important;
+  padding: 0 !important;
+  background: none !important;
+  border: none !important;
+}
+
+div.note    { background: rgba(59,130,246,0.06) !important;  border-color: rgba(59,130,246,0.25) !important; }
+div.note    p.admonition-title { color: #3b82f6 !important; }
+div.warning { background: rgba(234,179,8,0.06) !important;   border-color: rgba(234,179,8,0.25) !important; }
+div.warning p.admonition-title { color: #ca8a04 !important; }
+div.tip     { background: rgba(34,197,94,0.06) !important;   border-color: rgba(34,197,94,0.25) !important; }
+div.tip     p.admonition-title { color: #16a34a !important; }
+div.important,
+div.caution {
+  background: rgba(232,101,10,0.06) !important;
+  border-color: rgba(232,101,10,0.28) !important;
+}
+div.important p.admonition-title,
+div.caution   p.admonition-title { color: var(--comet-accent) !important; }
+
+/* ─── PREV / NEXT NAV ──────────────────────────────────────────────── */
+footer.prev-next-footer {
+  border-top: 1px solid var(--pst-color-border) !important;
+  margin-top: 52px !important;
+  padding-top: 26px !important;
+  box-shadow: none !important;
+}
+
+.prev-next-area a {
+  border: 1px solid var(--pst-color-border) !important;
+  border-radius: var(--comet-radius) !important;
+  padding: 13px 18px !important;
+  box-shadow: none !important;
+  text-decoration: none !important;
+  transition: border-color 120ms ease !important;
+}
+
+.prev-next-area a:hover {
+  border-color: var(--comet-accent) !important;
+  background: rgba(232,101,10,0.05) !important;
+}
+
+.prev-next-subtitle {
+  font-size: 11px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.07em !important;
+  color: var(--pst-color-text-muted) !important;
+}
+
+.prev-next-title {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: var(--pst-color-on-surface) !important;
+}
+
+/* ─── FOOTER ───────────────────────────────────────────────────────── */
+/* Used across every doc page. Job: be quiet, surface 5-6 useful links,
+   satisfy ASF legal requirements. Not a place to repeat marketing copy. */
+
+.bd-footer-content { display: none !important; }
+
+footer.comet-footer {
+  font-family: var(--comet-font) !important;
+  border-top: 1px solid var(--pst-color-border-muted);
+  background: transparent;
+  color: var(--pst-color-text-muted);
+}
+
+.comet-footer__inner {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 80px;
+  align-items: start;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 56px 56px 40px;
+}
+
+/* Brand: just the logo, clickable, no tagline */
+.comet-footer__brand {
+  display: inline-block;
+  text-decoration: none;
+  flex-shrink: 0;
+  opacity: 0.85;
+  transition: opacity 120ms ease;
+}
+
+.comet-footer__brand:hover { opacity: 1; }
+
+.comet-footer__logo {
+  height: 42px;
   width: auto;
-  padding: 0 2em;
+  display: block;
+  object-fit: contain;
+  max-width: 180px;
 }
 
-/* This is the bootstrap CSS style for "table-striped". Since the theme does
-not yet provide an easy way to configure this globally, it easier to simply
-include this snippet here than updating each table in all rst files to
-add ":class: table-striped" */
-
-.table tbody tr:nth-of-type(odd) {
-  background-color: rgba(0, 0, 0, 0.05);
+/* Link columns: two of them, generous gap, monospaced rhythm */
+.comet-footer__links {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 48px;
+  justify-content: end;
+  justify-self: end;
 }
 
+.comet-footer__col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 
-/* Limit the max height of the sidebar navigation section. Because in our
-customized template, there is more content above the navigation, i.e.
-larger logo: if we don't decrease the max-height, it will overlap with
-the footer.
-Details: 8rem for search box etc*/
+.comet-footer__col-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--pst-color-on-surface);
+  margin: 0 0 6px 0;
+}
 
-@media (min-width:720px) {
-  @supports (position:-webkit-sticky) or (position:sticky) {
-    .bd-links {
-      max-height: calc(100vh - 8rem)
-    }
+.comet-footer__col a {
+  font-size: 14px;
+  color: var(--pst-color-text-muted);
+  text-decoration: none;
+  transition: color 120ms ease;
+  padding: 2px 0;
+  width: max-content;
+}
+
+.comet-footer__col a:hover { color: var(--comet-accent); }
+
+/* Legal bar: hairline divider, two quiet lines, plenty of breathing room */
+.comet-footer__legal {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 22px 56px 28px;
+  border-top: 1px solid var(--pst-color-border-muted);
+}
+
+.comet-footer__legal p {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--pst-color-text-muted);
+  margin: 0 0 6px 0;
+}
+
+.comet-footer__legal p:last-child {
+  margin-bottom: 0;
+}
+
+.comet-footer__legal a {
+  color: var(--pst-color-text-muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.comet-footer__legal a:hover {
+  color: var(--comet-accent);
+  border-bottom-color: var(--comet-accent);
+}
+
+.comet-footer__trademark {
+  opacity: 0.7;
+}
+
+@media (max-width: 768px) {
+  .comet-footer__inner {
+    grid-template-columns: 1fr;
+    gap: 36px;
+    padding: 40px 24px 28px;
+  }
+  .comet-footer__links {
+    justify-self: start;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 28px;
+  }
+  .comet-footer__legal { padding: 18px 24px 24px; }
+}
+
+/* ─── BACK TO TOP ──────────────────────────────────────────────────── */
+#pst-back-to-top {
+  border-radius: 20px !important;
+  font-size: 12.5px !important;
+  font-family: var(--comet-font) !important;
+  background: var(--pst-color-surface) !important;
+  border: 1px solid var(--pst-color-border) !important;
+  color: var(--pst-color-text-muted) !important;
+  box-shadow: none !important;
+  transition: color 120ms, border-color 120ms !important;
+}
+
+#pst-back-to-top:hover {
+  color: var(--pst-color-on-surface) !important;
+  border-color: var(--comet-accent) !important;
+}
+
+/* ─── BREADCRUMB ───────────────────────────────────────────────────── */
+.bd-breadcrumbs {
+  font-size: 13px !important;
+  color: var(--pst-color-text-muted) !important;
+  padding: 12px 0 0 !important;
+}
+.bd-breadcrumbs a {
+  color: var(--pst-color-text-muted) !important;
+  text-decoration: none !important;
+}
+.bd-breadcrumbs a:hover { color: var(--comet-accent) !important; }
+
+/* Hide the home icon — the Comet logo in the navbar already does this job */
+.bd-breadcrumbs .breadcrumb-home {
+  display: none !important;
+}
+
+/* Hide the first non-home breadcrumb item (the section index page).
+   The section is already shown as the active orange tab in the top nav,
+   so repeating it here is just noise. */
+.bd-breadcrumbs .breadcrumb-home + .breadcrumb-item {
+  display: none !important;
+}
+
+/* When there's no home icon (some pages), still hide the first item */
+.bd-breadcrumbs > .breadcrumb-item:first-child:not(.active):not(.breadcrumb-home) {
+  display: none !important;
+}
+
+/* ─── IMAGES ───────────────────────────────────────────────────────── */
+article img {
+  border-radius: var(--comet-radius) !important;
+  max-width: 100% !important;
+}
+html[data-theme="dark"] article img { opacity: 0.92 !important; }
+
+/* ─── SCROLLBAR ────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+html[data-theme="dark"]  ::-webkit-scrollbar-thumb { background: #303030; border-radius: 3px; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #d0d0d0; border-radius: 3px; }
+
+/* ─── RESPONSIVE ───────────────────────────────────────────────────── */
+@media (min-width: 720px) {
+  @supports (position: -webkit-sticky) or (position: sticky) {
+    .bd-links { max-height: calc(100vh - 8rem); }
   }
 }
 
+@media (max-width: 960px) {
+  .bd-article-container { padding: 28px 32px 64px !important; }
+}
 
-/* Fix table text wrapping in RTD theme,
- * see https://rackerlabs.github.io/docs-rackspace/tools/rtd-tables.html
- */
+/* ─── LANDING PAGE ─────────────────────────────────────────────────── */
+/* Sphinx puts a body class of `bd-page-{pagename}` so we can target only
+   the homepage. The hero/cards/etc. take over the full canvas there;
+   every other page keeps the article-container constraints. */
 
-@media screen {
-    table.docutils td {
-        /* !important prevents the common CSS stylesheets from overriding
-          this as on RTD they are loaded after this stylesheet */
-        white-space: normal !important;
-    }
+body:has(.comet-hero) .bd-article-container {
+  max-width: 100% !important;
+  padding: 0 !important;
+}
+
+body:has(.comet-hero) article.bd-article {
+  padding: 0 !important;
+}
+
+/* Hide page chrome on the landing page — the hero+sections replace them.
+   The H1 is wrapped in a <section> by MyST, so we have to descend deeper
+   than `article > h1`. The prev/next footer is meaningless on a marketing
+   page that links out to specific docs via cards/CTAs. */
+body:has(.comet-hero) article.bd-article > section:first-of-type > h1:first-of-type,
+body:has(.comet-hero) .bd-breadcrumbs,
+body:has(.comet-hero) footer.prev-next-footer,
+body:has(.comet-hero) .prev-next-area {
+  display: none !important;
+}
+
+body:has(.comet-hero) .bd-main {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+/* Each landing section is full-bleed, with its own internal max-width */
+.comet-hero,
+.comet-install,
+.comet-perf,
+.comet-cards,
+.comet-arch,
+.comet-foot-cta {
+  width: 100%;
+  display: block;
+}
+
+.comet-hero__inner,
+.comet-install__inner,
+.comet-perf__inner,
+.comet-cards__inner,
+.comet-arch__inner,
+.comet-foot-cta__inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────── */
+.comet-hero {
+  padding: 88px 0 72px;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+  background:
+    radial-gradient(circle at 80% -20%, rgba(232, 101, 10, 0.08), transparent 55%),
+    radial-gradient(circle at 10% 110%, rgba(232, 101, 10, 0.05), transparent 50%);
+}
+
+/* Terminal-style hero variant — centered layout with terminal block centerpiece */
+.comet-hero--terminal {
+  padding: 80px 0 80px;
+  text-align: center;
+}
+
+.comet-hero--terminal .comet-hero__inner {
+  text-align: center;
+  max-width: 1080px;
+}
+
+.comet-hero--terminal .comet-hero__title {
+  max-width: none;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.comet-hero--terminal .comet-hero__lede {
+  margin-left: auto !important;
+  margin-right: auto !important;
+  max-width: 56ch;
+}
+
+.comet-hero--terminal .comet-hero__ctas {
+  justify-content: center;
+}
+
+.comet-hero__inner {
+  text-align: left;
+  max-width: 980px;
+}
+
+.comet-hero__eyebrow {
+  font-family: var(--comet-font);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 18px 0;
+}
+
+.comet-hero__title {
+  font-family: var(--comet-font) !important;
+  font-size: clamp(2.4rem, 4.5vw, 3.6rem) !important;
+  font-weight: 700 !important;
+  line-height: 1.08 !important;
+  letter-spacing: -0.03em !important;
+  margin: 0 0 22px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+  max-width: 24ch;
+}
+
+.comet-hero__title-accent {
+  color: var(--comet-accent);
+}
+
+.comet-hero__lede {
+  font-size: 1.15rem !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-text-base) !important;
+  max-width: 60ch;
+  margin: 0 0 32px 0 !important;
+}
+
+.comet-hero__ctas {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 24px 0;
+}
+
+.comet-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--comet-font) !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  padding: 12px 22px !important;
+  border-radius: 8px !important;
+  text-decoration: none !important;
+  border: 1px solid transparent !important;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease !important;
+  cursor: pointer;
+}
+
+.comet-cta--primary {
+  background: var(--comet-accent) !important;
+  color: #ffffff !important;
+}
+
+.comet-cta--primary:hover {
+  background: var(--comet-accent-lite) !important;
+  transform: translateY(-1px);
+}
+
+.comet-cta--secondary {
+  background: transparent !important;
+  color: var(--pst-color-on-surface) !important;
+  border-color: var(--pst-color-border) !important;
+}
+
+.comet-cta--secondary:hover {
+  border-color: var(--comet-accent) !important;
+  color: var(--comet-accent) !important;
+}
+
+.comet-hero__meta {
+  font-size: 12.5px !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 !important;
+}
+
+/* ── Install block ────────────────────────────────────────────────── */
+.comet-install {
+  padding: 56px 0;
+  background: var(--pst-color-surface);
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+html[data-theme="dark"] .comet-install {
+  background: #0e0e0e;
+}
+
+.comet-install__label {
+  font-family: var(--comet-font);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--pst-color-text-muted);
+  margin: 0 0 14px 0;
+}
+
+.comet-install__cmd {
+  font-family: var(--comet-mono) !important;
+  font-size: 14px !important;
+  line-height: 1.7 !important;
+  background: var(--pst-color-background) !important;
+  color: var(--pst-color-on-surface) !important;
+  border: 1px solid var(--pst-color-border) !important;
+  border-radius: 8px !important;
+  padding: 22px 26px !important;
+  margin: 0 0 14px 0 !important;
+  overflow-x: auto !important;
+  white-space: pre !important;
+}
+
+html[data-theme="dark"] .comet-install__cmd {
+  background: #060606 !important;
+  color: #d4d4d4 !important;
+}
+
+.comet-install__hint {
+  font-size: 13.5px !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 !important;
+}
+
+.comet-install__hint a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+}
+
+.comet-install__hint a:hover {
+  border-bottom-color: var(--comet-accent) !important;
+}
+
+/* ── Performance section ──────────────────────────────────────────── */
+.comet-perf {
+  padding: 80px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+.comet-perf__inner {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(0, 1.8fr);
+  gap: 56px;
+  align-items: center;
+}
+
+.comet-perf__eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-perf__title {
+  font-family: var(--comet-font) !important;
+  font-size: 1.7rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  line-height: 1.2 !important;
+  margin: 0 0 18px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+  max-width: 18ch;
+}
+
+.comet-perf__caption {
+  font-size: 1.05rem !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-on-surface) !important;
+  margin: 0 0 18px 0 !important;
+  font-weight: 400 !important;
+}
+
+.comet-perf__detail {
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 !important;
+}
+
+.comet-perf__detail code {
+  font-family: var(--comet-mono) !important;
+  font-size: 12.5px !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+  background: var(--pst-color-surface) !important;
+  border: 1px solid var(--pst-color-border) !important;
+  color: var(--pst-color-on-surface) !important;
+}
+
+.comet-perf__detail a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+}
+
+.comet-perf__chart figure {
+  margin: 0 !important;
+}
+
+.comet-perf__chart img {
+  width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  border-radius: 10px !important;
+  border: 1px solid var(--pst-color-border) !important;
+  background: #ffffff !important;
+  padding: 16px !important;
+}
+
+.comet-perf__chart figcaption {
+  font-size: 12.5px !important;
+  color: var(--pst-color-text-muted) !important;
+  text-align: center !important;
+  margin-top: 12px !important;
+  font-style: italic !important;
+}
+
+/* ── Cards grid ───────────────────────────────────────────────────── */
+.comet-cards {
+  padding: 80px 0;
+  background: var(--pst-color-surface);
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+html[data-theme="dark"] .comet-cards {
+  background: #0e0e0e;
+}
+
+.comet-cards__title {
+  font-size: 1.6rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  margin: 0 0 36px 0 !important;
+  border: none !important;
+  padding: 0 !important;
+  color: var(--pst-color-heading) !important;
+}
+
+.comet-cards__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+
+.comet-card {
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 24px !important;
+  border: 1px solid var(--pst-color-border) !important;
+  border-radius: 12px !important;
+  background: var(--pst-color-background) !important;
+  text-decoration: none !important;
+  transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease !important;
+}
+
+.comet-card:hover {
+  border-color: var(--comet-accent) !important;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(232, 101, 10, 0.08);
+}
+
+.comet-card__icon {
+  font-size: 28px;
+  margin-bottom: 16px;
+  line-height: 1;
+}
+
+.comet-card__title {
+  font-family: var(--comet-font) !important;
+  font-size: 1.05rem !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  margin: 0 0 10px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+.comet-card__body {
+  font-size: 14px !important;
+  line-height: 1.55 !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 0 18px 0 !important;
+  flex: 1;
+}
+
+.comet-card__cta {
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  color: var(--comet-accent) !important;
+  margin: 0 !important;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Architecture section ─────────────────────────────────────────── */
+.comet-arch {
+  padding: 80px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+.comet-arch__inner {
+  display: grid;
+  grid-template-columns: 1fr 1.1fr;
+  gap: 56px;
+  align-items: center;
+}
+
+.comet-arch__eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-arch__title {
+  font-size: 1.7rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  line-height: 1.25 !important;
+  margin: 0 0 20px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+  max-width: 22ch;
+}
+
+.comet-arch__body {
+  font-size: 1rem !important;
+  line-height: 1.65 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 0 16px 0 !important;
+}
+
+.comet-arch__links {
+  font-size: 14px !important;
+  margin: 22px 0 0 0 !important;
+  color: var(--pst-color-text-muted) !important;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.comet-arch__links a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  font-weight: 500 !important;
+  border-bottom: 1px solid transparent !important;
+  transition: border-color 120ms ease !important;
+}
+
+.comet-arch__links a:hover {
+  border-bottom-color: var(--comet-accent) !important;
+}
+
+.comet-arch__diagram img {
+  width: 100% !important;
+  height: auto !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--pst-color-border) !important;
+  background: #ffffff;
+  padding: 12px;
+}
+
+/* ── Foot CTA ─────────────────────────────────────────────────────── */
+.comet-foot-cta {
+  padding: 88px 0;
+  text-align: center;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(232, 101, 10, 0.06), transparent 60%);
+}
+
+.comet-foot-cta__title {
+  font-size: 1.9rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  margin: 0 0 14px 0 !important;
+  border: none !important;
+  padding: 0 !important;
+  color: var(--pst-color-heading) !important;
+}
+
+.comet-foot-cta__body {
+  font-size: 1.05rem !important;
+  line-height: 1.55 !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 auto 28px auto !important;
+  max-width: 52ch;
+}
+
+.comet-foot-cta__inner .comet-hero__ctas {
+  justify-content: center;
+}
+
+/* ── Terminal block (hero centerpiece) ────────────────────────────── */
+.comet-terminal {
+  margin: 36px auto 36px;
+  max-width: 880px;
+  border-radius: 12px;
+  overflow: hidden;
+  text-align: left;
+  background: #0d0f12;
+  border: 1px solid #1f242b;
+  box-shadow:
+    0 24px 60px -20px rgba(0, 0, 0, 0.35),
+    0 8px 24px -8px rgba(232, 101, 10, 0.10);
+}
+
+.comet-terminal__bar {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  background: #15181c;
+  border-bottom: 1px solid #1f242b;
+  position: relative;
+}
+
+.comet-terminal__dots {
+  display: flex;
+  gap: 7px;
+}
+
+.comet-terminal__dots i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #5a5a5a;
+}
+
+.comet-terminal__dots i:nth-child(1) { background: #ff5f57; }
+.comet-terminal__dots i:nth-child(2) { background: #febc2e; }
+.comet-terminal__dots i:nth-child(3) { background: #28c840; }
+
+.comet-terminal__title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--comet-mono);
+  font-size: 12px;
+  color: #8a8f95;
+  letter-spacing: 0.02em;
+}
+
+.comet-terminal__body {
+  font-family: var(--comet-mono) !important;
+  font-size: 13px !important;
+  line-height: 1.7 !important;
+  color: #d4d8de !important;
+  padding: 22px 24px 26px !important;
+  margin: 0 !important;
+  background: #0d0f12 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  overflow-x: auto !important;
+  white-space: pre !important;
+  text-align: left !important;
+}
+
+.comet-terminal__body .term-line {
+  display: block;
+}
+
+.comet-terminal__body .term-spacer {
+  display: block;
+  height: 6px;
+}
+
+.comet-terminal__body .term-comment {
+  color: #6a737d;
+  font-style: italic;
+}
+
+.comet-terminal__body .term-prompt {
+  color: var(--comet-accent);
+  margin-right: 6px;
+  user-select: none;
+}
+
+.comet-terminal__body .term-var {
+  color: #c792ea;
+}
+
+.comet-terminal__body .term-str {
+  color: #c3e88d;
+}
+
+.comet-terminal__body .term-indent {
+  padding-left: 28px;
+  color: #b9bec5;
+}
+
+.comet-terminal__body .term-blink {
+  display: inline-block;
+  color: var(--comet-accent);
+  animation: term-blink 1s steps(2, end) infinite;
+}
+
+@keyframes term-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comet-terminal__body .term-blink { animation: none; }
+}
+
+/* ── Prose band (the official two-paragraph pitch) ────────────────── */
+.comet-prose {
+  padding: 64px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+.comet-prose__inner {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 32px;
+  text-align: center;
+}
+
+.comet-prose__lede {
+  font-size: 1.15rem !important;
+  line-height: 1.65 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 0 18px 0 !important;
+}
+
+.comet-prose__lede:last-child {
+  margin-bottom: 0 !important;
+}
+
+.comet-prose__lede a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+}
+
+/* ── Stacked perf section (two charts, full-width) ────────────────── */
+.comet-perf__inner--stacked {
+  display: block;
+}
+
+.comet-perf__head {
+  text-align: center;
+  max-width: 720px;
+  margin: 0 auto 36px;
+}
+
+.comet-perf__head .comet-perf__eyebrow {
+  font-family: var(--comet-font);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-perf__head .comet-perf__caption {
+  font-size: 1.5rem !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  line-height: 1.3 !important;
+  color: var(--pst-color-heading) !important;
+  margin: 0 0 14px 0 !important;
+}
+
+.comet-perf__head .comet-perf__detail {
+  font-size: 15px !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 !important;
+}
+
+.comet-perf__figure {
+  margin: 0 0 40px 0 !important;
+  background: #ffffff;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.comet-perf__figure:last-child {
+  margin-bottom: 0 !important;
+}
+
+.comet-perf__figure img {
+  width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  border: none !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  margin: 0 auto !important;
+}
+
+.comet-perf__figure figcaption {
+  font-size: 13px !important;
+  color: var(--pst-color-text-muted) !important;
+  text-align: center !important;
+  margin-top: 14px !important;
+  font-style: italic !important;
+}
+
+/* ── Feature bands (alternating colors) ───────────────────────────── */
+.comet-feature {
+  padding: 80px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+}
+
+.comet-feature--alt {
+  background: var(--pst-color-surface);
+}
+
+html[data-theme="dark"] .comet-feature--alt {
+  background: #0e0e0e;
+}
+
+.comet-feature__inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+.comet-feature__copy {
+  text-align: left;
+}
+
+.comet-feature__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-feature__title {
+  font-family: var(--comet-font) !important;
+  font-size: 1.7rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  line-height: 1.25 !important;
+  margin: 0 0 18px 0 !important;
+  color: var(--pst-color-heading) !important;
+  border: none !important;
+  padding: 0 !important;
+  max-width: 28ch;
+}
+
+.comet-feature__body {
+  font-size: 1.02rem !important;
+  line-height: 1.65 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 0 14px 0 !important;
+}
+
+.comet-feature__body:last-child {
+  margin-bottom: 0 !important;
+}
+
+.comet-feature__links {
+  font-size: 14px !important;
+  margin: 20px 0 0 0 !important;
+}
+
+.comet-feature__links a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid transparent !important;
+  transition: border-color 120ms ease !important;
+}
+
+.comet-feature__links a:hover {
+  border-bottom-color: var(--comet-accent) !important;
+}
+
+.comet-feature__figure {
+  margin: 28px 0 0 0 !important;
+  background: #ffffff;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.comet-feature__figure img {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  margin: 0 auto !important;
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+
+.comet-feature__figure figcaption {
+  font-size: 13px !important;
+  color: var(--pst-color-text-muted) !important;
+  margin-top: 14px !important;
+  font-style: italic !important;
+}
+
+/* ── Stacked architecture (two diagrams full-width) ───────────────── */
+.comet-arch__inner--stacked {
+  display: block;
+}
+
+.comet-arch__head {
+  text-align: center;
+  max-width: 720px;
+  margin: 0 auto 28px;
+}
+
+.comet-arch__head:not(:first-child) {
+  margin-top: 56px;
+}
+
+.comet-arch__head .comet-arch__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-arch__head .comet-arch__body {
+  font-size: 1.05rem !important;
+  line-height: 1.6 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 !important;
+}
+
+.comet-arch__figure {
+  margin: 0 !important;
+  background: #ffffff;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.comet-arch__figure img {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  margin: 0 auto !important;
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+
+.comet-arch__figure figcaption {
+  font-size: 13px !important;
+  color: var(--pst-color-text-muted) !important;
+  margin-top: 14px !important;
+  font-style: italic !important;
+}
+
+/* ── Community 3-column band ──────────────────────────────────────── */
+.comet-community {
+  padding: 80px 0;
+  border-bottom: 1px solid var(--pst-color-border-muted);
+  background: var(--pst-color-surface);
+}
+
+html[data-theme="dark"] .comet-community {
+  background: #0e0e0e;
+}
+
+.comet-community__inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 32px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 40px;
+}
+
+.comet-community__inner--two {
+  max-width: 880px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 56px;
+}
+
+.comet-community__col {
+  text-align: left;
+}
+
+.comet-community__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--comet-accent);
+  margin: 0 0 14px 0;
+}
+
+.comet-community__body {
+  font-size: 15px !important;
+  line-height: 1.65 !important;
+  color: var(--pst-color-text-base) !important;
+  margin: 0 !important;
+}
+
+.comet-community__body a {
+  color: var(--comet-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+}
+
+/* ── Responsive collapses ─────────────────────────────────────────── */
+@media (max-width: 960px) {
+  .comet-hero,
+  .comet-hero--terminal { padding: 56px 0 40px; }
+  .comet-perf__inner,
+  .comet-arch__inner { grid-template-columns: 1fr; gap: 32px; }
+  .comet-cards__grid,
+  .comet-community__inner { grid-template-columns: 1fr; gap: 32px; }
+  .comet-install,
+  .comet-perf,
+  .comet-cards,
+  .comet-arch,
+  .comet-feature,
+  .comet-prose,
+  .comet-community,
+  .comet-foot-cta { padding: 56px 0; }
+  .comet-hero__inner,
+  .comet-install__inner,
+  .comet-perf__inner,
+  .comet-cards__inner,
+  .comet-arch__inner,
+  .comet-feature__inner,
+  .comet-prose__inner,
+  .comet-community__inner,
+  .comet-foot-cta__inner { padding: 0 22px; }
+  .comet-terminal { margin: 24px auto; }
+  .comet-terminal__body { font-size: 11.5px !important; padding: 16px 16px 18px !important; }
+  .comet-terminal__title { display: none; }
 }

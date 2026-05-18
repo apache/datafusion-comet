@@ -17,25 +17,53 @@ specific language governing permissions and limitations
 under the License.
 -->
 
+{# Comet docs layout — extends pydata_sphinx_theme to add a project footer.
+   All client-side enhancements live in _static/comet-ux.js, registered via
+   html_js_files in conf.py. #}
+
 {% extends "pydata_sphinx_theme/layout.html" %}
 
-<!--
-    Custom footer
--->
 {% block footer %}
-<!-- Based on pydata_sphinx_theme/footer.html -->
-<footer class="footer mt-5 mt-md-0">
-  <div class="container">
-    {% for footer_item in theme_footer_items %}
-    <div class="footer-item">
-      {% include footer_item %}
-    </div>
-    {% endfor %}
-    <div class="footer-item">
-      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
-      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
-    </div>
+<footer class="comet-footer" role="contentinfo">
+  <div class="comet-footer__inner">
+
+    <!-- Brand: logo only — no duplicated tagline -->
+    <a class="comet-footer__brand" href="{{ pathto('index') }}" aria-label="Apache DataFusion Comet — home">
+      <img src="{{ pathto('_static/images/DataFusionComet-Logo-Light.png', 1) }}"
+           class="comet-footer__logo only-light"
+           alt="Apache DataFusion Comet" />
+      <img src="{{ pathto('_static/images/DataFusionComet-Logo-Dark.png', 1) }}"
+           class="comet-footer__logo only-dark pst-js-only"
+           alt="Apache DataFusion Comet" />
+    </a>
+
+    <!-- Two compact link columns: documentation + community -->
+    <nav class="comet-footer__links" aria-label="Footer navigation">
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Documentation</div>
+        <a href="{{ pathto('user-guide/index') }}">User Guide</a>
+        <a href="{{ pathto('contributor-guide/index') }}">Contributor Guide</a>
+        <a href="{{ pathto('changelog/index') }}">Changelog</a>
+      </div>
+
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Community</div>
+        <a href="https://github.com/apache/datafusion-comet" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://datafusion.apache.org/contributor-guide/communication.html" target="_blank" rel="noopener">Slack &amp; Discord</a>
+        <a href="https://apache.org" target="_blank" rel="noopener">Apache Software Foundation</a>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Legal: license, copyright, trademark — single quiet line -->
+  <div class="comet-footer__legal">
+    <p>
+      &copy; 2023&ndash;2026 Apache Software Foundation &nbsp;·&nbsp;
+      Licensed under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache License 2.0</a>
+    </p>
+    <p class="comet-footer__trademark">
+      Apache DataFusion, Apache DataFusion Comet, the Apache feather logo, and the Apache DataFusion project logo are trademarks of The Apache Software Foundation.
+    </p>
   </div>
 </footer>
-
 {% endblock %}

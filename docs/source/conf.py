@@ -94,8 +94,9 @@ html_theme_options = {
     },
 
     "use_edit_page_button": False,
-    "secondary_sidebar_items": [],
-    "collapse_navigation": True,
+    "secondary_sidebar_items": ["page-toc"],
+    "collapse_navigation": False,
+    "show_nav_level": 1,
     "navbar_start": ["navbar-logo"],
     "navbar_center": ["navbar-nav"],
     "navbar_end": ["navbar-icon-links", "theme-switcher"],
@@ -128,10 +129,13 @@ html_css_files = [
 
 html_js_files = [
     ("https://buttons.github.io/buttons.js", {'async': 'true', 'defer': 'true'}),
+    "comet-ux.js",
 ]
 
 html_sidebars = {
-    "**": ["docs-sidebar.html"],
+    "**": ["search-field.html", "docs-sidebar.html"],
+    # Landing page is a full-width marketing page — no left rail.
+    "index": [],
 }
 
 # tell myst_parser to auto-generate anchor links for headers h1, h2, h3, h4
@@ -159,3 +163,40 @@ redirects = {
     "user-guide/source.html": "latest/source.html",
     "user-guide/tuning.html": "latest/tuning.html",
 }
+
+
+# -- $COMET_VERSION substitution -------------------------------------------
+# build.sh runs `replace_in_files` after copying source/ → temp/ to swap the
+# $COMET_VERSION placeholder with the real version from pom.xml. When Sphinx
+# is invoked directly against source/ (local dev, IDE preview, etc.), that
+# substitution never runs and the literal "$COMET_VERSION" leaks into page
+# titles, breadcrumbs, and the toctree caption. The hook below mirrors the
+# build.sh substitution at Sphinx read-time so local builds match prod.
+
+def _read_comet_version():
+    import os
+    import xml.etree.ElementTree as ET
+    pom_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "pom.xml"))
+    try:
+        tree = ET.parse(pom_path)
+        root = tree.getroot()
+        ns = {"m": "http://maven.apache.org/POM/4.0.0"}
+        ver = root.find("m:version", ns)
+        if ver is not None and ver.text:
+            return ver.text.strip()
+    except Exception:
+        pass
+    return "latest"
+
+
+_comet_version = _read_comet_version()
+
+
+def _substitute_version(app, docname, source):
+    if "$COMET_VERSION" in source[0]:
+        source[0] = source[0].replace("$COMET_VERSION", _comet_version)
+
+
+def setup(app):
+    app.connect("source-read", _substitute_version)
+    return {"version": _comet_version, "parallel_read_safe": True, "parallel_write_safe": True}
