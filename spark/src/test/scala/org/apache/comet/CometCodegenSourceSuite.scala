@@ -755,14 +755,12 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   // Null-guard emission for nested reference-typed getters. Spark's
   // `CodeGenerator.setArrayElement` only emits an `isNullAt` check before `update(i, getX(j))`
   // for primitive elements. For reference types (Decimal / String / Binary / Struct / Array /
-  // Map) it relies on the source's `getX` to return null on null positions itself. The emitter
-  // honors this by prepending `if (isNullAt(...)) return null;` to those getters when the
-  // element / field is nullable, eliding the guard otherwise.
+  // Map) it relies on the source's `getX` to return null on null positions itself, matching
+  // `ColumnarArray.getBinary` and friends. The emitter prepends `if (isNullAt(...)) return null;`
+  // to those getters when the element/field is nullable.
   //
-  // Runtime regression coverage for the leaf reference types lives in
-  // `CometCodegenDispatchSmokeSuite` (Binary / String / Decimal short / Decimal long REPROs).
-  // The complex types (Struct / Array / Map) can't be runtime-tested without HOFs (see
-  // TODO(hof-lambdas) on `CometBatchKernelCodegen.canHandle`), so they live here.
+  // Runtime regressions for the leaf reference types live in `CometCodegenSuite`; complex-type
+  // (Struct/Array/Map) coverage runs through HOFs in `CometCodegenHOFSuite`.
   // ============================================================================================
 
   private val nullableIntStruct = StructColumnSpec(

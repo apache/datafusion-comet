@@ -22,17 +22,12 @@ package org.apache.comet.codegen
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
 
 /**
- * Throwing-default base for [[MapData]] in the Arrow-direct codegen kernel. Codegen-emitted
- * `InputMap_${path}` subclasses override `numElements`, `keyArray`, and `valueArray`.
+ * Throwing-default `MapData` base for the codegen kernel. Per-column `InputMap_${path}`
+ * subclasses override `numElements`, `keyArray`, and `valueArray` (the latter two return
+ * `InputArray_*` views over the same backing key/value vectors).
  *
- * Consumer: `InputMap_${path}` nested classes per `MapType` input column. They back `getMap(ord)`
- * and route `keyArray()` / `valueArray()` through `InputArray_*` views (instances of
- * [[CometArrayData]]) over the same backing key / value vectors.
- *
- * Sibling shims [[CometInternalRow]] and [[CometArrayData]] cover row and array shapes. `MapData`
- * does not extend `SpecializedGetters`, so this base does not mix in
- * [[org.apache.comet.shims.CometInternalRowShim]] or delegate to
- * [[CometSpecializedGettersDispatch]].
+ * `MapData` does not extend `SpecializedGetters`, so this base does not mix in the row/array shim
+ * or delegate to [[CometSpecializedGettersDispatch]].
  */
 abstract class CometMapData extends MapData {
 

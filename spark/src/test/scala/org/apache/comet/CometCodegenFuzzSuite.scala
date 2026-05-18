@@ -36,13 +36,13 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGener
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Randomized tests for the Arrow-direct codegen dispatcher: schema-driven coverage of every input
- * vector class, plus a decimal precision-scale sweep across the `Decimal.MAX_LONG_DIGITS=18`
- * boundary at varying null densities. Extends [[CometTestBase]] (not [[CometFuzzTestBase]])
- * because the base's `shuffle` x `nativeC2R` cross-product `test()` override is irrelevant for
- * projection-only queries.
+ * Randomized end-to-end tests for the Arrow-direct codegen dispatcher: schema-driven coverage of
+ * every input vector class against random parquet, plus a decimal precision-scale sweep across
+ * the `Decimal.MAX_LONG_DIGITS=18` boundary at varying null densities. Extends [[CometTestBase]]
+ * (not [[CometFuzzTestBase]]) because the base's `shuffle` x `nativeC2R` cross-product is
+ * irrelevant for projection-only queries.
  */
-class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometCodegenFuzzSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   /** Random schema with primitives plus shallow arrays and structs. No maps, no deep nesting. */
   private var mixedTypesFilename: String = _
@@ -63,8 +63,7 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
         .parse("2024-05-25 12:34:56")
         .getTime)
 
-    mixedTypesFilename =
-      s"$tempDir/CometCodegenDispatchFuzzSuite_${System.currentTimeMillis()}.parquet"
+    mixedTypesFilename = s"$tempDir/CometCodegenFuzzSuite_${System.currentTimeMillis()}.parquet"
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
@@ -80,7 +79,7 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
     }
 
     nestedTypesFilename =
-      s"$tempDir/CometCodegenDispatchFuzzSuite_nested_${System.currentTimeMillis()}.parquet"
+      s"$tempDir/CometCodegenFuzzSuite_nested_${System.currentTimeMillis()}.parquet"
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
@@ -297,10 +296,8 @@ class CometCodegenDispatchFuzzSuite extends CometTestBase with AdaptiveSparkPlan
   /**
    * Element-level fuzz for `Array<Struct<...>>`. `array_distinct` is a non-HOF unary expression
    * that hashes each element to dedupe; struct hashing is field-wise, so the kernel emits element
-   * reads on each struct's fields. (Tried `array_sort` first; it's a `HigherOrderFunction` whose
-   * `CodegenFallback` mark trips the dispatcher's reject — the lambda gap documented on
-   * `CometBatchKernelCodegen.canHandle`.) `cardinality` consumes without materialization. Asserts
-   * the optimizer keeps `ArrayDistinct` so the coverage isn't vacuously folded.
+   * reads on each struct's fields. `cardinality` consumes the result without materialization.
+   * Asserts the optimizer keeps `ArrayDistinct` so the coverage isn't vacuously folded.
    */
   test("array_distinct element fuzz: Array<Struct<primitives>> columns") {
     val arrayStructFields = spark.table("t1").schema.fields.filter {

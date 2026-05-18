@@ -19,7 +19,7 @@
 
 # ScalaUDF codegen dispatch
 
-Comet can route Spark `ScalaUDF` expressions through a JVM-side kernel that processes Arrow batches directly, instead of falling back to Spark for the whole operator. The kernel is compiled per `(expression, input schema)` pair via Janino and reused across batches of the same query. Surrounding native operators stay on the Comet path. The cost is one JNI roundtrip per batch.
+Comet routes Spark `ScalaUDF` expressions through a JVM-side kernel that processes Arrow batches directly instead of falling back to Spark for the whole operator. The kernel is compiled per `(expression, input schema)` pair via Janino and reused across batches of the same query. Surrounding native operators stay on the Comet path. The cost is one JNI roundtrip per batch.
 
 ## Configuration
 
@@ -30,9 +30,9 @@ Comet can route Spark `ScalaUDF` expressions through a JVM-side kernel that proc
 ## Supported
 
 - User functions registered via `udf(...)`, `spark.udf.register(...)` (Scala or Java functional interfaces), or SQL `CREATE FUNCTION ... AS 'com.example.MyUDF'`.
-- Scalar input and output types: `Boolean`, `Byte`, `Short`, `Int`, `Long`, `Float`, `Double`, `Decimal`, `String`, `Binary`, `Date`, `Timestamp`, `TimestampNTZ`.
-- Complex input and output types with arbitrary nesting: `ArrayType`, `StructType`, `MapType`.
-- Composition with other Catalyst expressions inside the user function's argument tree (e.g. `myUdf(upper(s))` binds the whole tree and compiles into one kernel).
+- Scalar input/output types: `Boolean`, `Byte`, `Short`, `Int`, `Long`, `Float`, `Double`, `Decimal`, `String`, `Binary`, `Date`, `Timestamp`, `TimestampNTZ`.
+- Complex input/output types with arbitrary nesting: `ArrayType`, `StructType`, `MapType`.
+- Composition with other Catalyst expressions inside the argument tree (e.g. `myUdf(upper(s))` binds the whole tree and compiles into one kernel).
 - Higher-order functions (`transform`, `filter`, `exists`, `aggregate`, `zip_with`, `map_filter`, `map_zip_with`, etc.) inside the argument tree. Each HOF runs as a single per-row interpreted-eval call site spliced into the kernel; surrounding non-HOF expressions stay codegen.
 
 ## Not supported
@@ -43,12 +43,13 @@ Comet can route Spark `ScalaUDF` expressions through a JVM-side kernel that proc
 - Hive `GenericUDF` and `SimpleUDF`.
 - `CalendarIntervalType` arguments and return types.
 - Trees whose total nested-field count (output plus all `BoundReference` inputs) exceeds `spark.sql.codegen.maxFields` (default 100). The dispatcher refuses these at plan time and the operator falls back to Spark.
+- Dictionary-encoded Arrow input vectors. The kernel assumes materialized vectors; a dict-encoded input would error in `specFor`. Comet operators upstream of the dispatcher materialize dict-encoded reads today, so this surfaces only if a future operator introduces dictionary outputs into the bridge.
 
 ## Behavior
 
-- Non-deterministic expressions referenced from the UDF's argument tree (`rand`, `uuid`, `monotonically_increasing_id`) produce per-partition sequences consistent with Spark. The kernel instance lives for one Spark task; state resets at task boundaries.
+- Non-deterministic expressions referenced from the argument tree (`rand`, `uuid`, `monotonically_increasing_id`) produce per-partition sequences consistent with Spark. Kernel state lives for one Spark task and resets at task boundaries.
 - `TaskContext.get()` inside the user function returns the driving Spark task's context even though the kernel runs on a Tokio worker thread.
-- The user function must be closure-serializable. The same function that works with Spark's executor execution works here.
+- The user function must be closure-serializable; the same function that works with Spark's executor execution works here.
 
 ## Known limitations
 

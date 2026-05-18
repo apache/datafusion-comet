@@ -31,23 +31,20 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeData
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Routes scalar `ScalaUDF` expressions (user-registered Scala and Java UDFs) through the
- * Arrow-direct codegen dispatcher. `ScalaUDF.doGenCode` emits compilable Java that invokes the
- * user function via `ctx.addReferenceObj`, so the codegen path picks it up unchanged: we
- * serialize the bound tree, the closure serializer carries the function reference across the
- * wire, and the Janino-compiled kernel loads the function and invokes it in a tight batch loop.
+ * Routes scalar `ScalaUDF` (Scala and Java UDFs) through the codegen dispatcher.
+ * `ScalaUDF.doGenCode` emits compilable Java that invokes the user function via
+ * `ctx.addReferenceObj`; the dispatcher serializes the bound tree, the closure serializer carries
+ * the function reference across the wire, and the Janino-compiled kernel invokes it in a tight
+ * batch loop.
  *
- * Not covered here:
- *   - Aggregate UDFs (`ScalaAggregator`, `TypedImperativeAggregate`, old UDAF API) - different
- *     bridge contract.
- *   - Table UDFs (`UserDefinedTableFunction`) - generator shape; `canHandle` rejects.
- *   - Python / Pandas UDFs - different runtime.
- *   - Hive UDFs (`HiveGenericUDF` / `HiveSimpleUDF`) - separate expression classes; would need
- *     their own serde.
+ * Not covered:
+ *   - Aggregate UDFs (`ScalaAggregator`, `TypedImperativeAggregate`, legacy UDAF).
+ *   - Table UDFs and generators.
+ *   - Python / Pandas UDFs.
+ *   - Hive `GenericUDF` / `SimpleUDF`.
  *
- * Gated by [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]]. When disabled, the plan falls back to
- * Spark for the enclosing operator; `ScalaUDF` has no native path so there is no in-between
- * option.
+ * Gated by [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]]. When disabled, plans containing a
+ * `ScalaUDF` fall back to Spark for the enclosing operator.
  */
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
@@ -60,14 +57,12 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       return None
     }
 
-    // Bind the tree against the set of AttributeReferences it actually reads, so the compiled
-    // kernel's Spark-codegen path resolves ordinals relative to the data args we send as inputs
-    // rather than the full input schema.
+    // Bind against only the AttributeReferences the tree actually reads, so ordinals align with
+    // the data args we ship.
     val attrs = expr.collect { case a: AttributeReference => a }.distinct
     val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
 
-    // Gate on canHandle before serializing: prevents unsupported input / output shapes from
-    // reaching the Janino compiler at execute time and surfaces the reason via withInfo.
+    // Gate at plan time; surface the reason via withInfo rather than crashing Janino at execute.
     CometBatchKernelCodegen.canHandle(boundExpr) match {
       case Some(reason) =>
         withInfo(expr, reason)
@@ -75,11 +70,10 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       case None =>
     }
 
-    // Serialize the bound tree via Spark's closure serializer. The serializer respects the task
-    // context classloader (so user UDF jars are visible) and matches the machinery Spark uses to
-    // ship closures across the wire. The bytes become arg 0 of the JvmScalarUdf proto; the
-    // dispatcher identifies the expression to compile from them, which makes the path work in
-    // cluster mode without executor-side driver registry state.
+    // Serialize via Spark's closure serializer: respects the task context classloader (so user
+    // UDF jars are visible) and matches Spark's wire format. The bytes become arg 0 of the
+    // JvmScalarUdf proto and self-describe the expression so this works in cluster mode without
+    // executor-side driver registry state.
     val serializer = SparkEnv.get.closureSerializer.newInstance()
     val buffer = serializer.serialize(boundExpr)
     val bytes = new Array[Byte](buffer.remaining())

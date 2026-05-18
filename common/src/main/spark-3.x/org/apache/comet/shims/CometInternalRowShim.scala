@@ -20,10 +20,8 @@
 package org.apache.comet.shims
 
 /**
- * Per-profile extension point mixed into `CometInternalRow` and `CometArrayData`. Spark 4.x added
- * new abstract getters on `SpecializedGetters` (`getVariant` in 4.0, `getGeography` and
- * `getGeometry` in 4.1) that both `InternalRow` and `ArrayData` concrete subclasses must
- * implement. Spark 3.x has none of these; this trait is empty so the shared classes compile
- * unchanged on that profile.
+ * Per-profile shim mixed into `CometInternalRow` and `CometArrayData`. Spark 4.x adds abstract
+ * `SpecializedGetters` getters (`getVariant` in 4.0, `getGeography` and `getGeometry` in 4.1)
+ * that subclasses must implement; Spark 3.x has none, so this trait is empty.
  */
 trait CometInternalRowShim

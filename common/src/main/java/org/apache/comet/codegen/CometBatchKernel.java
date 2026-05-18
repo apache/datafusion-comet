@@ -28,13 +28,6 @@ import org.apache.arrow.vector.ValueVector;
  * {@code BoundReference.genCode} can call {@code this.getUTF8String(ord)} directly) and carries
  * typed input fields baked at codegen time, one per input column. Expression evaluation plus Arrow
  * read/write fuse into one method per expression tree.
- *
- * <p>Input scope: any {@code ValueVector[]}; the generated subclass casts each slot to the concrete
- * Arrow type the compile-time schema specified. Output is a generic {@code FieldVector}; the
- * generated subclass casts to the concrete type matching the bound expression's {@code dataType}.
- * Widen input support by adding vector classes to the getter switch in {@code
- * CometBatchKernelCodegen.emitTypedGetters}; widen output support by adding cases in {@code
- * CometBatchKernelCodegen.allocateOutput} and {@code emitOutputWriter}.
  */
 public abstract class CometBatchKernel extends CometInternalRow {
 
@@ -47,8 +40,8 @@ public abstract class CometBatchKernel extends CometInternalRow {
   /**
    * Process one batch.
    *
-   * @param inputs Arrow input vectors; length and concrete classes must match the schema the kernel
-   *     was compiled against
+   * @param inputs Arrow input vectors; length and concrete classes match the schema the kernel was
+   *     compiled against
    * @param output Arrow output vector; caller allocates to the expression's {@code dataType}
    * @param numRows number of rows in this batch
    */
@@ -56,13 +49,13 @@ public abstract class CometBatchKernel extends CometInternalRow {
 
   /**
    * Run partition-dependent initialization. The generated subclass overrides this to execute
-   * statements collected via {@code CodegenContext.addPartitionInitializationStatement}, for
-   * example reseeding {@code Rand}'s {@code XORShiftRandom} from {@code seed + partitionIndex}.
+   * statements collected via {@code CodegenContext.addPartitionInitializationStatement}, e.g.
+   * reseeding {@code Rand}'s {@code XORShiftRandom} from {@code seed + partitionIndex}.
    * Deterministic expressions leave this as a no-op.
    *
-   * <p>The caller must invoke this before the first {@code process} call of each partition. The
-   * generated subclass is not thread-safe across concurrent {@code process} calls, so kernels are
-   * allocated per dispatcher invocation and init is run once on the fresh instance.
+   * <p>The caller invokes this before the first {@code process} call of each partition. The
+   * generated subclass is not thread-safe across concurrent {@code process} calls; the dispatcher
+   * allocates one per partition and serializes calls.
    */
   public void init(int partitionIndex) {}
 }

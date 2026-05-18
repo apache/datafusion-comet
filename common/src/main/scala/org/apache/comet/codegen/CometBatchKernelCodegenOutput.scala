@@ -29,12 +29,9 @@ import org.apache.spark.sql.types._
 import org.apache.comet.CometArrowAllocator
 
 /**
- * Output-side emitters for the Arrow-direct codegen kernel. Everything that writes a computed
- * value into an Arrow output vector lives here: [[allocateOutput]], [[emitOutputWriter]] (the
- * entry point for the kernel's top-level write), [[emitWrite]] (recursive per-type write), the
- * output vector-class lookup, and the output-side type-support gate.
- *
- * Paired with [[CometBatchKernelCodegenInput]], which handles the symmetric input side.
+ * Output-side emitters for the codegen kernel: [[allocateOutput]], [[emitOutputWriter]]
+ * (top-level write entry), [[emitWrite]] (recursive per-type write), the output vector-class
+ * lookup. Paired with [[CometBatchKernelCodegenInput]] on the read side.
  */
 private[codegen] object CometBatchKernelCodegenOutput {
 
@@ -43,10 +40,9 @@ private[codegen] object CometBatchKernelCodegenOutput {
    * `Field.createVector` for the Spark -> Arrow mapping (handles `MapVector`'s non-null-key and
    * non-null-entries invariants).
    *
-   * For variable-length scalar outputs (`StringType`, `BinaryType`), `estimatedBytes` pre-sizes
-   * the data buffer to avoid mid-loop realloc; ignored for non-`BaseVariableWidthVector` roots,
-   * and not propagated into nested var-width children (those get default sizing because the
-   * parent's `allocateNew` resets child buffers).
+   * `estimatedBytes` pre-sizes the data buffer for variable-length scalar outputs; ignored for
+   * non-`BaseVariableWidthVector` roots, and not propagated into nested var-width children (those
+   * get default sizing because the parent's `allocateNew` resets child buffers).
    *
    * TODO(nested-varwidth-sizing): thread the estimate into nested var-width children. Arrow
    * Java's child-vector hints are allocator-level, so this needs a small recursion or a heuristic
@@ -57,7 +53,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
    * `Platform.copyMemory` for VarChar / VarBinary / Decimal scalar outputs, bypassing `setSafe`'s
    * realloc check. Depends on pre-allocated buffers (above).
    *
-   * Closes the vector on any failure so a partially-initialised tree doesn't leak buffers.
+   * Closes the vector on any failure so a partially-initialized tree doesn't leak buffers.
    */
   def allocateOutput(
       dataType: DataType,
@@ -92,10 +88,9 @@ private[codegen] object CometBatchKernelCodegenOutput {
   }
 
   /**
-   * Returns `(concreteVectorClassName, batchSetup, perRowSnippet)` for the expression's output
-   * type at the root of the generated kernel. `output` is already cast to
-   * `concreteVectorClassName` in `process`'s prelude, so `emitWrite`'s complex-type branches can
-   * hoist child casts straight off `output` without re-casting it per row.
+   * Returns `(concreteVectorClassName, batchSetup, perRowSnippet)`. `output` is cast to the
+   * concrete class in `process`'s prelude so `emitWrite`'s complex-type branches can hoist child
+   * casts off `output` without re-casting per row.
    */
   def emitOutputWriter(
       dataType: DataType,
@@ -106,11 +101,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
     (cls, emit.setup, emit.perRow)
   }
 
-  /**
-   * Concrete Arrow vector class name for the given output type. The name is used to cast `outRaw`
-   * to the right type at the top of the generated `process` method, so that subsequent writes
-   * through `emitWrite` can call vector-specific methods without further casts.
-   */
+  /** Concrete Arrow vector class name for the output type, used to cast `outRaw` once. */
   private def outputVectorClass(dataType: DataType): String = dataType match {
     case BooleanType => classOf[BitVector].getName
     case ByteType => classOf[TinyIntVector].getName
@@ -135,13 +126,11 @@ private[codegen] object CometBatchKernelCodegenOutput {
 
   /**
    * Composable write emitter. Returns an [[OutputEmit]] whose `setup` declares once-per-batch
-   * typed child-vector casts (hoisted above the `process` loop) and whose `perRow` writes
-   * `source` into `targetVec` at `idx`. `targetVec` is assumed pre-cast to the right Arrow class
-   * (root prelude cast or a parent's setup cast).
+   * typed child-vector casts and whose `perRow` writes `source` into `targetVec` at `idx`.
+   * `targetVec` is assumed pre-cast to the right Arrow class (root prelude or a parent's setup).
    *
-   * Scalars emit `perRow` only. Complex types emit both: setup for child casts, perRow for the
-   * loop / null guards / recursive writes. Inner `emitWrite` setup bubbles up so deep child casts
-   * land at the batch prelude.
+   * Scalars emit `perRow` only; complex types emit both. Inner setup bubbles up so deep child
+   * casts land at the batch prelude.
    */
   private def emitWrite(
       targetVec: String,
@@ -153,15 +142,11 @@ private[codegen] object CometBatchKernelCodegenOutput {
       OutputEmit("", s"$targetVec.set($idx, $source ? 1 : 0);")
     case ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType | DateType |
         TimestampType | TimestampNTZType =>
-      // All scalar primitives and date/time types share the direct `set(idx, value)` shape.
-      // Spark's codegen already emits the correct primitive Java type for each; Arrow's
-      // typed vectors accept the matching primitive in their `set` overloads.
+      // Spark codegen emits the matching primitive Java type; Arrow `set` overloads accept it.
       OutputEmit("", s"$targetVec.set($idx, $source);")
     case dt: DecimalType =>
-      // Optimization: DecimalOutputShortFastPath.
-      // For precision <= 18 the unscaled value fits in a signed long; pass it straight to
-      // `DecimalVector.setSafe(int, long)` and skip the `java.math.BigDecimal` allocation
-      // `setSafe(int, BigDecimal)` requires. For p > 18 the BigDecimal path is unavoidable.
+      // DecimalOutputShortFastPath: precision <= 18 fits in a signed long, so pass the unscaled
+      // value to `setSafe(int, long)` and skip the BigDecimal allocation.
       val write =
         if (dt.precision <= Decimal.MAX_LONG_DIGITS) {
           s"$targetVec.setSafe($idx, $source.toUnscaledLong());"
@@ -170,19 +155,12 @@ private[codegen] object CometBatchKernelCodegenOutput {
         }
       OutputEmit("", write)
     case _: StringType =>
-      // Optimization: Utf8OutputOnHeapShortcut.
-      // `UTF8String` is internally a `(base, offset, numBytes)` view. When the base is a
-      // `byte[]` (common case: Spark string functions allocate results on-heap), pass the
-      // existing byte[] directly to `VarCharVector.setSafe(int, byte[], int, int)` via the
-      // encoded offset and skip the redundant `getBytes()` allocation. Off-heap passthrough
-      // (rare on output side) falls back to `getBytes()`.
+      // Utf8OutputOnHeapShortcut: when the UTF8String is on-heap (Spark's string functions
+      // allocate results on-heap), pass its backing byte[] directly to `setSafe`, skipping the
+      // `getBytes()` allocation. Off-heap falls back to `getBytes()`.
       //
-      // TODO(utf8-unsafe-write): the output-side equivalent of the input emitter's
-      // `UTF8String.fromAddress` zero-copy read would cache the data buffer address once per
-      // batch and write via `Platform.copyMemory` + manual offset/validity buffer updates,
-      // bypassing `setSafe`'s realloc check. Coupled with `cached-write-buffer-addrs` and a
-      // pre-allocated buffer (root-only `estimatedBytes` today). Not done because perf payoff
-      // is unmeasured against this PR's workloads.
+      // TODO(utf8-unsafe-write): output-side equivalent of `UTF8String.fromAddress`. Coupled
+      // with `cached-write-buffer-addrs` and a pre-allocated buffer.
       val bBase = ctx.freshName("utfBase")
       val bLen = ctx.freshName("utfLen")
       val bArr = ctx.freshName("utfArr")
@@ -200,22 +178,16 @@ private[codegen] object CometBatchKernelCodegenOutput {
            |  $targetVec.setSafe($idx, $bArr, 0, $bArr.length);
            |}""".stripMargin)
     case BinaryType =>
-      // Spark's BinaryType value is already a `byte[]`.
       OutputEmit("", s"$targetVec.setSafe($idx, $source, 0, $source.length);")
     case ArrayType(elementType, containsNull) =>
-      // Complex-type output: recursive per-row write.
-      // Spark's `doGenCode` for ArrayType-returning expressions produces an `ArrayData` value
-      // (usually `GenericArrayData` / `UnsafeArrayData`). We iterate its elements, write each
-      // one into the Arrow `ListVector`'s child, and bracket with `startNewValue` /
-      // `endValue`. The element write recurses through `emitWrite` on the list's child vector,
-      // so any scalar we support becomes a valid array element. Nested complex types (Array of
-      // Array, Array of Struct) work by the same recursion. `targetVec` is a `ListVector` at
-      // the call site (either `output` at root or a hoisted child cast); we only need to cast
-      // its data vector, and that cast goes into setup.
+      // Spark's `doGenCode` for ArrayType produces an `ArrayData` value. Iterate elements,
+      // write each into the `ListVector`'s child, bracket with `startNewValue`/`endValue`. The
+      // element write recurses through `emitWrite` on the child vector so any supported scalar
+      // becomes a valid element. Nested complex types compose. `targetVec` is a `ListVector` at
+      // the call site; only its data vector needs casting (in setup).
       //
-      // Optimization: NullableElementElision. When `containsNull == false`, the element
-      // `isNullAt` guard is dead by Spark's own type-system contract, so we drop it at source
-      // level rather than relying on JIT folding.
+      // NullableElementElision: when `containsNull == false` drop the `isNullAt` guard at
+      // source level rather than relying on JIT folding.
       val childVar = ctx.freshName("outListChild")
       val childClass = outputVectorClass(elementType)
       val arrVar = ctx.freshName("arr")
@@ -246,17 +218,11 @@ private[codegen] object CometBatchKernelCodegenOutput {
            |$targetVec.endValue($idx, $nVar);""".stripMargin
       OutputEmit(setup, perRow)
     case st: StructType =>
-      // Complex-type output: recursive per-row write to a StructVector.
-      // Spark's `doGenCode` for StructType-returning expressions produces an `InternalRow`
-      // value (`GenericInternalRow` / `UnsafeRow` / ScalaUDF encoder output). Typed child-vector
-      // casts are hoisted to setup (once per batch); the per-row body references the hoisted
-      // names. `StructVector` writes are flat-indexed (same `$idx` as the struct's outer slot).
+      // Spark's `doGenCode` for StructType produces an `InternalRow`. Typed child-vector casts
+      // hoist to setup; the per-row body references the hoisted names.
       //
-      // Branchless optimization: for each field whose `nullable == false` on the
-      // [[StructType]], we skip the `row.isNullAt($fi)` guard at source level. Non-nullable
-      // fields in Spark are a contract that the producer does not emit nulls for that field,
-      // and matching that contract here lets HotSpot emit a straight write path per field
-      // rather than a branch.
+      // For non-nullable fields, drop the `row.isNullAt($fi)` guard at source level so HotSpot
+      // emits a straight write path per field rather than a branch.
       val rowVar = ctx.freshName("row")
       val perField = st.fields.zipWithIndex.map { case (field, fi) =>
         val childVar = ctx.freshName("outStructChild")
@@ -286,21 +252,12 @@ private[codegen] object CometBatchKernelCodegenOutput {
            |$perFieldWrites""".stripMargin
       OutputEmit(setup, perRow)
     case mt: MapType =>
-      // Complex-type output: recursive per-row write to a MapVector.
-      // Spark's `doGenCode` for MapType-returning expressions produces a `MapData` value
-      // (`ArrayBasedMapData` / `UnsafeMapData` / ScalaUDF encoder output). Typed child-vector
-      // casts for the entries struct and the key/value children are hoisted to setup (once per
-      // batch); the per-row body references them.
+      // Spark's `doGenCode` for MapType produces a `MapData`. Typed child-vector casts for the
+      // entries struct and the key/value children hoist to setup.
       //
-      // Per-row shape:
-      //   1. Read keyArray / valueArray from the MapData source.
-      //   2. Open a new map entry via `startNewValue(idx)`; returns the base index into the
-      //      entries StructVector for this row's key/value pairs.
-      //   3. For each key/value pair: set the entries struct slot defined (map values can be
-      //      null, but the struct slot itself is defined), write the key (always non-null by
-      //      Spark/Arrow invariant), then write the value with a null-guard on
-      //      `vals.isNullAt(j)`. Both writes recurse through `emitWrite`.
-      //   4. Close the map entry with `endValue(idx, n)`.
+      // Per-row: read keyArray/valueArray, open via `startNewValue(idx)`, write each pair into
+      // the entries struct (key always non-null per Spark/Arrow invariant; value guarded on
+      // `valueContainsNull`), close via `endValue(idx, n)`.
       val entriesVar = ctx.freshName("outMapEntries")
       val keyVar = ctx.freshName("outMapKey")
       val valVar = ctx.freshName("outMapVal")
@@ -351,9 +308,8 @@ private[codegen] object CometBatchKernelCodegenOutput {
   }
 
   /**
-   * Java expression that reads a typed value out of a Spark `SpecializedGetters` reference (which
-   * both `ArrayData` and `InternalRow` implement) at a given ordinal/index. Used by the
-   * `ArrayType` and `StructType` branches of [[emitWrite]] to source each element / field for its
+   * Java expression that reads a typed value out of a `SpecializedGetters` (both `ArrayData` and
+   * `InternalRow` implement it). Used by [[emitWrite]] to source each element/field for its
    * recursive inner write.
    */
   private def emitSpecializedGetterExpr(target: String, idx: String, elemType: DataType): String =
@@ -378,10 +334,6 @@ private[codegen] object CometBatchKernelCodegenOutput {
           s"CometBatchKernelCodegen.emitSpecializedGetterExpr: unsupported type $other")
     }
 
-  /**
-   * Split output for a complex-type write: `setup` holds once-per-batch declarations (typed
-   * child-vector casts) and lives outside the per-row for-loop; `perRow` holds the statements
-   * executed for each row. Scalar writes have empty setup.
-   */
+  /** `setup` is once-per-batch (typed child-vector casts); `perRow` runs per row. */
   private case class OutputEmit(setup: String, perRow: String)
 }

@@ -29,11 +29,11 @@ import org.apache.spark.sql.types._
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Smoke tests for the Arrow-direct codegen dispatcher. Runs ScalaUDF queries across the scalar
- * and complex type surface, composed UDF trees, subquery reuse, `TaskContext` propagation, and
- * per-task cache isolation, asserting results match Spark.
+ * End-to-end correctness for the Arrow-direct codegen dispatcher. Covers the scalar and complex
+ * type surface, composed UDF trees, subquery reuse, `TaskContext` propagation, per-task cache
+ * isolation, the `maxFields` plan-time gate, and regressions pinned from fuzz.
  */
-class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometCodegenSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def sparkConf: SparkConf =
     super.sparkConf
@@ -50,12 +50,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  /**
-   * Composition smoke tests. Demonstrate that the codegen dispatcher handles nested expression
-   * trees in one compile per (tree, schema) pair, not one JNI hop per sub-expression. Each test
-   * wraps the query in `assertCodegenDidWork` to prove the codegen path ran rather than silently
-   * falling back to Spark.
-   */
+  /** Asserts the dispatcher actually ran during `f`, guarding against silent serde fallback. */
   private def assertCodegenDidWork(f: => Unit): Unit = {
     CometScalaUDFCodegen.resetStats()
     f
@@ -66,14 +61,10 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   /**
-   * Stronger form of [[assertCodegenDidWork]]: asserts the full expression subtree compiles into
-   * one distinct kernel signature, not N (one per sub-expression). Compares the JVM-wide
-   * append-only signature set before and after `f`. `compileCount` is not usable here because
-   * each Spark task deserializes its own `boundExpr` and triggers its own compile (per-task cache
-   * is load-bearing for HOF correctness; see `CometScalaUDFCodegen` scaladoc), so a
-   * multi-partition query produces `compileCount > 1` even when the subtree fuses into one kernel
-   * shape. The signature set deduplicates across tasks. The activity check guards against silent
-   * Spark fallback where the size-delta assertion would pass vacuously.
+   * Asserts the composed subtree fused into one kernel signature, not N (one per sub-expression).
+   * Uses the JVM-wide signature set rather than `compileCount` because per-task `boundExpr`
+   * isolation makes multi-partition queries trip `compileCount > 1` even when the bytecode is
+   * shared.
    */
   private def assertOneKernelForSubtree(f: => Unit): Unit = {
     CometScalaUDFCodegen.resetStats()
@@ -92,15 +83,9 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   /**
-   * Assert the compile cache contains a kernel matching the given input Arrow vector classes (in
-   * ordinal order) and output `DataType`. A specialization check: if a future change loses
-   * vector-class discrimination on the cache key, `checkSparkAnswerAndOperator` still passes
-   * (Spark answers correctly) but this assertion fails. Cache is JVM-wide so a prior test's
-   * compile counts; pair with `assertCodegenDidWork` to also prove this test ran the dispatcher.
-   *
-   * Compares by simple name because `common` shades `org.apache.arrow`; a direct
-   * `classOf[VarCharVector]` here (unshaded) wouldn't match the shaded class the dispatcher
-   * actually stores.
+   * Asserts a kernel matching the given input Arrow vector classes and output type sits in the
+   * JVM-wide signature set. Pair with `assertCodegenDidWork` since the set is append-only.
+   * Compares by simple name because `common` shades `org.apache.arrow`.
    */
   private def assertKernelSignaturePresent(
       inputs: Seq[Class[_ <: ValueVector]],
@@ -116,11 +101,6 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
         s"cache had ${sigs.map { case (c, d) => (c.map(_.getSimpleName), d) }}")
   }
 
-  /**
-   * Multi-column smoke tests. The dispatcher compiles the whole bound expression tree, including
-   * composed sub-expressions that reference multiple columns. Verify end-to-end correctness
-   * against Spark for a handful of representative shapes.
-   */
   private def withTwoStringCols(rows: (String, String)*)(f: => Unit): Unit = {
     withTable("t") {
       sql("CREATE TABLE t (c1 STRING, c2 STRING) USING parquet")
@@ -395,13 +375,10 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   /**
-   * Type-surface ScalaUDF tests. Each exercises a distinct Arrow input vector class plus the
-   * matching output writer end to end.
-   *
-   * Backed by parquet tables with declared column types rather than `spark.range` projections:
-   * derived `cast(id as int)` columns get folded into the plan and leave the `BoundReference` on
-   * the underlying long, not the projected int. A declared parquet column keeps the Arrow vector
-   * the dispatcher sees aligned with the UDF's signature.
+   * Per-primitive identity-UDF coverage. Each entry registers a `T => T` UDF over a parquet
+   * column declared at `sqlType` and asserts the dispatcher compiled a kernel for the matching
+   * `(vector class, output type)` pair. Parquet-backed (rather than `spark.range`-cast) tables
+   * keep the column's Arrow vector class aligned with the UDF signature.
    */
   private def withTypedCol(sqlType: String, valueLiterals: String*)(f: => Unit): Unit = {
     withTable("t") {
@@ -414,160 +391,123 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("ScalaUDF on IntegerType (IntVector, getInt)") {
-    spark.udf.register("doubleIt", (i: Int) => i * 2)
-    withTypedCol("INT", "1", "2", "100") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT doubleIt(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[IntVector]), IntegerType)
-    }
-  }
+  private case class IdentityUdfCase(
+      label: String,
+      sqlType: String,
+      values: Seq[String],
+      vec: Class[_ <: ValueVector],
+      output: DataType,
+      udfName: String,
+      register: () => Unit)
 
-  test("ScalaUDF on LongType (BigIntVector, getLong)") {
-    spark.udf.register("inc", (l: Long) => l + 1L)
-    withTypedCol("BIGINT", "1", "2", "100") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT inc(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[BigIntVector]), LongType)
-    }
-  }
-
-  test("ScalaUDF on DoubleType (Float8Vector, getDouble)") {
-    spark.udf.register("halve", (d: Double) => d / 2.0)
-    withTypedCol("DOUBLE", "1.5", "2.5", "100.0") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT halve(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[Float8Vector]), DoubleType)
-    }
-  }
-
-  test("ScalaUDF on FloatType (Float4Vector, getFloat)") {
-    spark.udf.register("scaleF", (f: Float) => f * 1.5f)
-    withTypedCol("FLOAT", "CAST(1.5 AS FLOAT)", "CAST(2.5 AS FLOAT)") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT scaleF(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[Float4Vector]), FloatType)
-    }
-  }
-
-  test("ScalaUDF on BooleanType (BitVector, getBoolean)") {
-    spark.udf.register("neg", (b: Boolean) => !b)
-    withTypedCol("BOOLEAN", "TRUE", "FALSE", "TRUE") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT neg(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[BitVector]), BooleanType)
-    }
-  }
-
-  test("ScalaUDF on ShortType (SmallIntVector, getShort)") {
-    spark.udf.register("incS", (s: Short) => (s + 1).toShort)
-    withTypedCol(
+  private val identityScalarCases: Seq[IdentityUdfCase] = Seq(
+    IdentityUdfCase(
+      "Boolean",
+      "BOOLEAN",
+      Seq("TRUE", "FALSE", "TRUE"),
+      classOf[BitVector],
+      BooleanType,
+      "u_bool",
+      () => spark.udf.register("u_bool", (b: Boolean) => !b)),
+    IdentityUdfCase(
+      "Byte",
+      "TINYINT",
+      Seq("CAST(1 AS TINYINT)", "CAST(2 AS TINYINT)", "CAST(100 AS TINYINT)"),
+      classOf[TinyIntVector],
+      ByteType,
+      "u_byte",
+      () => spark.udf.register("u_byte", (b: Byte) => (b + 1).toByte)),
+    IdentityUdfCase(
+      "Short",
       "SMALLINT",
-      "CAST(1 AS SMALLINT)",
-      "CAST(2 AS SMALLINT)",
-      "CAST(30000 AS SMALLINT)") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT incS(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[SmallIntVector]), ShortType)
-    }
-  }
-
-  test("ScalaUDF on ByteType (TinyIntVector, getByte)") {
-    spark.udf.register("incB", (b: Byte) => (b + 1).toByte)
-    withTypedCol("TINYINT", "CAST(1 AS TINYINT)", "CAST(2 AS TINYINT)", "CAST(100 AS TINYINT)") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT incB(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[TinyIntVector]), ByteType)
-    }
-  }
-
-  test("ScalaUDF on DateType (DateDayVector, getInt)") {
-    // Date input flows through the Int getter because DateType is physically int. The UDF takes
-    // java.sql.Date and Spark's encoder handles the int -> Date materialization.
-    spark.udf.register(
-      "nextDay",
-      (d: java.sql.Date) => if (d == null) null else new java.sql.Date(d.getTime + 86400000L))
-    withTypedCol("DATE", "DATE'2024-01-01'", "DATE'2024-06-15'", "DATE'1970-01-01'") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT nextDay(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[DateDayVector]), DateType)
-    }
-  }
-
-  test("ScalaUDF on TimestampType (TimeStampMicroTZVector, getLong)") {
-    spark.udf.register(
-      "plusSecond",
-      (t: java.sql.Timestamp) =>
-        if (t == null) null else new java.sql.Timestamp(t.getTime + 1000L))
-    withTypedCol(
+      Seq("CAST(1 AS SMALLINT)", "CAST(2 AS SMALLINT)", "CAST(30000 AS SMALLINT)"),
+      classOf[SmallIntVector],
+      ShortType,
+      "u_short",
+      () => spark.udf.register("u_short", (s: Short) => (s + 1).toShort)),
+    IdentityUdfCase(
+      "Int",
+      "INT",
+      Seq("1", "2", "100"),
+      classOf[IntVector],
+      IntegerType,
+      "u_int",
+      () => spark.udf.register("u_int", (i: Int) => i * 2)),
+    IdentityUdfCase(
+      "Long",
+      "BIGINT",
+      Seq("1", "2", "100"),
+      classOf[BigIntVector],
+      LongType,
+      "u_long",
+      () => spark.udf.register("u_long", (l: Long) => l + 1L)),
+    IdentityUdfCase(
+      "Float",
+      "FLOAT",
+      Seq("CAST(1.5 AS FLOAT)", "CAST(2.5 AS FLOAT)"),
+      classOf[Float4Vector],
+      FloatType,
+      "u_float",
+      () => spark.udf.register("u_float", (f: Float) => f * 1.5f)),
+    IdentityUdfCase(
+      "Double",
+      "DOUBLE",
+      Seq("1.5", "2.5", "100.0"),
+      classOf[Float8Vector],
+      DoubleType,
+      "u_double",
+      () => spark.udf.register("u_double", (d: Double) => d / 2.0)),
+    IdentityUdfCase(
+      "Date",
+      "DATE",
+      Seq("DATE'2024-01-01'", "DATE'2024-06-15'", "DATE'1970-01-01'"),
+      classOf[DateDayVector],
+      DateType,
+      "u_date",
+      () =>
+        spark.udf.register(
+          "u_date",
+          (d: java.sql.Date) =>
+            if (d == null) null else new java.sql.Date(d.getTime + 86400000L))),
+    IdentityUdfCase(
+      "Timestamp",
       "TIMESTAMP",
-      "TIMESTAMP'2024-01-01 12:00:00'",
-      "TIMESTAMP'2024-06-15 23:59:59'") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT plusSecond(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[TimeStampMicroTZVector]), TimestampType)
-    }
-  }
-
-  test("ScalaUDF on TimestampNTZType (TimeStampMicroVector, getLong)") {
-    spark.udf.register(
-      "plusDayNtz",
-      (ldt: java.time.LocalDateTime) => if (ldt == null) null else ldt.plusDays(1))
-    withTypedCol(
+      Seq("TIMESTAMP'2024-01-01 12:00:00'", "TIMESTAMP'2024-06-15 23:59:59'"),
+      classOf[TimeStampMicroTZVector],
+      TimestampType,
+      "u_ts",
+      () =>
+        spark.udf.register(
+          "u_ts",
+          (t: java.sql.Timestamp) =>
+            if (t == null) null else new java.sql.Timestamp(t.getTime + 1000L))),
+    IdentityUdfCase(
+      "TimestampNTZ",
       "TIMESTAMP_NTZ",
-      "TIMESTAMP_NTZ'2024-01-01 12:00:00'",
-      "TIMESTAMP_NTZ'2024-06-15 23:59:59'") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT plusDayNtz(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[TimeStampMicroVector]), TimestampNTZType)
-    }
-  }
+      Seq("TIMESTAMP_NTZ'2024-01-01 12:00:00'", "TIMESTAMP_NTZ'2024-06-15 23:59:59'"),
+      classOf[TimeStampMicroVector],
+      TimestampNTZType,
+      "u_tsntz",
+      () =>
+        spark.udf.register(
+          "u_tsntz",
+          (ldt: java.time.LocalDateTime) => if (ldt == null) null else ldt.plusDays(1))))
 
-  test("ScalaUDF returning DateType") {
-    spark.udf.register("epochDay", (_: Int) => java.sql.Date.valueOf("1970-01-01"))
-    withTypedCol("INT", "1", "2", "3") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT epochDay(c) FROM t"))
+  identityScalarCases.foreach { c =>
+    test(s"identity ScalaUDF on ${c.label} routes through dispatcher") {
+      c.register()
+      withTypedCol(c.sqlType, c.values: _*) {
+        assertCodegenDidWork {
+          checkSparkAnswerAndOperator(sql(s"SELECT ${c.udfName}(c) FROM t"))
+        }
+        assertKernelSignaturePresent(Seq(c.vec), c.output)
       }
-      assertKernelSignaturePresent(Seq(classOf[IntVector]), DateType)
-    }
-  }
-
-  test("ScalaUDF returning TimestampType") {
-    spark.udf.register("mkTs", (s: Long) => new java.sql.Timestamp(s * 1000L))
-    withTypedCol("BIGINT", "0", "1700000000", "1750000000") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT mkTs(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[BigIntVector]), TimestampType)
-    }
-  }
-
-  test("ScalaUDF returning TimestampNTZType") {
-    spark.udf.register(
-      "mkTsNtz",
-      (s: Long) => java.time.LocalDateTime.ofEpochSecond(s, 0, java.time.ZoneOffset.UTC))
-    withTypedCol("BIGINT", "0", "1700000000", "1750000000") {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT mkTsNtz(c) FROM t"))
-      }
-      assertKernelSignaturePresent(Seq(classOf[BigIntVector]), TimestampNTZType)
     }
   }
 
   test("ScalaUDF returning a different type than its input") {
-    // String -> Int transition forces the output writer to switch from VarChar to Int. Exercises
-    // the `IntegerType` output path end to end from a user UDF.
+    // String -> Int output transition. Identity-loop above keeps input == output; this asserts
+    // the writer can switch types per the UDF's declared return.
     spark.udf.register("codePoint", (s: String) => if (s == null) 0 else s.codePointAt(0))
     withSubjects("abc", "A", null, "!") {
       assertCodegenDidWork {
@@ -648,11 +588,9 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
   }
 
   /**
-   * Decimal tests. The dispatcher's `getDecimal` getter specializes on the `BoundReference`'s
-   * `DecimalType.precision` at source-generation time: precision <= 18 emits an unscaled-long
-   * fast path via `Decimal.createUnsafe`, precision > 18 emits a `BigDecimal + Decimal.apply`
-   * slow path. These smoke tests exercise both sides of the split end to end and verify Spark and
-   * Comet agree on correctness across typical decimal workloads.
+   * Decimal end-to-end: the dispatcher's `getDecimal` specializes per `DecimalType.precision` at
+   * source-generation time. Two representative cases here; `CometCodegenFuzzSuite` sweeps every
+   * shape across the boundary at varying null densities.
    */
   private def withDecimalTable(decimalType: String, values: Seq[String])(f: => Unit): Unit = {
     withTable("t") {
@@ -663,64 +601,21 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  test("ScalaUDF over Decimal(9, 2) (short precision, fast path)") {
-    // Short-precision identity UDF. The column's DecimalType has precision 9, so the generated
-    // getter for ordinal 0 emits only the unscaled-long fast path. The UDF's Scala-side signature
-    // uses `java.math.BigDecimal`, which Spark's encoder pins at DecimalType(38, 18); the implicit
-    // Cast from DECIMAL(9, 2) -> DECIMAL(38, 18) runs inside Spark's generated code, not via our
-    // kernel's getter, so the fast path still fires on the column read.
-    spark.udf.register("decId9_2", (d: java.math.BigDecimal) => d)
-    withDecimalTable("DECIMAL(9, 2)", Seq("0.00", "1.50", "-1.50", "9999.99", "-9999.99", null)) {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT decId9_2(d) FROM t"))
-      }
-    }
-  }
-
-  test("ScalaUDF over Decimal(18, 0) (max short precision, fast path)") {
-    // Boundary precision: 18 is the last value for which the unscaled representation fits in a
-    // signed 64-bit long. The fast path must still be selected.
-    spark.udf.register("decId18_0", (d: java.math.BigDecimal) => d)
-    withDecimalTable(
-      "DECIMAL(18, 0)",
-      Seq("0", "1", "-1", "999999999999999999", "-999999999999999999", null)) {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT decId18_0(d) FROM t"))
-      }
-    }
-  }
-
-  test("ScalaUDF over Decimal(18, 9) (max short precision with scale, fast path)") {
-    // Same precision as above but with scale 9 to exercise the fractional side of the long
-    // decimal. Spark `Decimal` stores both as the same unscaled long; only the `scale` parameter
-    // differs.
-    spark.udf.register("decId18_9", (d: java.math.BigDecimal) => d)
+  test("ScalaUDF over Decimal(18, 9) routes through the unscaled-long fast path") {
+    // Boundary precision (18 == `MAX_LONG_DIGITS`) with a non-zero scale exercises the fractional
+    // branch of the fast-path encoding.
+    spark.udf.register("decIdShort", (d: java.math.BigDecimal) => d)
     withDecimalTable(
       "DECIMAL(18, 9)",
       Seq("0.000000000", "1.123456789", "-1.123456789", "999999999.999999999", null)) {
       assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT decId18_9(d) FROM t"))
+        checkSparkAnswerAndOperator(sql("SELECT decIdShort(d) FROM t"))
       }
     }
   }
 
-  test("ScalaUDF over Decimal(19, 0) (just past short precision, slow path)") {
-    // First precision where the unscaled value can exceed `Long.MAX_VALUE`. The generated getter
-    // must emit only the slow path; the fast-path marker must be absent in the compiled kernel.
-    spark.udf.register("decId19_0", (d: java.math.BigDecimal) => d)
-    withDecimalTable(
-      "DECIMAL(19, 0)",
-      Seq("0", "1", "-1", "9999999999999999999", "-9999999999999999999", null)) {
-      assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT decId19_0(d) FROM t"))
-      }
-    }
-  }
-
-  test("ScalaUDF over Decimal(38, 10) (max precision, slow path)") {
-    // Max decimal128 precision. Exercises the `getObject + Decimal.apply` branch and the
-    // end-to-end BigDecimal conversion path with a non-trivial scale.
-    spark.udf.register("decId38_10", (d: java.math.BigDecimal) => d)
+  test("ScalaUDF over Decimal(38, 10) routes through the BigDecimal slow path") {
+    spark.udf.register("decIdLong", (d: java.math.BigDecimal) => d)
     withDecimalTable(
       "DECIMAL(38, 10)",
       Seq(
@@ -730,7 +625,7 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
         "9999999999999999999999999999.0000000000",
         null)) {
       assertCodegenDidWork {
-        checkSparkAnswerAndOperator(sql("SELECT decId38_10(d) FROM t"))
+        checkSparkAnswerAndOperator(sql("SELECT decIdLong(d) FROM t"))
       }
     }
   }
@@ -1232,15 +1127,9 @@ class CometCodegenDispatchSmokeSuite extends CometTestBase with AdaptiveSparkPla
     }
   }
 
-  // Note: a runtime regression test for nullable nested `getStruct` / `getArray` / `getMap` would
-  // need a
-  // non-HOF expression that reads null elements after `flatten`. Spark's optimizer rules
-  // (`SimplifyExtractValueOps` and friends) tend to rewrite the obvious candidates
-  // (`element_at(flatten(arr), 1).x`, `flatten(arr)[i].x`) into shapes our dispatcher rejects
-  // without a clean reason, and the only iteration paths over complex elements without
-  // simplification go through HOFs (`array_filter`, `transform`) which our `canHandle` rejects
-  // (TODO(hof-lambdas) on `CometBatchKernelCodegen`). Static coverage of the emitter for these
-  // three getters lives in `CometCodegenSourceSuite` instead.
+  // Runtime coverage for nullable nested `getStruct` / `getArray` / `getMap` element reads is
+  // exercised through HOFs in `CometCodegenHOFSuite`. Static emitter assertions live in
+  // `CometCodegenSourceSuite`.
 }
 
 /**

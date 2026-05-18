@@ -22,20 +22,18 @@ package org.apache.comet.shims
 import org.apache.spark.sql.catalyst.expressions.{Expression, ResolvedCollation}
 
 /**
- * Spark 4.x replaced the `NullIntolerant` marker trait with a boolean method on `Expression`, and
- * introduced a `stateful` boolean method covering scalar expressions that carry per-row state
- * (e.g. `Rand`, `Uuid`). Neither concept exists as a trait in 4.x, so pattern matches against
- * them would fail to compile. This shim routes the checks through the method form.
+ * Spark 4.x replaced the `NullIntolerant` marker trait with a boolean method on `Expression` and
+ * added a `stateful` boolean. Neither exists as a trait in 4.x; this shim routes the checks
+ * through the method form.
  */
 trait CometExprTraitShim {
   def isNullIntolerant(expr: Expression): Boolean = expr.nullIntolerant
   def isStateful(expr: Expression): Boolean = expr.stateful
 
-  // `ResolvedCollation` is an `Unevaluable` leaf that only lives in `Collate.collation` as a
-  // type-level marker. `Collate.genCode` passes through to its child and never touches the
-  // collation slot, so the leaf is never invoked in generated code. Spark 4.1 analyzes it away,
-  // but 4.0 leaves it in the tree, so the dispatcher's `Unevaluable` guard trips on 4.0 without
-  // this exemption.
+  // `ResolvedCollation` is an `Unevaluable` leaf living only in `Collate.collation` as a
+  // type-level marker. `Collate.genCode` passes through to its child and never invokes it. Spark
+  // 4.1 analyzes it away; 4.0 leaves it in the tree, so the dispatcher's `Unevaluable` guard
+  // would trip without this exemption.
   def isCodegenInertUnevaluable(expr: Expression): Boolean = expr match {
     case _: ResolvedCollation => true
     case _ => false

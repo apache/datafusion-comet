@@ -27,23 +27,16 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 import org.apache.comet.shims.CometInternalRowShim
 
 /**
- * Throwing-default base for [[ArrayData]] in the Arrow-direct codegen kernel. Subclasses override
- * only the getters their element type needs (e.g. `numElements`, `isNullAt`, `getUTF8String` for
- * an `ArrayType(StringType)` input).
+ * Throwing-default `ArrayData` base for the codegen kernel. Subclasses override only the getters
+ * their element type needs.
  *
- * Consumer: `InputArray_${path}` nested classes the input emitter generates per `ArrayType` input
- * column. They back `getArray(ord)` plus the recursion for `Array<Array<...>>` and array-typed
- * map keys / struct fields.
+ * Consumer: per-column `InputArray_${path}` nested classes that back `getArray(ord)` plus the
+ * recursion for `Array<Array<...>>` and array-typed map keys / struct fields.
  *
- * `ArrayData` and [[CometInternalRow]]'s [[InternalRow]] are sibling abstract classes in Spark
- * (both extend `SpecializedGetters`, neither inherits the other), so a base aimed at one cannot
- * serve the other. The dispatch body that '''is''' shared between them lives in
- * [[CometSpecializedGettersDispatch]]. The third sibling, [[CometMapData]], backs `InputMap_*`
- * and routes `keyArray()` / `valueArray()` through `CometArrayData` instances.
- *
- * Mixes in [[CometInternalRowShim]] for the same reason `CometInternalRow` does: Spark 4.x adds
- * abstract `SpecializedGetters` methods (`getVariant`, `getGeography`, `getGeometry`) that both
- * `InternalRow` and `ArrayData` inherit; the per-profile shim provides throwing defaults.
+ * `ArrayData` and `InternalRow` are sibling abstract classes, so a base aimed at one cannot serve
+ * the other. The shared `get(ordinal, dataType)` dispatch lives in
+ * [[CometSpecializedGettersDispatch]]. Mixes in [[CometInternalRowShim]] so Spark 4.x's
+ * `getVariant` / `getGeography` / `getGeometry` get throwing defaults.
  */
 abstract class CometArrayData extends ArrayData with CometInternalRowShim {
 

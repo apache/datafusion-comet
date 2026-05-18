@@ -27,17 +27,12 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 import org.apache.comet.shims.CometInternalRowShim
 
 /**
- * Throwing-default base for [[InternalRow]] in the Arrow-direct codegen kernel. Subclasses
- * override only the getters their input shape needs; centralising the throws absorbs forward-
- * compat breakage when Spark adds abstract methods.
+ * Throwing-default `InternalRow` base for the codegen kernel. Subclasses override only the
+ * getters their input shape needs; centralizing the throws absorbs forward-compat breakage when
+ * Spark adds abstract methods.
  *
- * Two consumers: the compiled kernel itself (the orchestrator sets `ctx.INPUT_ROW = "row"` and
- * aliases `InternalRow row = this;` so `BoundReference.genCode` reads against `this`); and
+ * Two consumers: the compiled kernel (`ctx.INPUT_ROW = "row"` aliases `this`) and per-column
  * `InputStruct_${path}` nested classes that back `getStruct(ord, n)`.
- *
- * Siblings [[CometArrayData]] (used by `InputArray_*`) and [[CometMapData]] (used by
- * `InputMap_*`) cover the other two Spark data-shape abstractions. The `get(ordinal, dataType)`
- * dispatch shared with `CometArrayData` lives in [[CometSpecializedGettersDispatch]].
  */
 abstract class CometInternalRow extends InternalRow with CometInternalRowShim {
 

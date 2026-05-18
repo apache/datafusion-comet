@@ -23,20 +23,17 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, NullIntolerant}
 
 /**
  * Per-profile view of expression traits that shifted shape across Spark versions. Spark 3.x has a
- * `NullIntolerant` marker trait and no scalar-expression `Stateful` concept at all (the notion
- * was added in 4.x as a boolean method on `Expression`). Routing checks through one shim lets the
- * dispatcher ask "is this expression null-intolerant / stateful" without sprinkling version
- * pattern matches through the codebase.
+ * `NullIntolerant` marker trait and no scalar-expression `Stateful` concept (added in 4.x as a
+ * boolean method on `Expression`). Routing checks through one shim avoids version pattern matches
+ * in the codegen dispatcher.
  */
 trait CometExprTraitShim {
   def isNullIntolerant(expr: Expression): Boolean = expr.isInstanceOf[NullIntolerant]
 
-  // No scalar `Stateful` trait in 3.x. Aggregate/window/generator stateful cases are rejected
-  // elsewhere in `canHandle`, so treating all scalar expressions as non-stateful here is
-  // conservative-correct on this profile.
+  // Aggregate/window/generator stateful cases are rejected elsewhere in `canHandle`, so treating
+  // all scalar expressions as non-stateful here is conservative-correct on this profile.
   def isStateful(expr: Expression): Boolean = false
 
-  // No collation / `ResolvedCollation` concept in 3.x, so no `Unevaluable` leaf slips past the
-  // dispatcher's guard here.
+  // No collation / `ResolvedCollation` concept in 3.x.
   def isCodegenInertUnevaluable(expr: Expression): Boolean = false
 }
