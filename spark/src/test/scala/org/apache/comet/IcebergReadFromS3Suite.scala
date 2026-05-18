@@ -23,7 +23,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
 
-import org.apache.comet.iceberg.RESTCatalogHelper
+import org.apache.comet.iceberg.{MockCometCredentialProvider, RESTCatalogHelper}
 
 class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
 
@@ -296,6 +296,55 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
 
           spark.sql("DROP TABLE vend_cat.db.simple")
           spark.sql("DROP NAMESPACE vend_cat.db")
+        }
+    }
+  }
+
+  test("credential provider is invoked on every native S3 scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    // The mock provider reads its credentials from `catalogProperties` in `initialize()`, so
+    // wiring the correct MinIO creds through the REST catalog's vending payload both gets the
+    // data written and ensures the mock returns working credentials on the native read path.
+    val vendedCreds = Map(
+      "s3.access-key-id" -> userName,
+      "s3.secret-access-key" -> password,
+      "s3.endpoint" -> minioContainer.getS3URL,
+      "s3.path-style-access" -> "true")
+    val warehouse = s"s3a://$testBucketName/warehouse-cred-provider"
+    val mockClass = classOf[MockCometCredentialProvider].getName
+
+    withRESTCatalog(vendedCredentials = vendedCreds, warehouseLocation = Some(warehouse)) {
+      (restUri, _, _) =>
+        withSQLConf(
+          "spark.sql.catalog.prov_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+          "spark.sql.catalog.prov_cat.catalog-impl" -> "org.apache.iceberg.rest.RESTCatalog",
+          "spark.sql.catalog.prov_cat.uri" -> restUri,
+          "spark.sql.catalog.prov_cat.warehouse" -> warehouse,
+          CometConf.COMET_ICEBERG_CREDENTIAL_PROVIDER_CLASS.key -> mockClass) {
+
+          spark.sql("CREATE NAMESPACE prov_cat.db")
+          spark.sql("CREATE TABLE prov_cat.db.cred (id INT) USING iceberg")
+          spark.sql("INSERT INTO prov_cat.db.cred VALUES (1), (2), (3)")
+
+          // Reset so we only count the read path; the provider is instantiated during
+          // broadcast build, so expect both init and resolve counts to rise.
+          MockCometCredentialProvider.reset()
+
+          checkIcebergNativeScan("SELECT * FROM prov_cat.db.cred ORDER BY id")
+
+          assert(
+            MockCometCredentialProvider.getResolveCount > 0,
+            "resolveCredentials(ResolveContext) should fire from the native side on S3 reads")
+          val lastCtx = MockCometCredentialProvider.getLastContext
+          assert(lastCtx != null, "ResolveContext should have been captured")
+          val loc = lastCtx.tableLocation()
+          assert(
+            loc.contains(s"$testBucketName/") && loc.contains("/db/cred"),
+            s"Expected tableLocation under warehouse for db.cred, got: $loc")
+
+          spark.sql("DROP TABLE prov_cat.db.cred")
+          spark.sql("DROP NAMESPACE prov_cat.db")
         }
     }
   }

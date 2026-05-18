@@ -334,6 +334,8 @@ jobs:
               org.apache.comet.CometIcebergNativeSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
+              org.apache.comet.CometCredentialProviderSuite
+              org.apache.spark.sql.comet.CometIcebergCredentialBroadcastsSuite
           - name: "csv"
             value: |
               org.apache.comet.csv.CometCsvNativeReadSuite

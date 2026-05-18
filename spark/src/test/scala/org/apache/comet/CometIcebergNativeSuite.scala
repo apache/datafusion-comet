@@ -37,7 +37,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark42Plus}
-import org.apache.comet.iceberg.RESTCatalogHelper
+import org.apache.comet.iceberg.{MockCometCredentialProvider, RESTCatalogHelper}
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -98,6 +98,55 @@ class CometIcebergNativeSuite
         checkIcebergNativeScan("SELECT * FROM hadoop_catalog.db.test_table ORDER BY id")
 
         spark.sql("DROP TABLE hadoop_catalog.db.test_table")
+      }
+    }
+  }
+
+  test("credential provider is instantiated and called") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    MockCometCredentialProvider.reset()
+
+    withTempIcebergDir { warehouseDir =>
+      val mockClass = classOf[MockCometCredentialProvider].getName
+      withSQLConf(
+        "spark.sql.catalog.cred_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.cred_cat.type" -> "hadoop",
+        "spark.sql.catalog.cred_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_CREDENTIAL_PROVIDER_CLASS.key -> mockClass) {
+
+        spark.sql("""
+          CREATE TABLE cred_cat.db.cred_test (
+            id INT, name STRING
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO cred_cat.db.cred_test
+          VALUES (1, 'Alice'), (2, 'Bob')
+        """)
+
+        // Verify the native scan is in the plan -- if it fell back to
+        // Spark's regular scan, the credential provider would never fire.
+        val query = "SELECT * FROM cred_cat.db.cred_test ORDER BY id"
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(
+          icebergScans.nonEmpty,
+          s"Expected CometIcebergNativeScanExec in plan but found none. " +
+            s"Plan:\n$cometPlan")
+
+        assert(
+          MockCometCredentialProvider.getInitCount > 0,
+          "Credential provider should have been initialized")
+        assert(
+          MockCometCredentialProvider.getLastCatalogProperties != null,
+          "Catalog properties should have been captured during initialize()")
+
+        spark.sql("DROP TABLE cred_cat.db.cred_test")
       }
     }
   }

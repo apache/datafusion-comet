@@ -19,6 +19,7 @@
 pub mod columnar_to_row;
 pub mod expressions;
 pub mod jni_api;
+pub(crate) mod jni_credential_loader;
 pub(crate) mod merge_as_partial;
 pub(crate) mod metrics;
 pub mod operators;

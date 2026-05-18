@@ -19,7 +19,10 @@
 
 package org.apache.comet.iceberg
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.SparkSession
 
 /**
  * Shared reflection utilities for Iceberg operations.
@@ -323,15 +326,38 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Gets storage properties from an Iceberg table's FileIO.
-   *
-   * This extracts credentials from the FileIO implementation, which is critical for REST catalog
-   * credential vending. The REST catalog returns temporary S3 credentials per-table via the
-   * loadTable response, stored in the table's FileIO (typically ResolvingFileIO).
-   *
-   * The properties() method is not on the FileIO interface -- it exists on specific
-   * implementations like ResolvingFileIO and S3FileIO. Returns None gracefully when unavailable.
+   * Returns the V2 catalog name that loaded the given Iceberg [[org.apache.iceberg.Table]].
+   * [TODO: Logic fragile. Check if there is a different way to get cat name]
    */
+  def getCatalogName(table: Any): Option[String] =
+    getCatalogName(table, activeCatalogNames _)
+
+  /**
+   * Test seam for [[getCatalogName(table:Any)]]. The `knownCatalogNames` thunk lets tests inject
+   * a fixed catalog-name set without bootstrapping a SparkSession.
+   */
+  private[iceberg] def getCatalogName(
+      table: Any,
+      knownCatalogNames: () => Iterable[String]): Option[String] = {
+    if (table == null) return None
+    val fqn = table.toString
+    if (fqn == null || fqn.isEmpty || fqn == "null") return None
+
+    knownCatalogNames()
+      .find(name => fqn == name || fqn.startsWith(name + "."))
+      .orElse {
+        val idx = fqn.indexOf('.')
+        if (idx > 0) Some(fqn.substring(0, idx)) else None
+      }
+  }
+
+  private def activeCatalogNames(): Iterable[String] =
+    try {
+      SparkSession.active.sessionState.catalogManager.listCatalogs(None)
+    } catch {
+      case NonFatal(_) => Nil
+    }
+
   def getFileIOProperties(table: Any): Option[Map[String, String]] = {
     import scala.jdk.CollectionConverters._
     getFileIO(table).flatMap { fileIO =>
@@ -671,7 +697,14 @@ object IcebergReflection extends Logging {
  * @param globalFieldIdMapping
  *   Mapping from column names to Iceberg field IDs (built from scanSchema)
  * @param catalogProperties
- *   Catalog properties for FileIO (S3 credentials, regions, etc.)
+ *   Catalog properties for FileIO (S3 credentials, regions, etc.) - filtered to storage prefixes
+ * @param allFileIOProperties
+ *   Unfiltered FileIO properties for credential provider (includes tenant-id, refresh-id, etc.)
+ * @param catalogName
+ *   Spark V2 catalog name that loaded this table, derived from `Table.name()` and matched against
+ *   `CatalogManager.listCatalogs()`. Used as the cache key for catalog-scoped credential provider
+ *   broadcasts. None when the table has no catalog identity (e.g. HadoopTables loaded by raw
+ *   path).
  */
 case class CometIcebergNativeScanMetadata(
     table: Any,
@@ -682,6 +715,8 @@ case class CometIcebergNativeScanMetadata(
     tableSchema: Any,
     globalFieldIdMapping: Map[String, Int],
     catalogProperties: Map[String, String],
+    allFileIOProperties: Map[String, String],
+    catalogName: Option[String],
     fileFormat: String)
 
 object CometIcebergNativeScanMetadata extends Logging {
@@ -698,13 +733,16 @@ object CometIcebergNativeScanMetadata extends Logging {
    *   Path to the table metadata file (already extracted)
    * @param catalogProperties
    *   Catalog properties for FileIO (already extracted)
+   * @param allFileIOProperties
+   *   Unfiltered FileIO properties forwarded to the credential provider
    * @return
    *   Some(metadata) if all reflection succeeds, None to trigger fallback
    */
   def extract(
       scan: Any,
       metadataLocation: String,
-      catalogProperties: Map[String, String]): Option[CometIcebergNativeScanMetadata] = {
+      catalogProperties: Map[String, String],
+      allFileIOProperties: Map[String, String]): Option[CometIcebergNativeScanMetadata] = {
     import org.apache.comet.iceberg.IcebergReflection._
 
     for {
@@ -737,6 +775,8 @@ object CometIcebergNativeScanMetadata extends Logging {
         tableSchema = tableSchema,
         globalFieldIdMapping = globalFieldIdMapping,
         catalogProperties = catalogProperties,
+        allFileIOProperties = allFileIOProperties,
+        catalogName = IcebergReflection.getCatalogName(table),
         fileFormat = FileFormats.PARQUET)
     }
   }
