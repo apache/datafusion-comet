@@ -191,6 +191,15 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         other
     }
 
+    // AQE replan idempotency: if the data child is already a `CometNativeWriteExec` from a
+    // prior emit, return it directly rather than wrapping it in another `CometNativeWriteExec`.
+    // Without this, AQE materialising the inner shuffle stage and re-invoking the planner
+    // produces a nested write. Mirrors the legacy `CometExecRule:284-289` unwrap shortcut.
+    childPlan match {
+      case existing: CometNativeWriteExec => return existing
+      case _ =>
+    }
+
     // Create FileCommitProtocol for atomic writes
     val jobId = java.util.UUID.randomUUID().toString
     val committer =

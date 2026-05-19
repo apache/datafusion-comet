@@ -38,7 +38,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.SCAN_NATIVE_DATAFUSION
 import org.apache.comet.CometSparkSessionExtensions
 
 trait CometBenchmarkBase
@@ -172,12 +171,11 @@ trait CometBenchmarkBase
       }
     }
 
-    benchmark.addCase(s"SQL Parquet - Comet ($SCAN_NATIVE_DATAFUSION)$suffix") { _ =>
+    benchmark.addCase(s"SQL Parquet - Comet$suffix") { _ =>
       withSQLConf(
         (extraConf ++ Map(
           CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION)).toSeq: _*) {
+          CometConf.COMET_EXEC_ENABLED.key -> "true")).toSeq: _*) {
         spark.sql(query).noop()
       }
     }

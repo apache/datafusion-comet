@@ -91,14 +91,11 @@ object Phase1LikelyComet extends Logging {
     case _: AdaptiveSparkPlanExec | _: ExecutedCommandExec | _: V2CommandExec => false
 
     // CometPlanner supports native_datafusion for V1 Parquet and native Iceberg / CSV for V2.
-    // SCAN_AUTO is treated as native_datafusion. SCAN_NATIVE_ICEBERG_COMPAT is not predicted
-    // LIKELY_COMET here, so those scans fall back to plain Spark; for that mode, run with
-    // COMET_USE_PLANNER=false to use the legacy rule path that still emits CometScanExec.
-    // Phase 3 emission re-applies the full file-format / schema / encryption gates.
+    // After native_iceberg_compat removal there is a single V1 scan impl gated only by the
+    // top-level COMET_NATIVE_SCAN_ENABLED. Phase 3 emission re-applies the full file-format /
+    // schema / encryption gates.
     case _: FileSourceScanExec =>
-      val impl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
-      CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) &&
-      (impl == CometConf.SCAN_NATIVE_DATAFUSION || impl == CometConf.SCAN_AUTO)
+      CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf)
     case _: BatchScanExec =>
       CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf)
 

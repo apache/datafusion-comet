@@ -165,7 +165,7 @@ object V2ScanClassifier extends Logging with ShimSubqueryBroadcast {
       return V2ScanClassification.NotConvertible(fallbackReasons.toSet)
     }
 
-    val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
+    val typeChecker = CometScanTypeChecker()
     val schemaSupported =
       typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
     if (!schemaSupported) {

@@ -258,8 +258,11 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
-      // Fully native scan for V1
-      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
+      // Fully native scan for V1. After native_iceberg_compat removal there is only one
+      // scanImpl. Serde operates on the wrapped FileSourceScanExec (planner design); the
+      // CometScanExec wrapper is just a legacy carrier and gets deleted in the planner-only
+      // follow-up.
+      case scan: CometScanExec =>
         convertToComet(scan.wrapped, CometNativeScan).getOrElse(scan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)

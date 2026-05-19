@@ -93,7 +93,7 @@ object V1ScanGate extends Logging {
     if (!conf.parquetVectorizedReaderEnabled &&
       !COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.get()) {
       return reject(
-        s"$SCAN_NATIVE_DATAFUSION scan is incompatible with " +
+        s"native_datafusion scan is incompatible with " +
           s"${SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key}=false; set " +
           s"${COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key}=true to opt in")
     }
@@ -114,11 +114,11 @@ object V1ScanGate extends Logging {
     // side effects on the scan. That is acceptable: those messages should reach explain
     // output regardless of which rule decides to fall back.
     if (!CometNativeScan.isSupported(scanExec)) {
-      return reject(s"$SCAN_NATIVE_DATAFUSION scan unsupported. See scan info for details.")
+      return reject(s"native_datafusion scan unsupported. See scan info for details.")
     }
 
     if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
-      return reject(s"$SCAN_NATIVE_DATAFUSION does not support encryption")
+      return reject(s"native_datafusion does not support encryption")
     }
 
     if (scanExec.fileConstantMetadataColumns.nonEmpty) {
@@ -138,21 +138,21 @@ object V1ScanGate extends Logging {
       return reject("Native DataFusion scan does not support row index generation")
     }
 
-    val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
+    val typeChecker = CometScanTypeChecker()
     val schemaFallback = new ListBuffer[String]()
     val schemaSupported =
       typeChecker.isSchemaSupported(scanExec.requiredSchema, schemaFallback)
     if (!schemaSupported) {
       return reject(
         s"Unsupported schema ${scanExec.requiredSchema} " +
-          s"for $SCAN_NATIVE_DATAFUSION. ${schemaFallback.mkString(", ")}")
+          s"for native_datafusion. ${schemaFallback.mkString(", ")}")
     }
     val partitionSchemaSupported =
       typeChecker.isSchemaSupported(r.partitionSchema, schemaFallback)
     if (!partitionSchemaSupported) {
       return reject(
         s"Unsupported partitioning schema ${r.partitionSchema} " +
-          s"for $SCAN_NATIVE_DATAFUSION. ${schemaFallback.mkString(", ")}")
+          s"for native_datafusion. ${schemaFallback.mkString(", ")}")
     }
 
     V1ScanClassification.Convertible

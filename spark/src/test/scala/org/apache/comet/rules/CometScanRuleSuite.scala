@@ -128,9 +128,7 @@ class CometScanRuleSuite extends CometTestBase {
         val sparkPlan =
           createSparkPlan(spark, "SELECT id, value FROM unsupported_data WHERE id = 1")
 
-        withSQLConf(
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-          CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "true") {
+        withSQLConf(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "true") {
           val transformedPlan = applyCometScanRule(sparkPlan)
 
           // Should fallback to Spark due to ShortType (may be from unsigned UINT_8)

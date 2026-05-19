@@ -23,9 +23,6 @@ import java.time.{Duration, Period}
 
 import scala.util.Random
 
-import org.scalactic.source.Position
-import org.scalatest.Tag
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
@@ -43,15 +40,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
-
-  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
-    super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
-        testFun
-      }
-    }
-  }
 
   val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
     """[ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
@@ -2516,7 +2504,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
         val df = spark.read.parquet(dir.toString())
@@ -2546,7 +2533,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
         val df = spark.read.parquet(dir.toString())
@@ -3014,7 +3000,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
         SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
         SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString,
         // SPARK-53535 (Spark 4.1+) flipped the default to "false", which preserves the parent

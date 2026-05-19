@@ -68,7 +68,7 @@ object BroadcastConsumerIndex extends Logging {
    * Handles the AQE wrappers (`BroadcastQueryStageExec`, `ReusedExchangeExec`) that hide the raw
    * broadcast between planning and execution.
    *
-   * Reads the `LIKELY_COMET` tag directly rather than re-computing — Phase 1 must have already
+   * Reads the `LIKELY_COMET` tag directly rather than re-computing. Phase 1 must have already
    * tagged the plan (see ordering in `CometPlanner.apply`).
    */
   def build(plan: SparkPlan, conf: SQLConf): BroadcastConsumerIndex = {
