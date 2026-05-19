@@ -27,7 +27,7 @@ import org.apache.spark.sql.types.{BinaryType, BooleanType}
 import org.apache.comet.serde.CommonStringExprs
 import org.apache.comet.serde.ExprOuterClass.Expr
 
-trait ShimCometExprs extends CommonStringExprs {
+trait CometExprShimCommon extends CommonStringExprs {
 
   protected def sparkExprToProto(
       expr: Expression,
