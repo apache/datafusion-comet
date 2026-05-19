@@ -15,12 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
-use arrow::array::ArrayRef;
+use arrow::array::{Array, ArrayRef, Int32Builder};
 use arrow::datatypes::DataType;
-use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::common::cast::as_string_array;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::common::{exec_err, Result, ScalarValue};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
+
+use std::any::Any;
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct JsonArrayLength {
@@ -83,7 +87,21 @@ fn spark_json_array_length_array(array: &ArrayRef) -> Result<ArrayRef> {
     match array.data_type() {
         DataType::Utf8 => {
             let array = as_string_array(array)?;
-            Int32Array;
+            let mut builder = Int32Builder::with_capacity(array.len());
+
+            for row_idx in 0..array.len() {
+                if array.is_null(row_idx) {
+                    builder.append_null();
+                } else {
+                    let json_str = array.value(row_idx);
+                    if let Some(json_array_length) = get_json_array_length(json_str) {
+                        builder.append_value(json_array_length);
+                    } else {
+                        builder.append_null()
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()))
         }
         other => {
             exec_err!("Unsupported data type {other:?} for function `json_array_length`")
@@ -92,5 +110,28 @@ fn spark_json_array_length_array(array: &ArrayRef) -> Result<ArrayRef> {
 }
 
 fn spark_json_array_length_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
-    unimplemented!()
+    match scalar {
+        ScalarValue::Utf8(value) => {
+            let length = value
+                .clone()
+                .and_then(|json_str| get_json_array_length(&json_str));
+            Ok(ScalarValue::Int32(length))
+        }
+        other => {
+            exec_err!("Unsupported data type {other:?} for function `json_array_length`")
+        }
+    }
+}
+
+fn get_json_array_length(json_str: &str) -> Option<i32> {
+    match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(json_value) => {
+            if json_value.is_array() {
+                Some(json_value.as_array().unwrap().len() as i32)
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
 }

@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, UrlCodec}
+import org.apache.spark.sql.catalyst.expressions.json.JsonExpressionUtils
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
@@ -38,7 +39,9 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
         "read_side_padding"),
       ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"),
       ("encode", UrlCodec.getClass) -> CometUrlEncodeStaticInvoke,
-      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke)
+      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke,
+      ("lengthOfJsonArray", classOf[JsonExpressionUtils]) -> CometScalarFunction(
+        "json_array_length"))
 
   override def convert(
       expr: StaticInvoke,
