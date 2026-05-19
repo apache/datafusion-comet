@@ -17,6 +17,7 @@
 
 mod from_json;
 mod to_json;
+mod json_array_length;
 
 pub use from_json::FromJson;
 pub use to_json::ToJson;
