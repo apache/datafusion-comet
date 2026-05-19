@@ -42,9 +42,9 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  *
  *   - `NullIntolerant` short-circuit wraps `ev.code` in `if (any-input-null) { setNull; } else {
  *     ev.code; write; }`.
- *   - Non-nullable column declaration emits `return false;` from `isNullAt(ord)` and, when the
- *     dispatcher rewrites the `BoundReference`, Spark's `doGenCode` stops emitting its own
- *     `row.isNullAt(ord)` probe.
+ *   - Non-nullable column declaration emits `return false;` from `isNullAt(ord)`, and a
+ *     `BoundReference.nullable=false` (Catalyst sets this from schema-declared nullability) makes
+ *     Spark's `doGenCode` skip emitting its own `row.isNullAt(ord)` probe entirely.
  *   - Zero-copy string reads route through `UTF8String.fromAddress`.
  *
  * These are the smallest durable tests that the claimed optimizations actually reach the
@@ -72,10 +72,10 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("non-nullable BoundReference elides Spark's own isNullAt probe in the expression body") {
-    // When the BoundReference carries `nullable=false`, Spark's `doGenCode` skips the
-    // `row.isNullAt(ord)` branch at source level. This is the payoff of the tree-rewrite in
-    // `CometScalaUDFCodegen.lookupOrCompile`: subsequent expressions over the same column
-    // compile to tighter source rather than relying on JIT to constant-fold `isNullAt`.
+    // When the BoundReference carries `nullable=false` (Catalyst sets this from schema-declared
+    // nullability), Spark's `doGenCode` skips the `row.isNullAt(ord)` branch at source level.
+    // The dispatcher does not derive runtime nullability anymore; the BoundReference's source
+    // flag is the sole signal, and schema-non-null columns get full elision for free.
     val expr = Length(BoundReference(0, StringType, nullable = false))
     val src = gen(expr, nonNullableString)
     assert(
@@ -1036,13 +1036,13 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("CacheKey discriminates on ArrowColumnSpec.nullable") {
-    // Structural regression for the per-batch-nullability cache invariant: same expression bytes
-    // and same Arrow vector class with different `nullable` must produce non-equal cache keys
-    // so the dispatcher compiles a separate kernel for each variant. The non-nullable variant's
-    // generated source emits a literal `false` from `isNullAt`, which lets Spark's
-    // `BoundReference.doGenCode` skip the null branch at source level rather than relying on
-    // JIT folding. Conflating the two would silently use the nullable kernel on non-nullable
-    // batches, losing that elision.
+    // Structural regression: same expression bytes and same Arrow vector class with different
+    // `nullable` must produce non-equal cache keys. The dispatcher today hardcodes `nullable=true`
+    // for top-level specs, so the two variants don't both arise from runtime data, but the case
+    // class equality contract still has to discriminate so that any future tiered cache or test
+    // construction can rely on it. The non-nullable variant's generated source emits a literal
+    // `false` from `isNullAt`, distinct codegen output that we never want to silently share with
+    // the nullable variant.
     val bytes = java.nio.ByteBuffer.wrap(Array[Byte](1, 2, 3))
     val nullable =
       IndexedSeq[ArrowColumnSpec](ArrowColumnSpec(varCharVectorClass, nullable = true))

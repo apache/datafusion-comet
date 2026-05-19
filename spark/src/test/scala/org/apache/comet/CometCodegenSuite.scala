@@ -174,6 +174,89 @@ class CometCodegenSuite
     }
   }
 
+  test(
+    "same UDF over nullable and non-nullable columns gets distinct kernels with independent state") {
+    // Two columns, same type, different schema-declared nullability. Same UDF applied to each
+    // alongside a per-projection MonotonicallyIncreasingID. Each projection has its own MII
+    // child (different bytesKey), so each kernel must have its own counter advancing 0..N-1.
+    // If the dispatcher collapses them onto one kernel or shares state somehow, the counters
+    // would interleave and the output would diverge from Spark.
+    spark.udf.register("withId", (s: String, id: Long) => s"${s}_${id}")
+    withTempPath { dir =>
+      import org.apache.spark.sql.Row
+      import org.apache.spark.sql.types.{StringType, StructField, StructType}
+      val schema = StructType(
+        Seq(
+          StructField("a", StringType, nullable = true),
+          StructField("b", StringType, nullable = false)))
+      val rows = (0 until 64).map(i => Row(s"a_$i", s"b_$i"))
+      val rdd = spark.sparkContext.parallelize(rows, numSlices = 1)
+      spark.createDataFrame(rdd, schema).write.parquet(dir.getCanonicalPath)
+      withTable("t") {
+        sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "8") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              sql("SELECT withId(a, monotonically_increasing_id()), " +
+                "withId(b, monotonically_increasing_id()) FROM t"))
+          }
+        }
+      }
+    }
+  }
+
+  test("Nondeterministic state persists across nullability flips within a partition") {
+    // Regression guard against re-introducing per-batch nullability into the cache key. Force a
+    // single parquet file with `spark.range(numPartitions=1)`, large enough that batch size 8
+    // produces many batches in one scan partition. Null density varies by row range. If the
+    // dispatcher ever started deriving spec nullability from runtime data again, the cache key
+    // would flip mid-partition, the kernel would be re-allocated, and MII's counter would reset
+    // across the flip.
+    spark.udf.register("idPair", (id: Long, s: String) => (id, s))
+    withTempPath { dir =>
+      spark
+        .range(0, 200, 1, numPartitions = 1)
+        .selectExpr("CASE WHEN id >= 16 AND id < 32 THEN NULL ELSE concat('row_', id) END AS s")
+        .write
+        .parquet(dir.getCanonicalPath)
+      withTable("t") {
+        sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "8") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              sql("SELECT idPair(monotonically_increasing_id(), s) FROM t"))
+          }
+        }
+      }
+    }
+  }
+
+  test("Nondeterministic state persists across two ScalaUDFs in one task") {
+    // The dispatcher is one instance per task (keyed by `(taskAttemptId, udfClassName)` in
+    // CometUdfBridge), so a plan with two distinct ScalaUDFs shares one CometScalaUDFCodegen.
+    // Two distinct closure-serialized expressions hit two cache entries; per batch the
+    // dispatcher is invoked once for each. Each cache entry must stash its own kernel instance,
+    // otherwise the two expressions would fight for a shared kernel slot and stateful state
+    // (MII counter) would reset on every flip.
+    //
+    // Small batch size forces multiple batches over a small table so the per-key flip happens
+    // several times within one task.
+    spark.udf.register("idA", (id: Long) => id)
+    spark.udf.register("idB", (id: Long) => -id)
+    val rows = (0 until 64).map(i => s"row_$i")
+    withSubjects(rows: _*) {
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "8") {
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(
+            sql(
+              "SELECT s, " +
+                "idA(monotonically_increasing_id()) AS a, " +
+                "idB(monotonically_increasing_id()) AS b FROM t"))
+        }
+      }
+    }
+  }
+
   test("per-task cache isolates UDF state across sequential task runs in one session") {
     // Regression guard for the cache-scoping invariant on CometUdfBridge: instances live for
     // exactly one Spark task and are dropped on task completion, so a stateful kernel sees a
@@ -290,10 +373,7 @@ class CometCodegenSuite
     // Three user UDFs stacked in one tree: String -> String -> String -> Int. The fused kernel
     // carries three `ctx.addReferenceObj` calls. `assertOneKernelForSubtree` asserts that the
     // whole chain collapses into a single compile rather than one per nesting level.
-    // Input rows intentionally exclude nulls: per-batch nullability is a cache-key dimension
-    // (`nullable()` reads `getNullCount != 0`), so a null-present batch compiles a second kernel
-    // specialized for `nullable=true`. Null handling through composed UDFs is covered by the
-    // other composition tests above.
+    // Null handling through composed UDFs is covered by the other composition tests above.
     spark.udf.register("lvl1", (s: String) => if (s == null) null else s.toUpperCase)
     spark.udf.register("lvl2", (s: String) => if (s == null) null else s.reverse)
     spark.udf.register("lvl3", (s: String) => if (s == null) -1 else s.length)

@@ -400,9 +400,11 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     }
 
   /**
-   * Per-column compile-time invariants. The concrete Arrow vector class and per-batch nullability
+   * Per-column compile-time invariants. The concrete Arrow vector class and the nullability flag
    * are baked into the generated kernel and form part of the cache key: different vector classes
-   * or nullability produce different kernels.
+   * or nullability produce different kernels. The dispatcher hardcodes top-level `nullable=true`
+   * (per-batch null density is not part of the cache key); tests reach the non-nullable codegen
+   * path by constructing specs directly.
    */
   sealed trait ArrowColumnSpec {
     def vectorClass: Class[_ <: ValueVector]
