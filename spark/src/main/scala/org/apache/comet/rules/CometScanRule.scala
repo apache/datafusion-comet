@@ -40,14 +40,13 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
+import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
-import org.apache.comet.parquet.Native
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -734,61 +733,6 @@ object CometScanRule extends Logging {
    */
   val SKIP_COMET_SCAN_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
-
-  /**
-   * Validating object store configs can cause requests to be made to S3 APIs (such as when
-   * resolving the region for a bucket). We use a cache to reduce the number of S3 calls.
-   *
-   * The key is the config map converted to a string. The value is the reason that the config is
-   * not valid, or None if the config is valid.
-   */
-  val configValidityMap = new mutable.HashMap[String, Option[String]]()
-
-  /**
-   * We do not expect to see a large number of unique configs within the lifetime of a Spark
-   * session, but we reset the cache once it reaches a fixed size to prevent it growing
-   * indefinitely.
-   */
-  val configValidityMapMaxSize = 1024
-
-  def validateObjectStoreConfig(
-      filePath: String,
-      hadoopConf: Configuration,
-      fallbackReasons: mutable.ListBuffer[String]): Unit = {
-    val objectStoreConfigMap =
-      NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(filePath))
-
-    val cacheKey = objectStoreConfigMap
-      .map { case (k, v) =>
-        s"$k=$v"
-      }
-      .toList
-      .sorted
-      .mkString("\n")
-
-    if (configValidityMap.size >= configValidityMapMaxSize) {
-      logWarning("Resetting S3 object store validity cache")
-      configValidityMap.clear()
-    }
-
-    configValidityMap.get(cacheKey) match {
-      case Some(Some(reason)) =>
-        fallbackReasons += reason
-      case Some(None) =>
-      // previously validated
-      case _ =>
-        try {
-          val objectStoreOptions = objectStoreConfigMap.asJava
-          Native.validateObjectStoreConfig(filePath, objectStoreOptions)
-        } catch {
-          case e: CometNativeException =>
-            val reason = s"Object store config not supported: ${e.getMessage}"
-            fallbackReasons += reason
-            configValidityMap.put(cacheKey, Some(reason))
-        }
-    }
-
-  }
 
   /**
    * Single-pass validation of Iceberg FileScanTasks.

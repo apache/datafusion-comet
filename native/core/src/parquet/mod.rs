@@ -132,31 +132,6 @@ pub fn get_object_store_options(
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_validateObjectStoreConfig(
-    e: EnvUnowned,
-    _jclass: JClass,
-    file_path: JString,
-    object_store_options: JObject,
-) {
-    try_unwrap_or_throw(&e, |env| {
-        let session_config = SessionConfig::new();
-        let planner =
-            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
-        let session_ctx = planner.session_ctx();
-        let path: String = file_path.try_to_string(env).unwrap();
-        let object_store_config = get_object_store_options(env, object_store_options)?;
-        let (_, _) = prepare_object_store_with_configs(
-            session_ctx.runtime_env(),
-            path.clone(),
-            &object_store_config,
-        )?;
-        Ok(())
-    })
-}
-
-/// # Safety
-/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-#[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBatchReader(
     e: EnvUnowned,
     _jclass: JClass,
