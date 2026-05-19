@@ -93,6 +93,9 @@ pub struct SparkParquetOptions {
     /// requested schema does carry ids raises a runtime error rather than silently
     /// producing nulls (mirrors `spark.sql.parquet.fieldId.read.ignoreMissing`).
     pub ignore_missing_field_id: bool,
+    /// Whether type promotion (schema evolution) is allowed, e.g. INT32 -> INT64,
+    /// FLOAT -> DOUBLE. Mirrors spark.comet.schemaEvolution.enabled.
+    pub allow_type_promotion: bool,
 }
 
 impl SparkParquetOptions {
@@ -108,6 +111,7 @@ impl SparkParquetOptions {
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
             ignore_missing_field_id: false,
+            allow_type_promotion: false,
         }
     }
 
@@ -123,6 +127,7 @@ impl SparkParquetOptions {
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
             ignore_missing_field_id: false,
+            allow_type_promotion: false,
         }
     }
 }

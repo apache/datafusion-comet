@@ -30,7 +30,6 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
-      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
@@ -41,7 +40,6 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
-      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
@@ -191,7 +189,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17  # JDK only needed for common module proto generation
+          jdk-version: 17  # JDK only needed for JVM module proto generation
 
       - name: Restore Cargo cache
         uses: actions/cache/restore@v5
@@ -281,27 +279,22 @@ jobs:
           - name: "Spark 3.4, JDK 11, Scala 2.12"
             java_version: "11"
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
-            scan_impl: "auto"
 
           - name: "Spark 3.5, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.13"
-            scan_impl: "native_iceberg_compat"
 
           - name: "Spark 4.0, JDK 21"
             java_version: "21"
             maven_opts: "-Pspark-4.0"
-            scan_impl: "auto"
 
           - name: "Spark 4.1, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.1"
-            scan_impl: "auto"
 
           - name: "Spark 4.2, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.2"
-            scan_impl: "auto"
         suite:
           - name: "fuzz"
             value: |
@@ -393,7 +386,7 @@ jobs:
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
       fail-fast: false
-    name: ${{ matrix.profile.name }}/${{ matrix.profile.scan_impl }} [${{ matrix.suite.name }}]
+    name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -430,10 +423,9 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          artifact_name: ${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ matrix.profile.scan_impl }}
+          artifact_name: ${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           suites: ${{ matrix.suite.name == 'sql' && matrix.profile.name == 'Spark 3.4, JDK 11, Scala 2.12' && '' || matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
-          scan_impl: ${{ matrix.profile.scan_impl }}
           upload-test-reports: true
           skip-native-build: true
 
