@@ -19,11 +19,12 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
@@ -35,7 +36,9 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
         "read_side_padding"),
-      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"))
+      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"),
+      ("encode", UrlCodec.getClass) -> CometUrlEncodeStaticInvoke,
+      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke)
 
   override def convert(
       expr: StaticInvoke,
@@ -51,5 +54,32 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
           expr.children: _*)
         None
     }
+  }
+}
+
+object CometUrlEncodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
+  override def convert(
+      expr: StaticInvoke,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
+    val optExpr = scalarFunctionExprToProto("url_encode", childExpr)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometUrlDecodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
+  override def convert(
+      expr: StaticInvoke,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val failOnError = expr.children match {
+      case Seq(_, Literal(false, _)) => false
+      case _ => true
+    }
+    val funcName = if (failOnError) "url_decode" else "try_url_decode"
+    val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
+    val optExpr = scalarFunctionExprToProto(funcName, childExpr)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
   }
 }

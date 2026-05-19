@@ -30,6 +30,8 @@ import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupporte
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+
 object ShimSparkErrorConverter {
   val ObjectLocationPattern: Regex = "Object at location (.+?) not found".r
 }
@@ -88,12 +90,15 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.divideByZeroError(context.headOption.orNull))
 
       case "RemainderByZero" =>
-        // SPARK 4.0 REMOVED remainderByZeroError  so we use generic arithmetic exception
-        Some(
-          new SparkException(
-            errorClass = "REMAINDER_BY_ZERO",
-            messageParameters = params.map { case (k, v) => (k, v.toString) },
-            cause = null))
+        if (isSpark41Plus) {
+          Some(
+            new SparkException(
+              errorClass = "REMAINDER_BY_ZERO",
+              messageParameters = Map("config" -> "\"spark.sql.ansi.enabled\""),
+              cause = null))
+        } else {
+          Some(QueryExecutionErrors.divideByZeroError(context.headOption.orNull))
+        }
 
       case "IntervalDividedByZero" =>
         Some(QueryExecutionErrors.intervalDividedByZeroError(context.headOption.orNull))
