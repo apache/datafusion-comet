@@ -31,5 +31,4 @@ public final class Native extends NativeBase {
    */
   public static native void validateObjectStoreConfig(
       String filePath, Map<String, String> objectStoreOptions);
-
 }
