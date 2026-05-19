@@ -37,7 +37,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 
 import org.apache.comet.{CometConf, IntegrationTestSuite}
-import org.apache.comet.CometConf.SCAN_NATIVE_DATAFUSION
 
 /**
  * A integration test suite that tests parquet modular encryption usage.
@@ -455,26 +454,12 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
       pos: Position): Unit = {
 
     Seq("true", "false").foreach { cometEnabled =>
-      if (cometEnabled == "true") {
-        super.test(
-          testName + s" Comet($cometEnabled)" + s" Scan($SCAN_NATIVE_DATAFUSION)",
-          testTags: _*) {
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> cometEnabled,
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            SQLConf.ANSI_ENABLED.key -> "false",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            testFun
-          }
-        }
-      } else {
-        super.test(testName + s" Comet($cometEnabled)", testTags: _*) {
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> cometEnabled,
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            SQLConf.ANSI_ENABLED.key -> "false") {
-            testFun
-          }
+      super.test(testName + s" Comet($cometEnabled)", testTags: _*) {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> cometEnabled,
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          testFun
         }
       }
     }
