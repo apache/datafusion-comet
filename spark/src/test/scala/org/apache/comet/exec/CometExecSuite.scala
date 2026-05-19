@@ -60,9 +60,7 @@ class CometExecSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -2269,9 +2267,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "native-scan.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
@@ -3936,8 +3932,7 @@ class CometExecSuite extends CometTestBase {
 
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
         val df = spark.read.parquet(path)
 
         // Trigger two different actions to ensure metrics are not duplicated

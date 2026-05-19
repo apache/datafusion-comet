@@ -42,22 +42,15 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.collection._
 
-import org.apache.comet.{CometConf, MetricsSupport}
+import org.apache.comet.MetricsSupport
 import org.apache.comet.parquet.CometParquetFileFormat
 
 /**
- * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
- * [[FileSourceScanExec]].
- *
- * This is a hybrid scan where the native plan will contain a `ScanExec` that reads batches of
- * data from the JVM via JNI. The ultimate source of data may be a JVM implementation such as
- * Spark readers, or could be the `native_iceberg_compat` native scan.
- *
- * Note that scanImpl can only be `native_datafusion` after CometScanRule runs and before
- * CometExecRule runs. It will never be set to `native_datafusion` at execution time
+ * Comet physical scan node for DataSource V1. Most of the code here follows Spark's
+ * [[FileSourceScanExec]]. After CometScanRule runs, this node is replaced by a fully native scan
+ * by CometExecRule; it does not survive to execution time.
  */
 case class CometScanExec(
-    scanImpl: String,
     @transient relation: HadoopFsRelation,
     output: Seq[Attribute],
     requiredSchema: StructType,
@@ -72,10 +65,8 @@ case class CometScanExec(
     with ShimCometScanExec
     with CometPlan {
 
-  assert(scanImpl != CometConf.SCAN_AUTO)
-
   override val nodeName: String =
-    s"CometScan [$scanImpl] $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
+    s"CometScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
 
   // FIXME: ideally we should reuse wrapped.supportsColumnar, however that fails many tests
   override lazy val supportsColumnar: Boolean =
@@ -154,18 +145,13 @@ case class CometScanExec(
   }
 
   /**
-   * Returns the data filters that are supported for this scan implementation. For
-   * native_datafusion scans, this excludes dynamic pruning filters (subqueries) and null checks
-   * on array columns (see [[isNullCheckOnArrayColumn]]).
+   * Returns the data filters that are supported for this scan. Excludes dynamic pruning filters
+   * (subqueries) and null checks on array columns (see [[isNullCheckOnArrayColumn]]).
    */
   lazy val supportedDataFilters: Seq[Expression] = {
-    if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
-      dataFilters
-        .filterNot(isDynamicPruningFilter)
-        .filterNot(isNullCheckOnArrayColumn)
-    } else {
-      dataFilters
-    }
+    dataFilters
+      .filterNot(isDynamicPruningFilter)
+      .filterNot(isNullCheckOnArrayColumn)
   }
 
   /**
@@ -516,7 +502,6 @@ case class CometScanExec(
 
   override def doCanonicalize(): CometScanExec = {
     CometScanExec(
-      scanImpl,
       relation,
       output.map(QueryPlan.normalizeExpressions(_, output)),
       requiredSchema,
@@ -534,10 +519,7 @@ case class CometScanExec(
 
 object CometScanExec {
 
-  def apply(
-      scanExec: FileSourceScanExec,
-      session: SparkSession,
-      scanImpl: String): CometScanExec = {
+  def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
       val arr = Array.ofDim[B](product.productArity)
@@ -563,7 +545,6 @@ object CometScanExec {
     val newArgs = mapProductIterator(scanExec, transform)
     val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
     val batchScanExec = CometScanExec(
-      scanImpl,
       wrapped.relation,
       wrapped.output,
       wrapped.requiredSchema,

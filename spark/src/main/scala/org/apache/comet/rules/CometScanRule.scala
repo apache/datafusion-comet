@@ -197,9 +197,7 @@ case class CometScanRule(session: SparkSession)
       r: HadoopFsRelation,
       hadoopConf: Configuration): Option[SparkPlan] = {
     if (!COMET_EXEC_ENABLED.get()) {
-      withInfo(
-        scanExec,
-        s"$SCAN_NATIVE_DATAFUSION scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+      withInfo(scanExec, s"Native Parquet scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
       return None
     }
     // Disabling the vectorized reader opts into parquet-mr's permissive behavior
@@ -210,7 +208,7 @@ case class CometScanRule(session: SparkSession)
       !COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.get()) {
       withInfo(
         scanExec,
-        s"$SCAN_NATIVE_DATAFUSION scan is incompatible with " +
+        s"Native Parquet scan is incompatible with " +
           s"${SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key}=false; set " +
           s"${COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key}=true to opt in")
       return None
@@ -219,7 +217,7 @@ case class CometScanRule(session: SparkSession)
       return None
     }
     if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
-      withInfo(scanExec, s"$SCAN_NATIVE_DATAFUSION does not support encryption")
+      withInfo(scanExec, "Native Parquet scan does not support encryption")
       return None
     }
     if (scanExec.fileConstantMetadataColumns.nonEmpty) {
@@ -244,10 +242,10 @@ case class CometScanRule(session: SparkSession)
       withInfo(scanExec, "Native DataFusion scan does not support row index generation")
       return None
     }
-    if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
+    if (!isSchemaSupported(scanExec, r)) {
       return None
     }
-    Some(CometScanExec(scanExec, session, SCAN_NATIVE_DATAFUSION))
+    Some(CometScanExec(scanExec, session))
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
@@ -313,7 +311,7 @@ case class CometScanRule(session: SparkSession)
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
+        val typeChecker = CometScanTypeChecker()
         val schemaSupported =
           typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
 
@@ -670,19 +668,15 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
-  private def isSchemaSupported(
-      scanExec: FileSourceScanExec,
-      scanImpl: String,
-      r: HadoopFsRelation): Boolean = {
+  private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()
-    val typeChecker = CometScanTypeChecker(scanImpl)
+    val typeChecker = CometScanTypeChecker()
     val schemaSupported =
       typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     if (!schemaSupported) {
       withInfo(
         scanExec,
-        s"Unsupported schema ${scanExec.requiredSchema} " +
-          s"for $scanImpl: ${fallbackReasons.mkString(", ")}")
+        s"Unsupported schema ${scanExec.requiredSchema}: ${fallbackReasons.mkString(", ")}")
       return false
     }
     val partitionSchemaSupported =
@@ -690,19 +684,15 @@ case class CometScanRule(session: SparkSession)
     if (!partitionSchemaSupported) {
       withInfo(
         scanExec,
-        s"Unsupported partitioning schema ${scanExec.requiredSchema} " +
-          s"for $scanImpl: ${fallbackReasons
-              .mkString(", ")}")
+        s"Unsupported partitioning schema ${scanExec.requiredSchema}: " +
+          fallbackReasons.mkString(", "))
       return false
     }
     true
   }
 }
 
-case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with CometTypeShim {
-
-  // this class is intended to be used with a specific scan impl
-  assert(scanImpl != CometConf.SCAN_AUTO)
+case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 
   override def isTypeSupported(
       dt: DataType,
@@ -710,8 +700,8 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
       case ShortType if CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get() =>
-        fallbackReasons += s"$scanImpl scan may not handle unsigned UINT_8 correctly for $dt. " +
-          s"Set ${CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key}=false to allow " +
+        fallbackReasons += s"Native Parquet scan may not handle unsigned UINT_8 correctly for " +
+          s"$dt. Set ${CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key}=false to allow " +
           "native execution if your data does not contain unsigned small integers. " +
           CometConf.COMPAT_GUIDE
         false
@@ -722,9 +712,9 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
       case s: StructType if isVariantStruct(s) =>
         // Spark 4.0's PushVariantIntoScan rewrites a VariantType column into a struct of typed
         // fields plus per-field VariantMetadata, expecting the scan to honor Parquet variant
-        // shredding semantics. Comet's native scans don't, so fall back to Spark.
+        // shredding semantics. Comet's native scan does not, so fall back to Spark.
         fallbackReasons +=
-          s"Unsupported $name of type VariantType (shredded; not supported by $scanImpl scan)"
+          s"Unsupported $name of type VariantType (shredded; not supported by native scan)"
         false
       case s: StructType if s.fields.isEmpty =>
         false
