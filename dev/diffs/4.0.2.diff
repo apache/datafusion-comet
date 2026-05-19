@@ -1072,7 +1072,7 @@ index ad424b3a7cc..4ece0117a34 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index f294ff81021..37793afed44 100644
+index f294ff81021..7775027bcee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1524,7 +1524,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -1085,55 +1085,6 @@ index f294ff81021..37793afed44 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
-@@ -1985,8 +1986,16 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-         countAcc.add(1)
-         x
-       })
-+      // Comet's `CometProject` and `CometHashAggregate` do not implement Spark's cross-sibling
-+      // subexpression elimination over `ScalaUDF`, so each reference invokes the UDF body
-+      // separately. The other call sites in this test pass against Comet because the source
-+      // (`testData2`, a `LocalRelation`) is not Comet-scannable and the project runs on Spark's
-+      // path; the `agg` case routes through `CometHashAggregate` once an Exchange enters the
-+      // plan. TODO(comet#XXXX): add cross-sibling CSE to both `CometProject` and the aggregate
-+      // operator's input projection.
-       verifyCallCount(
--        df.agg(sum(testUdf($"b") + testUdf($"b") + testUdf($"b"))), Row(3.0), 1)
-+        df.agg(sum(testUdf($"b") + testUdf($"b") + testUdf($"b"))), Row(3.0),
-+        if (isCometEnabled) 3 else 1)
- 
-       verifyCallCount(
-         df.selectExpr("testUdf(a + 1) + testUdf(1 + a)", "testUdf(a + 1)"), Row(4, 2), 1)
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-index 575a4ae69d1..37f975c0e21 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-@@ -679,9 +679,24 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
-         s"Schema did not match for query #$i\n${expected.sql}: $output") {
-         output.schema
-       }
--      assertResult(expected.output, s"Result did not match" +
-+      // Comet may surface errors as `CometNativeException` instead of the matching Spark
-+      // exception class when DataFusion's parquet row filter wraps the typed error via
-+      // `format!("{e:?}")`, dropping the JNI bridge's ability to downcast. Same category,
-+      // different surface. Collapse both sides to a placeholder when this happens so the
-+      // literal compare passes. TODO(comet#XXXX): remove once DataFusion preserves the typed
-+      // error end to end.
-+      val (expectedOut, actualOut) = if (isCometEnabled &&
-+          expected.output.startsWith("org.apache.spark.SparkArithmeticException") &&
-+          expected.output.contains("\"DIVIDE_BY_ZERO\"") &&
-+          output.output.startsWith("org.apache.comet.CometNativeException") &&
-+          output.output.contains("DivideByZero")) {
-+        ("[DIVIDE_BY_ZERO]", "[DIVIDE_BY_ZERO]")
-+      } else {
-+        (expected.output, output.output)
-+      }
-+      assertResult(expectedOut, s"Result did not match" +
-         s" for query #$i\n${expected.sql}") {
--        output.output
-+        actualOut
-       }
-     }
-   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 index c1c041509c3..7d463e4b85e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
