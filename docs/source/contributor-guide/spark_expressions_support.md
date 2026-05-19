@@ -220,7 +220,7 @@
 - [ ] current_date
 - [ ] current_time
 - [ ] current_timestamp
-- [ ] current_timezone
+- [x] current_timezone
 - [x] date_add
 - [x] date_diff
 - [x] date_format
@@ -238,10 +238,14 @@
 - [x] dayofyear
 - [x] extract
 - [x] from_unixtime
-- [ ] from_utc_timestamp
+- [x] from_utc_timestamp
+  - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-12): baseline.
+  - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
+  - Known divergence: Comet's native timezone parser does not accept Spark's legacy zone forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). Such timezones throw a native parse error at execution.
 - [x] hour
 - [x] last_day
-- [ ] localtimestamp
+- [x] localtimestamp
 - [x] make_date
 - [x] make_dt_interval
 - [ ] make_interval
@@ -270,7 +274,11 @@
 - [ ] to_timestamp_ltz
 - [ ] to_timestamp_ntz
 - [ ] to_unix_timestamp
-- [ ] to_utc_timestamp
+- [x] to_utc_timestamp
+  - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-12): baseline.
+  - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
+  - Known divergence: Comet's native timezone parser does not accept Spark's legacy zone forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). Such timezones throw a native parse error at execution.
 - [x] trunc
 - [ ] try_make_interval
 - [ ] try_make_timestamp
@@ -371,7 +379,7 @@
 - [x] cos
 - [x] cosh
 - [x] cot
-- [ ] csc
+- [x] csc
 - [x] degrees
 - [x] div
 - [ ] e
@@ -517,7 +525,7 @@
 - [ ] collation
 - [x] concat_ws
 - [x] contains
-- [ ] decode
+- [x] decode
 - [ ] elt
 - [ ] encode
 - [x] endswith
