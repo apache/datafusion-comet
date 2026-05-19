@@ -19,15 +19,14 @@
 
 package org.apache.spark.sql
 
-import java.util.concurrent.atomic.AtomicInteger
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
+import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.{Success, Try}
-
 import org.scalatest.BeforeAndAfterEach
-
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.column.ParquetProperties
 import org.apache.parquet.example.data.Group
@@ -46,7 +45,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{DecimalType, StructType}
-
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
@@ -72,9 +70,7 @@ abstract class CometTestBase
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
     conf.set("spark.ui.enabled", "false")
     conf.set(SQLConf.SHUFFLE_PARTITIONS, 10) // reduce parallelism in tests
-    val sparkMajorVersion =
-      SPARK_VERSION.split("\\.").headOption.flatMap(s => Try(s.toInt).toOption).getOrElse(0)
-    conf.set(SQLConf.ANSI_ENABLED.key, (sparkMajorVersion >= 4).toString)
+    conf.set(SQLConf.ANSI_ENABLED.key, isSpark40Plus.toString)
     conf.set(SHUFFLE_MANAGER, shuffleManager)
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
