@@ -142,15 +142,13 @@ jobs:
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
-        # Since 4f5eaf0, auto mode uses native_datafusion for V1 scans,
-        # so we only need to test with auto.
         config:
-          - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
-          - {spark-short: '4.0', spark-full: '4.0.2', java: 21, scan-impl: 'auto'}
-          - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
+          - {spark-short: '3.4', spark-full: '3.4.3', java: 11}
+          - {spark-short: '3.5', spark-full: '3.5.8', java: 11}
+          - {spark-short: '4.0', spark-full: '4.0.2', java: 21}
+          - {spark-short: '4.1', spark-full: '4.1.1', java: 17}
       fail-fast: false
-    name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
+    name: spark-sql-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -190,7 +188,7 @@ jobs:
           # Cap parallel forked test JVMs at 1 so that even when
           # SparkParallelTestGrouping is enabled we don't blow the
           # 7 GB runner budget (each forked test JVM has -Xmx2g).
-          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
+          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
             build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
               'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
               ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
@@ -214,7 +212,7 @@ jobs:
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v7
         with:
-          name: fallback-log-spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
+          name: fallback-log-spark-sql-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
           path: "**/fallback.log"
 
   merge-fallback-logs:

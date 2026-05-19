@@ -61,11 +61,9 @@ Comet supports most standard storage systems, such as local file system and obje
 
 Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
 
-### Using experimental native DataFusion reader
+### Building Comet with HDFS support
 
-Unlike to native Comet reader the Datafusion reader fully supports nested types processing. This reader is currently experimental only
-
-To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed
+To build Comet with remote HDFS support it is required to have a JDK installed.
 
 Example:
 Build a Comet for `spark-4.1` provide a JDK path in `JAVA_HOME`
@@ -76,7 +74,7 @@ export JAVA_HOME="/opt/homebrew/opt/openjdk@17"
 make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
-Start Comet with experimental reader and HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
+Start Comet with HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
 and add additional parameters
 
 ```shell
@@ -167,7 +165,7 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" COM
   }
 ```
 
-Or use `spark-shell` with HDFS support as described [above](#using-experimental-native-datafusion-reader)
+Or use `spark-shell` with HDFS support as described [above](#building-comet-with-hdfs-support)
 
 ## S3
 

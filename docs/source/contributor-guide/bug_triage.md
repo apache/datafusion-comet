@@ -108,8 +108,8 @@ Periodically review open bugs to ensure priorities are still accurate:
    crashes, because crashes are at least visible.
 2. **User-reported over test-only.** A bug hit by a real user on a real workload takes priority
    over one found only in test suites.
-3. **Core path over experimental.** Bugs in the Parquet scan or widely-used expressions take
-   priority over bugs in experimental features.
+3. **Core path over experimental.** Bugs in widely-used expressions and operators take priority over
+   bugs in experimental features.
 4. **Production safety over feature completeness.** Fixing a data corruption bug is more important
    than adding support for a new expression.
 
