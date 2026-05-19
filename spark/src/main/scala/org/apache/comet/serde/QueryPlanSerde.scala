@@ -530,23 +530,29 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           case Unsupported(notes) =>
             withInfo(fn, notes.getOrElse(""))
             None
-          case Incompatible(notes) =>
+          case Incompatible(notes, optedInBy) =>
             val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
-            if (exprAllowIncompat) {
+            val namedConfOptIn = optedInBy.exists(isOptedInVia)
+            if (exprAllowIncompat || namedConfOptIn) {
               if (notes.isDefined) {
-                logWarning(
-                  s"Comet supports $fn when " +
-                    s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
-                    s"but has notes: ${notes.get}")
+                val optInDesc = if (namedConfOptIn) {
+                  optedInBy.get
+                } else {
+                  s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true"
+                }
+                logWarning(s"Comet supports $fn when $optInDesc but has notes: ${notes.get}")
               }
               aggHandler.convert(aggExpr, fn, inputs, binding, conf)
             } else {
               val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+              val extraOptIn = optedInBy
+                .map(kv => s" or by setting $kv")
+                .getOrElse("")
               withInfo(
                 fn,
                 s"$fn is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
-                  s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
-                  s"${CometConf.COMPAT_GUIDE}.")
+                  s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true" +
+                  s"$extraOptIn. ${CometConf.COMPAT_GUIDE}.")
               None
             }
           case Compatible(notes) =>
@@ -623,6 +629,21 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
+   * True when the current SQLConf has the named config set to the given value. The argument is a
+   * `key=value` string used by `Incompatible.optedInBy` to declare which config opts the user
+   * into running an otherwise-incompatible expression. The configured value is compared
+   * case-insensitively after splitting on the first `=`.
+   */
+  private def isOptedInVia(keyEqualsValue: String): Boolean = {
+    keyEqualsValue.split("=", 2) match {
+      case Array(key, expected) =>
+        Option(SQLConf.get.getConfString(key, null))
+          .exists(_.equalsIgnoreCase(expected))
+      case _ => false
+    }
+  }
+
+  /**
    * Convert a Spark expression to a protocol-buffer representation of a native Comet/DataFusion
    * expression.
    *
@@ -655,23 +676,29 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         case Unsupported(notes) =>
           withInfo(expr, notes.getOrElse(""))
           None
-        case Incompatible(notes) =>
+        case Incompatible(notes, optedInBy) =>
           val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
-          if (exprAllowIncompat) {
+          val namedConfOptIn = optedInBy.exists(isOptedInVia)
+          if (exprAllowIncompat || namedConfOptIn) {
             if (notes.isDefined) {
-              logWarning(
-                s"Comet supports $expr when " +
-                  s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
-                  s"but has notes: ${notes.get}")
+              val optInDesc = if (namedConfOptIn) {
+                optedInBy.get
+              } else {
+                s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true"
+              }
+              logWarning(s"Comet supports $expr when $optInDesc but has notes: ${notes.get}")
             }
             handler.convert(expr, inputs, binding)
           } else {
             val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+            val extraOptIn = optedInBy
+              .map(kv => s" or by setting $kv")
+              .getOrElse("")
             withInfo(
               expr,
               s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
-                s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
-                s"${CometConf.COMPAT_GUIDE}.")
+                s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true" +
+                s"$extraOptIn. ${CometConf.COMPAT_GUIDE}.")
             None
           }
         case Compatible(notes) =>

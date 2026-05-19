@@ -37,8 +37,17 @@ case class Compatible(notes: Option[String] = None) extends SupportLevel
  *
  * Any compatibility differences are noted in the
  * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
+ *
+ * @param notes
+ *   Optional human-readable notes about the incompatibility.
+ * @param optedInBy
+ *   Optional `key=value` pair naming a SQLConf entry that, when set to `value`, opts the user
+ *   into running this expression despite the incompatibility, in addition to the per-expression
+ *   `spark.comet.expression.<Name>.allowIncompatible` flag. Use this when a broader config (for
+ *   example, an engine selector) already encodes the user's acceptance of the trade-off.
  */
-case class Incompatible(notes: Option[String] = None) extends SupportLevel
+case class Incompatible(notes: Option[String] = None, optedInBy: Option[String] = None)
+    extends SupportLevel
 
 /** Comet does not support this feature */
 case class Unsupported(notes: Option[String] = None) extends SupportLevel

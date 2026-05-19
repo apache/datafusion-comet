@@ -31,6 +31,28 @@ import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
+/**
+ * Shared gate for regex serdes: when the user has selected `spark.comet.exec.regexp.engine=java`
+ * but has not enabled the experimental JVM UDF framework (`spark.comet.jvmUdf.enabled=false`, the
+ * default), produce an explanatory message instead of silently doing something else.
+ */
+private object RegexpEngine {
+
+  def jvmUdfDisabledReason(exprName: String): Option[String] = {
+    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA &&
+      !CometConf.COMET_JVM_UDF_ENABLED.get()) {
+      Some(
+        s"$exprName requires ${CometConf.COMET_JVM_UDF_ENABLED.key}=true when " +
+          s"${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_JAVA}. " +
+          "The JVM UDF framework is experimental and disabled by default.")
+    } else None
+  }
+
+  def javaEngineRequired(exprName: String): String =
+    s"$exprName requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
+      s"${CometConf.REGEXP_ENGINE_JAVA} and ${CometConf.COMET_JVM_UDF_ENABLED.key}=true"
+}
+
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
   override def getCompatibleNotes(): Seq[String] = Seq(
@@ -284,18 +306,22 @@ object CometRLike extends CometExpressionSerde[RLike] {
       "Uses Rust regexp engine, which has different behavior to Java regexp engine")
 
   override def getSupportLevel(expr: RLike): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
-      expr.right match {
-        case _: Literal => Compatible(None)
-        case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
-      }
-    } else {
-      super.getSupportLevel(expr)
+    RegexpEngine.jvmUdfDisabledReason("rlike") match {
+      case Some(reason) => Unsupported(Some(reason))
+      case None =>
+        if (CometConf.isJavaRegexpEngineActive()) {
+          expr.right match {
+            case _: Literal => Compatible(None)
+            case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
+          }
+        } else {
+          super.getSupportLevel(expr)
+        }
     }
   }
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
+    if (CometConf.isJavaRegexpEngineActive()) {
       convertViaJvmUdf(expr, inputs, binding)
     } else {
       convertViaNativeRegex(expr, inputs, binding)
@@ -377,7 +403,7 @@ object CometRLike extends CometExpressionSerde[RLike] {
 object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
 
   override def getSupportLevel(expr: RegExpExtract): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
+    if (CometConf.isJavaRegexpEngineActive()) {
       (expr.regexp, expr.idx) match {
         case (_: Literal, _: Literal) => Compatible(None)
         case (_: Literal, _) =>
@@ -386,9 +412,9 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
       }
     } else {
       Unsupported(
-        Some(
-          s"regexp_extract requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-            s"${CometConf.REGEXP_ENGINE_JAVA}"))
+        RegexpEngine
+          .jvmUdfDisabledReason("regexp_extract")
+          .orElse(Some(RegexpEngine.javaEngineRequired("regexp_extract"))))
     }
   }
 
@@ -396,11 +422,12 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
       expr: RegExpExtract,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() != CometConf.REGEXP_ENGINE_JAVA) {
+    if (!CometConf.isJavaRegexpEngineActive()) {
       withInfo(
         expr,
-        s"regexp_extract requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-          s"${CometConf.REGEXP_ENGINE_JAVA}")
+        RegexpEngine
+          .jvmUdfDisabledReason("regexp_extract")
+          .getOrElse(RegexpEngine.javaEngineRequired("regexp_extract")))
       return None
     }
     (expr.regexp, expr.idx) match {
@@ -446,7 +473,7 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
 object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
 
   override def getSupportLevel(expr: RegExpExtractAll): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
+    if (CometConf.isJavaRegexpEngineActive()) {
       (expr.regexp, expr.idx) match {
         case (_: Literal, _: Literal) => Compatible(None)
         case (_: Literal, _) =>
@@ -455,9 +482,9 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
       }
     } else {
       Unsupported(
-        Some(
-          s"regexp_extract_all requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-            s"${CometConf.REGEXP_ENGINE_JAVA}"))
+        RegexpEngine
+          .jvmUdfDisabledReason("regexp_extract_all")
+          .orElse(Some(RegexpEngine.javaEngineRequired("regexp_extract_all"))))
     }
   }
 
@@ -465,11 +492,12 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
       expr: RegExpExtractAll,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() != CometConf.REGEXP_ENGINE_JAVA) {
+    if (!CometConf.isJavaRegexpEngineActive()) {
       withInfo(
         expr,
-        s"regexp_extract_all requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-          s"${CometConf.REGEXP_ENGINE_JAVA}")
+        RegexpEngine
+          .jvmUdfDisabledReason("regexp_extract_all")
+          .getOrElse(RegexpEngine.javaEngineRequired("regexp_extract_all")))
       return None
     }
     (expr.regexp, expr.idx) match {
@@ -516,7 +544,7 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
 object CometRegExpInStr extends CometExpressionSerde[RegExpInStr] {
 
   override def getSupportLevel(expr: RegExpInStr): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
+    if (CometConf.isJavaRegexpEngineActive()) {
       (expr.regexp, expr.idx) match {
         case (_: Literal, _: Literal) => Compatible(None)
         case (_: Literal, _) =>
@@ -525,9 +553,9 @@ object CometRegExpInStr extends CometExpressionSerde[RegExpInStr] {
       }
     } else {
       Unsupported(
-        Some(
-          s"regexp_instr requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-            s"${CometConf.REGEXP_ENGINE_JAVA}"))
+        RegexpEngine
+          .jvmUdfDisabledReason("regexp_instr")
+          .orElse(Some(RegexpEngine.javaEngineRequired("regexp_instr"))))
     }
   }
 
@@ -535,11 +563,12 @@ object CometRegExpInStr extends CometExpressionSerde[RegExpInStr] {
       expr: RegExpInStr,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() != CometConf.REGEXP_ENGINE_JAVA) {
+    if (!CometConf.isJavaRegexpEngineActive()) {
       withInfo(
         expr,
-        s"regexp_instr requires ${CometConf.COMET_REGEXP_ENGINE.key}=" +
-          s"${CometConf.REGEXP_ENGINE_JAVA}")
+        RegexpEngine
+          .jvmUdfDisabledReason("regexp_instr")
+          .getOrElse(RegexpEngine.javaEngineRequired("regexp_instr")))
       return None
     }
     (expr.regexp, expr.idx) match {
@@ -650,18 +679,22 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
   override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
     expr.pos match {
       case Literal(value, DataTypes.IntegerType) if value == 1 =>
-        if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
-          expr.regexp match {
-            case _: Literal => Compatible(None)
-            case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
-          }
-        } else {
-          if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
-            !CometConf.isExprAllowIncompat("regexp")) {
-            Incompatible()
-          } else {
-            Compatible()
-          }
+        RegexpEngine.jvmUdfDisabledReason("regexp_replace") match {
+          case Some(reason) => Unsupported(Some(reason))
+          case None =>
+            if (CometConf.isJavaRegexpEngineActive()) {
+              expr.regexp match {
+                case _: Literal => Compatible(None)
+                case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
+              }
+            } else {
+              if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
+                !CometConf.isExprAllowIncompat("regexp")) {
+                Incompatible()
+              } else {
+                Compatible()
+              }
+            }
         }
       case _ =>
         Unsupported(Some("Comet only supports regexp_replace with an offset of 1 (no offset)."))
@@ -672,7 +705,7 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       expr: RegExpReplace,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
+    if (CometConf.isJavaRegexpEngineActive()) {
       convertViaJvmUdf(expr, inputs, binding)
     } else {
       convertViaNativeRegex(expr, inputs, binding)
@@ -763,13 +796,17 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
       "Regex engine differences between Java and Rust")
 
   override def getSupportLevel(expr: StringSplit): SupportLevel = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
-      expr.regex match {
-        case _: Literal => Compatible(None)
-        case _ => Unsupported(Some("Only scalar regex patterns are supported"))
-      }
-    } else {
-      Incompatible(Some("Regex engine differences between Java and Rust"))
+    RegexpEngine.jvmUdfDisabledReason("split") match {
+      case Some(reason) => Unsupported(Some(reason))
+      case None =>
+        if (CometConf.isJavaRegexpEngineActive()) {
+          expr.regex match {
+            case _: Literal => Compatible(None)
+            case _ => Unsupported(Some("Only scalar regex patterns are supported"))
+          }
+        } else {
+          Incompatible(Some("Regex engine differences between Java and Rust"))
+        }
     }
   }
 
@@ -777,7 +814,7 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
       expr: StringSplit,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_REGEXP_ENGINE.get() == CometConf.REGEXP_ENGINE_JAVA) {
+    if (CometConf.isJavaRegexpEngineActive()) {
       convertViaJvmUdf(expr, inputs, binding)
     } else {
       convertViaNativeRegex(expr, inputs, binding)

@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Test regexp_replace via JVM regex engine
+-- Config: spark.comet.jvmUdf.enabled=true
 -- Config: spark.comet.exec.regexp.engine=java
 
 statement

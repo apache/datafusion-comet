@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Test regexp_instr via JVM regex engine
+-- Config: spark.comet.jvmUdf.enabled=true
 -- Config: spark.comet.exec.regexp.engine=java
 
 statement

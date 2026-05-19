@@ -709,7 +709,7 @@ case class CometExecRule(session: SparkSession)
         case Unsupported(notes) =>
           withInfo(op, notes.getOrElse(""))
           false
-        case Incompatible(notes) =>
+        case Incompatible(notes, _) =>
           val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
           val incompatConf = CometConf.getOperatorAllowIncompatConfigKey(opName)
           if (allowIncompat) {

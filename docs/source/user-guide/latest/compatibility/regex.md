@@ -28,6 +28,17 @@ spark.comet.exec.regexp.engine=rust   # default
 spark.comet.exec.regexp.engine=java   # experimental
 ```
 
+The Java engine is built on Comet's experimental JVM UDF framework, which is disabled by default. To use
+the Java engine, both configs must be set:
+
+```
+spark.comet.jvmUdf.enabled=true
+spark.comet.exec.regexp.engine=java
+```
+
+If `spark.comet.exec.regexp.engine=java` is set without `spark.comet.jvmUdf.enabled=true`, the regex
+expressions fall back to Spark with an explanatory message.
+
 ## Choosing an engine
 
 |                      | Rust engine                             | Java engine (experimental)                                                                                          |
@@ -47,8 +58,9 @@ spark.comet.expression.regexp.allowIncompatible=true
 
 The **Java engine** is an experimental option for correctness-sensitive workloads. It evaluates expressions
 by passing Arrow vectors to a JVM-side UDF that uses `java.util.regex`, producing identical results to Spark
-for all patterns. Because it is experimental, the behavior, configuration, and supported expressions may
-change in future releases.
+for all patterns. Because the underlying JVM UDF framework is experimental, it is gated behind
+`spark.comet.jvmUdf.enabled=true`, and the behavior, configuration, and supported expressions may change in
+future releases.
 
 ## Why the engines differ
 

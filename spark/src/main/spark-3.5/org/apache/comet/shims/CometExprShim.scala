@@ -56,7 +56,7 @@ trait CometExprShim extends CommonStringExprs {
 
         val isCastSupported = castSupported match {
           case Compatible(_) => true
-          case Incompatible(_) => true
+          case Incompatible(_, _) => true
           case _ => false
         }
 
