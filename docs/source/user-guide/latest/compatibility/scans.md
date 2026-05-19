@@ -40,7 +40,6 @@ The following features are not supported and cause Comet to fall back to Spark:
   V2 API for Parquet scans. Comet's Parquet scan only supports the V1 API.
 - Spark metadata columns (e.g., `_metadata.file_path`)
 - No support for row indexes
-- No support for reading Parquet field IDs
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   Comet's Parquet scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
