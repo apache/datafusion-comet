@@ -541,10 +541,9 @@ converted into Arrow format, allowing native execution to happen after that.</p>
 <h3>HDFS<a class="headerlink" href="#hdfs" title="Link to this heading">#</a></h3>
 <p>Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for <a class="reference internal" href="#supported-spark-data-sources">supported formats</a></p>
 </section>
-<section id="using-experimental-native-datafusion-reader">
-<h3>Using experimental native DataFusion reader<a class="headerlink" href="#using-experimental-native-datafusion-reader" title="Link to this heading">#</a></h3>
-<p>Unlike to native Comet reader the Datafusion reader fully supports nested types processing. This reader is currently experimental only</p>
-<p>To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed</p>
+<section id="building-comet-with-hdfs-support">
+<h3>Building Comet with HDFS support<a class="headerlink" href="#building-comet-with-hdfs-support" title="Link to this heading">#</a></h3>
+<p>To build Comet with remote HDFS support it is required to have a JDK installed.</p>
 <p>Example:
 Build a Comet for <code class="docutils literal notranslate"><span class="pre">spark-4.1</span></code> provide a JDK path in <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code>
 Provide the JRE linker path in <code class="docutils literal notranslate"><span class="pre">RUSTFLAGS</span></code>, the path can vary depending on the system. Typically JRE linker is a part of installed JDK</p>
@@ -552,10 +551,9 @@ Provide the JRE linker path in <code class="docutils literal notranslate"><span 
 make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-4.1&quot;</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L </span><span class="nv">$JAVA_HOME</span><span class="s2">/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
 </pre></div>
 </div>
-<p>Start Comet with experimental reader and HDFS support as <a class="reference internal" href="installation.html#run-spark-shell-with-comet-enabled"><span class="std std-ref">described</span></a>
+<p>Start Comet with HDFS support as <a class="reference internal" href="installation.html#run-spark-shell-with-comet-enabled"><span class="std std-ref">described</span></a>
 and add additional parameters</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span>spark.comet.scan.impl<span class="o">=</span>native_datafusion<span class="w"> </span><span class="se">\</span>
---conf<span class="w"> </span>spark.hadoop.fs.defaultFS<span class="o">=</span><span class="s2">&quot;hdfs://namenode:9000&quot;</span><span class="w"> </span><span class="se">\</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span>spark.hadoop.fs.defaultFS<span class="o">=</span><span class="s2">&quot;hdfs://namenode:9000&quot;</span><span class="w"> </span><span class="se">\</span>
 --conf<span class="w"> </span>spark.hadoop.dfs.client.use.datanode.hostname<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 --conf<span class="w"> </span>dfs.client.use.datanode.hostname<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span>
 </pre></div>
@@ -625,7 +623,6 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="w">    </span><span class="n">withSQLConf</span><span class="p">(</span>
 <span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_NATIVE_SCAN_IMPL</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">SCAN_NATIVE_DATAFUSION</span><span class="p">,</span>
 <span class="w">      </span><span class="nc">SQLConf</span><span class="p">.</span><span class="nc">USE_V1_SOURCE_LIST</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;parquet&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="s">&quot;fs.defaultFS&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;hdfs://namenode:9000&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="s">&quot;dfs.client.use.datanode.hostname&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
@@ -636,7 +633,7 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 <span class="w">  </span><span class="p">}</span>
 </pre></div>
 </div>
-<p>Or use <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> with HDFS support as described <a class="reference internal" href="#using-experimental-native-datafusion-reader">above</a></p>
+<p>Or use <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> with HDFS support as described <a class="reference internal" href="#building-comet-with-hdfs-support">above</a></p>
 </section>
 </section>
 <section id="s3">

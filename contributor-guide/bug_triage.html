@@ -602,8 +602,7 @@ help contributors find bugs in their area of expertise.</p>
 </tbody>
 </table>
 </div>
-<p>The following pre-existing labels also serve as area indicators: <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code>,
-<code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code>, <code class="docutils literal notranslate"><span class="pre">spark</span> <span class="pre">4</span></code>, <code class="docutils literal notranslate"><span class="pre">spark</span> <span class="pre">sql</span> <span class="pre">tests</span></code>.</p>
+<p>The following pre-existing labels also serve as area indicators: <code class="docutils literal notranslate"><span class="pre">spark</span> <span class="pre">4</span></code>, <code class="docutils literal notranslate"><span class="pre">spark</span> <span class="pre">sql</span> <span class="pre">tests</span></code>.</p>
 </section>
 <section id="triage-process">
 <h2>Triage Process<a class="headerlink" href="#triage-process" title="Link to this heading">#</a></h2>
@@ -640,9 +639,8 @@ is more important than whether it crashes.</p></li>
 crashes, because crashes are at least visible.</p></li>
 <li><p><strong>User-reported over test-only.</strong> A bug hit by a real user on a real workload takes priority
 over one found only in test suites.</p></li>
-<li><p><strong>Core path over experimental.</strong> Bugs in the default scan mode (<code class="docutils literal notranslate"><span class="pre">native_comet</span></code>) or widely-used
-expressions take priority over bugs in experimental features like <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> or
-<code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code>.</p></li>
+<li><p><strong>Core path over experimental.</strong> Bugs in widely-used expressions and operators take priority over
+bugs in experimental features.</p></li>
 <li><p><strong>Production safety over feature completeness.</strong> Fixing a data corruption bug is more important
 than adding support for a new expression.</p></li>
 </ol>
