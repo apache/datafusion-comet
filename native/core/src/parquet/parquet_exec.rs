@@ -28,11 +28,9 @@ use datafusion::datasource::physical_plan::{
 };
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_expr::expressions::{BinaryExpr, Column};
+use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
@@ -72,6 +70,7 @@ pub(crate) fn init_datasource_exec(
     session_timezone: &str,
     case_sensitive: bool,
     return_null_struct_if_all_fields_missing: bool,
+    allow_type_promotion: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
@@ -81,6 +80,7 @@ pub(crate) fn init_datasource_exec(
         session_timezone,
         case_sensitive,
         return_null_struct_if_all_fields_missing,
+        allow_type_promotion,
         &object_store_url,
         encryption_enabled,
     );
@@ -132,22 +132,6 @@ pub(crate) fn init_datasource_exec(
     let mut parquet_source =
         ParquetSource::new(table_schema).with_table_parquet_options(table_parquet_options);
 
-    // Create a conjunctive form of the vector because ParquetExecBuilder takes
-    // a single expression
-    if let Some(data_filters) = data_filters {
-        let cnf_data_filters = data_filters.clone().into_iter().reduce(|left, right| {
-            Arc::new(BinaryExpr::new(
-                left,
-                datafusion::logical_expr::Operator::And,
-                right,
-            ))
-        });
-
-        if let Some(filter) = cnf_data_filters {
-            parquet_source = parquet_source.with_predicate(filter);
-        }
-    }
-
     if encryption_enabled {
         parquet_source = parquet_source.with_encryption_factory(
             session_ctx
@@ -161,11 +145,34 @@ pub(crate) fn init_datasource_exec(
     parquet_source = parquet_source
         .with_parquet_file_reader_factory(Arc::new(CachingParquetReaderFactory::new(store)));
 
+    // Route data filters through `try_pushdown_filters` rather than calling
+    // `with_predicate` directly. This is the contract DataFusion's optimizer
+    // uses, and it correctly classifies any filter ParquetSource cannot
+    // evaluate as a `RowFilter` (e.g. virtual-column refs like Parquet
+    // `row_number`) as `PushedDown::No`. The predicate still flows into
+    // `source.predicate` for row-group / page-index / bloom-filter pruning
+    // even when `datafusion.execution.parquet.pushdown_filters=false`; that
+    // config only gates per-row `RowFilter` evaluation. We discard
+    // `propagation.parent_pushdown_result` because Spark's Filter above the
+    // scan re-evaluates every dataFilter, so No-classified filters stay
+    // correct without us inserting a FilterExec here.
+    let file_source: Arc<dyn FileSource> = match data_filters {
+        Some(filters) if !filters.is_empty() => {
+            let state = session_ctx.state();
+            let propagation =
+                parquet_source.try_pushdown_filters(filters, state.config_options())?;
+            // `updated_node` is `None` when every filter classified as `No`
+            // (nothing pushable); keep the unmodified source in that case.
+            propagation
+                .updated_node
+                .unwrap_or_else(|| Arc::new(parquet_source))
+        }
+        _ => Arc::new(parquet_source),
+    };
+
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
         SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
     );
-
-    let file_source: Arc<dyn FileSource> = Arc::new(parquet_source);
 
     let file_groups = file_groups
         .iter()
@@ -192,6 +199,7 @@ fn get_options(
     session_timezone: &str,
     case_sensitive: bool,
     return_null_struct_if_all_fields_missing: bool,
+    allow_type_promotion: bool,
     object_store_url: &ObjectStoreUrl,
     encryption_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
@@ -205,6 +213,7 @@ fn get_options(
     spark_parquet_options.case_sensitive = case_sensitive;
     spark_parquet_options.return_null_struct_if_all_fields_missing =
         return_null_struct_if_all_fields_missing;
+    spark_parquet_options.allow_type_promotion = allow_type_promotion;
 
     if encryption_enabled {
         table_parquet_options.crypto.configure_factory(
@@ -216,26 +225,4 @@ fn get_options(
     }
 
     (table_parquet_options, spark_parquet_options)
-}
-
-/// Wraps a `SendableRecordBatchStream` to print each batch as it flows through.
-/// Returns a new `SendableRecordBatchStream` that yields the same batches.
-pub fn dbg_batch_stream(stream: SendableRecordBatchStream) -> SendableRecordBatchStream {
-    use futures::StreamExt;
-    let schema = stream.schema();
-    let printing_stream = stream.map(|batch_result| {
-        match &batch_result {
-            Ok(batch) => {
-                dbg!(batch, batch.schema());
-                for (col_idx, column) in batch.columns().iter().enumerate() {
-                    dbg!(col_idx, column, column.nulls());
-                }
-            }
-            Err(e) => {
-                println!("batch error: {:?}", e);
-            }
-        }
-        batch_result
-    });
-    Box::pin(RecordBatchStreamAdapter::new(schema, printing_stream))
 }
