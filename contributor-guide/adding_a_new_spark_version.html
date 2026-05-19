@@ -619,9 +619,7 @@ own test suites under the new profile.</p>
 <h3>Add the New Profile to the Test Matrix<a class="headerlink" href="#add-the-new-profile-to-the-test-matrix" title="Link to this heading">#</a></h3>
 <p>Promote the new Spark version from the compile-only job to the main test
 jobs in <code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_build_linux.yml</span></code> (and <code class="docutils literal notranslate"><span class="pre">pr_build_macos.yml</span></code> if
-capacity allows). Use <code class="docutils literal notranslate"><span class="pre">scan_impl:</span> <span class="pre">&quot;auto&quot;</span></code> so both <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and
-<code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> get exercised, matching how earlier versions are
-configured.</p>
+capacity allows). Match how earlier versions are configured.</p>
 </section>
 <section id="run-the-suite-locally-first">
 <h3>Run the Suite Locally First<a class="headerlink" href="#run-the-suite-locally-first" title="Link to this heading">#</a></h3>
@@ -732,14 +730,12 @@ test or cluster, and do not disable whole suites.</p></li>
 <section id="ci-for-the-spark-sql-tests">
 <h3>CI for the Spark SQL Tests<a class="headerlink" href="#ci-for-the-spark-sql-tests" title="Link to this heading">#</a></h3>
 <p>Spark SQL tests do not run from the main PR build workflows. They have
-their own dedicated workflow files:</p>
+their own dedicated workflow file:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/spark_sql_test.yml</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/spark_sql_test_native_iceberg_compat.yml</span></code></p></li>
 </ul>
-<p>Add the new version to the matrix in each of these files (<code class="docutils literal notranslate"><span class="pre">spark-short</span></code>,
-<code class="docutils literal notranslate"><span class="pre">spark-full</span></code>, <code class="docutils literal notranslate"><span class="pre">java</span></code>, <code class="docutils literal notranslate"><span class="pre">scan-impl</span></code>). Use the closest existing entry as a
-template.</p>
+<p>Add the new version to the matrix (<code class="docutils literal notranslate"><span class="pre">spark-short</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-full</span></code>, <code class="docutils literal notranslate"><span class="pre">java</span></code>).
+Use the closest existing entry as a template.</p>
 <p>Before merging, run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">format</span></code>, run clippy
 (<code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">native</span> <span class="pre">&amp;&amp;</span> <span class="pre">cargo</span> <span class="pre">clippy</span> <span class="pre">--all-targets</span> <span class="pre">--workspace</span> <span class="pre">--</span> <span class="pre">-D</span> <span class="pre">warnings</span></code>), and
 confirm every skip introduced in this PR has a linked GitHub issue.</p>

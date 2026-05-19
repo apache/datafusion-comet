@@ -512,31 +512,12 @@ under the License.
 -->
 <section id="parquet-compatibility">
 <h1>Parquet Compatibility<a class="headerlink" href="#parquet-compatibility" title="Link to this heading">#</a></h1>
-<p>Comet currently has two distinct implementations of the Parquet scan operator.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Scan Implementation</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code></p></td>
-<td><p>Fully native scan</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code></p></td>
-<td><p>Hybrid JVM/native scan</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>The configuration property <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl</span></code> is used to select an implementation. The default setting is
-<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl=auto</span></code>, which attempts to use <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> first, and falls back to Spark if the scan
-cannot be converted (e.g., due to unsupported features). Most users should not need to change this setting. However,
-it is possible to force Comet to use a particular implementation for all scan operations by setting this
-configuration property to one of the following implementations. For example: <code class="docutils literal notranslate"><span class="pre">--conf</span> <span class="pre">spark.comet.scan.impl=native_datafusion</span></code>.</p>
-<section id="shared-limitations">
-<h2>Shared Limitations<a class="headerlink" href="#shared-limitations" title="Link to this heading">#</a></h2>
-<p>The following features are not supported by either scan implementation, and Comet will fall back to Spark in these scenarios:</p>
+<p>Comet’s Parquet scan offloads decoding to native code and produces Arrow batches for the rest of
+the plan. Comet falls back to Spark when the scan cannot be converted (for example, due to one of
+the unsupported features listed below).</p>
+<section id="parquet-scan-limitations">
+<h2>Parquet Scan Limitations<a class="headerlink" href="#parquet-scan-limitations" title="Link to this heading">#</a></h2>
+<p>The following features are not supported and cause Comet to fall back to Spark:</p>
 <ul class="simple">
 <li><p>Decimals encoded in binary format.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ShortType</span></code> columns, by default. When reading Parquet files written by systems other than Spark that contain
@@ -548,36 +529,11 @@ This behavior can be disabled by setting <code class="docutils literal notransla
 columns are always safe because they can only come from signed <code class="docutils literal notranslate"><span class="pre">INT8</span></code>, where truncation preserves the signed value.</p></li>
 <li><p>Default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.</p></li>
 <li><p>Spark’s Datasource V2 API. When <code class="docutils literal notranslate"><span class="pre">spark.sql.sources.useV1SourceList</span></code> does not include <code class="docutils literal notranslate"><span class="pre">parquet</span></code>, Spark uses the
-V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API.</p></li>
+V2 API for Parquet scans. Comet’s Parquet scan only supports the V1 API.</p></li>
 <li><p>Spark metadata columns (e.g., <code class="docutils literal notranslate"><span class="pre">_metadata.file_path</span></code>)</p></li>
-</ul>
-<p>The following shared limitation may produce incorrect results without falling back to Spark:</p>
-<ul class="simple">
-<li><p>No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
-Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
-written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
-October 15, 1582.</p></li>
-</ul>
-<p>The following shared limitation raises an error at scan time rather than falling back to Spark:</p>
-<ul class="simple">
-<li><p>Invalid UTF-8 bytes in <code class="docutils literal notranslate"><span class="pre">STRING</span></code> columns. Spark permits arbitrary byte sequences in a <code class="docutils literal notranslate"><span class="pre">STRING</span></code>
-column (for example from <code class="docutils literal notranslate"><span class="pre">CAST(X'C1'</span> <span class="pre">AS</span> <span class="pre">STRING)</span></code>), but Comet’s native execution path is built on
-Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose <code class="docutils literal notranslate"><span class="pre">STRING</span></code> column contains
-non-UTF-8 bytes fails with <code class="docutils literal notranslate"><span class="pre">Parquet</span> <span class="pre">error:</span> <span class="pre">encountered</span> <span class="pre">non</span> <span class="pre">UTF-8</span> <span class="pre">data</span></code>. Disable Comet for the
-query, or cast the column to <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> before persisting, if you need to preserve non-UTF-8 bytes.
-See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4121">#4121</a>.</p></li>
-</ul>
-</section>
-<section id="native-datafusion-limitations">
-<h2><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> Limitations<a class="headerlink" href="#native-datafusion-limitations" title="Link to this heading">#</a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan has some additional limitations, mostly related to Parquet metadata. All of these
-cause Comet to fall back to Spark (including when using <code class="docutils literal notranslate"><span class="pre">auto</span></code> mode). Note that the <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan
-requires <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled=true</span></code> because the scan node must be wrapped by <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>.</p>
-<ul class="simple">
 <li><p>No support for row indexes</p></li>
-<li><p>No support for reading Parquet field IDs</p></li>
 <li><p>No support for <code class="docutils literal notranslate"><span class="pre">input_file_name()</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start()</span></code>, or <code class="docutils literal notranslate"><span class="pre">input_file_block_length()</span></code> SQL functions.
-The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan does not use Spark’s <code class="docutils literal notranslate"><span class="pre">FileScanRDD</span></code>, so these functions cannot populate their values.</p></li>
+Comet’s Parquet scan does not use Spark’s <code class="docutils literal notranslate"><span class="pre">FileScanRDD</span></code>, so these functions cannot populate their values.</p></li>
 <li><p>No support for <code class="docutils literal notranslate"><span class="pre">ignoreMissingFiles</span></code> or <code class="docutils literal notranslate"><span class="pre">ignoreCorruptFiles</span></code> being set to <code class="docutils literal notranslate"><span class="pre">true</span></code></p></li>
 <li><p>Duplicate field names in case-insensitive mode (e.g., a Parquet file with both <code class="docutils literal notranslate"><span class="pre">B</span></code> and <code class="docutils literal notranslate"><span class="pre">b</span></code> columns)
 are detected at read time and raise a <code class="docutils literal notranslate"><span class="pre">SparkRuntimeException</span></code> with error class <code class="docutils literal notranslate"><span class="pre">_LEGACY_ERROR_TEMP_2093</span></code>,
@@ -586,10 +542,26 @@ matching Spark’s behavior.</p></li>
 Spark’s parquet-mr semantics (silent overflow, null-on-narrowing), which Comet’s native reader
 does not replicate. By default Comet falls back to Spark in this case. Set
 <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.allowDisabledParquetVectorizedReader=true</span></code> to opt in to running the
-<code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan regardless. See
+Comet Parquet scan regardless. See
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4352">#4352</a>.</p></li>
 </ul>
-<p>The following <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> limitations may produce incorrect results on Spark versions prior to 4.0
+<p>The following limitation may produce incorrect results without falling back to Spark:</p>
+<ul class="simple">
+<li><p>No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
+Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
+written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
+October 15, 1582.</p></li>
+</ul>
+<p>The following limitation raises an error at scan time rather than falling back to Spark:</p>
+<ul class="simple">
+<li><p>Invalid UTF-8 bytes in <code class="docutils literal notranslate"><span class="pre">STRING</span></code> columns. Spark permits arbitrary byte sequences in a <code class="docutils literal notranslate"><span class="pre">STRING</span></code>
+column (for example from <code class="docutils literal notranslate"><span class="pre">CAST(X'C1'</span> <span class="pre">AS</span> <span class="pre">STRING)</span></code>), but Comet’s native execution path is built on
+Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose <code class="docutils literal notranslate"><span class="pre">STRING</span></code> column contains
+non-UTF-8 bytes fails with <code class="docutils literal notranslate"><span class="pre">Parquet</span> <span class="pre">error:</span> <span class="pre">encountered</span> <span class="pre">non</span> <span class="pre">UTF-8</span> <span class="pre">data</span></code>. Disable Comet for the
+query, or cast the column to <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> before persisting, if you need to preserve non-UTF-8 bytes.
+See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4121">#4121</a>.</p></li>
+</ul>
+<p>The following limitation may produce incorrect results on Spark versions prior to 4.0
 without falling back to Spark:</p>
 <ul class="simple">
 <li><p>Reading <code class="docutils literal notranslate"><span class="pre">TimestampLTZ</span></code> as <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code>. On Spark 3.x, Spark raises an error per
@@ -615,8 +587,8 @@ that has evolved past one or more underlying Parquet files. Spark coerces the fi
 table types at read time.</p></li>
 </ol>
 <p>Spark’s vectorized Parquet reader fully validates these conversions in <code class="docutils literal notranslate"><span class="pre">ParquetVectorUpdaterFactory.getUpdater</span></code>
-and throws <code class="docutils literal notranslate"><span class="pre">SchemaColumnConvertNotSupportedException</span></code> for unsupported pairs. <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> mirrors
-that validation in its schema adapter; the entries below are the remaining gaps.</p>
+and throws <code class="docutils literal notranslate"><span class="pre">SchemaColumnConvertNotSupportedException</span></code> for unsupported pairs. Comet’s Parquet scan
+mirrors that validation in its schema adapter; the entries below are the remaining gaps.</p>
 <p>Note that the exact set of accepted conversions has changed between Spark versions
 (for example, Spark 3.x’s <code class="docutils literal notranslate"><span class="pre">schemaEvolution.enabled</span></code> flag gates <code class="docutils literal notranslate"><span class="pre">INT32</span> <span class="pre">→</span> <span class="pre">INT64</span></code>, <code class="docutils literal notranslate"><span class="pre">FLOAT</span> <span class="pre">→</span> <span class="pre">DOUBLE</span></code>,
 and <code class="docutils literal notranslate"><span class="pre">INT32</span> <span class="pre">→</span> <span class="pre">DOUBLE</span></code> widening that Spark 4.0+ accepts unconditionally; <code class="docutils literal notranslate"><span class="pre">TimestampLTZ</span> <span class="pre">→</span> <span class="pre">TimestampNTZ</span></code>
@@ -639,18 +611,6 @@ reader produces. Code that catches <code class="docutils literal notranslate"><s
 vanilla Spark. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4354">#4354</a>.</p></li>
 </ul>
 </section>
-</section>
-<section id="native-iceberg-compat-limitations">
-<h2><code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> Limitations<a class="headerlink" href="#native-iceberg-compat-limitations" title="Link to this heading">#</a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scan has the following additional limitation that may produce incorrect results
-without falling back to Spark:</p>
-<ul class="simple">
-<li><p>Some Spark configuration values are hard-coded to their defaults rather than respecting user-specified values.
-This may produce incorrect results when non-default values are set. The affected configurations are
-<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.binaryAsString</span></code>, <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.int96AsTimestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">spark.sql.caseSensitive</span></code>,
-<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.inferTimestampNTZ.enabled</span></code>, and <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.parquet.nanosAsLong</span></code>. See
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1816">issue #1816</a> for more details.</p></li>
-</ul>
 </section>
 </section>
 

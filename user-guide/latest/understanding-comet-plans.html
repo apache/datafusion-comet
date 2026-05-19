@@ -649,19 +649,16 @@ by role. Names match what is shown in the plan output.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometScan</span></code></p></td>
-<td><p>V1 Parquet scan driven by Spark’s file-source path through Comet’s Parquet reader. Decoding runs in native code; the resulting Arrow batches cross JNI into the native plan. The active scan implementation is shown in brackets, e.g. <code class="docutils literal notranslate"><span class="pre">CometScan</span> <span class="pre">[native_iceberg_compat]</span></code>.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometBatchScan</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometBatchScan</span></code></p></td>
 <td><p>DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code></p></td>
-<td><p>Fully native Parquet scan that runs entirely in DataFusion (no JVM Parquet reader involvement).</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code></p></td>
+<td><p>Fully native Parquet scan that runs entirely in DataFusion.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergNativeScan</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergNativeScan</span></code></p></td>
 <td><p>Fully native Iceberg Parquet scan.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometCsvNativeScan</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometCsvNativeScan</span></code></p></td>
 <td><p>Fully native CSV scan (experimental).</p></td>
 </tr>
 </tbody>
