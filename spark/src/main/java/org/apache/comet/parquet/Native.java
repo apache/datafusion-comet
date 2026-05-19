@@ -25,8 +25,6 @@ import org.apache.comet.NativeBase;
 
 public final class Native extends NativeBase {
 
-  ///////////// Arrow Native Parquet Reader APIs
-
   /**
    * Verify that object store options are valid. An exception will be thrown if the provided options
    * are not valid.
@@ -34,53 +32,4 @@ public final class Native extends NativeBase {
   public static native void validateObjectStoreConfig(
       String filePath, Map<String, String> objectStoreOptions);
 
-  /**
-   * Initialize a record batch reader for a PartitionedFile
-   *
-   * @param filePath
-   * @param starts
-   * @param lengths
-   * @return a handle to the record batch reader, used in subsequent calls.
-   */
-  public static native long initRecordBatchReader(
-      String filePath,
-      long fileSize,
-      long[] starts,
-      long[] lengths,
-      byte[] filter,
-      byte[] requiredSchema,
-      byte[] dataSchema,
-      String sessionTimezone,
-      int batchSize,
-      boolean caseSensitive,
-      boolean returnNullStructIfAllFieldsMissing,
-      Map<String, String> objectStoreOptions,
-      CometFileKeyUnwrapper keyUnwrapper,
-      Object metricsNode);
-
-  /**
-   * Read the next batch of data into memory on native side
-   *
-   * @param handle
-   * @return the number of rows read
-   */
-  public static native int readNextRecordBatch(long handle);
-
-  /**
-   * Load the column corresponding to columnNum in the currently loaded record batch into JVM
-   *
-   * @param handle
-   * @param columnNum
-   * @param arrayAddr
-   * @param schemaAddr
-   */
-  public static native void currentColumnBatch(
-      long handle, int columnNum, long arrayAddr, long schemaAddr);
-
-  /**
-   * Close the record batch reader. Free the resources
-   *
-   * @param handle
-   */
-  public static native void closeRecordBatchReader(long handle);
 }
