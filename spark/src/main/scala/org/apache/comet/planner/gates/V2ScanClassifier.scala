@@ -80,9 +80,7 @@ object V2ScanClassifier extends Logging with ShimSubqueryBroadcast {
       case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get(conf) =>
         classifyCsv(scan, scanExec)
 
-      case _
-          if scanExec.scan.getClass.getName ==
-            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+      case _ if IcebergReflection.isIcebergScanClass(scanExec.scan.getClass.getName) =>
         classifyIceberg(scanExec, conf)
 
       case other =>
