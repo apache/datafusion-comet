@@ -71,7 +71,7 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
   test("to_csv - with configurable formatting options") {
     val table = "t1"
     withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       CometConf.getExprAllowIncompatConfigKey(classOf[StructsToCsv]) -> "true") {
       withTable(table) {
         val newLinesStr =
