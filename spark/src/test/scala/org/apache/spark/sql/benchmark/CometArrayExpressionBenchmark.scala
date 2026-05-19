@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.comet.CometConf
-
 // spotless:off
 /**
  * Benchmark to measure performance of Comet array expressions. To run this benchmark:

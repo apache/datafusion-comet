@@ -208,7 +208,7 @@ case class CometScanRule(session: SparkSession)
       !COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.get()) {
       withInfo(
         scanExec,
-        s"Native Parquet scan is incompatible with " +
+        "Native Parquet scan is incompatible with " +
           s"${SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key}=false; set " +
           s"${COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key}=true to opt in")
       return None
@@ -700,7 +700,7 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
       case ShortType if CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get() =>
-        fallbackReasons += s"Native Parquet scan may not handle unsigned UINT_8 correctly for " +
+        fallbackReasons += "Native Parquet scan may not handle unsigned UINT_8 correctly for " +
           s"$dt. Set ${CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key}=false to allow " +
           "native execution if your data does not contain unsigned small integers. " +
           CometConf.COMPAT_GUIDE
