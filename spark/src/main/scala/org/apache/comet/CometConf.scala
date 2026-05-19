@@ -111,25 +111,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithEnvVarOrDefault("ENABLE_COMET_WRITE", false)
 
-  @deprecated
-  val SCAN_NATIVE_DATAFUSION = "native_datafusion"
-
-  @deprecated
-  val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
-
-  @deprecated
-  val SCAN_AUTO = "auto"
-
-  @deprecated
-  val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
-    .category(CATEGORY_TESTING)
-    .internal()
-    .doc("This configuration option is deprecated and has no effect on Comet behavior.")
-    .stringConf
-    .transform(_.toLowerCase(Locale.ROOT))
-    .checkValues(Set(SCAN_NATIVE_DATAFUSION, SCAN_AUTO))
-    .createWithEnvVarOrDefault("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
-
   val COMET_ICEBERG_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.icebergNative.enabled")
       .category(CATEGORY_SCAN)

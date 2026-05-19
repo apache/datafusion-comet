@@ -1540,13 +1540,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType") {
-    val hasIncompatibleType = (dt: DataType) =>
-      if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == "auto") {
-        true
-      } else {
-        !CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-          .isTypeSupported(dt, "a", ListBuffer.empty)
-      }
+    val hasIncompatibleType =
+      (dt: DataType) => !CometScanTypeChecker().isTypeSupported(dt, "a", ListBuffer.empty)
     Seq(
       BooleanType,
       StringType,

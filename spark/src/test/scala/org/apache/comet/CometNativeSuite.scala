@@ -60,11 +60,6 @@ class CometNativeSuite extends CometTestBase {
       parquet.Native.closeRecordBatchReader(0)
     }
     assert(exception1.getMessage contains "null batch context handle")
-
-    val exception2 = intercept[NullPointerException] {
-      parquet.Native.closeColumnReader(0)
-    }
-    assert(exception2.getMessage contains "null context handle")
   }
 
   test("Comet native should use spark local dir as temp dir") {

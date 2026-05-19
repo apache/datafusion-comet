@@ -42,13 +42,12 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    super.test(s"$testName - ${CometConf.SCAN_NATIVE_DATAFUSION}", testTags: _*) {
+    super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false") {
         testFun
       }
     }
