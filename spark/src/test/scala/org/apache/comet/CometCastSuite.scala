@@ -1786,6 +1786,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Row(
           Seq[Any](
             values(i % values.length),
+            // Keep every third row's middle nested-array element null.
             if (i % 3 == 0) null else values((i + 1) % values.length),
             values((i + 2) % values.length)))
       }
