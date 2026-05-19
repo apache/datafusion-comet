@@ -115,6 +115,7 @@ of expressions that be disabled.
 | LastDay          | `last_day`                   |
 | LocalTimestamp   | `localtimestamp`             |
 | MakeDate         | `make_date`                  |
+| MakeTime         | `make_time`                  |
 | Minute           | `minute`                     |
 | NextDay          | `next_day`                   |
 | Second           | `second`                     |
@@ -131,8 +132,6 @@ of expressions that be disabled.
 | DayOfYear        | `dayofyear`                  |
 | WeekOfYear       | `weekofyear`                 |
 | Quarter          | `quarter`                    |
-| MakeDate         | `make_date`                  |
-| MakeTime         | `make_time`                  |
 | ToTime           | `to_time`                    |
 | TryToTime        | `try_to_time`                |
 
