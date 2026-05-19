@@ -71,33 +71,48 @@ pub fn spark_pmod(args: &[ColumnarValue], fail_on_error: bool) -> Result<Columna
         return exec_err!("pmod expects exactly two arguments");
     }
 
-    let lhs = &args[0];
-    let rhs = &args[1];
-
-    let left_data_type = lhs.data_type();
-    let right_data_type = rhs.data_type();
+    let left_data_type = args[0].data_type();
 
     if left_data_type.is_nested() {
-        if right_data_type != left_data_type {
-            return internal_err!("Type mismatch for spark pmod operation");
-        }
-        return apply_cmp_for_nested(Operator::Modulo, lhs, rhs);
+        return internal_err!("spark_pmod does not support nested types");
     }
 
     let arrays = ColumnarValue::values_to_arrays(args)?;
     let left = &arrays[0];
     let right = &arrays[1];
 
+    // Mirror Spark's `if (r < 0) (r + n) % n else r` so that the non-negative
+    // branch (including `-0.0`) is returned untouched. The right-hand side is
+    // masked to zero on non-negative rows so that `add(result, masked_right)`
+    // never overflows on values whose adjusted branch is discarded by the zip.
+    //
+    // Arrow's `cmp::lt` uses total ordering, where `lt(-0.0, 0.0)` is `true`.
+    // For floats we therefore compare against `-0.0`, which makes the
+    // total-order `lt` align with IEEE 754 (`-0.0` is not strictly less than
+    // `-0.0`, and `NaN` sorts above any number so the comparison is `false`).
     match (|| -> std::result::Result<ArrayRef, arrow::error::ArrowError> {
-        let zero = ScalarValue::new_zero(&left_data_type)
-            .map_err(|e| arrow::error::ArrowError::ComputeError(e.to_string()))?
-            .to_array_of_size(left.len())
-            .map_err(|e| arrow::error::ArrowError::ComputeError(e.to_string()))?;
+        let to_array = |sv: ScalarValue| {
+            sv.to_array_of_size(left.len())
+                .map_err(|e| arrow::error::ArrowError::ComputeError(e.to_string()))
+        };
+        let new_zero = || {
+            ScalarValue::new_zero(&left_data_type)
+                .map_err(|e| arrow::error::ArrowError::ComputeError(e.to_string()))
+        };
+        let zero = to_array(new_zero()?)?;
+        let lt_threshold = match left_data_type {
+            DataType::Float32 => to_array(ScalarValue::Float32(Some(-0.0)))?,
+            DataType::Float64 => to_array(ScalarValue::Float64(Some(-0.0)))?,
+            _ => Arc::clone(&zero),
+        };
         let result = rem(left, right)?;
-        let neg = arrow::compute::kernels::cmp::lt(&result, &zero)?;
-        let plus = arrow::compute::kernels::zip::zip(&neg, right, &zero)?;
-        let result = arrow::compute::kernels::numeric::add(&plus, &result)?;
-        rem(&result, right)
+        let neg = arrow::compute::kernels::cmp::lt(&result, &lt_threshold)?;
+        let masked_right = arrow::compute::kernels::zip::zip(&neg, right, &zero)?;
+        let adjusted = rem(
+            &arrow::compute::kernels::numeric::add(&result, &masked_right)?,
+            right,
+        )?;
+        arrow::compute::kernels::zip::zip(&neg, &adjusted, &result)
     })() {
         Ok(result) => Ok(ColumnarValue::Array(result)),
         Err(e) if e.to_string().contains("Divide by zero") && fail_on_error => {
@@ -351,6 +366,28 @@ mod tests {
     use datafusion::logical_expr::ColumnarValue;
     use datafusion::physical_expr::expressions::{Column, Literal};
     use datafusion::prelude::SessionContext;
+
+    #[test]
+    fn spark_pmod_preserves_negative_zero_f64() {
+        use arrow::array::Float64Array;
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![-0.0_f64]));
+        let b: ArrayRef = Arc::new(Float64Array::from(vec![3.0_f64]));
+        let out = spark_pmod(&[ColumnarValue::Array(a), ColumnarValue::Array(b)], false).unwrap();
+        let arr = out.into_array(1).unwrap();
+        let arr = arr.as_any().downcast_ref::<Float64Array>().unwrap();
+        assert_eq!(arr.value(0).to_bits(), (-0.0_f64).to_bits());
+    }
+
+    #[test]
+    fn spark_pmod_preserves_negative_zero_f32() {
+        use arrow::array::Float32Array;
+        let a: ArrayRef = Arc::new(Float32Array::from(vec![-0.0_f32]));
+        let b: ArrayRef = Arc::new(Float32Array::from(vec![3.0_f32]));
+        let out = spark_pmod(&[ColumnarValue::Array(a), ColumnarValue::Array(b)], false).unwrap();
+        let arr = out.into_array(1).unwrap();
+        let arr = arr.as_any().downcast_ref::<Float32Array>().unwrap();
+        assert_eq!(arr.value(0).to_bits(), (-0.0_f32).to_bits());
+    }
 
     fn with_fail_on_error<F: Fn(bool)>(test_fn: F) {
         for fail_on_error in [true, false] {
