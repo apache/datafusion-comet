@@ -29,7 +29,6 @@ import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefa
 import org.apache.spark.sql.comet.CometScanExec
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
-import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
@@ -87,6 +86,18 @@ object V1ScanGate extends Logging {
       return reject(s"Unsupported file format ${r.fileFormat}")
     }
 
+    // Disabling the vectorized reader opts into parquet-mr's permissive behavior (silent
+    // overflow / null-on-narrowing). Comet has no parquet-mr-equivalent backend, so default
+    // to falling back to Spark; the opt-in config lets the user accept the loss of those
+    // behaviors and use Comet anyway.
+    if (!conf.parquetVectorizedReaderEnabled &&
+      !COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.get()) {
+      return reject(
+        s"$SCAN_NATIVE_DATAFUSION scan is incompatible with " +
+          s"${SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key}=false; set " +
+          s"${COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key}=true to opt in")
+    }
+
     val hadoopConf = r.sparkSession.sessionState.newHadoopConfWithOptions(r.options)
 
     val possibleDefaultValues = getExistenceDefaultValues(scanExec.requiredSchema)
@@ -125,11 +136,6 @@ object V1ScanGate extends Logging {
 
     if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
       return reject("Native DataFusion scan does not support row index generation")
-    }
-
-    if (session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
-      ParquetUtils.hasFieldIds(scanExec.requiredSchema)) {
-      return reject("Native DataFusion scan does not support Parquet field ID matching")
     }
 
     val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)

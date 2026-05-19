@@ -35,9 +35,14 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
  */
 class CometScanRuleSuite extends CometTestBase {
 
-  /** Helper method to apply CometExecRule and return the transformed plan */
+  /** Helper method to apply CometScanRule and return the transformed plan */
   private def applyCometScanRule(plan: SparkPlan): SparkPlan = {
-    CometScanRule(spark).apply(stripAQEPlan(plan))
+    // This suite exercises the legacy CometScanRule path explicitly. CometScanRule asserts
+    // when COMET_USE_PLANNER is true (its assertion guards against accidental dual-registration
+    // with CometPlanner). When the legacy rule is deleted along with this suite, drop this.
+    withSQLConf(CometConf.COMET_USE_PLANNER.key -> "false") {
+      CometScanRule(spark).apply(stripAQEPlan(plan))
+    }
   }
 
   /** Create a test data frame that is used in all tests */

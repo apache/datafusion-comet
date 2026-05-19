@@ -30,6 +30,8 @@ import org.apache.comet.planner.PlanningContext
 import org.apache.comet.planner.gates.{S2CGate, V1ScanClassification, V1ScanGate, V2ScanClassification, V2ScanClassifier}
 import org.apache.comet.planner.tags.{CometTags, PlannerDecision}
 import org.apache.comet.planner.tags.PlannerDecision.{Convert, ConvertS2C, Fallback, Passthrough}
+import org.apache.comet.rules.CometExecRule
+import org.apache.comet.serde.CometOperatorSerde
 
 /**
  * Phase 2: decide per-node whether to convert, pass through, or fall back, using the
@@ -77,63 +79,80 @@ object Phase2Decision extends Logging {
       node: SparkPlan,
       parentLikely: Boolean,
       selfLikely: Boolean,
-      ctx: PlanningContext): PlannerDecision = node match {
-    case scan: FileSourceScanExec if selfLikely =>
-      V1ScanGate.classify(scan, ctx.session, ctx.conf, ctx.hasInputFileExpressions) match {
-        case V1ScanClassification.Convertible => Convert
-        case V1ScanClassification.NotConvertible(reasons) =>
-          logDebug(s"Phase2: V1 gate rejected scan=${scan.id} reasons=$reasons")
-          s2cOrFallback(scan, parentLikely, ctx, reasons)
-      }
+      ctx: PlanningContext): PlannerDecision = {
+    // SKIP_COMET overrides all other logic. The producer encodes its reason in the tag value;
+    // Phase 2 just respects the decision. Writers today: Spark34DppFallbackPrePass.
+    node.getTagValue(CometTags.SKIP_COMET) match {
+      case Some(reason) => return Fallback(Set(reason))
+      case None =>
+    }
+    node match {
+      case scan: FileSourceScanExec if selfLikely =>
+        V1ScanGate.classify(scan, ctx.session, ctx.conf, ctx.hasInputFileExpressions) match {
+          case V1ScanClassification.Convertible => Convert
+          case V1ScanClassification.NotConvertible(reasons) =>
+            logDebug(s"Phase2: V1 gate rejected scan=${scan.id} reasons=$reasons")
+            s2cOrFallback(scan, parentLikely, ctx, reasons)
+        }
 
-    case _: FileSourceScanExec =>
-      s2cOrFallback(node, parentLikely, ctx, Set.empty)
+      case _: FileSourceScanExec =>
+        s2cOrFallback(node, parentLikely, ctx, Set.empty)
 
-    case scan: BatchScanExec if selfLikely =>
-      V2ScanClassifier.classify(scan, ctx.conf) match {
-        case V2ScanClassification.IcebergConvertible(metadata) =>
-          scan.setTagValue(CometTags.ICEBERG_METADATA, metadata)
-          Convert
-        case V2ScanClassification.CsvConvertible =>
-          Convert
-        case V2ScanClassification.NotConvertible(reasons) =>
-          logDebug(s"Phase2: V2 classify=NotConvertible scan=${scan.id} reasons=$reasons")
-          s2cOrFallback(scan, parentLikely, ctx, reasons)
-      }
+      case scan: BatchScanExec if selfLikely =>
+        V2ScanClassifier.classify(scan, ctx.conf) match {
+          case V2ScanClassification.IcebergConvertible(metadata) =>
+            scan.setTagValue(CometTags.ICEBERG_METADATA, metadata)
+            Convert
+          case V2ScanClassification.CsvConvertible =>
+            Convert
+          case V2ScanClassification.NotConvertible(reasons) =>
+            logDebug(s"Phase2: V2 classify=NotConvertible scan=${scan.id} reasons=$reasons")
+            s2cOrFallback(scan, parentLikely, ctx, reasons)
+        }
 
-    case _: BatchScanExec =>
-      s2cOrFallback(node, parentLikely, ctx, Set.empty)
+      case _: BatchScanExec =>
+        s2cOrFallback(node, parentLikely, ctx, Set.empty)
 
-    case s: ShuffleExchangeExec =>
-      val childLikely = s.children.exists(likely)
-      if (selfLikely && (parentLikely || childLikely)) Convert else Passthrough
+      case s: ShuffleExchangeExec =>
+        val childLikely = s.children.exists(likely)
+        if (selfLikely && (parentLikely || childLikely)) Convert else Passthrough
 
-    case b: BroadcastExchangeExec =>
-      val consumed = ctx.broadcastConsumers.isConsumedByCometCandidate(b)
-      val forced = CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.get(ctx.conf)
-      if (selfLikely && (parentLikely || consumed || forced)) Convert else Passthrough
+      case b: BroadcastExchangeExec =>
+        val consumed = ctx.broadcastConsumers.isConsumedByCometCandidate(b)
+        val forced = CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.get(ctx.conf)
+        if (selfLikely && (parentLikely || consumed || forced)) Convert else Passthrough
 
-    case _: CometSparkToColumnarExec =>
-      if (parentLikely) Convert else Passthrough
+      case _: CometSparkToColumnarExec =>
+        if (parentLikely) Convert else Passthrough
 
-    case op if op.isInstanceOf[LeafExecNode] =>
-      if (selfLikely) Convert
-      else s2cOrFallback(op, parentLikely, ctx, Set.empty)
+      case op if op.isInstanceOf[LeafExecNode] =>
+        if (selfLikely) Convert
+        else s2cOrFallback(op, parentLikely, ctx, Set.empty)
 
-    case op =>
-      // Treat S2C-eligible leaves as effectively convertible for the purpose of parent
-      // decisions: Phase 3 will wrap them in CometSparkToColumnarExec when the parent is
-      // LIKELY_COMET, so from the parent's perspective they'll present a Comet output.
-      // Without this, a Comet-capable parent (e.g. HashAggregate) would fall back just
-      // because its BatchScan child isn't natively convertible, even though S2C would
-      // bridge the gap. Old CometExecRule side-stepped this by running bottom-up and
-      // wrapping S2C leaves before visiting their parents.
-      def effectivelyLikely(c: SparkPlan): Boolean =
-        likely(c) || (c.isInstanceOf[LeafExecNode] && S2CGate.shouldApply(c, ctx.conf))
-      val allChildrenLikely = op.children.nonEmpty && op.children.forall(effectivelyLikely)
-      if (selfLikely && allChildrenLikely) Convert
-      else if (op.children.exists(effectivelyLikely)) Passthrough
-      else Fallback(Set.empty)
+      case op =>
+        // Treat S2C-eligible leaves as effectively convertible for the purpose of parent
+        // decisions: Phase 3 will wrap them in CometSparkToColumnarExec when the parent is
+        // LIKELY_COMET, so from the parent's perspective they'll present a Comet output.
+        // Without this, a Comet-capable parent (e.g. HashAggregate) would fall back just
+        // because its BatchScan child isn't natively convertible, even though S2C would
+        // bridge the gap. Old CometExecRule side-stepped this by running bottom-up and
+        // wrapping S2C leaves before visiting their parents.
+        def effectivelyLikely(c: SparkPlan): Boolean =
+          likely(c) || (c.isInstanceOf[LeafExecNode] && S2CGate.shouldApply(c, ctx.conf))
+        // Use serde.dataChildren when a serde is registered so operators with structural Spark
+        // wrappers (e.g. DataWritingCommandExec wrapping WriteFilesExec) check the actual data
+        // producers, matching the predicate Phase 1 used to set `selfLikely`.
+        val checkChildren = CometExecRule.allExecs.get(op.getClass) match {
+          case Some(serde) =>
+            serde.asInstanceOf[CometOperatorSerde[SparkPlan]].dataChildren(op)
+          case None => op.children
+        }
+        val allChildrenLikely =
+          checkChildren.nonEmpty && checkChildren.forall(effectivelyLikely)
+        if (selfLikely && allChildrenLikely) Convert
+        else if (checkChildren.exists(effectivelyLikely)) Passthrough
+        else Fallback(Set.empty)
+    }
   }
 
   private def s2cOrFallback(

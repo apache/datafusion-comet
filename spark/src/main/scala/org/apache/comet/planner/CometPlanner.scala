@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
-import org.apache.comet.planner.phases.{NormalizePrePass, Phase1LikelyComet, Phase2Decision, Phase3Emit, SubqueryBroadcastRewrite}
+import org.apache.comet.planner.phases.{NormalizePrePass, Phase1LikelyComet, Phase2Decision, Phase3Emit, Spark34DppFallbackPrePass, SubqueryBroadcastRewrite}
 import org.apache.comet.planner.tags.CometTags
 import org.apache.comet.rules.RewriteJoin
 
@@ -93,7 +93,18 @@ case class CometPlanner(session: SparkSession) extends Rule[SparkPlan] with Logg
         case _ => false
       }))
 
-    val broadcastConsumers = BroadcastConsumerIndex.build(prepared, conf)
+    // Phase 1 must run before BroadcastConsumerIndex.build: Phase 1's generic-exec prediction
+    // reads children's LIKELY_COMET tags (post-order walk), and the index reads BHJ tags to
+    // decide which broadcasts have a Comet consumer.
+    val annotated1 = phase1LikelyComet(
+      prepared,
+      PlanningContext(
+        session = session,
+        conf = conf,
+        broadcastConsumers = BroadcastConsumerIndex.Empty,
+        hasInputFileExpressions = hasInputFileExpressions))
+
+    val broadcastConsumers = BroadcastConsumerIndex.build(annotated1, conf)
 
     val context = PlanningContext(
       session = session,
@@ -101,7 +112,6 @@ case class CometPlanner(session: SparkSession) extends Rule[SparkPlan] with Logg
       broadcastConsumers = broadcastConsumers,
       hasInputFileExpressions = hasInputFileExpressions)
 
-    val annotated1 = phase1LikelyComet(prepared, context)
     val annotated2 = phase2Decision(annotated1, context)
     val emitted = phase3Emit(annotated2, context)
     val reverted = revertOrphanedBroadcasts(emitted)
@@ -275,18 +285,18 @@ case class CometPlanner(session: SparkSession) extends Rule[SparkPlan] with Logg
   }
 
   /**
-   * Pre-pass: expression-level rewrites that change operator structure. Float NaN/zero
-   * normalization around comparison operators (arrow-rs doesn't normalize) and SMJ-to-SHJ/BHJ
-   * join rewriting. Both must run before classification because they change the set of node types
-   * the later phases see.
+   * Pre-pass: expression-level rewrites that change operator structure, plus the Spark 3.4 AQE
+   * DPP fallback tagging. The latter must run before Phase 1 because Phase 2 reads its tags;
+   * absorbs the legacy `CometSpark34AqeDppFallbackRule` queryStagePrep rule into the planner.
    */
   private def prePass(plan: SparkPlan): SparkPlan = {
     val normalized = NormalizePrePass(plan)
-    if (CometConf.COMET_REPLACE_SMJ.get()) {
+    val rewritten = if (CometConf.COMET_REPLACE_SMJ.get()) {
       normalized.transformUp { case p => RewriteJoin.rewrite(p) }
     } else {
       normalized
     }
+    Spark34DppFallbackPrePass(rewritten, conf)
   }
 
   /**

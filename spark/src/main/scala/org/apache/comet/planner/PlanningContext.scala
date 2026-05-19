@@ -27,8 +27,6 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.planner.phases.Phase1LikelyComet
-
 /**
  * State threaded through CometPlanner's three phases. Holds session-scoped data (configs, the
  * active SparkSession), a few plan-wide flags computed once at the top of `apply` so per-node
@@ -65,15 +63,21 @@ object BroadcastConsumerIndex extends Logging {
   }
 
   /**
-   * Walks `plan` looking for `BroadcastHashJoinExec` nodes that would themselves be LIKELY_COMET
-   * under the current configuration. For each such join, records every `BroadcastExchangeExec` it
-   * references as a consumer. Handles the AQE wrappers (`BroadcastQueryStageExec`,
-   * `ReusedExchangeExec`) that hide the raw broadcast between planning and execution.
+   * Walks `plan` looking for `BroadcastHashJoinExec` nodes that would themselves be LIKELY_COMET.
+   * For each such join, records every `BroadcastExchangeExec` it references as a consumer.
+   * Handles the AQE wrappers (`BroadcastQueryStageExec`, `ReusedExchangeExec`) that hide the raw
+   * broadcast between planning and execution.
+   *
+   * Reads the `LIKELY_COMET` tag directly rather than re-computing — Phase 1 must have already
+   * tagged the plan (see ordering in `CometPlanner.apply`).
    */
   def build(plan: SparkPlan, conf: SQLConf): BroadcastConsumerIndex = {
     val consumed = new java.util.IdentityHashMap[BroadcastExchangeExec, java.lang.Boolean]()
     plan.foreach {
-      case bhj: BroadcastHashJoinExec if Phase1LikelyComet.isLikelyComet(bhj, conf) =>
+      case bhj: BroadcastHashJoinExec
+          if bhj
+            .getTagValue(org.apache.comet.planner.tags.CometTags.LIKELY_COMET)
+            .getOrElse(false) =>
         bhj.children.foreach(indexBroadcast(_, consumed))
       case _ =>
     }

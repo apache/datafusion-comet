@@ -29,6 +29,7 @@ import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
 /**
@@ -112,6 +113,12 @@ case object CometSpark34AqeDppFallbackRule
       !isSpark35Plus,
       "CometSpark34AqeDppFallbackRule must only be registered on Spark < 3.5; " +
         "see ShimCometSparkSessionExtensions.injectPreSpark35QueryStagePrepRuleShim")
+
+    // CometPlanner absorbs this rule's behavior via Spark34DppFallbackPrePass + the
+    // FORCE_FALLBACK tag. When the planner is active, this rule must not also tag, or both paths
+    // would attempt to write decision state on the same nodes. Legacy rollback path (planner
+    // disabled) keeps using this rule unchanged.
+    if (CometConf.COMET_USE_PLANNER.get(conf)) return plan
 
     if (!conf.dynamicPartitionPruningEnabled) return plan
 

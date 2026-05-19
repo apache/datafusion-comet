@@ -75,7 +75,8 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
-      classOf[WindowExec] -> CometWindowExec)
+      classOf[WindowExec] -> CometWindowExec,
+      classOf[DataWritingCommandExec] -> CometDataWritingCommand)
 
   /**
    * Sinks that have a native plan of ScanExec.

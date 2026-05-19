@@ -44,6 +44,17 @@ trait CometOperatorSerde[T <: SparkPlan] {
   def requiresNativeChildren: Boolean = false
 
   /**
+   * The plan nodes this serde treats as its "real" inputs for native dispatch (LIKELY_COMET
+   * propagation, native-child gating, protobuf child wiring). Default is `op.children`.
+   *
+   * Override when the immediate `op.children` includes a Spark wrapper that the serde unwraps in
+   * `createExec` (e.g. `DataWritingCommandExec` whose child is a `WriteFilesExec` around the
+   * actual data query). The planner uses this to evaluate convertibility against the data
+   * children rather than the structural wrapper, and to wire the right protobuf operators.
+   */
+  def dataChildren(op: T): Seq[SparkPlan] = op.children
+
+  /**
    * Determine the support level of the operator based on its attributes.
    *
    * @param operator

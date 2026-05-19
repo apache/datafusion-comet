@@ -33,10 +33,14 @@ import org.apache.comet.serde.OperatorOuterClass
 object CometTags {
 
   /**
-   * Set by Phase 1 (LIKELY_COMET annotator) on every node. Value `true` means "serde supports
-   * this op in isolation" (configs enabled, structural / expression checks pass). Ignores child
-   * gating so it can be computed bottom-up without the classification depending on its own
-   * descendants' decisions. Read by Phase 2 to judge demand-aware conversion.
+   * Set by Phase 1 (LIKELY_COMET annotator) on every node. Value `true` means "this op is
+   * predicted to end up Comet in the final plan". The prediction considers the operator's own
+   * serde (configs enabled, structural / expression checks pass) and, for the generic exec case,
+   * whether each child can provide native input (child's `LIKELY_COMET=true` or child is an
+   * S2C-eligible leaf). The prediction never depends on the operator's own DECISION nor on any
+   * parent's prediction — that's the anti-circularity property that lets Phase 1 be a single
+   * post-order walk with no fixed-point iteration. Read by Phase 2 to drive demand-aware
+   * conversion (e.g. shuffle Convert iff parent or child is LIKELY_COMET).
    */
   val LIKELY_COMET: TreeNodeTag[Boolean] = TreeNodeTag("comet.likelyComet")
 
@@ -76,6 +80,26 @@ object CometTags {
    * `Phase 3` treats a child as native-compatible if it is a `CometNativeExec` OR has this tag.
    */
   val NATIVE_OP: TreeNodeTag[OperatorOuterClass.Operator] = TreeNodeTag("comet.nativeOp")
+
+  /**
+   * Read by Phase 2 at the top of `decide`: presence forces `Fallback`, overriding the normal
+   * per-node logic. The tag value is the human-readable reason surfaced via `withInfo` / explain
+   * output.
+   *
+   * Use for cases where the planner must keep a node Spark-native for correctness or for
+   * coordination with another rule (e.g. arranging for Spark's
+   * `PlanAdaptiveDynamicPruningFilters` to succeed on Spark 3.4 by holding the BHJ build-side
+   * broadcast Spark-native). Do not use as a soft preference or performance hint; Phase 2 has no
+   * notion of partial / conditional skip.
+   *
+   * Producers today: `Spark34DppFallbackPrePass`. Replaces the per-node-type
+   * `SKIP_COMET_SCAN_TAG` / `SKIP_COMET_BROADCAST_TAG` / `SKIP_COMET_SHUFFLE_TAG` family used by
+   * the rule complex on `main`. Phase 2 reads all node types uniformly so one tag suffices.
+   *
+   * Monotonic decision-class state: once set, the decision doesn't change across AQE replans, so
+   * persisting the tag across `CometPlanner.apply` invocations is intentional.
+   */
+  val SKIP_COMET: TreeNodeTag[String] = TreeNodeTag("comet.skipComet")
 }
 
 /**

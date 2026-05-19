@@ -17,11 +17,12 @@
  * under the License.
  */
 
-package org.apache.comet.rules
+package org.apache.comet.planner
 
 import scala.util.Random
 
 import org.apache.spark.sql._
+import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
@@ -34,23 +35,29 @@ import org.apache.comet.CometConf
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
- * Test suite specifically for CometExecRule transformation logic. Tests the rule's ability to
- * transform Spark operators to Comet operators, fallback mechanisms, configuration handling, and
- * edge cases.
+ * Behavior tests for `CometPlanner`. Mirrors the scenarios covered by `CometScanRuleSuite` and
+ * `CometExecRuleSuite` for the legacy two-rule path, asserting equivalent end-state plans under
+ * the new three-phase planner. The planner emits different intermediate plan shapes (no
+ * `CometScanExec` wrapper, no `CometSinkPlaceHolder`), so assertions target the final operator
+ * classes the planner actually produces:
+ *
+ *   - V1 native scan: `CometNativeScanExec` directly (not `CometScanExec`).
+ *   - Project/Filter/HashAggregate/Broadcast/Shuffle: same `Comet*Exec` classes as legacy.
+ *
+ * Two redundant-shuffle tests at the bottom (`should not emit Comet shuffle between Spark
+ * aggregates`, `should emit Comet shuffle between Comet aggregates`) translate the legacy
+ * revert-pass tests (`CometExecRuleSuite` lines 270 / 297) into the planner's upstream-avoidance
+ * contract: Phase 2's demand-aware rule should produce the correct shuffle decision in one shot
+ * without any revert pass. The first of these is a minimal reproducer for the redundant-Comet-
+ * shuffle pattern observed in TPC-DS goldens (see PR #4010 for the legacy fix).
  */
-class CometExecRuleSuite extends CometTestBase {
+class CometPlannerSuite extends CometTestBase {
 
-  /** Helper method to apply CometExecRule and return the transformed plan */
-  private def applyCometExecRule(plan: SparkPlan): SparkPlan = {
-    // This suite exercises the legacy CometExecRule path explicitly. CometExecRule asserts when
-    // COMET_USE_PLANNER is true (its assertion guards against accidental dual-registration with
-    // CometPlanner). When the legacy rule is deleted along with this suite, drop this.
-    withSQLConf(CometConf.COMET_USE_PLANNER.key -> "false") {
-      CometExecRule(spark).apply(stripAQEPlan(plan))
-    }
+  /** Apply CometPlanner to a Spark-only plan and return the transformed plan. */
+  private def applyCometPlanner(plan: SparkPlan): SparkPlan = {
+    CometPlanner(spark).apply(stripAQEPlan(plan))
   }
 
-  /** Create a test data frame that is used in all tests */
   private def createTestDataFrame = {
     val testSchema = new StructType(
       Array(
@@ -59,7 +66,7 @@ class CometExecRuleSuite extends CometTestBase {
     FuzzDataGenerator.generateDataFrame(new Random(42), spark, testSchema, 100, DataGenOptions())
   }
 
-  /** Create a SparkPlan from the specified SQL with Comet disabled */
+  /** Build a SparkPlan with Comet disabled so we get the pre-conversion shape to feed in. */
   private def createSparkPlan(spark: SparkSession, sql: String): SparkPlan = {
     var sparkPlan: SparkPlan = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -69,7 +76,6 @@ class CometExecRuleSuite extends CometTestBase {
     sparkPlan
   }
 
-  /** Count the number of the specified operator in the plan */
   private def countOperators(plan: SparkPlan, opClass: Class[_]): Int = {
     stripAQEPlan(plan).collect {
       case stage: QueryStageExec =>
@@ -78,15 +84,77 @@ class CometExecRuleSuite extends CometTestBase {
     }.sum
   }
 
+  // --- Scan tests (port of CometScanRuleSuite) -----------------------------------------------
+
+  test("CometPlanner should replace FileSourceScanExec, but only when Comet is enabled") {
+    withTempPath { path =>
+      createTestDataFrame.write.parquet(path.toString)
+      withTempView("test_data") {
+        spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
+
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+
+        assert(countOperators(sparkPlan, classOf[FileSourceScanExec]) == 1)
+
+        for (cometEnabled <- Seq(true, false)) {
+          withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled.toString) {
+            val transformedPlan = applyCometPlanner(sparkPlan)
+
+            if (cometEnabled) {
+              assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 0)
+              assert(countOperators(transformedPlan, classOf[CometNativeScanExec]) == 1)
+            } else {
+              assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
+              assert(countOperators(transformedPlan, classOf[CometNativeScanExec]) == 0)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("CometPlanner should fallback to Spark for ShortType when safety check enabled") {
+    withTempPath { path =>
+      import org.apache.spark.sql.types._
+      val unsupportedSchema = new StructType(
+        Array(
+          StructField("id", DataTypes.IntegerType, nullable = true),
+          StructField("value", DataTypes.ShortType, nullable = true),
+          StructField("name", DataTypes.StringType, nullable = true)))
+
+      val testData = Seq(Row(1, 1.toShort, "test1"), Row(2, -1.toShort, "test2"))
+      val df = spark.createDataFrame(spark.sparkContext.parallelize(testData), unsupportedSchema)
+      df.write.parquet(path.toString)
+
+      withTempView("unsupported_data") {
+        spark.read.parquet(path.toString).createOrReplaceTempView("unsupported_data")
+
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT id, value FROM unsupported_data WHERE id = 1")
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+          CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "true") {
+          val transformedPlan = applyCometPlanner(sparkPlan)
+
+          assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
+          assert(countOperators(transformedPlan, classOf[CometNativeScanExec]) == 0)
+        }
+      }
+    }
+  }
+
+  // --- Exec tests (port of CometExecRuleSuite) -----------------------------------------------
+
   test(
-    "CometExecRule should apply basic operator transformations, but only when Comet is enabled") {
+    "CometPlanner should apply basic operator transformations, but only when Comet is enabled") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
       val sparkPlan =
         createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
 
-      // Count original Spark operators
       assert(countOperators(sparkPlan, classOf[ProjectExec]) == 1)
       assert(countOperators(sparkPlan, classOf[FilterExec]) == 1)
 
@@ -95,7 +163,7 @@ class CometExecRuleSuite extends CometTestBase {
           CometConf.COMET_ENABLED.key -> cometEnabled.toString,
           CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
 
-          val transformedPlan = applyCometExecRule(sparkPlan)
+          val transformedPlan = applyCometPlanner(sparkPlan)
 
           if (cometEnabled) {
             assert(countOperators(transformedPlan, classOf[ProjectExec]) == 0)
@@ -113,19 +181,18 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should apply hash aggregate transformations") {
+  test("CometPlanner should apply hash aggregate transformations") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
       val sparkPlan =
         createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
 
-      // Count original Spark operators
       val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
       assert(originalHashAggCount == 2)
 
       withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
+        val transformedPlan = applyCometPlanner(sparkPlan)
 
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 0)
         assert(
@@ -136,49 +203,24 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  // TODO this test exposes the bug described in
-  // https://github.com/apache/datafusion-comet/issues/1389
-  ignore("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
+  test("CometPlanner should not allow Spark partial and Comet final hash aggregate") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
       val sparkPlan =
         createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
 
-      // Count original Spark operators
-      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
-      assert(originalHashAggCount == 2)
-
-      withSQLConf(
-        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
-        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
-
-        // if the final aggregate cannot be converted to Comet, then neither should be
-        assert(
-          countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
-      }
-    }
-  }
-
-  test("CometExecRule should not allow Spark partial and Comet final hash aggregate") {
-    withTempView("test_data") {
-      createTestDataFrame.createOrReplaceTempView("test_data")
-
-      val sparkPlan =
-        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
-
-      // Count original Spark operators
       val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
       assert(originalHashAggCount == 2)
 
       withSQLConf(
         CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
+        val transformedPlan = applyCometPlanner(sparkPlan)
 
-        // if the partial aggregate cannot be converted to Comet, then neither should be
+        // If the partial aggregate can't go Comet, the final mustn't either, otherwise we end up
+        // with a Spark partial feeding a Comet final and the row<->arrow boundary is in the wrong
+        // place. This mirrors the legacy CometExecRuleSuite test of the same name.
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
@@ -186,7 +228,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should apply broadcast exchange transformations") {
+  test("CometPlanner should apply broadcast exchange transformations") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -194,13 +236,12 @@ class CometExecRuleSuite extends CometTestBase {
         spark,
         "SELECT /*+ BROADCAST(b) */ a.id, b.name FROM test_data a JOIN test_data b ON a.id = b.id")
 
-      // Count original Spark operators
       val originalBroadcastExchangeCount =
         countOperators(sparkPlan, classOf[BroadcastExchangeExec])
       assert(originalBroadcastExchangeCount == 1)
 
       withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
+        val transformedPlan = applyCometPlanner(sparkPlan)
 
         assert(countOperators(transformedPlan, classOf[BroadcastExchangeExec]) == 0)
         assert(
@@ -211,19 +252,18 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should apply shuffle exchange transformations") {
+  test("CometPlanner should apply shuffle exchange transformations") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
       val sparkPlan =
         createSparkPlan(spark, "SELECT id, COUNT(*) FROM test_data GROUP BY id ORDER BY id")
 
-      // Count original Spark operators
       val originalShuffleExchangeCount = countOperators(sparkPlan, classOf[ShuffleExchangeExec])
       assert(originalShuffleExchangeCount == 2)
 
       withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
+        val transformedPlan = applyCometPlanner(sparkPlan)
 
         assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
         assert(
@@ -234,40 +274,38 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should not wrap shuffle in CometColumnarShuffle when both sides are JVM") {
+  // --- Demand-aware shuffle contract (translation of revert-pass tests) ----------------------
+
+  test("CometPlanner should not emit Comet shuffle between Spark aggregates") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
       val sparkPlan =
         createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
 
-      val originalShuffleExchangeCount = countOperators(sparkPlan, classOf[ShuffleExchangeExec])
-      assert(originalShuffleExchangeCount == 1)
+      assert(countOperators(sparkPlan, classOf[ShuffleExchangeExec]) == 1)
       assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
 
-      // Disable partial aggregate so both aggregates fall back to Spark JVM. The shuffle between
-      // them would otherwise be wrapped with CometColumnarShuffle, which adds unnecessary
-      // row<->arrow conversion overhead when neither side can consume columnar output.
-      // See https://github.com/apache/datafusion-comet/issues/4004.
+      // Disable partial aggregate so both aggregates fall back to Spark JVM. The planner's
+      // Phase 2 demand-aware rule should emit Passthrough for the shuffle (selfLikely=true but
+      // parent/child both have LIKELY_COMET=false), so the shuffle stays Spark with no revert
+      // pass needed. Minimal reproducer for the redundant-shuffle pattern that PR #4010 fixed
+      // for the legacy rule via revertRedundantColumnarShuffle.
       withSQLConf(
         CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
+        val transformedPlan = applyCometPlanner(sparkPlan)
 
-        // Both aggregates should remain JVM
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
 
-        // The shuffle should remain a Spark ShuffleExchangeExec (not wrapped in Comet)
         assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 0)
-        assert(
-          countOperators(transformedPlan, classOf[ShuffleExchangeExec]) ==
-            originalShuffleExchangeCount)
+        assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 1)
       }
     }
   }
 
-  test("CometExecRule should not revert columnar shuffle when the revert config is disabled") {
+  test("CometPlanner should emit Comet shuffle between Comet aggregates") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -277,38 +315,10 @@ class CometExecRuleSuite extends CometTestBase {
       assert(countOperators(sparkPlan, classOf[ShuffleExchangeExec]) == 1)
       assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
 
-      // Both aggregates fall back to JVM as in the prior test, but the revert optimization is
-      // disabled, so the shuffle should still be wrapped in CometColumnarShuffle.
-      withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false",
-        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
-        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
-
-        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
-
-        assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
-        assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 1)
-      }
-    }
-  }
-
-  test("CometExecRule should not revert columnar shuffle when both aggregates go native") {
-    withTempView("test_data") {
-      createTestDataFrame.createOrReplaceTempView("test_data")
-
-      val sparkPlan =
-        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
-
-      assert(countOperators(sparkPlan, classOf[ShuffleExchangeExec]) == 1)
-      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
-
-      // With default settings both aggregates convert to Comet native, so the shuffle between
-      // them has a Comet consumer on both sides and must remain columnar - the revert must not
-      // fire here.
+      // Default settings: both aggregates convert to Comet, so the shuffle between them has
+      // Comet consumers on both sides and must convert too.
       withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
+        val transformedPlan = applyCometPlanner(sparkPlan)
 
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 0)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 2)
@@ -318,5 +328,4 @@ class CometExecRuleSuite extends CometTestBase {
       }
     }
   }
-
 }

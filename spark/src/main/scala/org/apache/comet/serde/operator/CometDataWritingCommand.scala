@@ -53,6 +53,18 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
   // (e.g., due to unsupported complex types), the write must also fall back.
   override def requiresNativeChildren: Boolean = true
 
+  // The DataWritingCommandExec's immediate child is a Spark `WriteFilesExec` wrapper around the
+  // actual data query. Native dispatch (LIKELY_COMET propagation, native-child gating, protobuf
+  // wiring) needs to look at the wrapped data query, not the wrapper. `createExec` already
+  // unwraps via the same shape; this exposes it to the planner so Phase 1/2/3 can stay generic
+  // (no `case w: WriteFilesExec` anywhere).
+  override def dataChildren(
+      op: DataWritingCommandExec): Seq[org.apache.spark.sql.execution.SparkPlan] =
+    op.child match {
+      case w: WriteFilesExec => Seq(w.child)
+      case other => Seq(other)
+    }
+
   override def getSupportLevel(op: DataWritingCommandExec): SupportLevel = {
     op.cmd match {
       case cmd: InsertIntoHadoopFsRelationCommand =>

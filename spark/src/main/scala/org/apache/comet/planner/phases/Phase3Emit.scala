@@ -153,9 +153,19 @@ case class Phase3Emit(session: SparkSession) extends Logging {
   // Vacuous truth for leaf nodes (children.isEmpty): a leaf has no children to fail the predicate,
   // so the generic emit path can wire it via its serde with no child nativeOps. Without this,
   // leaves like LocalTableScanExec / RangeExec / InMemoryTableScanExec slip past the generic
-  // case and never get converted.
+  // case and never get converted. Uses `serde.dataChildren` so operators with structural Spark
+  // wrappers (e.g. DataWritingCommandExec wrapping WriteFilesExec) check the actual data
+  // producers rather than the wrapper.
   private def allChildrenNative(op: SparkPlan): Boolean =
-    op.children.forall(isNativeCompatible)
+    effectiveChildren(op).forall(isNativeCompatible)
+
+  /**
+   * The children a serde-driven generic emit treats as its inputs. Defaults to `op.children` when
+   * no serde is registered; uses `serde.dataChildren` otherwise so operators with structural
+   * wrappers can transparently look through them.
+   */
+  private def effectiveChildren(op: SparkPlan): Seq[SparkPlan] =
+    lookupSerde(op).map(_.dataChildren(op)).getOrElse(op.children)
 
   /**
    * Pulls the protobuf operator representing a child for parent wiring. Reads `nativeOp` from a
@@ -182,7 +192,7 @@ case class Phase3Emit(session: SparkSession) extends Logging {
     assert(
       allChildrenNative(op),
       s"emitGeneric invoked with non-native children node=${op.getClass.getSimpleName} id=${op.id}")
-    runSerde(op, serde, op.children.map(nativeOpOf))
+    runSerde(op, serde, serde.dataChildren(op).map(nativeOpOf))
   }
 
   /**

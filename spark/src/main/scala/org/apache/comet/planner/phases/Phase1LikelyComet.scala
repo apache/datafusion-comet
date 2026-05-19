@@ -31,22 +31,31 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.planner.gates.S2CGate
 import org.apache.comet.planner.tags.CometTags
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, Unsupported}
 
 /**
- * Phase 1: predict whether each node's serde would support it *in isolation*, ignoring child
- * gating. The resulting `LIKELY_COMET` tag is read by Phase 2 to make demand-aware decisions
- * (e.g. shuffle conversion pays off only if at least one side is likelyComet).
+ * Phase 1: predict per node whether it will end up Comet in the final plan, expressed as a
+ * `LIKELY_COMET` tag read by Phase 2's demand-aware decisions.
  *
- * "In isolation" means: config enabled, own structural / expression / type checks pass, but no
- * consideration of whether children have already been marked convertible. This breaks the
- * circularity that otherwise requires a retry pass (as in the old CometExecRule broadcast
- * handling).
+ * Prediction inputs by node category:
+ *   - Scan leaves: serde + config gates.
+ *   - Shuffle / Broadcast / AQE stage wrappers / already-converted CometNativeExec: structural;
+ *     optimistically `true` for exchanges since their real convertibility depends on the children
+ *     they end up with, which Phase 3 re-checks at emit time.
+ *   - Generic exec operators (Project, Filter, HashAggregate, joins, ...): the operator's own
+ *     serde AND every child must be able to provide native input (child `LIKELY_COMET=true` or
+ *     S2C-eligible leaf). Mirrors the legacy `CometExecRule` generic case's implicit
+ *     `op.children.forall(_.isInstanceOf[CometNativeExec])` guard.
  *
- * The predicate currently wraps `CometOperatorSerde.getSupportLevel` and the `enabledConfig`
- * gate, with `Incompatible` treated per `COMET_EXPR_ALLOW_INCOMPATIBLE_OPERATORS` heuristics.
+ * Anti-circularity property: no prediction depends on the operator's own DECISION nor on any
+ * parent's prediction. That's why this phase is a single post-order walk with no fixed-point
+ * iteration. The earlier "in isolation" framing (predict from serde alone, ignore children) was
+ * not enough to make Phase 2's demand-aware rules correct: a shuffle between two Spark aggregates
+ * needs `LIKELY_COMET=false` on both aggregates to decide Passthrough, and that requires
+ * propagating cant-go-native upward from the failing descendant.
  *
  * This phase only mutates tag state on nodes. It does not change the plan tree shape.
  */
@@ -55,20 +64,27 @@ object Phase1LikelyComet extends Logging {
   def apply(plan: SparkPlan, conf: SQLConf): SparkPlan = {
     var total = 0
     var likely = 0
-    plan.foreach { node =>
+    // Post-order walk: children's LIKELY_COMET tags are set before their parents are visited, so
+    // `isLikelyComet` can read child tags when refining a parent's prediction (e.g. an exec
+    // operator that needs columnar input from its children).
+    def visit(node: SparkPlan): Unit = {
+      node.children.foreach(visit)
       val verdict = isLikelyComet(node, conf)
       node.setTagValue(CometTags.LIKELY_COMET, verdict)
       total += 1
       if (verdict) likely += 1
     }
+    visit(plan)
     logDebug(s"Phase1: total=$total likely=$likely")
     plan
   }
 
   /**
-   * Returns whether `node` would be LIKELY_COMET under the current configuration. Exposed so
-   * other planner components (e.g. `BroadcastConsumerIndex`) can reason about a hypothetical
-   * node's eligibility without walking the whole plan.
+   * Returns whether `node` would be LIKELY_COMET under the current configuration. Generic exec
+   * ops additionally require that each child either already has `LIKELY_COMET=true` or is an
+   * S2C-eligible leaf, mirroring the legacy `CometExecRule` generic case which only converts when
+   * `op.children.forall(_.isInstanceOf[CometNativeExec])`. External callers must ensure children
+   * have been visited first (the planner's `apply` does this via post-order traversal).
    */
   def isLikelyComet(node: SparkPlan, conf: SQLConf): Boolean = node match {
     // Never-convertible control plan nodes.
@@ -86,16 +102,23 @@ object Phase1LikelyComet extends Logging {
     case _: BatchScanExec =>
       CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf)
 
-    case _: ShuffleExchangeExec =>
-      // Optimistic: Phase 1 can't evaluate the shuffle serde's getSupportLevel accurately
-      // because `shuffleSupported` checks `isCometPlan(child)` and children haven't been
-      // converted yet. Emit-time guard in Phase 3 re-checks with the actual converted child.
-      true
+    case s: ShuffleExchangeExec =>
+      // A shuffle's LIKELY_COMET reflects whether its data source can provide native input.
+      // Optimistic-true broke upward propagation: a Spark partial HashAgg below a shuffle could
+      // not flag the shuffle as non-likely, which made the final HashAgg above read a stale-true
+      // child, which made Phase 2 see `parentLikely=true` on the shuffle and convert it. The
+      // legacy rule lived with this and added `revertRedundantColumnarShuffle` (PR #4010) as a
+      // post-pass; the planner avoids the conversion in the first place by predicting
+      // accurately. Phase 3 still re-checks at emit time. S2C-eligible leaves count because
+      // Phase 2 wraps them in `CometSparkToColumnarExec`.
+      s.children.exists(c => childCanProvideNativeInput(c, conf))
 
-    case _: BroadcastExchangeExec =>
-      // Same as shuffle. Broadcast's convertibility also depends on child type / state after
-      // conversion. Phase 3 re-checks at emit time.
-      true
+    case b: BroadcastExchangeExec =>
+      // Same shape as shuffle: a broadcast over Spark-only data cannot itself go native, so
+      // Phase 1 must report that honestly for parent BHJs' children-OK checks to be correct.
+      // Phase 2's BroadcastConsumerIndex still gates conversion on a downstream Comet BHJ
+      // wanting this broadcast; this only changes whether the broadcast is a candidate at all.
+      b.children.exists(c => childCanProvideNativeInput(c, conf))
 
     // AQE stage re-entry: a prior CometPlanner pass converted an exchange, AQE materialized it
     // and wrapped it in a query stage. Phase 3 re-emits the stage itself as a Comet-compatible
@@ -113,8 +136,15 @@ object Phase1LikelyComet extends Logging {
     // Generic exec operators dispatched through the serde map.
     case op =>
       CometExecRule.allExecs.get(op.getClass) match {
-        case Some(serde) =>
-          predictFromSerde(op, serde.asInstanceOf[CometOperatorSerde[SparkPlan]], conf)
+        case Some(rawSerde) =>
+          val serde = rawSerde.asInstanceOf[CometOperatorSerde[SparkPlan]]
+          val selfOk = predictFromSerde(op, serde, conf)
+          // Use `serde.dataChildren` so operators with structural Spark wrappers
+          // (e.g. DataWritingCommandExec wrapping WriteFilesExec) check the actual data
+          // producers, not the wrapper. Mirrors the legacy CometExecRule generic case's
+          // `op.children.forall(_.isInstanceOf[CometNativeExec])` guard, with the unwrap moved
+          // into the serde.
+          selfOk && serde.dataChildren(op).forall(c => childCanProvideNativeInput(c, conf))
         case None =>
           // Fall back: a leaf we don't recognize can't convert; a non-leaf we don't recognize
           // might still act as a passthrough in Phase 2 but is not itself LIKELY_COMET.
@@ -124,6 +154,10 @@ object Phase1LikelyComet extends Logging {
           }
       }
   }
+
+  private def childCanProvideNativeInput(child: SparkPlan, conf: SQLConf): Boolean =
+    child.getTagValue(CometTags.LIKELY_COMET).getOrElse(false) ||
+      (child.isInstanceOf[LeafExecNode] && S2CGate.shouldApply(child, conf))
 
   private def predictFromSerde(
       op: SparkPlan,
