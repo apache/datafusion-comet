@@ -608,10 +608,10 @@ index 2796b1cf154..53dcfde932e 100644
          }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 new file mode 100644
-index 00000000000..5691536c114
+index 00000000000..c528360742a
 --- /dev/null
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,44 @@
 +/*
 + * Licensed to the Apache Software Foundation (ASF) under one or more
 + * contributor license agreements.  See the NOTICE file distributed with
@@ -640,7 +640,6 @@ index 00000000000..5691536c114
 + * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
 + */
 +case class IgnoreComet(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeIcebergCompat(reason: String) extends Tag("DisableComet")
 +case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
 +case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
 +
@@ -1040,7 +1039,7 @@ index 18123a4d6ec..0fe185baa33 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 75eabcb96f2..7a681f147e4 100644
+index 75eabcb96f2..f8141c28f60 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -21,10 +21,11 @@ import scala.collection.mutable.ArrayBuffer
@@ -1061,7 +1060,7 @@ index 75eabcb96f2..7a681f147e4 100644
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
 +        case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(
-+        fs @ CometScanExec(_, _, _, _, partitionFilters, _, _, _, _, _, _)))) =>
++        fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
 +          partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
 +            fs.inputRDDs().forall(
 +              _.asInstanceOf[FileScanRDD].filePartitions.forall(
@@ -2864,18 +2863,10 @@ index abe606ad9c1..2d930b64cca 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index dd55fcfe42c..cd18a23d4de 100644
+index dd55fcfe42c..d4f94b1d608 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-@@ -27,6 +27,7 @@ import scala.concurrent.duration._
- import scala.language.implicitConversions
- import scala.util.control.NonFatal
- 
-+import org.apache.comet.CometConf
- import org.apache.hadoop.fs.Path
- import org.scalactic.source.Position
- import org.scalatest.{BeforeAndAfterAll, Suite, Tag}
-@@ -41,6 +42,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
+@@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
  import org.apache.spark.sql.catalyst.plans.PlanTestBase
  import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
  import org.apache.spark.sql.catalyst.util._
@@ -2883,7 +2874,7 @@ index dd55fcfe42c..cd18a23d4de 100644
  import org.apache.spark.sql.execution.FilterExec
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
  import org.apache.spark.sql.execution.datasources.DataSourceUtils
-@@ -119,6 +121,34 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
+@@ -119,6 +120,17 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
  
    override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
        (implicit pos: Position): Unit = {
@@ -2892,33 +2883,16 @@ index dd55fcfe42c..cd18a23d4de 100644
 +      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
 +      return
 +    }
-+    if (isCometEnabled) {
-+      val cometScanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
-+      val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
-+        cometScanImpl == CometConf.SCAN_AUTO
-+      val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION ||
-+        cometScanImpl == CometConf.SCAN_AUTO
-+      if (isNativeIcebergCompat &&
-+        testTags.exists(_.isInstanceOf[IgnoreCometNativeIcebergCompat])) {
-+        ignore(testName + " (disabled for NATIVE_ICEBERG_COMPAT)", testTags: _*)(testFun)
-+        return
-+      }
-+      if (isNativeDataFusion &&
-+        testTags.exists(_.isInstanceOf[IgnoreCometNativeDataFusion])) {
-+        ignore(testName + " (disabled for NATIVE_DATAFUSION)", testTags: _*)(testFun)
-+        return
-+      }
-+      if ((isNativeDataFusion || isNativeIcebergCompat) &&
-+        testTags.exists(_.isInstanceOf[IgnoreCometNativeScan])) {
-+        ignore(testName + " (disabled for NATIVE_DATAFUSION and NATIVE_ICEBERG_COMPAT)",
-+          testTags: _*)(testFun)
-+        return
-+      }
++    if (isCometEnabled &&
++      testTags.exists(t =>
++        t.isInstanceOf[IgnoreCometNativeDataFusion] || t.isInstanceOf[IgnoreCometNativeScan])) {
++      ignore(testName + " (disabled for NATIVE_DATAFUSION)", testTags: _*)(testFun)
++      return
 +    }
      if (testTags.exists(_.isInstanceOf[DisableAdaptiveExecution])) {
        super.test(testName, testTags: _*) {
          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-@@ -242,6 +272,11 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +254,11 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -2930,7 +2904,7 @@ index dd55fcfe42c..cd18a23d4de 100644
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -434,6 +469,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -434,6 +451,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
