@@ -739,10 +739,10 @@ index 9c529d14221..ab2850b5d68 100644
          }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 new file mode 100644
-index 00000000000..c528360742a
+index 00000000000..4b31bea33de
 --- /dev/null
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,42 @@
 +/*
 + * Licensed to the Apache Software Foundation (ASF) under one or more
 + * contributor license agreements.  See the NOTICE file distributed with
@@ -771,8 +771,6 @@ index 00000000000..c528360742a
 + * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
 + */
 +case class IgnoreComet(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
 +
 +/**
 + * Helper trait that disables Comet for all tests regardless of default config values.
@@ -2543,14 +2541,14 @@ index cd6f41b4ef4..4b6a17344bc 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 6080a5e8e4b..f5dadef89ae 100644
+index 6080a5e8e4b..23a451d5bcf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -38,6 +38,7 @@ import org.apache.parquet.schema.MessageType
  
  import org.apache.spark.{SparkConf, SparkException, SparkRuntimeException}
  import org.apache.spark.sql._
-+import org.apache.spark.sql.IgnoreCometNativeScan
++import org.apache.spark.sql.IgnoreComet
  import org.apache.spark.sql.catalyst.dsl.expressions._
  import org.apache.spark.sql.catalyst.expressions._
  import org.apache.spark.sql.catalyst.optimizer.InferFiltersFromConstraints
@@ -2573,7 +2571,7 @@ index 6080a5e8e4b..f5dadef89ae 100644
  
 -  test("Filters should be pushed down for vectorized Parquet reader at row group level") {
 +  test("Filters should be pushed down for vectorized Parquet reader at row group level",
-+    IgnoreCometNativeScan("Native scans do not support the tested accumulator")) {
++    IgnoreComet("Native scans do not support the tested accumulator")) {
      import testImplicits._
  
      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
@@ -2608,7 +2606,7 @@ index 6080a5e8e4b..f5dadef89ae 100644
    }
  
 -  test("filter pushdown - StringPredicate") {
-+  test("filter pushdown - StringPredicate", IgnoreCometNativeScan("cannot be pushed down")) {
++  test("filter pushdown - StringPredicate", IgnoreComet("cannot be pushed down")) {
      import testImplicits._
      // keep() should take effect on StartsWith/EndsWith/Contains
      Seq(
@@ -2618,7 +2616,7 @@ index 6080a5e8e4b..f5dadef89ae 100644
  
 -  test("SPARK-17091: Convert IN predicate to Parquet filter push-down") {
 +  test("SPARK-17091: Convert IN predicate to Parquet filter push-down",
-+    IgnoreCometNativeScan("Comet has different push-down behavior")) {
++    IgnoreComet("Comet has different push-down behavior")) {
      val schema = StructType(Seq(
        StructField("a", IntegerType, nullable = false)
      ))
@@ -2665,7 +2663,7 @@ index 6080a5e8e4b..f5dadef89ae 100644
  
 -  test("SPARK-34562: Bloom filter push down") {
 +  test("SPARK-34562: Bloom filter push down",
-+    IgnoreCometNativeScan("Native scans do not support the tested accumulator")) {
++    IgnoreComet("Native scans do not support the tested accumulator")) {
      withTempPath { dir =>
        val path = dir.getCanonicalPath
        spark.range(100).selectExpr("id * 2 AS id")
@@ -2832,7 +2830,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index 0acb21f3e6f..e7c65429119 100644
+index 0acb21f3e6f..15bd866d8aa 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,7 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -2840,7 +2838,7 @@ index 0acb21f3e6f..e7c65429119 100644
  
  import org.apache.spark.SparkException
 -import org.apache.spark.sql.{AnalysisException, Row}
-+import org.apache.spark.sql.{AnalysisException, IgnoreComet, IgnoreCometNativeDataFusion, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, Row}
  import org.apache.spark.sql.catalyst.expressions.Cast.toSQLType
  import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
  import org.apache.spark.sql.functions.desc
@@ -2860,7 +2858,7 @@ index 0acb21f3e6f..e7c65429119 100644
  
 -  test("schema mismatch failure error message for parquet vectorized reader") {
 +  test("schema mismatch failure error message for parquet vectorized reader",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4316")) {
++      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4316")) {
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
@@ -3448,7 +3446,7 @@ index 86c4e49f6f6..2e639e5f38d 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index f0f3f94b811..f132dfc0f1d 100644
+index f0f3f94b811..b7d18771314 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -33,7 +33,7 @@ import org.scalatest.{BeforeAndAfterAll, Suite, Tag}
@@ -3456,7 +3454,7 @@ index f0f3f94b811..f132dfc0f1d 100644
  
  import org.apache.spark.SparkFunSuite
 -import org.apache.spark.sql.{AnalysisException, Row}
-+import org.apache.spark.sql.{AnalysisException, IgnoreComet, IgnoreCometNativeDataFusion, IgnoreCometNativeScan, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, Row}
  import org.apache.spark.sql.catalyst.FunctionIdentifier
  import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
  import org.apache.spark.sql.catalyst.catalog.SessionCatalog.DEFAULT_DATABASE
@@ -3468,7 +3466,7 @@ index f0f3f94b811..f132dfc0f1d 100644
  import org.apache.spark.sql.execution.FilterExec
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
  import org.apache.spark.sql.execution.datasources.DataSourceUtils
-@@ -121,6 +122,17 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
+@@ -121,6 +122,11 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
  
    override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
        (implicit pos: Position): Unit = {
@@ -3477,16 +3475,10 @@ index f0f3f94b811..f132dfc0f1d 100644
 +      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
 +      return
 +    }
-+    if (isCometEnabled &&
-+      testTags.exists(t =>
-+        t.isInstanceOf[IgnoreCometNativeDataFusion] || t.isInstanceOf[IgnoreCometNativeScan])) {
-+      ignore(testName + " (disabled for NATIVE_DATAFUSION)", testTags: _*)(testFun)
-+      return
-+    }
      if (testTags.exists(_.isInstanceOf[DisableAdaptiveExecution])) {
        super.test(testName, testTags: _*) {
          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-@@ -248,8 +260,15 @@ private[sql] trait SQLTestUtilsBase
+@@ -248,8 +254,15 @@ private[sql] trait SQLTestUtilsBase
      override protected def converter: ColumnNodeToExpressionConverter = self.spark.converter
    }
  
@@ -3502,7 +3494,7 @@ index f0f3f94b811..f132dfc0f1d 100644
      super.withSQLConf(pairs: _*)(f)
    }
  
-@@ -451,6 +470,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -451,6 +464,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
