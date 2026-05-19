@@ -72,7 +72,9 @@ abstract class CometTestBase
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
     conf.set("spark.ui.enabled", "false")
     conf.set(SQLConf.SHUFFLE_PARTITIONS, 10) // reduce parallelism in tests
-    conf.set(SQLConf.ANSI_ENABLED.key, "false")
+    val sparkMajorVersion =
+      SPARK_VERSION.split("\\.").headOption.flatMap(s => Try(s.toInt).toOption).getOrElse(0)
+    conf.set(SQLConf.ANSI_ENABLED.key, (sparkMajorVersion >= 4).toString)
     conf.set(SHUFFLE_MANAGER, shuffleManager)
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
