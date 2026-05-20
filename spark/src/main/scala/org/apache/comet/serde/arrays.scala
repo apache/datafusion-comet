@@ -31,7 +31,6 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
-import org.apache.comet.udf.CometLambdaRegistry
 
 object CometArrayRemove
     extends CometExpressionSerde[ArrayRemove]
@@ -852,25 +851,31 @@ object CometArrayExists extends CometExpressionSerde[ArrayExists] {
       return None
     }
 
-    val registryKey = CometLambdaRegistry.register(expr)
-    val keyLiteral = Literal(registryKey)
-    val keyProto = exprToProtoInternal(keyLiteral, inputs, binding)
-    if (keyProto.isEmpty) {
-      CometLambdaRegistry.remove(registryKey)
-      withInfo(expr, "Failed to serialize registry key literal")
+    // The lambda body is evaluated on the executor inside ArrayExistsUDF, so the entire
+    // ArrayExists Catalyst expression must travel with the plan. The driver-side
+    // CometLambdaRegistry approach broke under real distributed execution because the
+    // executor JVM doesn't share the driver's map. Serializing the expression as bytes
+    // and shipping it through the proto as a Literal arg keeps the lambda self-contained.
+    val baos = new java.io.ByteArrayOutputStream()
+    val oos = new java.io.ObjectOutputStream(baos)
+    try {
+      oos.writeObject(expr)
+    } finally {
+      oos.close()
+    }
+    val payloadProto = exprToProtoInternal(Literal(baos.toByteArray, BinaryType), inputs, binding)
+    if (payloadProto.isEmpty) {
+      withInfo(expr, "Failed to serialize lambda expression payload")
       return None
     }
 
-    val returnType = serializeDataType(BooleanType).getOrElse {
-      CometLambdaRegistry.remove(registryKey)
-      return None
-    }
+    val returnType = serializeDataType(BooleanType).getOrElse(return None)
 
     val udfBuilder = ExprOuterClass.JvmScalarUdf
       .newBuilder()
       .setClassName("org.apache.comet.udf.ArrayExistsUDF")
       .addArgs(arrayProto.get)
-      .addArgs(keyProto.get)
+      .addArgs(payloadProto.get)
       .setReturnType(returnType)
       .setReturnNullable(expr.nullable)
 

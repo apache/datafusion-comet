@@ -19,8 +19,6 @@
 
 package org.apache.comet.udf
 
-import java.nio.charset.StandardCharsets
-
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.ListVector
 import org.apache.spark.sql.catalyst.expressions.{ArrayExists, LambdaFunction, NamedLambdaVariable}
@@ -34,7 +32,9 @@ import org.apache.comet.CometArrowAllocator
  *
  * Inputs:
  *   - inputs(0): ListVector (the array column)
- *   - inputs(1): VarCharVector length-1 scalar (registry key for the lambda expression)
+ *   - inputs(1): VarBinaryVector length-1 scalar containing the Java-serialized [[ArrayExists]]
+ *     Catalyst expression. Shipping the expression in the proto avoids the driver-vs-executor
+ *     mismatch a process-local registry would suffer.
  *
  * Output: BitVector (nullable boolean), same length as the input array vector.
  *
@@ -48,13 +48,17 @@ class ArrayExistsUDF extends CometUDF {
   override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
     require(inputs.length == 2, s"ArrayExistsUDF expects 2 inputs, got ${inputs.length}")
     val listVec = inputs(0).asInstanceOf[ListVector]
-    val keyVec = inputs(1).asInstanceOf[VarCharVector]
+    val payloadVec = inputs(1).asInstanceOf[VarBinaryVector]
     require(
-      keyVec.getValueCount >= 1 && !keyVec.isNull(0),
-      "ArrayExistsUDF requires a non-null scalar registry key")
+      payloadVec.getValueCount >= 1 && !payloadVec.isNull(0),
+      "ArrayExistsUDF requires a non-null scalar payload")
 
-    val registryKey = new String(keyVec.get(0), StandardCharsets.UTF_8)
-    val arrayExistsExpr = CometLambdaRegistry.get(registryKey).asInstanceOf[ArrayExists]
+    val payloadBytes = payloadVec.get(0)
+    val bais = new java.io.ByteArrayInputStream(payloadBytes)
+    val ois = new java.io.ObjectInputStream(bais)
+    val arrayExistsExpr =
+      try ois.readObject().asInstanceOf[ArrayExists]
+      finally ois.close()
 
     val LambdaFunction(_, Seq(elementVar: NamedLambdaVariable), _) = arrayExistsExpr.function
     val body = arrayExistsExpr.functionForEval
