@@ -21,9 +21,9 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, FromUTCTimestamp, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, SecondsToTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -364,9 +364,84 @@ object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 
 object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
 
+private object UTCTimestampSerde {
+  val tzParseIncompatReason: String =
+    "Comet's native timezone parser only accepts IANA zone IDs (e.g." +
+      " `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also" +
+      " accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like" +
+      " `PST`; queries using those forms will throw a native parse error at" +
+      " execution time. See https://github.com/apache/datafusion-comet/issues/2013."
+}
+
+object CometFromUTCTimestamp extends CometExpressionSerde[FromUTCTimestamp] {
+
+  override def getSupportLevel(expr: FromUTCTimestamp): SupportLevel =
+    Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(UTCTimestampSerde.tzParseIncompatReason)
+
+  override def convert(
+      expr: FromUTCTimestamp,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto("from_utc_timestamp", childExprs: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometToUTCTimestamp extends CometExpressionSerde[ToUTCTimestamp] {
+
+  override def getSupportLevel(expr: ToUTCTimestamp): SupportLevel =
+    Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(UTCTimestampSerde.tzParseIncompatReason)
+
+  override def convert(
+      expr: ToUTCTimestamp,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto("to_utc_timestamp", childExprs: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometConvertTimezone extends CometExpressionSerde[ConvertTimezone] {
+
+  override def getSupportLevel(expr: ConvertTimezone): SupportLevel =
+    Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(UTCTimestampSerde.tzParseIncompatReason)
+
+  override def convert(
+      expr: ConvertTimezone,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val srcTz = exprToProtoInternal(expr.sourceTz, inputs, binding)
+    val tgtTz = exprToProtoInternal(expr.targetTz, inputs, binding)
+    val ts = exprToProtoInternal(expr.sourceTs, inputs, binding)
+    val toUtc = scalarFunctionExprToProto("to_utc_timestamp", ts, srcTz)
+    val fromUtc = scalarFunctionExprToProto("from_utc_timestamp", toUtc, tgtTz)
+    optExprWithInfo(fromUtc, expr, expr.children: _*)
+  }
+}
+
 object CometNextDay extends CometScalarFunction[NextDay]("next_day")
 
 object CometMakeDate extends CometScalarFunction[MakeDate]("make_date")
+
+object CometSecondsToTimestamp
+    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
+  override def getSupportLevel(expr: SecondsToTimestamp): SupportLevel =
+    expr.child.dataType match {
+      case IntegerType | LongType | FloatType | DoubleType => Compatible()
+      case dt => Unsupported(Some(s"timestamp_seconds does not support input type $dt"))
+    }
+}
 
 object CometLastDay extends CometScalarFunction[LastDay]("last_day")
 
