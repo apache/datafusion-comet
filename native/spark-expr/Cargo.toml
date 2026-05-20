@@ -118,3 +118,7 @@ harness = false
 [[bench]]
 name = "map_sort"
 harness = false
+
+[[bench]]
+name = "to_time"
+harness = false

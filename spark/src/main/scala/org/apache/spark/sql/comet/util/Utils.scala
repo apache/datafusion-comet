@@ -109,6 +109,12 @@ object Utils extends CometTypeShim with Logging {
       YearMonthIntervalType()
     case di: ArrowType.Interval if di.getUnit == IntervalUnit.DAY_TIME => DayTimeIntervalType()
     case d: ArrowType.Duration if d.getUnit == TimeUnit.MICROSECOND => DayTimeIntervalType()
+    case t: ArrowType.Time if t.getUnit == TimeUnit.NANOSECOND && t.getBitWidth == 64 =>
+      // scalastyle:off classforname
+      val clazz = Class.forName("org.apache.spark.sql.types.TimeType$")
+      // scalastyle:on classforname
+      val module = clazz.getField("MODULE$").get(null)
+      clazz.getMethod("apply").invoke(module).asInstanceOf[DataType]
     case _ => throw new UnsupportedOperationException(s"Unsupported data type: ${dt.toString}")
   }
 
@@ -143,6 +149,8 @@ object Utils extends CometTypeShim with Logging {
         }
       case TimestampNTZType =>
         new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)
+      case dt if isTimeType(dt) =>
+        new ArrowType.Time(TimeUnit.NANOSECOND, 64)
       case _ =>
         throw new UnsupportedOperationException(
           s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")
@@ -394,7 +402,7 @@ object Utils extends CometTypeShim with Logging {
           _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
           _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
           _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: StructVector | _: ListVector |
-          _: MapVector | _: NullVector) =>
+          _: MapVector | _: NullVector | _: TimeNanoVector) =>
         v.asInstanceOf[FieldVector]
       case _ =>
         throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")

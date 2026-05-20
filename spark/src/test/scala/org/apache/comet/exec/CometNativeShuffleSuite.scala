@@ -84,9 +84,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     Seq("false", "true").foreach { _ =>
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
-          withSQLConf(
-            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio,
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+          withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
             withParquetTable(
               (0 until 50).map(i => (i, Seq(Seq(i + 1), Seq(i + 2), Seq(i + 3)), i + 1)),
               "tbl") {
@@ -528,7 +526,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           .parquet(dir.toString)
       }
       withSQLConf(
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
         val testDF = spark.read.parquet(dir.toString).repartition(10)
         // Verify CometShuffleExchangeExec is in the plan

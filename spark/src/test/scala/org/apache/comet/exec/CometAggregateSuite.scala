@@ -22,6 +22,7 @@ package org.apache.comet.exec
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
@@ -41,6 +42,11 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGener
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  // Several aggregate tests exercise overflow behavior expected to wrap around silently;
+  // ANSI-mode variants opt in to ANSI explicitly via withSQLConf.
+  override protected def sparkConf: SparkConf =
+    super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
   test("min/max floating point with negative zero") {
     val r = new Random(42)
