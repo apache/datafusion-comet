@@ -26,6 +26,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometConf
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
@@ -149,7 +150,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string basic") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
       withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {
         checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
         checkSparkAnswerAndOperator("SELECT split('one,two,three', ',') FROM tbl")
@@ -159,7 +160,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string with limit") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
       withParquetTable((0 until 5).map(i => ("a,b,c,d,e", i)), "tbl") {
         checkSparkAnswerAndOperator("SELECT split(_1, ',', 2) FROM tbl")
         checkSparkAnswerAndOperator("SELECT split(_1, ',', 3) FROM tbl")
@@ -170,7 +171,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string with regex patterns") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
       withParquetTable((0 until 5).map(i => ("word1 word2  word3", i)), "tbl") {
         checkSparkAnswerAndOperator("SELECT split(_1, ' ') FROM tbl")
         checkSparkAnswerAndOperator("SELECT split(_1, '\\\\s+') FROM tbl")
@@ -183,7 +184,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string edge cases") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
       withParquetTable(Seq(("", 0), ("single", 1), (null, 2), ("a", 3)), "tbl") {
         checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
       }
@@ -191,7 +192,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string with UTF-8 characters") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
       // CJK characters
       withParquetTable(Seq(("你好,世界", 0), ("こんにちは,世界", 1)), "tbl_cjk") {
         checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_cjk")

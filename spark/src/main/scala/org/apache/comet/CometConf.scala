@@ -400,18 +400,20 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.regexp.engine")
       .category(CATEGORY_EXEC)
       .doc(
-        "Selects the engine used to evaluate supported regular-expression " +
-          s"expressions. `$REGEXP_ENGINE_RUST` uses the native DataFusion regexp engine. " +
-          s"`$REGEXP_ENGINE_JAVA` routes through a JVM-side UDF (java.util.regex.Pattern) " +
-          "for Spark-compatible semantics, at the cost of JNI roundtrips per batch. The " +
-          s"`$REGEXP_ENGINE_JAVA` engine additionally requires " +
-          s"${COMET_JVM_UDF_ENABLED.key}=true and is experimental. Expressions routed when " +
-          "set to java: rlike, regexp_extract, regexp_extract_all, regexp_replace, " +
-          "regexp_instr, and split.")
+        s"Selects the engine used to evaluate Spark regular-expression expressions. " +
+          s"`$REGEXP_ENGINE_JAVA` (default) routes through a JVM-side UDF " +
+          s"(java.util.regex.Pattern) for Spark-compatible semantics, at the cost of JNI " +
+          s"roundtrips per batch; this requires ${COMET_JVM_UDF_ENABLED.key}=true and " +
+          s"falls back to Spark otherwise. `$REGEXP_ENGINE_RUST` runs the native DataFusion " +
+          "regexp engine when an implementation exists; setting this is itself the opt-in " +
+          "for the semantic differences between Java and Rust regex. Affected expressions: " +
+          "rlike, regexp_extract, regexp_extract_all, regexp_replace, regexp_instr, and " +
+          s"split (the extract/instr family has no native Rust path; they fall back to Spark " +
+          s"under `$REGEXP_ENGINE_RUST`).")
       .stringConf
       .transform(_.toLowerCase(Locale.ROOT))
       .checkValues(Set(REGEXP_ENGINE_RUST, REGEXP_ENGINE_JAVA))
-      .createWithDefault(REGEXP_ENGINE_RUST)
+      .createWithDefault(REGEXP_ENGINE_JAVA)
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
@@ -934,15 +936,6 @@ object CometConf extends ShimCometConf {
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
     getBooleanConf(getExprEnabledConfigKey(name), defaultValue = true, conf)
-  }
-
-  /**
-   * True when the user has selected the experimental Java regexp engine AND opted into the JVM
-   * UDF framework. Both must be set; otherwise regex expressions should not route through the JVM
-   * UDF bridge.
-   */
-  def isJavaRegexpEngineActive(conf: SQLConf = SQLConf.get): Boolean = {
-    COMET_REGEXP_ENGINE.get(conf) == REGEXP_ENGINE_JAVA && COMET_JVM_UDF_ENABLED.get(conf)
   }
 
   def getExprEnabledConfigKey(name: String): String = {

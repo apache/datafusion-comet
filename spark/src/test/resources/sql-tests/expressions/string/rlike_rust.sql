@@ -15,20 +15,24 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test RLIKE with Rust regexp engine (patterns expected to fallback)
+-- Test RLIKE with Rust regexp engine
 -- Config: spark.comet.exec.regexp.engine=rust
 
 statement
-CREATE TABLE test_rlike(s string) USING parquet
+CREATE TABLE test_rlike_enabled(s string) USING parquet
 
 statement
-INSERT INTO test_rlike VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
+INSERT INTO test_rlike_enabled VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[0-9]+$' FROM test_rlike
+query
+SELECT s RLIKE '^[0-9]+$' FROM test_rlike_enabled
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[a-z]+$' FROM test_rlike
+query
+SELECT s RLIKE '^[a-z]+$' FROM test_rlike_enabled
 
-query spark_answer_only
-SELECT s RLIKE '' FROM test_rlike
+query
+SELECT s RLIKE '' FROM test_rlike_enabled
+
+-- literal arguments
+query
+SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^[a-z]+$', '' RLIKE '', NULL RLIKE 'a'

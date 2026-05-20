@@ -15,17 +15,24 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test split with Rust regexp engine (patterns expected to fallback)
+-- Test split with Rust regexp engine
 -- Config: spark.comet.exec.regexp.engine=rust
 
 statement
-CREATE TABLE test_split_rust(s string) USING parquet
+CREATE TABLE test_split_rust_enabled(s string) USING parquet
 
 statement
-INSERT INTO test_split_rust VALUES ('one,two,three'), ('hello'), (''), (NULL), ('a::b::c')
+INSERT INTO test_split_rust_enabled VALUES ('one,two,three'), ('hello'), (''), (NULL), ('a::b::c')
 
-query expect_fallback(is not fully compatible with Spark)
-SELECT split(s, ',', -1) FROM test_split_rust
+query
+SELECT split(s, ',', -1) FROM test_split_rust_enabled
 
-query expect_fallback(is not fully compatible with Spark)
-SELECT split(s, '::', -1) FROM test_split_rust
+query
+SELECT split(s, ',', 2) FROM test_split_rust_enabled
+
+query
+SELECT split(s, '::', -1) FROM test_split_rust_enabled
+
+-- literal arguments
+query
+SELECT split('a,b,c', ',', -1), split('hello', ',', -1), split(NULL, ',', -1)

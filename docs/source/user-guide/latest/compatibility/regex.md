@@ -20,46 +20,35 @@ under the License.
 # Regular Expressions
 
 Comet provides two regexp engines for evaluating regular expressions: a **Rust engine** that uses the Rust
-[`regex`] crate natively and an experimental **Java engine** that calls back into the JVM. The engine is
-selected with:
+[`regex`] crate natively, and an experimental **Java engine** that calls back into the JVM via Comet's JVM
+UDF framework. The engine is selected with `spark.comet.exec.regexp.engine`, which accepts:
 
-```
-spark.comet.exec.regexp.engine=rust   # default
-spark.comet.exec.regexp.engine=java   # experimental
-```
+- `java` (default) — route through the Java engine for full Spark compatibility. Requires
+  `spark.comet.jvmUdf.enabled=true`; otherwise regex expressions fall back to Spark with an explanatory
+  message.
+- `rust` — run the Rust engine when an expression has a native implementation. Setting this is itself
+  the opt-in for the semantic differences between Java and Rust regex (no separate `allowIncompatible`
+  flag needed). Expressions without a native Rust implementation (`regexp_extract`,
+  `regexp_extract_all`, `regexp_instr`) fall back to Spark.
 
-The Java engine is built on Comet's experimental JVM UDF framework, which is disabled by default. To use
-the Java engine, both configs must be set:
-
-```
-spark.comet.jvmUdf.enabled=true
-spark.comet.exec.regexp.engine=java
-```
-
-If `spark.comet.exec.regexp.engine=java` is set without `spark.comet.jvmUdf.enabled=true`, the regex
-expressions fall back to Spark with an explanatory message.
+The JVM UDF framework is experimental and disabled by default. With pure defaults
+(`engine=java`, `jvmUdf.enabled=false`), all regex expressions fall back to Spark.
 
 ## Choosing an engine
 
-|                      | Rust engine                             | Java engine (experimental)                                                                                          |
-| -------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **Compatibility**    | Pattern-dependent differences           | 100% compatible with Spark                                                                                          |
-| **Feature coverage** | `rlike`, `regexp_replace`, `split` only | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`) |
-| **Performance**      | Fully native, no JNI overhead           | One JNI round-trip per batch (Arrow vectors stay columnar)                                                          |
-| **Pattern support**  | Linear-time subset only                 | All Java regex features (backreferences, lookaround, etc.)                                                          |
+|                      | Rust engine                             | Java engine (experimental, default)                                                                                  |
+| -------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **Compatibility**    | Differs from Java regex (see below)     | 100% compatible with Spark                                                                                           |
+| **Feature coverage** | `rlike`, `regexp_replace`, `split` only | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`)  |
+| **Performance**      | Fully native, no JNI overhead           | One JNI round-trip per batch (Arrow vectors stay columnar)                                                           |
+| **Pattern support**  | Linear-time subset only                 | All Java regex features (backreferences, lookaround, etc.)                                                           |
 
-The **Rust engine** (default) is faster but only supports a subset of patterns. When it encounters a pattern
-it cannot handle, it falls back to Spark automatically. To opt in to native evaluation for patterns Comet
-considers potentially incompatible, set:
+The **Rust engine** is faster but cannot match Java regex semantics for every pattern. Because the engine
+choice is itself the opt-in, setting `spark.comet.exec.regexp.engine=rust` declares acceptance of those
+differences without a separate per-expression flag.
 
-```
-spark.comet.expression.regexp.allowIncompatible=true
-```
-
-The **Java engine** is an experimental option for correctness-sensitive workloads. It evaluates expressions
-by passing Arrow vectors to a JVM-side UDF that uses `java.util.regex`, producing identical results to Spark
-for all patterns. Because the underlying JVM UDF framework is experimental, it is gated behind
-`spark.comet.jvmUdf.enabled=true`, and the behavior, configuration, and supported expressions may change in
+The **Java engine** is the default but the underlying JVM UDF framework is experimental and gated behind
+`spark.comet.jvmUdf.enabled=true`; the behavior, configuration, and supported expressions may change in
 future releases.
 
 ## Why the engines differ
