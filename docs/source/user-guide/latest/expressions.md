@@ -291,7 +291,6 @@ Comet supports using the following aggregate functions within window contexts wi
 | Flatten        |
 | GetArrayItem   |
 | Size           |
-| Slice          |
 | SortArray      |
 
 ## Map Expressions

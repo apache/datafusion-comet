@@ -151,7 +151,7 @@
 - [x] get
 - [ ] sequence
 - [ ] shuffle
-- [x] slice
+- [ ] slice
 - [x] sort_array
 
 ### bitwise_funcs

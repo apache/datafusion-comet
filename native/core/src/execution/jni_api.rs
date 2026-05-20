@@ -43,7 +43,6 @@ use datafusion::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
-use datafusion_spark::function::array::slice::SparkSlice;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bit_shift::SparkBitShift;
@@ -606,7 +605,6 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFactorial::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSec::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkAddMonths::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSlice::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUnixTimestamp::microseconds()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUnixTimestamp::milliseconds()));
