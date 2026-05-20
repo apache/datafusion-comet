@@ -49,19 +49,19 @@ import org.apache.comet.udf.CometUDF
  *
  * Caching hierarchy, broadest scope on the left:
  * {{{
- *   ┌────────────────────────────┐  ┌────────────────────────────┐  ┌────────────────────────────┐
- *   │ 1. JVM bytecode cache      │  │ 2. Per-task dispatcher     │  │ 3. Per-task kernel cache   │
- *   │    (Spark's CodeGenerator) │  │    (CometUdfBridge.        │  │    (kernelCache field)     │
- *   │                            │  │     INSTANCES)             │  │                            │
- *   ├────────────────────────────┤  ├────────────────────────────┤  ├────────────────────────────┤
- *   │ Key:   generated Java      │  │ Key:   task + UDF class    │  │ Key:   bound expression +  │
- *   │        source              │  │                            │  │        input column shapes │
- *   │ Value: compiled Java class │  │ Value: dispatcher object   │  │ Value: ready-to-run kernel │
- *   │ Scope: JVM, all queries    │  │ Scope: one Spark task      │  │        with state primed   │
- *   │        share it            │  │                            │  │ Scope: one Spark task      │
- *   │ Owner: Spark               │  │ Owner: Comet               │  │        (lives inside 2)    │
- *   │                            │  │                            │  │ Owner: Comet               │
- *   └────────────────────────────┘  └────────────────────────────┘  └────────────────────────────┘
+ *   +----------------------------+  +----------------------------+  +----------------------------+
+ *   | 1. JVM bytecode cache      |  | 2. Per-task dispatcher     |  | 3. Per-task kernel cache   |
+ *   |    (Spark's CodeGenerator) |  |    (CometUdfBridge.        |  |    (kernelCache field)     |
+ *   |                            |  |     INSTANCES)             |  |                            |
+ *   +----------------------------+  +----------------------------+  +----------------------------+
+ *   | Key:   generated Java      |  | Key:   task + UDF class    |  | Key:   bound expression +  |
+ *   |        source              |  |                            |  |        input column shapes |
+ *   | Value: compiled Java class |  | Value: dispatcher object   |  | Value: ready-to-run kernel |
+ *   | Scope: JVM, all queries    |  | Scope: one Spark task      |  |        with state primed   |
+ *   |        share it            |  |                            |  | Scope: one Spark task      |
+ *   | Owner: Spark               |  | Owner: Comet               |  |        (lives inside 2)    |
+ *   |                            |  |                            |  | Owner: Comet               |
+ *   +----------------------------+  +----------------------------+  +----------------------------+
  * }}}
  *
  * Stateful expressions (`Rand`, `MonotonicallyIncreasingID`) advance inside the per-task kernel
