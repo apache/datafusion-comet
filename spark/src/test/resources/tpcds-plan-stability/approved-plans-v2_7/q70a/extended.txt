@@ -8,7 +8,7 @@ TakeOrderedAndProject
                   +- CometColumnarExchange
                      +- HashAggregate
                         +- Union
-                           :- HashAggregate
+                           :-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
                            :  +- Exchange
                            :     +- HashAggregate
                            :        +- Project
@@ -57,10 +57,10 @@ TakeOrderedAndProject
                            :                                                           +- CometProject
                            :                                                              +- CometFilter
                            :                                                                 +- CometNativeScan parquet spark_catalog.default.date_dim
-                           :- HashAggregate
+                           :-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
                            :  +- Exchange
                            :     +- HashAggregate
-                           :        +- HashAggregate
+                           :        +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
                            :           +- Exchange
                            :              +- HashAggregate
                            :                 +- Project
@@ -109,10 +109,10 @@ TakeOrderedAndProject
                            :                                                                    +- CometProject
                            :                                                                       +- CometFilter
                            :                                                                          +- CometNativeScan parquet spark_catalog.default.date_dim
-                           +- HashAggregate
+                           +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
                               +- Exchange
                                  +- HashAggregate
-                                    +- HashAggregate
+                                    +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
                                        +- Exchange
                                           +- HashAggregate
                                              +- Project
