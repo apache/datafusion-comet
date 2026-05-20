@@ -624,7 +624,11 @@ impl PhysicalPlanner {
             }
             ExprStruct::ToJson(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(ToJson::new(child, &expr.timezone)))
+                Ok(Arc::new(ToJson::new(
+                    child,
+                    &expr.timezone,
+                    expr.ignore_null_fields,
+                )))
             }
             ExprStruct::ToPrettyString(expr) => {
                 let mut spark_cast_options =

@@ -23,6 +23,7 @@ import scala.jdk.CollectionConverters._
 import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToCsv, StructsToJson}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -120,13 +121,14 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
       expr: StructsToJson,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val ignoreNullFields = SQLConf.get.jsonGeneratorIgnoreNullFields
     exprToProtoInternal(expr.child, inputs, binding) match {
       case Some(p) =>
         val toJson = ExprOuterClass.ToJson
           .newBuilder()
           .setChild(p)
           .setTimezone(expr.timeZoneId.getOrElse("UTC"))
-          .setIgnoreNullFields(true)
+          .setIgnoreNullFields(ignoreNullFields)
           .build()
         Some(
           ExprOuterClass.Expr

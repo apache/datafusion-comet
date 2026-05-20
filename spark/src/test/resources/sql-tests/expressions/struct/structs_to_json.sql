@@ -15,11 +15,13 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- ConfigMatrix: spark.sql.jsonGenerator.ignoreNullFields=false,true
+
 statement
 CREATE TABLE test_to_json(a int, b string, f float, d double) USING parquet
 
 statement
-INSERT INTO test_to_json VALUES (1, 'hello', cast('NaN' as float), cast('Infinity' as double)), (NULL, NULL, NULL, NULL), (0, '', 0.0, 0.0)
+INSERT INTO test_to_json VALUES (1, 'hello', cast('NaN' as float), cast('Infinity' as double)), (NULL, NULL, NULL, NULL), (0, '', 0.0, 0.0), (2, 'hello', cast('NaN' as float), cast('-Infinity' as double))
 
 query
 SELECT to_json(named_struct('a', a, 'b', b, 'f', f, 'd', d)) FROM test_to_json
