@@ -214,7 +214,7 @@
 
 ### datetime_funcs
 
-- [x] add_months
+- [ ] add_months
 - [x] convert_timezone
 - [ ] curdate
 - [ ] current_date
@@ -286,9 +286,9 @@
 - [ ] try_to_time
 - [ ] try_to_timestamp
 - [x] unix_date
-- [x] unix_micros
-- [x] unix_millis
-- [x] unix_seconds
+- [ ] unix_micros
+- [ ] unix_millis
+- [ ] unix_seconds
 - [x] unix_timestamp
 - [x] weekday
 - [x] weekofyear

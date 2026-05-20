@@ -47,14 +47,12 @@ use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bit_shift::SparkBitShift;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
-use datafusion_spark::function::datetime::add_months::SparkAddMonths;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::datetime::from_utc_timestamp::SparkFromUtcTimestamp;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
 use datafusion_spark::function::datetime::next_day::SparkNextDay;
 use datafusion_spark::function::datetime::to_utc_timestamp::SparkToUtcTimestamp;
-use datafusion_spark::function::datetime::unix::SparkUnixTimestamp;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
@@ -604,11 +602,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCsc::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFactorial::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSec::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkAddMonths::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUnixTimestamp::microseconds()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUnixTimestamp::milliseconds()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUnixTimestamp::seconds()));
 }
 
 /// Prepares arrow arrays for output.

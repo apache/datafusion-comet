@@ -101,7 +101,6 @@ of expressions that be disabled.
 
 | Expression       | SQL                          |
 | ---------------- | ---------------------------- |
-| AddMonths        | `add_months`                 |
 | ConvertTimezone  | `convert_timezone`           |
 | CurrentTimeZone  | `current_timezone`           |
 | DateAdd          | `date_add`                   |
@@ -125,9 +124,6 @@ of expressions that be disabled.
 | TruncDate        | `trunc`                      |
 | TruncTimestamp   | `date_trunc`                 |
 | UnixDate         | `unix_date`                  |
-| UnixMicros       | `unix_micros`                |
-| UnixMillis       | `unix_millis`                |
-| UnixSeconds      | `unix_seconds`               |
 | UnixTimestamp    | `unix_timestamp`             |
 | Year             | `year`                       |
 | Month            | `month`                      |
