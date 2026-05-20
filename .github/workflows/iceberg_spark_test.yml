@@ -30,11 +30,9 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
-      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/**"
-      - "common/src/test/**"
       - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
       - "spark-integration/**"
   pull_request:
@@ -43,11 +41,9 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
-      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/**"
-      - "common/src/test/**"
       - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
       - "spark-integration/**"
   # manual trigger
@@ -66,7 +62,6 @@ jobs:
   # Build native library once and share with all test jobs
   build-native:
     name: Build Native Library
-    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.labels.*.name, 'skip-ci') && !contains(github.event.pull_request.title, '[skip ci]')) }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust

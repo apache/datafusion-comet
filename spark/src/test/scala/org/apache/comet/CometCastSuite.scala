@@ -25,6 +25,7 @@ import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.parser.ParseException
@@ -40,6 +41,11 @@ import org.apache.comet.serde.{Compatible, Incompatible}
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
+
+  // Casts in this suite predominantly test non-ANSI semantics (silent overflow/null on
+  // invalid input); tests that target ANSI behavior opt in explicitly via withSQLConf.
+  override protected def sparkConf: SparkConf =
+    super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
   /** Create a data generator using a fixed seed so that tests are reproducible */
   private val gen = DataGenerator.DEFAULT
@@ -1540,13 +1546,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType") {
-    val hasIncompatibleType = (dt: DataType) =>
-      if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == "auto") {
-        true
-      } else {
-        !CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-          .isTypeSupported(dt, "a", ListBuffer.empty)
-      }
+    val hasIncompatibleType =
+      (dt: DataType) => !CometScanTypeChecker().isTypeSupported(dt, "a", ListBuffer.empty)
     Seq(
       BooleanType,
       StringType,
