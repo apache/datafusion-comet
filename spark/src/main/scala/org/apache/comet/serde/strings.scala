@@ -48,6 +48,16 @@ private object RegexpRoute {
   case class Fallback(reason: String) extends RegexpRoute
 
   /**
+   * SupportLevel returned by serdes whose route is [[Native]]. Surfaced as `Incompatible` so the
+   * standard gating in `QueryPlanSerde` can recognize `spark.comet.exec.regexp.engine=rust` as
+   * the opt-in (via `optedInBy`) without each serde repeating the check.
+   */
+  val nativeIncompatible: Incompatible =
+    Incompatible(
+      Some("Rust regexp engine has different semantics from Java regexp"),
+      Some(s"${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_RUST}"))
+
+  /**
    * Pick a route given the user's config and whether a native Rust implementation exists for the
    * expression. `engine=java` (default) routes to the JVM UDF if the master switch is on; else
    * Spark fallback. `engine=rust` runs native if available; else Spark fallback.
@@ -334,7 +344,8 @@ object CometRLike extends CometExpressionSerde[RLike] {
     expr.right match {
       case _: Literal =>
         RegexpRoute.choose("rlike", hasNative = true) match {
-          case RegexpRoute.Native | RegexpRoute.JvmUdf => Compatible(None)
+          case RegexpRoute.Native => RegexpRoute.nativeIncompatible
+          case RegexpRoute.JvmUdf => Compatible(None)
           case RegexpRoute.Fallback(reason) => Unsupported(Some(reason))
         }
       case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
@@ -663,7 +674,8 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
         expr.regexp match {
           case _: Literal =>
             RegexpRoute.choose("regexp_replace", hasNative = true) match {
-              case RegexpRoute.Native | RegexpRoute.JvmUdf => Compatible(None)
+              case RegexpRoute.Native => RegexpRoute.nativeIncompatible
+              case RegexpRoute.JvmUdf => Compatible(None)
               case RegexpRoute.Fallback(reason) => Unsupported(Some(reason))
             }
           case _ => Unsupported(Some("Only scalar regexp patterns are supported"))
@@ -760,7 +772,8 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
     expr.regex match {
       case _: Literal =>
         RegexpRoute.choose("split", hasNative = true) match {
-          case RegexpRoute.Native | RegexpRoute.JvmUdf => Compatible(None)
+          case RegexpRoute.Native => RegexpRoute.nativeIncompatible
+          case RegexpRoute.JvmUdf => Compatible(None)
           case RegexpRoute.Fallback(reason) => Unsupported(Some(reason))
         }
       case _ => Unsupported(Some("Only scalar regex patterns are supported"))
