@@ -191,8 +191,8 @@ on the unoptimized path.
   enabled; vanilla `PythonMapInArrowExec` / `MapInPandasExec` handle the operation. The Spark 3.5
   `PythonArrowInput` trait has a different contract than 4.x and a separate implementation has
   not been written. Track 3.5 support as a future follow-on if there is user demand.
-- The current implementation copies Comet's vector buffers into Spark's allocator via
-  `Unsafe.copyMemory` (one bulk memcpy per buffer per column). True zero-copy via
-  `TransferPair` is blocked on Comet's Parquet readers allocating from `ArrowUtils.rootAllocator`
-  (rather than each reader constructing its own independent `RootAllocator`). Tracked in
+- The current implementation copies Comet's vector buffers into Spark's allocator one
+  buffer at a time. True zero-copy via `TransferPair` is blocked on Comet's Parquet
+  readers allocating from `ArrowUtils.rootAllocator` (rather than each reader
+  constructing its own independent `RootAllocator`). Tracked in
   [#4294](https://github.com/apache/datafusion-comet/issues/4294).

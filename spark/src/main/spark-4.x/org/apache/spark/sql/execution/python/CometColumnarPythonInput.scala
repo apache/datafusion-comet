@@ -22,7 +22,6 @@ package org.apache.spark.sql.execution.python
 import java.io.DataOutputStream
 import java.nio.channels.Channels
 
-import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.vector.{BaseFixedWidthVector, BaseLargeVariableWidthVector, BaseVariableWidthVector, FieldVector, VectorSchemaRoot, VectorUnloader}
@@ -36,21 +35,18 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
 
-import org.apache.comet.vector.{CometDecodedVector, CometVectorIpcCopier}
+import org.apache.comet.vector.CometDecodedVector
 
 /**
  * `PythonArrowInput` implementation that streams Comet `ColumnarBatch` values to the Python
  * worker as Arrow IPC.
  *
- * Comet's vectors live in the shaded `org.apache.comet.shaded.arrow.*` package at runtime
- * (relocated by comet-common's maven-shade-plugin). This trait must not reference shaded Arrow
- * types directly; buffer copying is delegated to `CometVectorIpcCopier` in comet-common, which
- * crosses the module boundary using only `long` primitives.
- *
- * Per-batch: walk the destination struct's children (unshaded, allocated from the runner's
- * persistent root), allocate each child sized to match the corresponding Comet column, collect
- * dst buffer addresses into a `long[]`, and call the helper for a single bulk memcpy across all
- * buffers.
+ * Per batch: walk the destination struct's children, allocate each child sized to match the
+ * corresponding Comet column, and copy each buffer with `ArrowBuf.setBytes`. The source (Comet's
+ * vectors) and the destination (Spark's persistent IPC root) live in different `RootAllocator`
+ * trees, so `TransferPair` / `VectorLoader.load` cannot rebind buffers across the boundary;
+ * per-buffer memcpy is the available alternative until the readers share a parent allocator
+ * (tracked in #4294).
  */
 private[python] trait CometColumnarPythonInput extends PythonArrowInput[Iterator[ColumnarBatch]] {
   self: BasePythonRunner[Iterator[ColumnarBatch], _] =>
@@ -97,7 +93,12 @@ private[python] trait CometColumnarPythonInput extends PythonArrowInput[Iterator
 
     var i = 0
     while (i < cometBatch.numCols()) {
-      val src = cometBatch.column(i).asInstanceOf[CometDecodedVector]
+      val src =
+        cometBatch
+          .column(i)
+          .asInstanceOf[CometDecodedVector]
+          .getValueVector
+          .asInstanceOf[FieldVector]
       val dst = structVec.getChildByOrdinal(i).asInstanceOf[FieldVector]
       copyVector(src, dst)
       i += 1
@@ -126,103 +127,57 @@ private[python] trait CometColumnarPythonInput extends PythonArrowInput[Iterator
   }
 
   /**
-   * Copy a Comet column (whose Arrow buffers are in the shaded class tree) into the destination
-   * FieldVector (allocated from the runner's persistent root, in the unshaded class tree). The
-   * actual byte copy happens inside `CometVectorIpcCopier` in comet-common, which references only
-   * shaded Arrow types internally and exposes the buffer addresses as `long` primitives.
+   * Copy a Comet column into the destination FieldVector. Walks both trees in lockstep: sizes
+   * each destination node from the source, copies every buffer with `ArrowBuf.setBytes`, then
+   * sets value counts bottom-up so `setValueCount` does not rewrite the offset bytes we just
+   * copied.
    */
-  private def copyVector(src: CometDecodedVector, dst: FieldVector): Unit = {
-    val srcBufSizes = CometVectorIpcCopier.bufferReadableBytes(src)
-    val srcValueCounts = CometVectorIpcCopier.valueCounts(src)
+  private def copyVector(src: FieldVector, dst: FieldVector): Unit = {
+    val valueCount = src.getValueCount
 
-    val dstNodes = collectFieldVectors(dst)
+    dst match {
+      case bfwv: BaseFixedWidthVector =>
+        bfwv.allocateNew(valueCount)
+      case bvwv: BaseVariableWidthVector =>
+        bvwv.allocateNew(src.getDataBuffer.readableBytes, valueCount)
+      case blvwv: BaseLargeVariableWidthVector =>
+        blvwv.allocateNew(src.getDataBuffer.readableBytes, valueCount)
+      case _ =>
+        dst.setInitialCapacity(valueCount)
+        dst.allocateNew()
+    }
+
+    val srcBufs = src.getFieldBuffers
+    val dstBufs = dst.getFieldBuffers
     require(
-      dstNodes.size == srcValueCounts.length,
-      s"tree node count mismatch for ${dst.getField}: " +
-        s"dst=${dstNodes.size}, src=${srcValueCounts.length}")
-
-    var bufIdx = 0
-    var nodeIdx = 0
-    while (nodeIdx < dstNodes.size) {
-      val node = dstNodes(nodeIdx)
-      val valueCount = srcValueCounts(nodeIdx)
-      node match {
-        case bfwv: BaseFixedWidthVector =>
-          bfwv.allocateNew(valueCount)
-        case bvwv: BaseVariableWidthVector =>
-          val ownBufCount = node.getFieldBuffers.size
-          val dataSize = srcBufSizes(bufIdx + ownBufCount - 1)
-          bvwv.allocateNew(dataSize, valueCount)
-        case blvwv: BaseLargeVariableWidthVector =>
-          val ownBufCount = node.getFieldBuffers.size
-          val dataSize = srcBufSizes(bufIdx + ownBufCount - 1)
-          blvwv.allocateNew(dataSize, valueCount)
-        case _ =>
-          node.setInitialCapacity(valueCount)
-          node.allocateNew()
-      }
-      bufIdx += node.getFieldBuffers.size
-      nodeIdx += 1
+      srcBufs.size == dstBufs.size,
+      s"buffer count mismatch for ${dst.getField}: src=${srcBufs.size}, dst=${dstBufs.size}")
+    var b = 0
+    while (b < srcBufs.size) {
+      val s = srcBufs.get(b)
+      dstBufs.get(b).setBytes(0, s, 0, s.readableBytes)
+      b += 1
     }
+
+    val srcChildren = src.getChildrenFromFields
+    val dstChildren = dst.getChildrenFromFields
     require(
-      bufIdx == srcBufSizes.length,
-      s"buffer count mismatch for ${dst.getField}: dst=$bufIdx, src=${srcBufSizes.length}")
-
-    val dstAddrs = collectBufferAddresses(dstNodes, srcBufSizes.length)
-    CometVectorIpcCopier.copyBuffersToAddresses(src, dstAddrs)
-
-    // Process nodes bottom-up (leaves first) so that when a composite vector (struct, list)
-    // calls setValueCount on its children recursively, those children have already had their
-    // lastSet field updated and fillHoles becomes a no-op.
-    var fi = dstNodes.size - 1
-    while (fi >= 0) {
-      val node = dstNodes(fi)
-      val vc = srcValueCounts(fi)
-      // For vectors that fill offset-buffer "holes" in setValueCount (variable-width and list
-      // types), set lastSet = vc - 1 first so fillHoles is a no-op and the already-copied
-      // offset bytes are preserved.
-      node match {
-        case v: BaseVariableWidthVector => v.setLastSet(vc - 1)
-        case v: BaseLargeVariableWidthVector => v.setLastSet(vc - 1)
-        case v: ListVector => v.setLastSet(vc - 1)
-        case v: LargeListVector => v.setLastSet(vc - 1)
-        case _ =>
-      }
-      node.setValueCount(vc)
-      fi -= 1
+      srcChildren.size == dstChildren.size,
+      s"child count mismatch for ${dst.getField}: src=${srcChildren.size}, dst=${dstChildren.size}")
+    srcChildren.asScala.zip(dstChildren.asScala).foreach { case (sc, dc) =>
+      copyVector(sc.asInstanceOf[FieldVector], dc.asInstanceOf[FieldVector])
     }
-  }
 
-  private def collectFieldVectors(vec: FieldVector): IndexedSeq[FieldVector] = {
-    val buf = ArrayBuffer.empty[FieldVector]
-    walkFieldVectors(vec, buf)
-    buf.toIndexedSeq
-  }
-
-  private def walkFieldVectors(vec: FieldVector, buf: ArrayBuffer[FieldVector]): Unit = {
-    buf += vec
-    vec.getChildrenFromFields.asScala.foreach { child =>
-      walkFieldVectors(child.asInstanceOf[FieldVector], buf)
+    // For vectors that fill offset-buffer "holes" in setValueCount (variable-width and list
+    // types), set lastSet = vc - 1 first so fillHoles is a no-op and the already-copied
+    // offset bytes are preserved.
+    dst match {
+      case v: BaseVariableWidthVector => v.setLastSet(valueCount - 1)
+      case v: BaseLargeVariableWidthVector => v.setLastSet(valueCount - 1)
+      case v: ListVector => v.setLastSet(valueCount - 1)
+      case v: LargeListVector => v.setLastSet(valueCount - 1)
+      case _ =>
     }
-  }
-
-  private def collectBufferAddresses(
-      nodes: IndexedSeq[FieldVector],
-      expected: Int): Array[Long] = {
-    val addrs = new Array[Long](expected)
-    var idx = 0
-    var ni = 0
-    while (ni < nodes.size) {
-      val bufs = nodes(ni).getFieldBuffers
-      var bi = 0
-      while (bi < bufs.size) {
-        addrs(idx) = bufs.get(bi).memoryAddress()
-        idx += 1
-        bi += 1
-      }
-      ni += 1
-    }
-    require(idx == expected, s"collected $idx addresses, expected $expected")
-    addrs
+    dst.setValueCount(valueCount)
   }
 }
