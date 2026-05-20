@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.comet.shims.ShimCometMapInBatch
+import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -106,21 +106,29 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // UnsafeProjection copies and keeping the stage columnar. The matchers are
       // version-shimmed: Spark 3.4 returns None (it lacks the required APIs) and Spark 4.1+
       // matches the renamed `MapInArrowExec`.
-      case p: SparkPlan if CometConf.COMET_PYARROW_UDF_ENABLED.get() =>
-        matchMapInArrow(p).orElse(matchMapInPandas(p)) match {
-          case Some(info) =>
-            extractColumnarChild(info.child)
-              .map { columnarChild =>
-                CometMapInBatchExec(
-                  info.func,
-                  info.output,
-                  columnarChild,
-                  info.isBarrier,
-                  info.pythonEvalType)
-              }
-              .getOrElse(p)
-          case None => p
-        }
+      //
+      // Falls back to vanilla Spark when `spark.sql.execution.arrow.useLargeVarTypes` is enabled:
+      // CometColumnarPythonInput.copyVector does raw `setBytes` on each Arrow buffer, but Comet's
+      // source string/binary vectors always use 4-byte offsets while the destination root is
+      // allocated with 8-byte offsets when this conf is on. The buffer counts match but the
+      // offset width does not, so a direct memcpy would corrupt the offsets.
+      //
+      // The guard runs `eligibleMapInBatchInfo` so this case only matches actual MapInArrow /
+      // MapInPandas operators. Without the structural check the case would match every
+      // `SparkPlan` whenever the pyarrow conf is on, short-circuiting the
+      // `CometShuffleExchangeExec` arm below.
+      case p if eligibleMapInBatchInfo(p).isDefined =>
+        val info = eligibleMapInBatchInfo(p).get
+        extractColumnarChild(info.child)
+          .map { columnarChild =>
+            CometMapInBatchExec(
+              info.func,
+              info.output,
+              columnarChild,
+              info.isBarrier,
+              info.pythonEvalType)
+          }
+          .getOrElse(p)
 
       // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
       // shuffle takes row-based input.
@@ -165,6 +173,27 @@ case class EliminateRedundantTransitions(session: SparkSession)
     case CometColumnarToRowExec(child) => Some(child)
     case CometNativeColumnarToRowExec(child) => Some(child)
     case _ => None
+  }
+
+  /**
+   * Returns `Some(info)` only when this rule should attempt to rewrite `plan` to
+   * `CometMapInBatchExec`, i.e. when the conf is on, the largeVarTypes fallback does not apply,
+   * and the plan is one of the version-shimmed MapInArrow / MapInPandas operators. Used in the
+   * pattern guard so the case only fires for plans we actually want to rewrite - without that
+   * narrowing, the `case` would match every `SparkPlan` whenever the conf is on and consume the
+   * later `CometShuffleExchangeExec` arm. Read the conf via the raw key string so this compiles
+   * against Spark 3.4, which lacks `SQLConf.arrowUseLargeVarTypes`.
+   */
+  private def eligibleMapInBatchInfo(plan: SparkPlan): Option[MapInBatchInfo] = {
+    if (!CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
+      None
+    } else if (plan.conf
+        .getConfString("spark.sql.execution.arrow.useLargeVarTypes", "false")
+        .toBoolean) {
+      None
+    } else {
+      matchMapInArrow(plan).orElse(matchMapInPandas(plan))
+    }
   }
 
   /**

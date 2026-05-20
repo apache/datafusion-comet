@@ -407,6 +407,324 @@ def test_map_in_arrow_array_and_struct(spark, tmp_path, accelerated):
     assert out == expected
 
 
+def test_map_in_arrow_numeric_scalars(spark, tmp_path, accelerated):
+    """
+    Covers the BaseFixedWidthVector branch in CometColumnarPythonInput.copyVector for
+    every fixed-width primitive Comet's scan supports beyond the long/double/int already
+    exercised by other tests: boolean, byte, short, float. Each has a distinct buffer
+    size, and the validity bit handling is independent per column.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("b", T.BooleanType()),
+            T.StructField("tiny", T.ByteType()),
+            T.StructField("small", T.ShortType()),
+            T.StructField("flt", T.FloatType()),
+        ]
+    )
+    rows = [
+        (1, True, 1, 1000, 1.5),
+        (2, False, -128, -32768, -3.25),
+        (3, True, 127, 32767, float("inf")),
+        (4, None, None, None, None),
+    ]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = {(r["id"], r["b"], r["tiny"], r["small"], r["flt"]) for r in result_df.collect()}
+    assert out == set(rows)
+
+
+def test_map_in_arrow_binary_type(spark, tmp_path, accelerated):
+    """
+    BinaryType is the BaseVariableWidthVector path with non-string content. StringType
+    already exercises that path for utf-8 data; binary covers the case where the data
+    buffer can hold arbitrary bytes (including null bytes mid-string).
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("payload", T.BinaryType()),
+        ]
+    )
+    rows = [
+        (1, b"\x00\x01\x02\x03"),
+        (2, b""),
+        (3, b"\xff" * 64),
+        (4, None),
+    ]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = {(r["id"], bytes(r["payload"]) if r["payload"] is not None else None)
+           for r in result_df.collect()}
+    expected = set(rows)
+    assert out == expected
+
+
+def test_map_in_arrow_timestamp_ntz(spark, tmp_path, accelerated):
+    """
+    TimestampNTZType is a separate Arrow type from TimestampType (no timezone) and goes
+    through a different ArrowType.Timestamp(..., tz=None) on the wire.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("ts_ntz", T.TimestampNTZType()),
+        ]
+    )
+    rows = [
+        (1, dt.datetime(2024, 1, 1, 12, 30, 45)),
+        (2, dt.datetime(1970, 1, 1, 0, 0, 0)),
+        (3, None),
+    ]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = {(r["id"], r["ts_ntz"]) for r in result_df.collect()}
+    assert out == set(rows)
+
+
+def test_map_in_arrow_map_type(spark, tmp_path, accelerated):
+    """
+    MapType is encoded in Arrow as a List<Struct<key, value>> with extra metadata. The
+    buffer layout (offsets + struct child + key/value children) is distinct from a plain
+    list, and CometMapVector is a separate vector class from CometListVector. Without
+    this test the recursive copy path through map-typed columns is unexercised.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField(
+                "attrs", T.MapType(T.StringType(), T.IntegerType(), valueContainsNull=True)
+            ),
+        ]
+    )
+    rows = [
+        (1, {"a": 1, "b": 2}),
+        (2, {}),
+        (3, None),
+        (4, {"only": None}),
+    ]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    def _normalize(row):
+        attrs = row["attrs"]
+        attrs_norm = (
+            tuple(sorted(attrs.items(), key=lambda kv: kv[0]))
+            if attrs is not None
+            else None
+        )
+        return (row["id"], attrs_norm)
+
+    out = {_normalize(r) for r in result_df.collect()}
+    expected = {
+        (
+            r[0],
+            tuple(sorted(r[1].items(), key=lambda kv: kv[0])) if r[1] is not None else None,
+        )
+        for r in rows
+    }
+    assert out == expected
+
+
+def test_map_in_arrow_deeply_nested(spark, tmp_path, accelerated):
+    """
+    Exercises the recursive descent in CometColumnarPythonInput.copyVector at depth > 1,
+    in every nesting combination: array-of-array, array-of-struct, struct-of-array,
+    struct-of-struct. Single-level nesting is covered by test_map_in_arrow_array_and_struct;
+    the bug surface here is that setLastSet / setValueCount must be applied bottom-up
+    correctly at every level.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("matrix", T.ArrayType(T.ArrayType(T.IntegerType()))),
+            T.StructField(
+                "people",
+                T.ArrayType(
+                    T.StructType(
+                        [
+                            T.StructField("name", T.StringType()),
+                            T.StructField("age", T.IntegerType()),
+                        ]
+                    )
+                ),
+            ),
+            T.StructField(
+                "config",
+                T.StructType(
+                    [
+                        T.StructField("flags", T.ArrayType(T.StringType())),
+                        T.StructField(
+                            "limits",
+                            T.StructType(
+                                [
+                                    T.StructField("min", T.IntegerType()),
+                                    T.StructField("max", T.IntegerType()),
+                                ]
+                            ),
+                        ),
+                    ]
+                ),
+            ),
+        ]
+    )
+    rows = [
+        (
+            1,
+            [[1, 2], [3, 4, 5]],
+            [("alice", 30), ("bob", 25)],
+            (["x", "y"], (0, 100)),
+        ),
+        (
+            2,
+            [[], [None, 7]],
+            [("solo", None)],
+            ([], (None, None)),
+        ),
+        (3, None, None, None),
+        (4, [None, [9]], [None, ("ghost", 0)], (None, None)),
+    ]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    def _norm_array(a):
+        return tuple(a) if a is not None else None
+
+    def _norm_matrix(m):
+        return tuple(_norm_array(inner) for inner in m) if m is not None else None
+
+    def _norm_people(p):
+        if p is None:
+            return None
+        return tuple(
+            (item["name"], item["age"]) if item is not None else None for item in p
+        )
+
+    def _norm_config(c):
+        if c is None:
+            return None
+        flags = _norm_array(c["flags"])
+        limits = c["limits"]
+        limits_norm = (limits["min"], limits["max"]) if limits is not None else None
+        return (flags, limits_norm)
+
+    def _norm_row(r):
+        return (
+            r["id"],
+            _norm_matrix(r["matrix"]),
+            _norm_people(r["people"]),
+            _norm_config(r["config"]),
+        )
+
+    def _norm_input_people(p):
+        if p is None:
+            return None
+        return tuple(item if item is not None else None for item in p)
+
+    def _norm_input_config(c):
+        if c is None:
+            return None
+        flags, limits = c
+        return (_norm_array(flags), limits)
+
+    out = {_norm_row(r) for r in result_df.collect()}
+    expected = {
+        (
+            r[0],
+            _norm_matrix(r[1]),
+            _norm_input_people(r[2]),
+            _norm_input_config(r[3]),
+        )
+        for r in rows
+    }
+    assert out == expected
+
+
+def test_map_in_arrow_falls_back_when_use_large_var_types(spark, tmp_path):
+    """
+    `spark.sql.execution.arrow.useLargeVarTypes=true` widens StringType / BinaryType to
+    LargeUtf8 / LargeBinary in the destination IPC root (8-byte offsets). Comet's source
+    vectors always use 4-byte offsets; CometColumnarPythonInput.copyVector does a raw
+    setBytes per buffer and would corrupt the offset buffer in this configuration.
+    EliminateRedundantTransitions must skip the rewrite in that case so vanilla Spark
+    handles the operation. This test does not use the `accelerated` fixture: it sets
+    pyarrowUdf.enabled=true AND useLargeVarTypes=true and asserts the plan still falls
+    back to vanilla MapInArrow.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("name", T.StringType()),
+        ]
+    )
+    rows = [(i, f"name_{i}") for i in range(20)]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    prev_pyarrow = spark.conf.get("spark.comet.exec.pyarrowUdf.enabled", "false")
+    prev_large = spark.conf.get("spark.sql.execution.arrow.useLargeVarTypes", "false")
+    spark.conf.set("spark.comet.exec.pyarrowUdf.enabled", "true")
+    spark.conf.set("spark.sql.execution.arrow.useLargeVarTypes", "true")
+    try:
+        result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+        plan = _executed_plan(result_df)
+        assert "CometMapInBatch" not in plan, (
+            f"useLargeVarTypes=true should force fallback, but plan has "
+            f"CometMapInBatch:\n{plan}"
+        )
+        assert "MapInArrow" in plan, (
+            f"expected vanilla MapInArrow in fallback plan, got:\n{plan}"
+        )
+        out = sorted((r["id"], r["name"]) for r in result_df.collect())
+        assert out == sorted(rows)
+    finally:
+        spark.conf.set("spark.comet.exec.pyarrowUdf.enabled", prev_pyarrow)
+        spark.conf.set("spark.sql.execution.arrow.useLargeVarTypes", prev_large)
+
+
 def test_map_in_arrow_after_shuffle(spark, tmp_path, accelerated):
     """
     Verifies correctness when a shuffle sits between the Comet scan and the

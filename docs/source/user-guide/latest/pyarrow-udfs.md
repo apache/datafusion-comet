@@ -191,6 +191,11 @@ on the unoptimized path.
   enabled; vanilla `PythonMapInArrowExec` / `MapInPandasExec` handle the operation. The Spark 3.5
   `PythonArrowInput` trait has a different contract than 4.x and a separate implementation has
   not been written. Track 3.5 support as a future follow-on if there is user demand.
+- `spark.sql.execution.arrow.useLargeVarTypes=true` is not supported. With this conf enabled,
+  Spark widens `StringType` and `BinaryType` to Arrow's 8-byte-offset variants in the
+  destination IPC root, while Comet's source vectors always use 4-byte offsets. The buffer-copy
+  path cannot bridge that mismatch, so `EliminateRedundantTransitions` skips the rewrite and
+  vanilla Spark handles the operation.
 - The current implementation copies Comet's vector buffers into Spark's allocator one
   buffer at a time. True zero-copy via `TransferPair` is blocked on Comet's Parquet
   readers allocating from `ArrowUtils.rootAllocator` (rather than each reader
