@@ -126,6 +126,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Randn] -> CometRandn,
     classOf[Remainder] -> CometRemainder,
     classOf[Round] -> CometRound,
+    classOf[Sec] -> CometScalarFunction("sec"),
     classOf[Signum] -> CometScalarFunction("signum"),
     classOf[Sin] -> CometScalarFunction("sin"),
     classOf[Sinh] -> CometScalarFunction("sinh"),
