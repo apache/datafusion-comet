@@ -110,17 +110,5 @@ name = "comet"
 crate-type = ["cdylib", "rlib"]
 
 [[bench]]
-name = "parquet_read"
-harness = false
-
-[[bench]]
-name = "bit_util"
-harness = false
-
-[[bench]]
-name = "parquet_decode"
-harness = false
-
-[[bench]]
 name = "array_element_append"
 harness = false

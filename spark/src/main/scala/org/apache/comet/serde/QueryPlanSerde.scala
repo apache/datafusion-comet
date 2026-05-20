@@ -108,6 +108,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Divide] -> CometDivide,
     classOf[Exp] -> CometScalarFunction("exp"),
     classOf[Expm1] -> CometScalarFunction("expm1"),
+    classOf[Factorial] -> CometScalarFunction("factorial"),
     classOf[Floor] -> CometFloor,
     classOf[Greatest] -> CometScalarFunction("greatest"),
     classOf[Hex] -> CometHex,
@@ -216,6 +217,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private[comet] val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(
+      classOf[ConvertTimezone] -> CometConvertTimezone,
       classOf[DateAdd] -> CometDateAdd,
       classOf[DateDiff] -> CometDateDiff,
       classOf[DateFormatClass] -> CometDateFormat,
@@ -369,6 +371,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
         _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
       true
+    case dt if isTimeType(dt) =>
+      true
     case s: StructType if allowComplex =>
       s.fields.nonEmpty && s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
@@ -403,6 +407,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: ArrayType => 14
       case _: MapType => 15
       case _: StructType => 16
+      case dt if isTimeType(dt) => 17
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None
