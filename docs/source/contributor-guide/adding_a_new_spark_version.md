@@ -138,9 +138,7 @@ own test suites under the new profile.
 
 Promote the new Spark version from the compile-only job to the main test
 jobs in `.github/workflows/pr_build_linux.yml` (and `pr_build_macos.yml` if
-capacity allows). Use `scan_impl: "auto"` so both `native_datafusion` and
-`native_iceberg_compat` get exercised, matching how earlier versions are
-configured.
+capacity allows). Match how earlier versions are configured.
 
 ### Run the Suite Locally First
 
@@ -256,14 +254,12 @@ new-version bring-up are:
 ### CI for the Spark SQL Tests
 
 Spark SQL tests do not run from the main PR build workflows. They have
-their own dedicated workflow files:
+their own dedicated workflow file:
 
 - `.github/workflows/spark_sql_test.yml`
-- `.github/workflows/spark_sql_test_native_iceberg_compat.yml`
 
-Add the new version to the matrix in each of these files (`spark-short`,
-`spark-full`, `java`, `scan-impl`). Use the closest existing entry as a
-template.
+Add the new version to the matrix (`spark-short`, `spark-full`, `java`).
+Use the closest existing entry as a template.
 
 Before merging, run `make format`, run clippy
 (`cd native && cargo clippy --all-targets --workspace -- -D warnings`), and

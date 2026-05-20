@@ -121,6 +121,12 @@ message NativeScanCommon {
   bool use_field_id = 15;
   // True when spark.sql.parquet.fieldId.read.ignoreMissing is set.
   bool ignore_missing_field_id = 16;
+  // Whether widening type promotion is allowed (e.g. INT32 -> INT64,
+  // FLOAT -> DOUBLE). Set from Comet's per-Spark-version constant in
+  // ShimCometConf (false on 3.x, true on 4.x). When false, reading a column
+  // with a disallowed promoted type throws an error matching Spark's
+  // SchemaColumnConvertNotSupportedException behavior.
+  bool allow_type_promotion = 17;
 }
 
 message NativeScan {
@@ -355,6 +361,8 @@ message Explode {
   bool outer = 2;
   // Expressions for other columns to project alongside the exploded values
   repeated spark.spark_expression.Expr project_list = 3;
+  // Whether to emit a position column alongside the exploded values (posexplode)
+  bool position = 4;
 }
 
 message HashJoin {
