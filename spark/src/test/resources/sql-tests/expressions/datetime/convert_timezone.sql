@@ -26,7 +26,9 @@ INSERT INTO test_convert_timezone VALUES
   (timestamp_ntz'2021-12-06 08:00:00', 'UTC', 'America/Los_Angeles'),
   (timestamp_ntz'2021-07-01 12:00:00', 'America/New_York', 'Asia/Tokyo'),
   (timestamp_ntz'2023-01-15 09:30:00', 'America/Los_Angeles', 'UTC'),
-  (NULL, 'UTC', 'Asia/Tokyo')
+  (NULL, 'UTC', 'Asia/Tokyo'),
+  (timestamp_ntz'2021-12-06 08:00:00', NULL, 'Asia/Tokyo'),
+  (timestamp_ntz'2021-12-06 08:00:00', 'UTC', NULL)
 
 query
 SELECT convert_timezone('UTC', 'America/Los_Angeles', timestamp_ntz'2021-12-06 08:00:00')
@@ -36,6 +38,12 @@ SELECT convert_timezone('Asia/Tokyo', 'Europe/Berlin', timestamp_ntz'2021-12-06 
 
 query
 SELECT convert_timezone('America/Los_Angeles', 'Asia/Tokyo', timestamp_ntz'2023-01-15 20:00:00')
+
+query
+SELECT convert_timezone(CAST(NULL AS STRING), 'Asia/Tokyo', timestamp_ntz'2021-12-06 08:00:00')
+
+query
+SELECT convert_timezone('UTC', CAST(NULL AS STRING), timestamp_ntz'2021-12-06 08:00:00')
 
 query
 SELECT convert_timezone(src, tgt, ts) FROM test_convert_timezone
