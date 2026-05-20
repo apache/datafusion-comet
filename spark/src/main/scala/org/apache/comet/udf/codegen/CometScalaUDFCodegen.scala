@@ -47,10 +47,25 @@ import org.apache.comet.udf.CometUDF
  * Arg 0 is a `VarBinaryVector` scalar carrying the closure-serialized bound `Expression` bytes;
  * args 1..N are the data columns the `BoundReference`s read in ordinal order.
  *
- * The dispatcher instance is per-task (lifetime managed by `CometUdfBridge.INSTANCES`, dropped
- * via `TaskCompletionListener`); bytecode is deduped JVM-wide via `CodeGenerator.compile`'s
- * cache. Stateful expressions (`Rand`, `MonotonicallyIncreasingID`) advance inside the per-task
- * kernel across batches.
+ * Caching hierarchy, broadest scope on the left:
+ * {{{
+ *   ┌────────────────────────────┐  ┌────────────────────────────┐  ┌────────────────────────────┐
+ *   │ 1. JVM bytecode cache      │  │ 2. Per-task dispatcher     │  │ 3. Per-task kernel cache   │
+ *   │    (Spark's CodeGenerator) │  │    (CometUdfBridge.        │  │    (kernelCache field)     │
+ *   │                            │  │     INSTANCES)             │  │                            │
+ *   ├────────────────────────────┤  ├────────────────────────────┤  ├────────────────────────────┤
+ *   │ Key:   generated Java      │  │ Key:   task + UDF class    │  │ Key:   bound expression +  │
+ *   │        source              │  │                            │  │        input column shapes │
+ *   │ Value: compiled Java class │  │ Value: dispatcher object   │  │ Value: ready-to-run kernel │
+ *   │ Scope: JVM, all queries    │  │ Scope: one Spark task      │  │        with state primed   │
+ *   │        share it            │  │                            │  │ Scope: one Spark task      │
+ *   │ Owner: Spark               │  │ Owner: Comet               │  │        (lives inside 2)    │
+ *   │                            │  │                            │  │ Owner: Comet               │
+ *   └────────────────────────────┘  └────────────────────────────┘  └────────────────────────────┘
+ * }}}
+ *
+ * Stateful expressions (`Rand`, `MonotonicallyIncreasingID`) advance inside the per-task kernel
+ * across batches.
  *
  * `evaluate` runs under `this.synchronized` because DataFusion operators like `HashJoinExec`
  * pipeline build/probe via `OnceAsync` (`tokio::spawn`), so multiple Tokio worker threads can

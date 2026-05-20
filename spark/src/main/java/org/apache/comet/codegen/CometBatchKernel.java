@@ -38,16 +38,6 @@ public abstract class CometBatchKernel extends CometInternalRow {
   }
 
   /**
-   * Process one batch.
-   *
-   * @param inputs Arrow input vectors; length and concrete classes match the schema the kernel was
-   *     compiled against
-   * @param output Arrow output vector; caller allocates to the expression's {@code dataType}
-   * @param numRows number of rows in this batch
-   */
-  public abstract void process(ValueVector[] inputs, FieldVector output, int numRows);
-
-  /**
    * Run partition-dependent initialization. The generated subclass overrides this to execute
    * statements collected via {@code CodegenContext.addPartitionInitializationStatement}, e.g.
    * reseeding {@code Rand}'s {@code XORShiftRandom} from {@code seed + partitionIndex}.
@@ -58,4 +48,14 @@ public abstract class CometBatchKernel extends CometInternalRow {
    * allocates one per partition and serializes calls.
    */
   public void init(int partitionIndex) {}
+
+  /**
+   * Process one batch.
+   *
+   * @param inputs Arrow input vectors; length and concrete classes match the schema the kernel was
+   *     compiled against
+   * @param output Arrow output vector; caller allocates to the expression's {@code dataType}
+   * @param numRows number of rows in this batch
+   */
+  public abstract void process(ValueVector[] inputs, FieldVector output, int numRows);
 }
