@@ -23,6 +23,7 @@ import java.io.File
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 
 class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -65,8 +66,13 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "spark.sql.optimizer.excludedRules" ->
       "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
 
+  // Most SQL fixtures here predate Spark 4 ANSI default and expect non-ANSI semantics
+  // (silent overflow/null on bad input). Individual files can opt in via their own
+  // --CONFIG line, which appears later in the pair list and wins.
+  private val ansiDisabled = Seq(SQLConf.ANSI_ENABLED.key -> "false")
+
   private def runTestFile(relativePath: String, file: SqlTestFile): Unit = {
-    val allConfigs = file.configs ++ constantFoldingExcluded
+    val allConfigs = ansiDisabled ++ file.configs ++ constantFoldingExcluded
     withSQLConf(allConfigs: _*) {
       withTable(file.tables: _*) {
         file.records.foreach {

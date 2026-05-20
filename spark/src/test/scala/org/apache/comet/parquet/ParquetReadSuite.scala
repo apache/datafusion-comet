@@ -1757,45 +1757,48 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   }
 
   test("read basic complex types") {
-    Seq(true, false).foreach(dictionaryEnabled => {
-      withTempPath { dir =>
-        val path = new Path(dir.toURI.toString, "complex_types.parquet")
-        makeParquetFileComplexTypes(path, dictionaryEnabled, 10)
-        withParquetTable(path.toUri.toString, "complex_types") {
-          checkSparkAnswerAndOperator(sql("select * from complex_types"))
-          // First level
-          checkSparkAnswerAndOperator(sql(
-            "select optional_array, array_of_struct, optional_map, complex_map from complex_types"))
-          // second nested level
-          checkSparkAnswerAndOperator(
-            sql(
-              "select optional_array[0], " +
-                "array_of_struct[0].field1, " +
-                "array_of_struct[0].optional_nested_array, " +
-                "optional_map.key, " +
-                "optional_map.value, " +
-                "map_keys(complex_map), " +
-                "map_entries(complex_map), " +
-                "map_values(complex_map) " +
-                "from complex_types"))
-          // leaf fields
-          checkSparkAnswerAndOperator(
-            sql(
-              "select optional_array[0], " +
-                "array_of_struct[0].field1, " +
-                "array_of_struct[0].optional_nested_array[0], " +
-                "optional_map.key, " +
-                "optional_map.value, " +
-                "map_keys(complex_map)[0].key_field1, " +
-                "map_keys(complex_map)[0].key_field2, " +
-                "map_entries(complex_map)[0].key, " +
-                "map_entries(complex_map)[0].value, " +
-                "map_values(complex_map)[0].value_field1, " +
-                "map_values(complex_map)[0].value_field2 " +
-                "from complex_types"))
+    // Array indexing in the queries below would throw INVALID_ARRAY_INDEX under ANSI.
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      Seq(true, false).foreach(dictionaryEnabled => {
+        withTempPath { dir =>
+          val path = new Path(dir.toURI.toString, "complex_types.parquet")
+          makeParquetFileComplexTypes(path, dictionaryEnabled, 10)
+          withParquetTable(path.toUri.toString, "complex_types") {
+            checkSparkAnswerAndOperator(sql("select * from complex_types"))
+            // First level
+            checkSparkAnswerAndOperator(sql(
+              "select optional_array, array_of_struct, optional_map, complex_map from complex_types"))
+            // second nested level
+            checkSparkAnswerAndOperator(
+              sql(
+                "select optional_array[0], " +
+                  "array_of_struct[0].field1, " +
+                  "array_of_struct[0].optional_nested_array, " +
+                  "optional_map.key, " +
+                  "optional_map.value, " +
+                  "map_keys(complex_map), " +
+                  "map_entries(complex_map), " +
+                  "map_values(complex_map) " +
+                  "from complex_types"))
+            // leaf fields
+            checkSparkAnswerAndOperator(
+              sql(
+                "select optional_array[0], " +
+                  "array_of_struct[0].field1, " +
+                  "array_of_struct[0].optional_nested_array[0], " +
+                  "optional_map.key, " +
+                  "optional_map.value, " +
+                  "map_keys(complex_map)[0].key_field1, " +
+                  "map_keys(complex_map)[0].key_field2, " +
+                  "map_entries(complex_map)[0].key, " +
+                  "map_entries(complex_map)[0].value, " +
+                  "map_values(complex_map)[0].value_field1, " +
+                  "map_values(complex_map)[0].value_field2 " +
+                  "from complex_types"))
+          }
         }
-      }
-    })
+      })
+    }
   }
 
   test("reading ancient dates before 1582") {

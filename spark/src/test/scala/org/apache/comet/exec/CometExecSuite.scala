@@ -3594,6 +3594,8 @@ class CometExecSuite extends CometTestBase {
           "struct(id)").foreach { valueType =>
           {
             withSQLConf(
+              // cast(id as tinyint) overflows for id >= 128, which throws under ANSI
+              SQLConf.ANSI_ENABLED.key -> "false",
               SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
               CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
               CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
