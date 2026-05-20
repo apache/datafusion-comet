@@ -30,6 +30,8 @@ import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupporte
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+
 object ShimSparkErrorConverter {
   val ObjectLocationPattern: Regex = "Object at location (.+?) not found".r
 }
@@ -88,12 +90,15 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.divideByZeroError(context.headOption.orNull))
 
       case "RemainderByZero" =>
-        // SPARK 4.0 REMOVED remainderByZeroError  so we use generic arithmetic exception
-        Some(
-          new SparkException(
-            errorClass = "REMAINDER_BY_ZERO",
-            messageParameters = params.map { case (k, v) => (k, v.toString) },
-            cause = null))
+        if (isSpark41Plus) {
+          Some(
+            new SparkException(
+              errorClass = "REMAINDER_BY_ZERO",
+              messageParameters = Map("config" -> "\"spark.sql.ansi.enabled\""),
+              cause = null))
+        } else {
+          Some(QueryExecutionErrors.divideByZeroError(context.headOption.orNull))
+        }
 
       case "IntervalDividedByZero" =>
         Some(QueryExecutionErrors.intervalDividedByZeroError(context.headOption.orNull))
@@ -294,6 +299,31 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors.foundDuplicateFieldInCaseInsensitiveModeError(
             params("requiredFieldName").toString,
             params("matchedOrcFields").toString))
+
+      case "DuplicateFieldByFieldId" =>
+        // Mirror Spark's `ParquetReadSupport.matchIdField` which calls
+        // `foundDuplicateFieldInFieldIdLookupModeError`. Wrap in FAILED_READ_FILE.NO_HINT
+        // so the outer exception is a SparkException (matches what Spark's `FileScanRDD`
+        // produces for stock parquet-mr at task boundary on 4.x); keeps the underlying
+        // SparkRuntimeException as `getCause` so tests that assert a RuntimeException
+        // with "Found duplicate field(s)" still pass.
+        val dupCause = QueryExecutionErrors.foundDuplicateFieldInFieldIdLookupModeError(
+          params("requiredId").toString.toInt,
+          params("matchedFields").toString)
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(QueryExecutionErrors.cannotReadFilesError(dupCause, filePath))
+
+      case "ParquetMissingFieldIds" =>
+        // Mirror Spark's `ParquetReadSupport.inferSchema`. Same wrapping rationale as
+        // `DuplicateFieldByFieldId`: wrap the RuntimeException in FAILED_READ_FILE.NO_HINT
+        // so the outer is a SparkException.
+        val missingCause = new RuntimeException(
+          "Spark read schema expects field Ids, but Parquet file schema doesn't " +
+            "contain any field Ids. Please remove the field ids from Spark schema or " +
+            "ignore missing ids by setting " +
+            "`spark.sql.parquet.fieldId.read.ignoreMissing = true`")
+        val missingPath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(QueryExecutionErrors.cannotReadFilesError(missingCause, missingPath))
 
       case "ParquetSchemaConvert" =>
         // Mirror Spark 4.0's FileDataSourceV2: wrap the

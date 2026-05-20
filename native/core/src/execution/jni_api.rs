@@ -48,20 +48,27 @@ use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
+use datafusion_spark::function::datetime::from_utc_timestamp::SparkFromUtcTimestamp;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
 use datafusion_spark::function::datetime::next_day::SparkNextDay;
+use datafusion_spark::function::datetime::to_utc_timestamp::SparkToUtcTimestamp;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::map::map_from_entries::MapFromEntries;
 use datafusion_spark::function::map::str_to_map::SparkStrToMap;
 use datafusion_spark::function::math::expm1::SparkExpm1;
+use datafusion_spark::function::math::factorial::SparkFactorial;
 use datafusion_spark::function::math::hex::SparkHex;
+use datafusion_spark::function::math::trigonometry::SparkCsc;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
+use datafusion_spark::function::url::try_url_decode::TryUrlDecode as SparkTryUrlDecode;
+use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
+use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
 use futures::poll;
 use futures::stream::StreamExt;
 use futures::FutureExt;
@@ -303,6 +310,13 @@ struct ExecutionContext {
     pub tracing_memory_metric_name: String,
     /// Pre-computed tracing event name for executePlan calls
     pub tracing_event_name: String,
+    /// Spark `TaskContext` captured on the driving Spark task thread at `createPlan` time.
+    /// Threaded into every JVM scalar UDF the planner builds so the JNI bridge can install it
+    /// as the thread-local `TaskContext` for the Tokio worker running the UDF. `None` when no
+    /// driving Spark task is present (unit tests, direct native driver runs). The `Arc` is
+    /// cheap to clone; the underlying `Global<JObject>` releases its JNI global ref on drop
+    /// via `jni`'s `Drop` impl.
+    pub task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -329,6 +343,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
+    task_context_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize Spark configs
@@ -450,6 +465,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 String::new()
             };
 
+            // Capture the driving Spark task's TaskContext as a JNI global reference when
+            // non-null. The `Arc<Global<JObject>>` releases its global ref on drop, so cleanup
+            // is automatic when the ExecutionContext drops.
+            let task_context = if !task_context_obj.is_null() {
+                Some(Arc::new(jni_new_global_ref!(env, task_context_obj)?))
+            } else {
+                None
+            };
+
             let exec_context = Box::new(ExecutionContext {
                 id,
                 task_attempt_id,
@@ -476,6 +500,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                     "thread_{rust_thread_id}_comet_memory_reserved"
                 ),
                 tracing_event_name,
+                task_context,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -552,8 +577,10 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitGet::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFromUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkNextDay::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkToUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
@@ -567,6 +594,11 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStrToMap::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlDecode::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryUrlDecode::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCsc::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFactorial::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -697,7 +729,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let start = Instant::now();
                 let planner =
                     PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-                        .with_exec_id(exec_context_id);
+                        .with_exec_id(exec_context_id)
+                        .with_task_context(exec_context.task_context.clone());
                 let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),
