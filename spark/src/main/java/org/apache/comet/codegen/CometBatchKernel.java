@@ -44,7 +44,7 @@ public abstract class CometBatchKernel extends CometInternalRow {
    * Deterministic expressions leave this as a no-op.
    *
    * <p>The caller invokes this before the first {@code process} call of each partition. The
-   * generated subclass is not thread-safe across concurrent {@code process} calls; the dispatcher
+   * generated subclass is not thread-safe across concurrent {@code process} calls. The dispatcher
    * allocates one per partition and serializes calls.
    */
   public void init(int partitionIndex) {}
@@ -52,9 +52,9 @@ public abstract class CometBatchKernel extends CometInternalRow {
   /**
    * Process one batch.
    *
-   * @param inputs Arrow input vectors; length and concrete classes match the schema the kernel was
-   *     compiled against
-   * @param output Arrow output vector; caller allocates to the expression's {@code dataType}
+   * @param inputs Arrow input vectors. Length and concrete classes match the schema the kernel was
+   *     compiled against.
+   * @param output Arrow output vector. Caller allocates to the expression's {@code dataType}.
    * @param numRows number of rows in this batch
    */
   public abstract void process(ValueVector[] inputs, FieldVector output, int numRows);

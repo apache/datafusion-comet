@@ -28,7 +28,7 @@ import org.apache.comet.shims.CometInternalRowShim
 
 /**
  * Throwing-default `InternalRow` base for the codegen kernel. Subclasses override only the
- * getters their input shape needs; centralizing the throws absorbs forward-compat breakage when
+ * getters their input shape needs. Centralizing the throws absorbs forward-compat breakage when
  * Spark adds abstract methods.
  *
  * Two consumers: the compiled kernel (`ctx.INPUT_ROW = "row"` aliases `this`) and per-column

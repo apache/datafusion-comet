@@ -88,15 +88,12 @@ private[codegen] object CometBatchKernelCodegenInput {
   }
 
   /**
-   * Emit typed-getter overrides. Each switches on column ordinal; with the inlined constant
+   * Emit typed-getter overrides. Each switches on column ordinal. With the inlined constant
    * ordinal from `BoundReference.genCode`, JIT folds the switch to one branch.
    *
    * `decimalTypeByOrdinal` lets the decimal getter specialize per ordinal: when only a
    * `DecimalType(precision <= 18)` `BoundReference` reads the ordinal, the case skips the
    * `BigDecimal` allocation and reads the unscaled long directly.
-   *
-   * TODO(unsafe-readers): primitive `v.get(i)` performs a bounds check that is redundant given `i
-   * in [0, numRows)`.
    */
   def emitTypedGetters(
       inputSchema: Seq[ArrowColumnSpec],
@@ -679,8 +676,8 @@ private[codegen] object CometBatchKernelCodegenInput {
 
   /**
    * Emit one `InputStruct_${path}` nested class. Constructor takes `rowIdx` and stores it in a
-   * `final` field. Scalar getters switch on field ordinal; complex getters allocate fresh inner
-   * views (offsets computed for array/map children; rowIdx passed through for struct children).
+   * `final` field. Scalar getters switch on field ordinal. Complex getters allocate fresh inner
+   * views (offsets computed for array/map children, rowIdx passed through for struct children).
    */
   private def emitStructClass(path: String, spec: StructColumnSpec): String = {
     val baseClassName = classOf[CometInternalRow].getName

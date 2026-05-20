@@ -62,7 +62,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val attrs = expr.collect { case a: AttributeReference => a }.distinct
     val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
 
-    // Gate at plan time; surface the reason via withInfo rather than crashing Janino at execute.
+    // Gate at plan time. Surface the reason via withInfo rather than crashing Janino at execute.
     CometBatchKernelCodegen.canHandle(boundExpr) match {
       case Some(reason) =>
         withInfo(expr, reason)

@@ -69,7 +69,7 @@ import org.apache.comet.udf.CometUDF
  *
  * `evaluate` runs under `this.synchronized` because DataFusion operators like `HashJoinExec`
  * pipeline build/probe via `OnceAsync` (`tokio::spawn`), so multiple Tokio worker threads can
- * call back into one task's dispatcher; the kernel's per-batch instance fields would race
+ * call back into one task's dispatcher. The kernel's per-batch instance fields would race
  * otherwise.
  *
  * TODO(udf-codegen-pool): if intra-task UDF parallelism shows up as a bottleneck, replace the
@@ -98,7 +98,7 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
       "CometScalaUDFCodegen requires non-null serialized expression bytes at arg 0")
     val bytes = exprVec.get(0)
 
-    // TODO(dict-encoded): kernels assume materialized inputs; dict-encoded vectors would fail the
+    // TODO(dict-encoded): kernels assume materialized inputs. Dict-encoded vectors would fail the
     // cast in `specFor` below. Fix is to materialize at the dispatcher (via
     // `CDataDictionaryProvider`) or widen `emitTypedGetters` with a dict-index + lookup path.
 
@@ -193,7 +193,7 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
    */
   private def specFor(v: ValueVector): ArrowColumnSpec = v match {
     case map: MapVector =>
-      // MapVector extends ListVector; match it first.
+      // MapVector extends ListVector, match it first.
       val struct = map.getDataVector.asInstanceOf[StructVector]
       val keyVec = struct.getChildByOrdinal(0).asInstanceOf[ValueVector]
       val valueVec = struct.getChildByOrdinal(1).asInstanceOf[ValueVector]
@@ -253,7 +253,7 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
 object CometScalaUDFCodegen {
 
   // JVM-wide counters across all per-task instances. Compile work is deduped JVM-wide via
-  // `CodeGenerator.compile`'s source cache; these track this dispatcher's per-task cache activity.
+  // `CodeGenerator.compile`'s source cache. These track this dispatcher's per-task cache activity.
   private val compileCount = new AtomicLong(0)
   private val cacheHitCount = new AtomicLong(0)
 

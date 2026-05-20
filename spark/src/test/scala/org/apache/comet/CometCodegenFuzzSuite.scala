@@ -202,7 +202,7 @@ class CometCodegenFuzzSuite
 
   /**
    * Element-level fuzz for nested array reads: `ArrayMax.doGenCode` walks every element of every
-   * row, calling the kernel's nested element getter — the path the unsafe-getter optimization
+   * row, calling the kernel's nested element getter, the path the unsafe-getter optimization
    * touches and which the cardinality probe deliberately skips.
    */
   test("array_max element fuzz: every Array<primitive> column") {
@@ -283,7 +283,7 @@ class CometCodegenFuzzSuite
 
   /**
    * Element-level fuzz for `Array<Struct<...>>`. `array_distinct` is a non-HOF unary expression
-   * that hashes each element to dedupe; struct hashing is field-wise, so the kernel emits element
+   * that hashes each element to dedupe. Struct hashing is field-wise, so the kernel emits element
    * reads on each struct's fields. `cardinality` consumes the result without materialization.
    * Asserts the optimizer keeps `ArrayDistinct` so the coverage isn't vacuously folded.
    */
@@ -316,8 +316,8 @@ class CometCodegenFuzzSuite
   }
 
   /**
-   * Top-level Array / Map → cardinality probe. Struct → drill into each scalar child via
-   * `GetStructField`; nested Array / Map sub-fields also get the cardinality probe (depth bound:
+   * Top-level Array / Map produces a cardinality probe. Struct drills into each scalar child via
+   * `GetStructField`. Nested Array / Map sub-fields also get the cardinality probe (depth bound:
    * deeper struct-of-struct nesting is skipped to keep the sweep finite).
    */
   private def probeComplexColumn(field: StructField, viewName: String): Unit = {
@@ -355,7 +355,7 @@ class CometCodegenFuzzSuite
     val intDigits = precision - scale
     // `BigInt.apply(bits, rng)` samples uniformly on `[0, 2^bits - 1]`; bound to the decimal's
     // integer-part range (10^intDigits - 1) so the result fits the schema. `BigInteger.bitLength`
-    // would overshoot slightly; min with the exact max is cheap insurance.
+    // would overshoot slightly. Min with the exact max is cheap insurance.
     val intMax = BigInt(10).pow(intDigits) - 1
     val bits = math.max(intMax.bitLength, 1)
     (0 until RowCount).map { _ =>

@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, ResolvedCollation}
 
 /**
  * Spark 4.x replaced the `NullIntolerant` marker trait with a boolean method on `Expression` and
- * added a `stateful` boolean. Neither exists as a trait in 4.x; this shim routes the checks
+ * added a `stateful` boolean. Neither exists as a trait in 4.x. This shim routes the checks
  * through the method form.
  */
 trait CometExprTraitShim {

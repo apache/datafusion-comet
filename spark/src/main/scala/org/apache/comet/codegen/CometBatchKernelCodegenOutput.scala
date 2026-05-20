@@ -73,7 +73,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
    * Complex top-level types route through a [[RenamedListVector]] / [[RenamedMapVector]] /
    * [[RenamedStructVector]] (see those for the runtime-vs-export naming gap).
    *
-   * `estimatedBytes` pre-sizes the data buffer for variable-length scalar outputs; ignored for
+   * `estimatedBytes` pre-sizes the data buffer for variable-length scalar outputs. Ignored for
    * other root types, and not propagated into nested var-width children (their `allocateNew` runs
    * through the parent's `allocateNew`, which resets child buffers).
    *
@@ -184,7 +184,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
    * typed child-vector casts and whose `perRow` writes `source` into `targetVec` at `idx`.
    * `targetVec` is assumed pre-cast to the right Arrow class (root prelude or a parent's setup).
    *
-   * Scalars emit `perRow` only; complex types emit both. Inner setup bubbles up so deep child
+   * Scalars emit `perRow` only. Complex types emit both. Inner setup bubbles up so deep child
    * casts land at the batch prelude.
    */
   private def emitWrite(
@@ -239,7 +239,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
       // write each into the `ListVector`'s child, bracket with `startNewValue`/`endValue`. The
       // element write recurses through `emitWrite` on the child vector so any supported scalar
       // becomes a valid element. Nested complex types compose. `targetVec` is a `ListVector` at
-      // the call site; only its data vector needs casting (in setup).
+      // the call site, and only its data vector needs casting (in setup).
       //
       // NullableElementElision: when `containsNull == false` drop the `isNullAt` guard at
       // source level rather than relying on JIT folding.
@@ -274,7 +274,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
       OutputEmit(setup, perRow)
     case st: StructType =>
       // Spark's `doGenCode` for StructType produces an `InternalRow`. Typed child-vector casts
-      // hoist to setup; the per-row body references the hoisted names.
+      // hoist to setup, and the per-row body references the hoisted names.
       //
       // For non-nullable fields, drop the `row.isNullAt($fi)` guard at source level so HotSpot
       // emits a straight write path per field rather than a branch.
@@ -311,7 +311,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
       // entries struct and the key/value children hoist to setup.
       //
       // Per-row: read keyArray/valueArray, open via `startNewValue(idx)`, write each pair into
-      // the entries struct (key always non-null per Spark/Arrow invariant; value guarded on
+      // the entries struct (key always non-null per Spark/Arrow invariant, value guarded on
       // `valueContainsNull`), close via `endValue(idx, n)`.
       val entriesVar = ctx.freshName("outMapEntries")
       val keyVar = ctx.freshName("outMapKey")

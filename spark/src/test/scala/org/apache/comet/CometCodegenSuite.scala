@@ -34,7 +34,7 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * isolation, the `maxFields` plan-time gate, and regressions pinned from fuzz.
  *
  * Tests exercising fallback paths (config disabled, `maxFields` exceeded) use `checkSparkAnswer`
- * rather than `checkSparkAnswerAndOperator` because ScalaUDF has no Comet-native path; under
+ * rather than `checkSparkAnswerAndOperator` because ScalaUDF has no Comet-native path. Under
  * fallback the project runs on the JVM Spark path.
  */
 class CometCodegenSuite
@@ -108,7 +108,7 @@ class CometCodegenSuite
     // counting nested input fields plus the output field and refusing once the total exceeds the
     // configured cap. Comet has no mid-execution fallback, so the gate must fire at plan time
     // (in the serde) rather than letting an oversized kernel reach Janino. With 5 input
-    // BoundReferences and a 1-field output we have 6 fields total; setting `maxFields=3` ensures
+    // BoundReferences and a 1-field output we have 6 fields total. Setting `maxFields=3` ensures
     // the gate fires here regardless of test ordering or future schema additions.
     spark.udf.register(
       "sumFiveInts",
@@ -160,8 +160,8 @@ class CometCodegenSuite
     // Wrap `monotonically_increasing_id()` as the argument of a ScalaUDF so the whole tree
     // (including the stateful MonotonicallyIncreasingID child) routes through the dispatcher.
     // Per-partition kernel caching means the id counter advances across batches within a
-    // partition; without it, every batch would restart at 0 and the UDF output would disagree
-    // with Spark's. The UDF body is a trivial identity; we're testing state correctness of the
+    // partition. Without it, every batch would restart at 0 and the UDF output would disagree
+    // with Spark's. The UDF body is a trivial identity. We're testing state correctness of the
     // Nondeterministic child across batches, not the UDF logic.
     spark.udf.register("idPassthrough", (id: Long) => id)
     val rows = (0 until 4096).map(i => s"row_$i")
@@ -233,7 +233,7 @@ class CometCodegenSuite
   test("Nondeterministic state persists across two ScalaUDFs in one task") {
     // The dispatcher is one instance per task (keyed by `(taskAttemptId, udfClassName)` in
     // CometUdfBridge), so a plan with two distinct ScalaUDFs shares one CometScalaUDFCodegen.
-    // Two distinct closure-serialized expressions hit two cache entries; per batch the
+    // Two distinct closure-serialized expressions hit two cache entries. Per batch the
     // dispatcher is invoked once for each. Each cache entry must stash its own kernel instance,
     // otherwise the two expressions would fight for a shared kernel slot and stateful state
     // (MII counter) would reset on every flip.
@@ -327,7 +327,7 @@ class CometCodegenSuite
   }
 
   test("ScalaUDF as a child of a native Spark expression") {
-    // The ScalaUDF routes through the dispatcher as a sub-expression; the surrounding `length`
+    // The ScalaUDF routes through the dispatcher as a sub-expression. The surrounding `length`
     // runs through Comet's native scalar function path. This exercises the cross-boundary
     // composition where a dispatcher-compiled kernel returns a UTF8String that a native Comet
     // expression then consumes.
@@ -343,7 +343,7 @@ class CometCodegenSuite
     // Two user UDFs stacked, both operating on String. The dispatcher binds the whole tree and
     // Spark's codegen emits two `ctx.addReferenceObj` calls inside one generated method. Races
     // on the `ExpressionEncoder` serializers in `references` would show up here since each UDF
-    // contributes its own stateful serializer; the `freshReferences` closure in `CompiledKernel`
+    // contributes its own stateful serializer. The `freshReferences` closure in `CompiledKernel`
     // is what keeps this correct across partitions.
     spark.udf.register("inner", (s: String) => if (s == null) null else s.toUpperCase)
     spark.udf.register("outer", (s: String) => if (s == null) null else s"<$s>")
@@ -537,7 +537,7 @@ class CometCodegenSuite
   }
 
   test("ScalaUDF returning a different type than its input") {
-    // String -> Int output transition. Identity-loop above keeps input == output; this asserts
+    // String -> Int output transition. Identity-loop above keeps input == output. This asserts
     // the writer can switch types per the UDF's declared return.
     spark.udf.register("codePoint", (s: String) => if (s == null) 0 else s.codePointAt(0))
     withSubjects("abc", "A", null, "!") {
@@ -592,7 +592,7 @@ class CometCodegenSuite
 
   test("ScalaUDF returning ArrayType(IntegerType)") {
     // Exercises ArrayType output with a primitive element. emitWrite's ArrayType case
-    // recurses into the IntegerType case for the inner write; no byte[] allocation involved.
+    // recurses into the IntegerType case for the inner write. No byte[] allocation involved.
     spark.udf.register(
       "asLengths",
       (s: String) => if (s == null) null else s.split(",").map(_.length).toSeq)
@@ -715,7 +715,7 @@ class CometCodegenSuite
     // `XORShiftRandom(seed + partitionIndex)` per partition, so different partitions produce
     // different sequences for the same seed. Matching Spark across partitions requires the
     // kernel to see the real partition index, which the dispatcher derives from
-    // `TaskContext.get().partitionId()` — live on this path thanks to the bridge-level
+    // `TaskContext.get().partitionId()`, live on this path thanks to the bridge-level
     // TaskContext propagation. Composing with a ScalaUDF (identity on Double here) forces the
     // tree through codegen dispatch so the Rand evaluation runs inside our kernel's init
     // rather than via Spark's normal codegen.
@@ -848,7 +848,7 @@ class CometCodegenSuite
     // `ScalaUDF.scalaConverter` applies Spark's `ExpressionEncoder.Deserializer` on every row
     // to materialize the case-class instance. The generated deserializer has a
     // `newInstance(NameAgePair)` step that throws `EXPRESSION_DECODING_FAILED` on a null input,
-    // independent of the dispatcher. Case-class UDF tests omit null top-level rows; other
+    // independent of the dispatcher. Case-class UDF tests omit null top-level rows. Other
     // tests with plain `Seq` / `Map` args can include nulls because the deserializer hands null
     // to the UDF body which handles it.
     spark.udf.register("fmtPair", (r: NameAgePair) => s"${r.name}:${r.age}")
@@ -953,7 +953,7 @@ class CometCodegenSuite
   test("ScalaUDF round-trips Struct<name, items: Array<Int>>") {
     // Struct with a complex field on both sides: input reads go through InputStruct_col0 +
     // InputArray_col0_f1, output writes through StructVector + ListVector.
-    // Null top-level rows omitted - case-class arg; see the note on `fmtPair` above.
+    // Null top-level rows omitted - case-class arg. See the note on `fmtPair` above.
     spark.udf.register(
       "growItems",
       (r: NameItems) =>
@@ -994,7 +994,7 @@ class CometCodegenSuite
 
   test("ScalaUDF round-trips Map<String, Struct<x: Int, y: String>>") {
     // Struct value inside a map, both sides. Null top-level rows omitted - the map value is a
-    // case class; see the note on `fmtPair` above.
+    // case class. See the note on `fmtPair` above.
     spark.udf.register(
       "tagValues",
       (m: Map[String, XyPair]) =>
@@ -1038,7 +1038,7 @@ class CometCodegenSuite
     // Fuzz signal: array_max(flatten(arr)) returns empty byte arrays where Spark returns the
     // actual max binary, with the empties sorting to the front of the output. Pattern points at
     // cross-batch state pollution. Generate 100 rows of varied outer/inner shape, longer
-    // binaries, mixed nulls; force multiple batches with a small batch size.
+    // binaries, mixed nulls. Force multiple batches with a small batch size.
     spark.udf.register("idBinFlat", (b: Array[Byte]) => b)
     withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "16") {
       withTable("t") {
@@ -1078,7 +1078,7 @@ class CometCodegenSuite
   /**
    * Regressions for nested reference-typed getter null handling. Spark's
    * `CodeGenerator.setArrayElement` only emits an `isNullAt` check before `array.update(i,
-   * getX(j))` for Java primitives; for reference-typed elements (Binary, String, Decimal, Struct,
+   * getX(j))` for Java primitives. For reference-typed elements (Binary, String, Decimal, Struct,
    * Array, Map) it relies on the source's `getX` to return `null` itself, matching
    * `ColumnarArray.getBinary`. Without that contract, inner nulls become empty bytes / empty
    * strings / garbage decimals / non-null shells in the flattened output.

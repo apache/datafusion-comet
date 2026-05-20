@@ -29,13 +29,13 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  * Spark's HOFs (`ArrayTransform`, `ArrayFilter`, `ArrayAggregate`, `ArrayExists`, `ZipWith`,
  * `MapFilter`, etc.) all extend `CodegenFallback`. The dispatcher's `canHandle` admits them.
  * `CodegenFallback.doGenCode` emits a single `((Expression) references[N]).eval(row)` call site
- * per HOF; the kernel dispatches to `Expression.eval(InternalRow)`, which iterates the array,
+ * per HOF. The kernel dispatches to `Expression.eval(InternalRow)`, which iterates the array,
  * mutates `NamedLambdaVariable.value`'s `AtomicReference` per element, and recursively evaluates
  * the lambda body. Lambda-body leaf reads resolve through the kernel's typed Arrow getters since
  * the kernel is an `InternalRow`.
  *
  * Cost model: per-row interpreted-eval inside the HOF subtree. Surrounding native operators stay
- * native; surrounding non-HOF expressions stay codegen.
+ * native. Surrounding non-HOF expressions stay codegen.
  *
  * Each Spark task gets its own `boundExpr` Java object. The dispatcher's compile cache lives on
  * the per-task instance, not the companion, so concurrent partitions cannot race on a shared
@@ -60,7 +60,7 @@ class CometCodegenHOFSuite
 
   test("ArrayTransform inside identity ScalaUDF over Array<Int>") {
     // Regresses the simplest HOF shape: `idArr(transform(a, x -> x + 1))`. Tree contains one
-    // CodegenFallback HOF; the kernel splices its interpreted-eval call site into the per-row
+    // CodegenFallback HOF. The kernel splices its interpreted-eval call site into the per-row
     // body and the result ArrayData feeds the ListVector output writer. Null and empty rows
     // exercise the HOF's null-on-null-arg path and the empty-iteration path.
     spark.udf.register("idArr", (arr: Seq[Int]) => arr)
@@ -73,7 +73,7 @@ class CometCodegenHOFSuite
 
   test("array_max over ArrayTransform inside identity ScalaUDF") {
     // Regresses composed CodegenFallback subtrees: array_max consumes the ArrayData transform
-    // produces. Both run interpreted; the kernel splices both eval call sites into the same
+    // produces. Both run interpreted. The kernel splices both eval call sites into the same
     // per-row body. Empty/null rows exercise array_max's null-on-empty path.
     spark.udf.register("idIntBoxed", (i: java.lang.Integer) => i)
     withArrayIntTable("(array(1, 2, 3)), (array(-5, 5)), (null), (array(0))") {

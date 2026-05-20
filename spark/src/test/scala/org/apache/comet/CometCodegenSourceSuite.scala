@@ -38,8 +38,8 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * assert on the emitted Java directly, without invoking Janino. The goal is to catch regressions
  * in the optimizations we claim the dispatcher applies:
  *
- *   - `NullIntolerant` short-circuit wraps `ev.code` in `if (any-input-null) { setNull; } else {
- *     ev.code; write; }`.
+ *   - `NullIntolerant` short-circuit wraps `ev.code` in `if (any-input-null) { setNull } else {
+ *     ev.code; write }`.
  *   - Non-nullable column declaration emits `return false;` from `isNullAt(ord)`, and a
  *     `BoundReference.nullable=false` (Catalyst sets this from schema-declared nullability) makes
  *     Spark's `doGenCode` skip emitting its own `row.isNullAt(ord)` probe entirely.
@@ -72,7 +72,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   test("non-nullable BoundReference elides Spark's own isNullAt probe in the expression body") {
     // When the BoundReference carries `nullable=false` (Catalyst sets this from schema-declared
     // nullability), Spark's `doGenCode` skips the `row.isNullAt(ord)` branch at source level.
-    // The dispatcher does not derive runtime nullability anymore; the BoundReference's source
+    // The dispatcher does not derive runtime nullability anymore. The BoundReference's source
     // flag is the sole signal, and schema-non-null columns get full elision for free.
     val expr = Length(BoundReference(0, StringType, nullable = false))
     val src = gen(expr, nonNullableString)
@@ -124,7 +124,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("NullIntolerant short-circuit skipped when a non-NullIntolerant node breaks the chain") {
-    // Concat is not NullIntolerant; null in some args doesn't necessarily produce a null
+    // Concat is not NullIntolerant. Null in some args doesn't necessarily produce a null
     // result. The short-circuit heuristic would be incorrect here (short-circuiting on c0 or c1
     // being null would skip evaluation, but Concat's null handling differs). Expect the
     // default path without the `if (colX.isNull(i) || colY.isNull(i))` wrapper, letting Spark's
@@ -155,7 +155,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   test("canHandle accepts Nondeterministic expressions (per-partition kernel handles state)") {
     // Each cache entry holds one kernel instance with `init(partitionIndex)` called once, so
     // Rand / Uuid / etc. produce the expected per-partition sequences across batches. The
-    // previous canHandle rejection was conservative; with that caching in place, accepting
+    // previous canHandle rejection was conservative. With that caching in place, accepting
     // Nondeterministic is correct.
     val expr = FakeNondeterministic()
     val reason = CometBatchKernelCodegen.canHandle(expr)
@@ -178,7 +178,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     // versions (Spark 3.5 emits `UTF8String.toUpperCase()`, Spark 4 emits
     // `CollationSupport.Upper.exec*` via collation-aware codegen), so we avoid it as a marker.
     // When CSE fires, `Length(Upper(c0))` compiles into one `subExpr_*` helper whose body calls
-    // `numChars()` once; both uses in the `Add` read the cached result from mutable state.
+    // `numChars()` once. Both uses in the `Add` read the cached result from mutable state.
     // Without CSE, each Add child would emit its own `numChars()` call.
     val upperOrd0 = Upper(BoundReference(0, StringType, nullable = true))
     val lenUpper = Length(upperOrd0)
@@ -204,7 +204,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     // against Spark ever relaxing that check and against us accidentally applying CSE outside
     // the `generateExpressions` path (which respects the filter). `Rand.doGenCode` emits one
     // `$rng.nextDouble()` call per evaluation, so two Rands produce two `.nextDouble()` calls
-    // in the body; one-call output would indicate incorrect CSE.
+    // in the body. One-call output would indicate incorrect CSE.
     val expr = Add(Rand(Literal(0L, LongType)), Rand(Literal(0L, LongType)))
     val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq.empty)
     val occurrences = "\\.nextDouble\\(\\)".r.findAllIn(result.body).size
@@ -336,7 +336,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     // straight to the setSafe/set call. This test uses a non-NullIntolerant-short-circuit
     // shape by wrapping Length in Coalesce, so we exercise the default branch of defaultBody
     // rather than the NullIntolerant one. Actually, Length is NullIntolerant, so the NI branch
-    // fires; use an expression that's non-nullable but whose tree is not fully NullIntolerant
+    // fires. Use an expression that's non-nullable but whose tree is not fully NullIntolerant
     // to hit the default branch. `Coalesce(Seq(Length(col_non_null), Literal(0)))` has
     // nullable=false (Coalesce is non-null when any child is) and Coalesce itself is not
     // NullIntolerant, so the default branch runs. Assert `setNull` is absent.
@@ -406,7 +406,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     //   - setIndexDefined on each struct entry
     //   - keyArray() / valueArray() retrieval from the MapData source
     // Non-null literals here mean `valueContainsNull == false`, so the value-side null guard is
-    // elided; the existence and elision of the `isNullAt` guard are exercised by the dedicated
+    // elided. The existence and elision of the `isNullAt` guard are exercised by the dedicated
     // [[NullableElementElision]] tests below.
     val expr = CreateMap(
       Seq(
@@ -440,7 +440,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("ArrayType output keeps isNullAt on the element loop when containsNull is true") {
-    // CreateArray with at least one nullable child produces containsNull=true; the element
+    // CreateArray with at least one nullable child produces containsNull=true. The element
     // null-guard must survive.
     val expr =
       CreateArray(Seq(BoundReference(0, IntegerType, nullable = true), Literal(2, IntegerType)))
@@ -454,7 +454,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("MapType output keeps value isNullAt when valueContainsNull is true") {
-    // ElementAt with safe-index selection produces a nullable Int; wrapping the value column in
+    // ElementAt with safe-index selection produces a nullable Int. Wrapping the value column in
     // a CreateMap with that nullable Int makes valueContainsNull=true. The value-side null-guard
     // must survive.
     val expr =
@@ -515,7 +515,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       src.contains("public int getInt(int i)"),
       s"expected primitive int getter on nested array class; got:\n$src")
-    // Scalar-element fast path reads directly off the typed child vector; no BigDecimal /
+    // Scalar-element fast path reads directly off the typed child vector. No BigDecimal /
     // fromAddress scaffolding should leak in.
     assert(
       !src.contains(".fromAddress("),
