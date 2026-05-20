@@ -41,3 +41,13 @@ SELECT parse_url('https://user:pass@host:8080/p?k=v#ref', 'REF')
 -- NULL inputs still return NULL in ANSI mode
 query
 SELECT parse_url(NULL, 'HOST')
+
+-- invalid URL throws in ANSI mode (native returns NULL instead of throwing)
+query ignore(known divergence: native parse_url does not throw INVALID_URL for malformed URLs)
+SELECT parse_url('not a url at all', 'HOST')
+
+query ignore(known divergence: native parse_url does not throw INVALID_URL for malformed URLs)
+SELECT parse_url('://missing-scheme', 'HOST')
+
+query ignore(known divergence: native parse_url does not throw INVALID_URL for malformed URLs)
+SELECT parse_url('', 'HOST')
