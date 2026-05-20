@@ -101,6 +101,7 @@ of expressions that be disabled.
 
 | Expression       | SQL                          |
 | ---------------- | ---------------------------- |
+| AddMonths        | `add_months`                 |
 | ConvertTimezone  | `convert_timezone`           |
 | CurrentTimeZone  | `current_timezone`           |
 | DateAdd          | `date_add`                   |
@@ -124,6 +125,9 @@ of expressions that be disabled.
 | TruncDate        | `trunc`                      |
 | TruncTimestamp   | `date_trunc`                 |
 | UnixDate         | `unix_date`                  |
+| UnixMicros       | `unix_micros`                |
+| UnixMillis       | `unix_millis`                |
+| UnixSeconds      | `unix_seconds`               |
 | UnixTimestamp    | `unix_timestamp`             |
 | Year             | `year`                       |
 | Month            | `month`                      |
@@ -206,16 +210,17 @@ of expressions that be disabled.
 
 ## Bitwise Expressions
 
-| Expression   | SQL  |
-| ------------ | ---- |
-| BitwiseAnd   | `&`  |
-| BitwiseCount |      |
-| BitwiseGet   |      |
-| BitwiseOr    | `\|` |
-| BitwiseNot   | `~`  |
-| BitwiseXor   | `^`  |
-| ShiftLeft    | `<<` |
-| ShiftRight   | `>>` |
+| Expression         | SQL   |
+| ------------------ | ----- |
+| BitwiseAnd         | `&`   |
+| BitwiseCount       |       |
+| BitwiseGet         |       |
+| BitwiseOr          | `\|`  |
+| BitwiseNot         | `~`   |
+| BitwiseXor         | `^`   |
+| ShiftLeft          | `<<`  |
+| ShiftRight         | `>>`  |
+| ShiftRightUnsigned | `>>>` |
 
 ## Aggregate Expressions
 
@@ -286,6 +291,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | Flatten        |
 | GetArrayItem   |
 | Size           |
+| Slice          |
 | SortArray      |
 
 ## Map Expressions
