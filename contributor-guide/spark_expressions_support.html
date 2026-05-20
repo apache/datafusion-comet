@@ -909,7 +909,13 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> e</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> exp</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> expm1</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> factorial</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> factorial</p>
+<ul>
+<li><p>3.4.3 (audited 2026-05-15): identical to v3.5.8.</p></li>
+<li><p>3.5.8 (audited 2026-05-15): canonical reference; <code class="docutils literal notranslate"><span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ImplicitCastInputTypes</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span></code>. Returns NULL for NULL input or values outside <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">20]</span></code>.</p></li>
+<li><p>4.0.1 (audited 2026-05-15): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> trait replaced by <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> method override; behavior unchanged.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> floor</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> greatest</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> hex</p></li>

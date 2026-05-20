@@ -257,6 +257,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.EqualTo.enabled` | Enable Comet acceleration for `EqualTo` | true |
 | `spark.comet.expression.Exp.enabled` | Enable Comet acceleration for `Exp` | true |
 | `spark.comet.expression.Expm1.enabled` | Enable Comet acceleration for `Expm1` | true |
+| `spark.comet.expression.Factorial.enabled` | Enable Comet acceleration for `Factorial` | true |
 | `spark.comet.expression.Flatten.enabled` | Enable Comet acceleration for `Flatten` | true |
 | `spark.comet.expression.Floor.enabled` | Enable Comet acceleration for `Floor` | true |
 | `spark.comet.expression.FromUTCTimestamp.enabled` | Enable Comet acceleration for `FromUTCTimestamp` | true |
