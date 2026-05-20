@@ -924,7 +924,9 @@ case class CometExecRule(session: SparkSession)
     case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
     case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)
     case e: ShuffleExchangeExec => findPartialAggInPlan(e.child)
-    case _ => None
+    case other =>
+      logDebug(s"findPartialAggInPlan: stopping at ${other.nodeName}; not a known passthrough")
+      None
   }
 
 }

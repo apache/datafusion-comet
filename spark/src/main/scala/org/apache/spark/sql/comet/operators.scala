@@ -1410,13 +1410,6 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
-  private def containsMapType(dt: DataType): Boolean = dt match {
-    case _: MapType => true
-    case StructType(fields) => fields.exists(f => containsMapType(f.dataType))
-    case ArrayType(elementType, _) => containsMapType(elementType)
-    case _ => false
-  }
-
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -1434,11 +1427,16 @@ trait CometBaseAggregate {
     val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
 
     if (multiMode) {
+      withInfo(aggregate, s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
       return None
     }
 
     if (sparkFinalMode &&
       !QueryPlanSerde.allAggsSupportMixedExecution(aggregate.aggregateExpressions)) {
+      withInfo(
+        aggregate,
+        "Spark Final aggregate without Comet Partial requires compatible " +
+          "intermediate buffer formats")
       return None
     }
 
@@ -1461,7 +1459,7 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (groupingExpressions.exists(expr => containsMapType(expr.dataType))) {
+    if (groupingExpressions.exists(expr => QueryPlanSerde.containsMapType(expr.dataType))) {
       withInfo(aggregate, "Grouping on map-containing types is not supported")
       return None
     }
