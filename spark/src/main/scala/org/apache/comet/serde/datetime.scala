@@ -426,7 +426,7 @@ object CometConvertTimezone extends CometExpressionSerde[ConvertTimezone] {
     val ts = exprToProtoInternal(expr.sourceTs, inputs, binding)
     val toUtc = scalarFunctionExprToProto("to_utc_timestamp", ts, srcTz)
     val fromUtc = scalarFunctionExprToProto("from_utc_timestamp", toUtc, tgtTz)
-    optExprWitahInfo(fromUtc, expr, expr.children: _*)
+    optExprWithInfo(fromUtc, expr, expr.children: _*)
   }
 }
 
