@@ -44,6 +44,12 @@ If you need to process dates far in the future with accurate timezone handling, 
 
 <!--BEGIN:EXPR_COMPAT[datetime]-->
 
+## ConvertTimezone
+
+The following incompatibilities cause `ConvertTimezone` to fall back to Spark by default. Set `spark.comet.expression.ConvertTimezone.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like `PST`; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.
+
 ## DateFormatClass
 
 The following incompatibilities cause `DateFormatClass` to fall back to Spark by default. Set `spark.comet.expression.DateFormatClass.allowIncompatible=true` to enable Comet acceleration despite these differences.

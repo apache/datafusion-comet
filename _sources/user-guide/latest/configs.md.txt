@@ -234,6 +234,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Concat.enabled` | Enable Comet acceleration for `Concat` | true |
 | `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
 | `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
+| `spark.comet.expression.ConvertTimezone.enabled` | Enable Comet acceleration for `ConvertTimezone` | true |
 | `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
 | `spark.comet.expression.Cosh.enabled` | Enable Comet acceleration for `Cosh` | true |
 | `spark.comet.expression.Cot.enabled` | Enable Comet acceleration for `Cot` | true |
