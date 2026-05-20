@@ -85,7 +85,13 @@ case class CometBroadcastExchangeExec(
       "number of coalesced rows for broadcast"))
 
   override def doCanonicalize(): SparkPlan = {
-    CometBroadcastExchangeExec(null, null, mode, child.canonicalized)
+    // originalPlan is the source-of-truth for the projection applied during broadcast
+    // (e.g. count+1 vs count-1 in correlated IN with count-bug decorrelation). Two
+    // CometBroadcastExchanges with identical Comet children but different originalPlans
+    // produce different broadcast values, so their canonical forms must differ to
+    // prevent AQE's ReusedExchange from incorrectly merging them. See issue #4242.
+    val canonicalOriginal = if (originalPlan != null) originalPlan.canonicalized else null
+    CometBroadcastExchangeExec(canonicalOriginal, null, mode, child.canonicalized)
   }
 
   override def runtimeStatistics: Statistics = {

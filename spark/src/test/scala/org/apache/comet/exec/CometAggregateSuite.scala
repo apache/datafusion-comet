@@ -2067,6 +2067,62 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/4242
+  // AQE's PropagateEmptyRelationAfterAQE rule pattern-matches BaseAggregateExec only, not
+  // CometHashAggregateExec. With mixed Spark-Partial / Comet-Final COUNT, the Final escapes
+  // the rule and propagation of empty intermediate results stops, changing downstream results
+  // in some queries.
+  test("issue #4242: AQE PropagateEmptyRelation with mixed Spark Partial / Comet Final COUNT") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withTempDir { dir =>
+        spark.range(10).toDF("a").write.parquet(dir.getCanonicalPath + "/t1")
+        spark.range(10).toDF("b").write.parquet(dir.getCanonicalPath + "/t2")
+        withTempView("t1", "t2") {
+          spark.read.parquet(dir.getCanonicalPath + "/t1").createOrReplaceTempView("t1")
+          spark.read.parquet(dir.getCanonicalPath + "/t2").createOrReplaceTempView("t2")
+
+          // Empty left side joined with empty right side then grouped count.
+          val q1 =
+            """SELECT inner_a, COUNT(*) FROM (
+              |  SELECT t1.a AS inner_a FROM t1 LEFT OUTER JOIN t2 ON t1.a = t2.b
+              |  WHERE t1.a > 100 AND t2.b > 100
+              |) GROUP BY inner_a""".stripMargin
+          checkSparkAnswer(q1)
+
+          // Global ungrouped count over an empty input should produce one row with COUNT = 0.
+          val q2 = "SELECT COUNT(*) FROM t1 WHERE a > 100"
+          checkSparkAnswer(q2)
+        }
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/4242
+  // Mirrors the OR pattern in Spark's in-count-bug.sql. Decorrelating correlated IN with
+  // COUNT inside an OR is known to drop a row when partial/final aggregate stages are
+  // split between Spark and Comet.
+  test("issue #4242: count-bug decorrelation with correlated IN OR pattern") {
+    withTempView("t1", "t2") {
+      sql("CREATE TEMPORARY VIEW t1(c1, c2) AS VALUES (0, 1), (1, 2)")
+      sql("CREATE TEMPORARY VIEW t2(c1, c2) AS VALUES (0, 2), (0, 3)")
+
+      val orQuery =
+        """SELECT * FROM t1 WHERE
+          | c1 IN (SELECT count(*) + 1 FROM t2 WHERE t2.c1 = t1.c1) OR
+          | c2 IN (SELECT count(*) - 1 FROM t2 WHERE t2.c1 = t1.c1)""".stripMargin
+      checkSparkAnswer(orQuery)
+
+      val orAndNotInQuery =
+        """SELECT * FROM t1 WHERE
+          | (c1 IN (SELECT count(*) + 1 FROM t2 WHERE t2.c1 = t1.c1) OR
+          |  c2 IN (SELECT count(*) - 1 FROM t2 WHERE t2.c1 = t1.c1)) AND
+          | c1 NOT IN (SELECT count(*) FROM t2 WHERE t2.c1 = t1.c2)""".stripMargin
+      checkSparkAnswer(orAndNotInQuery)
+    }
+  }
+
   protected def checkSparkAnswerAndNumOfAggregates(query: String, numAggregates: Int): Unit = {
     val df = sql(query)
     checkSparkAnswer(df)

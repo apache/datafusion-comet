@@ -13,7 +13,7 @@ TakeOrderedAndProject
                :                 +- CometSortMergeJoin
                :                    :- CometSort
                :                    :  +- CometColumnarExchange
-               :                    :     +- HashAggregate
+               :                    :     +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
                :                    :        +- Exchange
                :                    :           +- HashAggregate
                :                    :              +- Project
@@ -63,7 +63,7 @@ TakeOrderedAndProject
                :                    :                                                              +- CometNativeScan parquet spark_catalog.default.date_dim
                :                    +- CometSort
                :                       +- CometColumnarExchange
-               :                          +- HashAggregate
+               :                          +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
                :                             +- Exchange
                :                                +- HashAggregate
                :                                   +- Project
@@ -114,7 +114,7 @@ TakeOrderedAndProject
                                        +- CometSortMergeJoin
                                           :- CometSort
                                           :  +- CometColumnarExchange
-                                          :     +- HashAggregate
+                                          :     +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
                                           :        +- Exchange
                                           :           +- HashAggregate
                                           :              +- Project
@@ -164,7 +164,7 @@ TakeOrderedAndProject
                                           :                                                              +- CometNativeScan parquet spark_catalog.default.date_dim
                                           +- CometSort
                                              +- CometColumnarExchange
-                                                +- HashAggregate
+                                                +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
                                                    +- Exchange
                                                       +- HashAggregate
                                                          +- Project
