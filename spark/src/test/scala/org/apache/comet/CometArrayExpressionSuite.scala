@@ -1132,4 +1132,104 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       checkSparkAnswerAndOperator(sql("SELECT exists(arr, x -> x > 0) FROM t"))
     }
   }
+
+  test("array_exists - DataFrame API") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<INT>) USING parquet")
+      sql("INSERT INTO t VALUES (array(1, 2, 3)), (array(1, 2)), (array()), (NULL)")
+      val df = spark.table("t")
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), x => x > 2)))
+      checkSparkAnswerAndOperator(
+        df.select(
+          exists(col("arr"), x => x > 0).as("any_positive"),
+          exists(col("arr"), x => x > 100).as("any_large")))
+    }
+  }
+
+  test("array_exists - decimal element type") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<DECIMAL(10,2)>) USING parquet")
+      sql("INSERT INTO t VALUES (array(1.50, 2.75, 3.25)), (array(0.10, 0.20))")
+      checkSparkAnswerAndOperator(
+        spark.table("t").select(exists(col("arr"), x => x > lit(BigDecimal("2.00")))))
+    }
+  }
+
+  test("array_exists - date element type") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<DATE>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES (array(date'2024-01-01', date'2024-06-15')), (array(date'2023-01-01'))")
+      checkSparkAnswerAndOperator(
+        spark
+          .table("t")
+          .select(exists(col("arr"), x => x > lit("2024-03-01").cast("date"))))
+    }
+  }
+
+  test("array_exists - timestamp element type") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<TIMESTAMP>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES " +
+          "(array(timestamp'2024-01-01 00:00:00', timestamp'2024-06-15 12:30:00')), " +
+          "(array(timestamp'2023-01-01 00:00:00'))")
+      checkSparkAnswerAndOperator(
+        spark
+          .table("t")
+          .select(exists(col("arr"), x => x > lit("2024-03-01 00:00:00").cast("timestamp"))))
+    }
+  }
+
+  test("array_exists - literal lambda bodies") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<INT>) USING parquet")
+      sql("INSERT INTO t VALUES (array(1, 2, 3)), (array()), (NULL)")
+      val df = spark.table("t")
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), _ => lit(false))))
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), _ => lit(true))))
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), _ => lit(null).cast("boolean"))))
+    }
+  }
+
+  test("array_exists - CaseWhen/If in lambda") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<INT>) USING parquet")
+      sql("INSERT INTO t VALUES (array(1, 2, 3)), (array(-1, 0, 1)), (NULL)")
+      val df = spark.table("t")
+      checkSparkAnswerAndOperator(
+        df.selectExpr("exists(arr, x -> CASE WHEN x > 0 THEN true ELSE false END)"))
+      checkSparkAnswerAndOperator(df.selectExpr("exists(arr, x -> IF(x > 0, true, false))"))
+    }
+  }
+
+  test("array_exists - fallback for unsupported element type") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<BINARY>) USING parquet")
+      sql("INSERT INTO t VALUES (array(X'01', X'02'))")
+      checkSparkAnswerAndFallbackReason(
+        spark.table("t").select(exists(col("arr"), x => x.isNotNull)),
+        "Unsupported array element type")
+    }
+  }
+
+  test("array_exists - fallback for lambda capturing outer column") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr ARRAY<INT>, threshold INT) USING parquet")
+      sql("INSERT INTO t VALUES (array(1, 2, 3), 2), (array(1, 2), 5)")
+      checkSparkAnswerAndFallbackReason(
+        spark.table("t").select(exists(col("arr"), x => x > col("threshold"))),
+        "Lambda references columns outside the array element")
+    }
+  }
+
+  test("array_exists - fallback for nested lambda") {
+    withTable("t") {
+      sql("CREATE TABLE t (arr1 ARRAY<INT>, arr2 ARRAY<INT>) USING parquet")
+      sql("INSERT INTO t VALUES (array(1, 2, 3), array(4, 5, 6)), (array(10), array(1))")
+      checkSparkAnswerAndFallbackReason(
+        spark.table("t").select(exists(col("arr1"), x => exists(col("arr2"), y => y > x))),
+        "Lambda references columns outside the array element")
+    }
+  }
 }
