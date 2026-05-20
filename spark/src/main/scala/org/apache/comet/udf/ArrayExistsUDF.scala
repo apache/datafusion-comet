@@ -45,7 +45,7 @@ import org.apache.comet.CometArrowAllocator
  */
 class ArrayExistsUDF extends CometUDF {
 
-  override def evaluate(inputs: Array[ValueVector]): ValueVector = {
+  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
     require(inputs.length == 2, s"ArrayExistsUDF expects 2 inputs, got ${inputs.length}")
     val listVec = inputs(0).asInstanceOf[ListVector]
     val keyVec = inputs(1).asInstanceOf[VarCharVector]
