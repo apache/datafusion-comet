@@ -19,14 +19,15 @@
 
 package org.apache.spark.sql
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-
 import java.util.concurrent.atomic.AtomicInteger
+
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.{Success, Try}
+
 import org.scalatest.BeforeAndAfterEach
+
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.column.ParquetProperties
 import org.apache.parquet.example.data.Group
@@ -45,7 +46,9 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{DecimalType, StructType}
+
 import org.apache.comet._
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
