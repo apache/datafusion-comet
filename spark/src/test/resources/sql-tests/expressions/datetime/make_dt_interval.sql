@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.expression.MakeDTInterval.allowIncompatible=true
+
 -- literal arguments, all arities (omitted args default to 0)
 query
 SELECT make_dt_interval()

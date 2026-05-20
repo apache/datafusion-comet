@@ -434,7 +434,16 @@ object CometNextDay extends CometScalarFunction[NextDay]("next_day")
 
 object CometMakeDate extends CometScalarFunction[MakeDate]("make_date")
 
-object CometMakeDTInterval extends CometScalarFunction[MakeDTInterval]("make_dt_interval")
+object CometMakeDTInterval extends CometScalarFunction[MakeDTInterval]("make_dt_interval") {
+  private val overflowIncompatReason: String =
+    "make_dt_interval returns NULL on arithmetic overflow, whereas Spark throws " +
+      "INTERVAL_ARITHMETIC_OVERFLOW"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(overflowIncompatReason)
+
+  override def getSupportLevel(expr: MakeDTInterval): SupportLevel =
+    Incompatible(Some(overflowIncompatReason))
+}
 
 object CometSecondsToTimestamp
     extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
