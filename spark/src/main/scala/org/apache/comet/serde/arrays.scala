@@ -354,6 +354,12 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
     }
   }
 
+  private def normalizeArrayContainsNull(dt: DataType): DataType = dt match {
+    case ArrayType(elementType, _) =>
+      ArrayType(normalizeArrayContainsNull(elementType), containsNull = true)
+    case other => other
+  }
+
   override def convert(
       expr: ArrayExcept,
       inputs: Seq[Attribute],
@@ -369,7 +375,12 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
     val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
 
     val arrayExceptScalarExpr =
-      scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
+      scalarFunctionExprToProtoWithReturnType(
+        "array_except",
+        normalizeArrayContainsNull(expr.dataType),
+        false,
+        leftArrayExprProto,
+        rightArrayExprProto)
     optExprWithInfo(arrayExceptScalarExpr, expr, expr.children: _*)
   }
 }

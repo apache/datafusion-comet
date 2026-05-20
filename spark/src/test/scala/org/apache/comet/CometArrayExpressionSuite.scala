@@ -748,6 +748,40 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_except with mixed nullable inputs (GH-3646)") {
+    // Spark can produce arrays with different containsNull values depending on
+    // whether the source columns are NOT NULL constrained. For example,
+    // `array(1, 2)` produces ArrayType(Int, false) while `array(col)` from a
+    // nullable column produces ArrayType(Int, true). DataFusion's check_datatypes
+    // uses strict equals_datatype which compares inner field nullability, causing
+    // "array_except received incompatible types". This test verifies the fix.
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayExcept]) -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          withTempView("t1") {
+            val path = new Path(dir.toURI.toString, "test.parquet")
+            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
+            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+            // array(1, 2, 3) is built from non-null literals => containsNull=false
+            // array(_4) is built from nullable column => containsNull=true
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_except(array(1, 2, 3), array(_4)) from t1"))
+
+            // same but with explicitly typed literal to match _3 type
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_except(array(cast(1 as int), 2, 3), array(_3)) from t1"))
+
+            // two column-sourced arrays that could have different nullabilities
+            // after Spark analysis (one with WHERE clause filtering, one without)
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_except(array(_2, _3), array(_4)) from t1"))
+          }
+        }
+      }
+    }
+  }
+
   test("array_repeat") {
     withSQLConf(
       CometConf.getExprAllowIncompatConfigKey(classOf[ArrayRepeat]) -> "true",
