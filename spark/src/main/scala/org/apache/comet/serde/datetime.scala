@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, FromUTCTimestamp, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, SecondsToTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, FromUTCTimestamp, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, SecondsToTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -406,6 +406,27 @@ object CometToUTCTimestamp extends CometExpressionSerde[ToUTCTimestamp] {
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto("to_utc_timestamp", childExprs: _*)
     optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometConvertTimezone extends CometExpressionSerde[ConvertTimezone] {
+
+  override def getSupportLevel(expr: ConvertTimezone): SupportLevel =
+    Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(UTCTimestampSerde.tzParseIncompatReason)
+
+  override def convert(
+      expr: ConvertTimezone,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val srcTz = exprToProtoInternal(expr.sourceTz, inputs, binding)
+    val tgtTz = exprToProtoInternal(expr.targetTz, inputs, binding)
+    val ts = exprToProtoInternal(expr.sourceTs, inputs, binding)
+    val toUtc = scalarFunctionExprToProto("to_utc_timestamp", ts, srcTz)
+    val fromUtc = scalarFunctionExprToProto("from_utc_timestamp", toUtc, tgtTz)
+    optExprWitahInfo(fromUtc, expr, expr.children: _*)
   }
 }
 
