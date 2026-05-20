@@ -46,11 +46,8 @@ import org.apache.comet.shims.CometExprTraitShim
  * [[canHandle]] / [[allocateOutput]] / [[compile]] / [[generateSource]] entry points, and
  * cross-cutting kernel-shape decisions (NullIntolerant short-circuit, CSE variant).
  *
- * The generated kernel '''is''' the `InternalRow` that Spark's `BoundReference.genCode` reads
- * from: `ctx.INPUT_ROW = "row"` plus `InternalRow row = this;` inside `process` routes
- * `row.getUTF8String(ord)` to the kernel's own typed getter (final method, constant ordinal; JIT
- * devirtualizes and folds). `row` rather than `this` because Spark's `splitExpressions` passes
- * `INPUT_ROW` as a helper-method parameter name and `this` is a reserved Java keyword.
+ * The generated kernel is the `InternalRow` that Spark's `BoundReference.genCode` reads from; see
+ * [[generateSource]] for how the wiring is set up.
  */
 object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
@@ -138,9 +135,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     // in `CometScalaUDFCodegen.kernelCache` prevents concurrent partitions from racing on the
     // lambda variable's `AtomicReference`. See `CometCodegenHOFSuite`.
     //
-    // Nondeterministic / stateful expressions are accepted: per-partition kernel allocation in
-    // `CometScalaUDFCodegen.ensureKernel` plus a single `init(partitionIndex)` call at partition
-    // entry give `Rand` / `MonotonicallyIncreasingID` / etc. correct state.
+    // Nondeterministic / stateful expressions are accepted: each cache entry holds one kernel
+    // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
+    // state advances correctly across batches.
     //
     // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`) is accepted: the surrounding
     // Comet operator's inherited `SparkPlan.waitForSubqueries` populates the subquery's
@@ -209,10 +206,10 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         inputSchema
           .map(s => s"${s.vectorClass.getSimpleName}${if (s.nullable) "?" else ""}")
           .mkString(","))
-    // `references` cannot be cached across kernel instances: ScalaUDF embeds stateful
-    // `ExpressionEncoder` serializers via `ctx.addReferenceObj` that reuse an internal
-    // `UnsafeRow` / `byte[]` per `apply`. Sharing one across partitions would race. Re-running
-    // `genCode` is microseconds; Janino compile is milliseconds.
+    // ScalaUDF embeds stateful `ExpressionEncoder` serializers via `ctx.addReferenceObj` that
+    // reuse internal `UnsafeRow` / `byte[]` buffers per `apply`. Each kernel instance needs its
+    // own copy; the closure regenerates the references array per call so the dispatcher can hand
+    // a fresh array to every kernel it allocates from this `CompiledKernel`.
     val freshReferences: () => Array[Any] = () =>
       generateSource(boundExpr, inputSchema).references
     CompiledKernel(clazz, freshReferences)
@@ -226,6 +223,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   def generateSource(
       boundExpr: Expression,
       inputSchema: Seq[ArrowColumnSpec]): GeneratedSource = {
+    canHandle(boundExpr).foreach(reason =>
+      throw new IllegalArgumentException(s"CometBatchKernelCodegen.generateSource: $reason"))
     val ctx = new CodegenContext
     // `BoundReference.genCode` emits `${ctx.INPUT_ROW}.getUTF8String(ord)`. Aliasing `row` to
     // `this` at the top of `process` routes those reads to the kernel's typed getters (final

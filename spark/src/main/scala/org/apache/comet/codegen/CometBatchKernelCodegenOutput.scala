@@ -20,6 +20,7 @@
 package org.apache.comet.codegen
 
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
@@ -114,7 +115,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
       case t: Throwable =>
         try vec.close()
         catch {
-          case _: Throwable => ()
+          case NonFatal(_) => ()
         }
         throw t
     }

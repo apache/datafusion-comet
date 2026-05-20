@@ -32,15 +32,14 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  * per HOF; the kernel dispatches to `Expression.eval(InternalRow)`, which iterates the array,
  * mutates `NamedLambdaVariable.value`'s `AtomicReference` per element, and recursively evaluates
  * the lambda body. Lambda-body leaf reads resolve through the kernel's typed Arrow getters since
- * the kernel '''is''' an `InternalRow`.
+ * the kernel is an `InternalRow`.
  *
  * Cost model: per-row interpreted-eval inside the HOF subtree. Surrounding native operators stay
  * native; surrounding non-HOF expressions stay codegen.
  *
- * Critical invariant: each Spark task gets its own `boundExpr` Java object. The dispatcher's
- * compile cache lives on the per-task instance, not the companion, so concurrent partitions
- * cannot race on a shared `NamedLambdaVariable.value`. The two-collects test below regresses
- * this.
+ * Each Spark task gets its own `boundExpr` Java object. The dispatcher's compile cache lives on
+ * the per-task instance, not the companion, so concurrent partitions cannot race on a shared
+ * `NamedLambdaVariable.value`. The two-collects test below regresses this.
  */
 class CometCodegenHOFSuite
     extends CometTestBase
@@ -98,14 +97,11 @@ class CometCodegenHOFSuite
   }
 
   test("HOF query produces correct results across two collects (per-task isolation regression)") {
-    // Regresses the per-task `boundExpr` isolation: when the dispatcher's compile cache lived
-    // on the companion object, multiple tasks shared one `boundExpr` and concurrent partitions
+    // Regresses the per-task `boundExpr` isolation. When the dispatcher's compile cache lived on
+    // the companion object, multiple tasks shared one `boundExpr` and concurrent partitions
     // raced on `NamedLambdaVariable.value`'s `AtomicReference`, producing off-by-one element
-    // values where row N's first iteration read row N-1's first element. The fix moved the
-    // cache to the per-task instance so each task deserializes its own boundExpr (matching
-    // Spark's per-task closure-deserialize model). Two collects of the same query must each
-    // match Spark's interpreter; print synchronization on `System.err` could mask the race
-    // under earlier debug builds, so this assertion is the canonical regression.
+    // values. The fix moved the cache to the per-task instance so each task deserializes its own
+    // boundExpr. Two collects of the same query must each match Spark's interpreter.
     spark.udf.register("idArr", (arr: Seq[Int]) => arr)
     withArrayIntTable("(array(1, 2)), (array(3, 4)), (array(5))") {
       val q = "SELECT idArr(transform(a, x -> x + 1)) FROM t"

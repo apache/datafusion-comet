@@ -45,16 +45,10 @@ This feature is experimental and disabled by default.
 - Table UDFs and generators.
 - Python `@udf` and Pandas `@pandas_udf`.
 - Hive `GenericUDF` and `SimpleUDF`.
-- `CalendarIntervalType`, `NullType`, and `UserDefinedType` arguments and return types.
+- `CalendarIntervalType`, `NullType`, and `UserDefinedType` arguments and return types. UDT-typed columns fall back to Spark; for native execution, store and read the underlying representation directly (e.g. write MLlib `Vector` outputs as `Struct<type: Byte, size: Int, indices: Array<Int>, values: Array<Double>>` rather than `VectorUDT`).
 - Trees whose total nested-field count (output plus all input columns the UDF tree references) exceeds `spark.sql.codegen.maxFields` (default 100). Comet refuses these at plan time and the operator falls back to Spark.
 
 When a UDF is rejected, the reason surfaces through Comet's standard fallback diagnostics; the query still runs on Spark.
-
-### Working around UDT arguments
-
-Spark `UserDefinedType`s (e.g. MLlib's `VectorUDT`) wrap an underlying SQL representation, typically a struct or array of supported scalar types. To run a UDF over a UDT-typed column on the Comet path, register the function over the underlying representation instead of the UDT class and reconstruct the UDT object inside the function body. Convert back to the underlying representation on output. The same pattern works for the return type: produce a struct / array of supported scalars instead of returning the UDT directly, and rehydrate at the call site if needed.
-
-This is awkward but unblocks UDT use cases without losing native execution of the surrounding plan.
 
 ## Behavior
 
@@ -64,4 +58,4 @@ This is awkward but unblocks UDT use cases without losing native execution of th
 
 ## Known limitations
 
-- Comet specializes the UDF once per query. Spark's analyzer produces a fresh `ScalaUDF` instance per query, so two structurally identical queries do not share a specialization. Within one query, batches of the same shape reuse the specialization.
+- Each query containing a ScalaUDF pays a one-time codegen cost on its first batch and reuses the compiled kernel for subsequent batches, matching Spark's whole-stage codegen behavior. Bytecode is deduped JVM-wide via the same `CodeGenerator` cache, so structurally identical queries across a session share the compiled class.

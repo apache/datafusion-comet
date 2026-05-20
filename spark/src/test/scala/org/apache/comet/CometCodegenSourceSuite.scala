@@ -155,10 +155,10 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("canHandle accepts Nondeterministic expressions (per-partition kernel handles state)") {
-    // Per-partition kernel instance caching in `CometScalaUDFCodegen.ensureKernel` advances
-    // mutable state across batches in one partition, so Rand/Uuid/etc. produce the expected
-    // sequences. The previous canHandle rejection was conservative; with that caching in
-    // place, accepting Nondeterministic is correct.
+    // Each cache entry holds one kernel instance with `init(partitionIndex)` called once, so
+    // Rand / Uuid / etc. produce the expected per-partition sequences across batches. The
+    // previous canHandle rejection was conservative; with that caching in place, accepting
+    // Nondeterministic is correct.
     val expr = FakeNondeterministic()
     val reason = CometBatchKernelCodegen.canHandle(expr)
     assert(reason.isEmpty, s"expected canHandle to accept Nondeterministic; got $reason")

@@ -24,11 +24,13 @@ import java.util.Collections
 import java.util.concurrent.atomic.AtomicLong
 
 import scala.collection.mutable
+import scala.util.control.NonFatal
 
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{BinaryType, DataType, StringType}
@@ -39,59 +41,32 @@ import org.apache.comet.udf.CometUDF
 
 /**
  * Arrow-direct codegen dispatcher. For each `(bound expression, input Arrow schema)` pair,
- * compiles a specialized [[CometBatchKernel]] on first encounter, instantiates and initializes it
- * once, and caches the live instance.
+ * compiles a specialized [[CometBatchKernel]] on first encounter, initializes it with the task's
+ * partition index, and caches the live instance.
  *
- * Arg 0 is a `VarBinaryVector` scalar carrying the closure-serialized bound `Expression` bytes.
- * Args 1..N are the data columns the `BoundReference`s read, in ordinal order. The bytes
- * self-describe the expression so the path works in cluster mode without executor-side state.
+ * Arg 0 is a `VarBinaryVector` scalar carrying the closure-serialized bound `Expression` bytes;
+ * args 1..N are the data columns the `BoundReference`s read in ordinal order.
  *
- * Three lifetime scopes:
- *   - JVM-wide bytecode dedup via `CodeGenerator.compile`'s source-keyed Guava cache. Stateless.
- *   - Per-task: this instance, lifetime managed by `CometUdfBridge.INSTANCES` keyed on
- *     `taskAttemptId` and dropped via `TaskCompletionListener`. Holds [[kernelCache]], so the
- *     deserialized `boundExpr` (which carries mutable state like `NamedLambdaVariable.value` for
- *     HOFs) is not shared across concurrent tasks. Mirrors Spark's per-task closure-deserialize
- *     model.
- *   - Per-partition: one Spark task = one partition. Each `CacheEntry` holds the kernel instance
- *     initialized once at compile time with the task's partition index. Stateful expressions
- *     (`Rand`'s `XORShiftRandom`, `MonotonicallyIncreasingID`'s counter) advance inside that
- *     instance across all batches for that `(expression, schema)`.
+ * The dispatcher instance is per-task (lifetime managed by `CometUdfBridge.INSTANCES`, dropped
+ * via `TaskCompletionListener`); bytecode is deduped JVM-wide via `CodeGenerator.compile`'s
+ * cache. Stateful expressions (`Rand`, `MonotonicallyIncreasingID`) advance inside the per-task
+ * kernel across batches.
  *
- * Nullability is not derived from runtime batch data. `BoundReference.nullable` on the bound tree
- * (set on the driver from Catalyst's schema-tracked nullable) is the sole source: schema-declared
- * non-null columns let Spark's `BoundReference.doGenCode` elide its own `isNullAt` probe
- * entirely. Per-batch null density does not enter the cache key, so all batches of one expression
- * share one kernel instance regardless of how nulls are distributed across batches.
+ * `evaluate` runs under `this.synchronized` because DataFusion operators like `HashJoinExec`
+ * pipeline build/probe via `OnceAsync` (`tokio::spawn`), so multiple Tokio worker threads can
+ * call back into one task's dispatcher; the kernel's per-batch instance fields would race
+ * otherwise.
  *
- * Concurrency: [[evaluate]] takes `this.synchronized` for the cache lookup and `process` call. A
- * single Spark task can have multiple concurrent JNI callers because DataFusion operators like
- * `HashJoinExec` pipeline build/probe via `OnceAsync` (`tokio::spawn`), so multiple Tokio worker
- * threads call back into one task's dispatcher. The kernel keeps per-batch state (`col0`,
- * `rowIdx`) in instance fields, so concurrent `process` calls on a shared kernel would race; the
- * lock serializes them. Cross-task parallelism is unaffected.
- *
- * Spark's `BufferedRowIterator` is single-threaded per task by construction, so per-task
- * throughput here matches Spark's; probe-side work, the bulk of UDF eval, is serial in either.
- *
- * TODO(udf-codegen-pool): if intra-task UDF parallelism shows up as a bottleneck (large build
- * sides with heavy UDFs), replace the per-key kernel instance with a per-key kernel pool and
- * externalize per-partition stateful counters into the dispatcher so pool members can run
- * concurrently without sharing kernel state.
+ * TODO(udf-codegen-pool): if intra-task UDF parallelism shows up as a bottleneck, replace the
+ * per-key kernel instance with a pool and externalize per-partition counters.
  */
-class CometScalaUDFCodegen extends CometUDF {
+class CometScalaUDFCodegen extends CometUDF with Logging {
 
   /**
-   * Per-task `(serialized-bytes, specs) -> compiled kernel + initialized instance + bound
-   * metadata`. Per-task scope is load-bearing for HOF correctness: HOFs mutate
-   * `NamedLambdaVariable.value` per element, and a JVM-wide cache would race across concurrent
-   * tasks running the same query. Per-task scope is also load-bearing for stateful expression
-   * correctness: the kernel instance carries `Rand`'s `XORShiftRandom` and
-   * `MonotonicallyIncreasingID`'s counter, which advance across batches for the partition this
-   * task is processing. Compile work stays deduped JVM-wide via `CodeGenerator.compile`'s source
-   * cache; only the kernel instance and `boundExpr` Java object are per-task.
-   *
-   * Guarded by `this.synchronized` in [[evaluate]].
+   * Per-task cache keyed on serialized expression bytes plus per-column specs. The deserialized
+   * `boundExpr` carries mutable state (`NamedLambdaVariable.value` for HOFs, `Rand`'s
+   * `XORShiftRandom`) that must not be shared across concurrent tasks running the same query;
+   * keeping the cache per-task gives each task its own copy. Guarded by `this.synchronized`.
    */
   private val kernelCache
       : mutable.Map[CometScalaUDFCodegen.CacheKey, CometScalaUDFCodegen.CacheEntry] =
@@ -144,7 +119,7 @@ class CometScalaUDFCodegen extends CometUDF {
         case t: Throwable =>
           try out.close()
           catch {
-            case _: Throwable => ()
+            case NonFatal(_) => ()
           }
           throw t
       }
@@ -155,44 +130,51 @@ class CometScalaUDFCodegen extends CometUDF {
       key: CometScalaUDFCodegen.CacheKey,
       bytes: Array[Byte],
       specs: IndexedSeq[ArrowColumnSpec]): CometScalaUDFCodegen.CacheEntry = {
-    val existing = kernelCache.get(key)
-    if (existing.isDefined) {
-      CometScalaUDFCodegen.cacheHitCount.incrementAndGet()
-      existing.get
-    } else {
-      val loader = Option(Thread.currentThread().getContextClassLoader)
-        .getOrElse(classOf[Expression].getClassLoader)
-      val boundExpr = SparkEnv.get.closureSerializer
-        .newInstance()
-        .deserialize[Expression](ByteBuffer.wrap(bytes), loader)
-      val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)
-      val kernel = compiled.newInstance()
-      kernel.init(CometScalaUDFCodegen.currentPartitionIndex())
-      val outputField = CometBatchKernelCodegen.toFfiArrowField(
-        "codegen_result",
-        boundExpr.dataType,
-        boundExpr.nullable)
-      val entry =
-        CometScalaUDFCodegen.CacheEntry(compiled, kernel, boundExpr.dataType, outputField)
-      kernelCache.put(key, entry)
-      CometScalaUDFCodegen.compileCount.incrementAndGet()
-      CometScalaUDFCodegen.recordCompiledSignature(specs, boundExpr.dataType)
-      entry
+    assert(Thread.holdsLock(this), "lookupOrCompile must run under this.synchronized")
+    kernelCache.get(key) match {
+      case Some(entry) =>
+        CometScalaUDFCodegen.cacheHitCount.incrementAndGet()
+        entry
+      case None =>
+        val loader = Option(Thread.currentThread().getContextClassLoader)
+          .getOrElse(classOf[Expression].getClassLoader)
+        val boundExpr =
+          try {
+            SparkEnv.get.closureSerializer
+              .newInstance()
+              .deserialize[Expression](ByteBuffer.wrap(bytes), loader)
+          } catch {
+            case NonFatal(t) =>
+              logError(
+                "CometScalaUDFCodegen: closure-deserialize failed " +
+                  s"(bytes=${bytes.length}, specs=$specs)",
+                t)
+              throw t
+          }
+        val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)
+        val kernel = compiled.newInstance()
+        kernel.init(CometScalaUDFCodegen.currentPartitionIndex())
+        val outputField = CometBatchKernelCodegen.toFfiArrowField(
+          "codegen_result",
+          boundExpr.dataType,
+          boundExpr.nullable)
+        val entry =
+          CometScalaUDFCodegen.CacheEntry(compiled, kernel, boundExpr.dataType, outputField)
+        kernelCache.put(key, entry)
+        CometScalaUDFCodegen.compileCount.incrementAndGet()
+        CometScalaUDFCodegen.recordCompiledSignature(specs, boundExpr.dataType)
+        entry
     }
   }
 
   /**
-   * Build the compile-time spec for one input Arrow vector. Recurses on complex types. Spark
-   * `DataType`s on complex children come from [[Utils.fromArrowField]].
+   * Build the compile-time spec for one input Arrow vector. Recurses on complex types.
    *
-   * `nullable = true` is hardcoded for top-level scalar/array/struct/map specs: the dispatcher
-   * does not specialize on per-batch null density. Catalyst's `BoundReference.nullable` (embedded
-   * in `bytesKey`) carries schema-declared nullability, and `BoundReference.doGenCode` skips its
-   * own `isNullAt` probe when that flag is false, so schema-non-null columns still get the
-   * elision without us deriving it from runtime data.
-   *
-   * `StructFieldSpec.nullable` reads `field.isNullable` from Arrow Java metadata, which is stable
-   * across batches of a partition (a schema property, not a per-batch derivation).
+   * Top-level `nullable=true` is hardcoded: the cache key does not specialize on per-batch null
+   * density. Schema-declared nullability still reaches the kernel via `BoundReference.nullable`
+   * embedded in `bytesKey`, so `BoundReference.doGenCode` elides its own `isNullAt` probe on
+   * non-null columns. `StructFieldSpec.nullable` reads `field.isNullable` from Arrow metadata,
+   * which is a schema property and therefore stable across batches.
    */
   private def specFor(v: ValueVector): ArrowColumnSpec = v match {
     case map: MapVector =>

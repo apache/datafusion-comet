@@ -206,27 +206,20 @@ impl PhysicalPlanner {
         }
     }
 
-    pub fn with_exec_id(self, exec_context_id: i64) -> Self {
-        Self {
-            exec_context_id,
-            partition: self.partition,
-            session_ctx: Arc::clone(&self.session_ctx),
-            query_context_registry: Arc::clone(&self.query_context_registry),
-            task_context: self.task_context,
-        }
+    pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
+        self.exec_context_id = exec_context_id;
+        self
     }
 
     /// Attach a propagated Spark `TaskContext` global reference. Called by the JNI `executePlan`
     /// entry with whatever was captured at `createPlan` time. The planner clones this `Option`
     /// into every `JvmScalarUdfExpr` it builds.
-    pub fn with_task_context(self, task_context: Option<Arc<Global<JObject<'static>>>>) -> Self {
-        Self {
-            exec_context_id: self.exec_context_id,
-            partition: self.partition,
-            session_ctx: self.session_ctx,
-            query_context_registry: self.query_context_registry,
-            task_context,
-        }
+    pub fn with_task_context(
+        mut self,
+        task_context: Option<Arc<Global<JObject<'static>>>>,
+    ) -> Self {
+        self.task_context = task_context;
+        self
     }
 
     /// Return session context of this planner.

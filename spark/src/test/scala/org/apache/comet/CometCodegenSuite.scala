@@ -32,6 +32,10 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * End-to-end correctness for the Arrow-direct codegen dispatcher. Covers the scalar and complex
  * type surface, composed UDF trees, subquery reuse, `TaskContext` propagation, per-task cache
  * isolation, the `maxFields` plan-time gate, and regressions pinned from fuzz.
+ *
+ * Tests exercising fallback paths (config disabled, `maxFields` exceeded) use `checkSparkAnswer`
+ * rather than `checkSparkAnswerAndOperator` because ScalaUDF has no Comet-native path; under
+ * fallback the project runs on the JVM Spark path.
  */
 class CometCodegenSuite
     extends CometTestBase
@@ -85,9 +89,7 @@ class CometCodegenSuite
 
   test("disabled mode bypasses the dispatcher") {
     // When the per-feature config is off, `CometScalaUDF.convert` returns None and the enclosing
-    // operator falls back to Spark. The dispatcher's counters must not move. We do not assert
-    // `checkSparkAnswerAndOperator` here because ScalaUDF has no Comet-native path, so the
-    // project runs on the JVM Spark path under this configuration.
+    // operator falls back to Spark. The dispatcher's counters must not move.
     spark.udf.register("noopStr", (s: String) => s)
     CometScalaUDFCodegen.resetStats()
     withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
@@ -116,9 +118,6 @@ class CometCodegenSuite
       sql("INSERT INTO t VALUES (1, 2, 3, 4, 5), (10, 20, 30, 40, 50)")
       CometScalaUDFCodegen.resetStats()
       withSQLConf("spark.sql.codegen.maxFields" -> "3") {
-        // Result correctness still has to match Spark; only the dispatcher path is refused.
-        // ScalaUDF has no Comet-native path, so this runs on the JVM Spark path under fallback,
-        // hence `checkSparkAnswer` rather than `checkSparkAnswerAndOperator`.
         checkSparkAnswer(sql("SELECT sumFiveInts(a, b, c, d, e) FROM t"))
       }
       val after = CometScalaUDFCodegen.stats()

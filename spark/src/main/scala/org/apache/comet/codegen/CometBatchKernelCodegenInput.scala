@@ -723,12 +723,8 @@ private[codegen] object CometBatchKernelCodegenInput {
   // addresses (`valueAddr`, `offsetAddr`) for unsafe reads, or the Arrow field for the decimal
   // slow path. `ind` is the per-line indent.
   //
-  // The VarChar/VarBinary unsafe emitters duplicate `CometPlainVector.getUTF8String/getBinary`
-  // minus the internal `isNullAt` (caller already handled it) and per-call offset-buffer
-  // dereference (we cache that). Once apache/datafusion-comet#4280 (offset-address caching) and
-  // #4279 (validity-bitmap byte cache) land upstream, both differences disappear and these
-  // emitters can be replaced by `CometPlainVector` reuse. The decimal-fast variant is
-  // independent: compile-time precision specialization.
+  // TODO(#4280, #4279): once offset-address caching and validity-bitmap byte cache land in
+  // CometPlainVector, replace the VarChar/VarBinary unsafe emitters with CometPlainVector reads.
 
   private def emitStructScalarGetters(path: String, spec: StructColumnSpec): String = {
     val withOrd = spec.fields.zipWithIndex
