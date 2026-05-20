@@ -413,7 +413,7 @@
 - [ ] randstr
 - [ ] rint
 - [x] round
-- [ ] sec
+- [x] sec
 - [x] shiftleft
 - [x] sign
 - [x] signum
