@@ -64,7 +64,7 @@ trait CometCodegenAssertions {
   /**
    * Asserts a kernel matching the given input Arrow vector classes and output type sits in the
    * JVM-wide signature set. Pair with `assertCodegenRan` since the set is append-only. Compares
-   * by simple name because `common` shades `org.apache.arrow`.
+   * by simple name to be robust to Arrow shading.
    */
   protected def assertKernelSignaturePresent(
       inputs: Seq[Class[_ <: ValueVector]],

@@ -35,8 +35,8 @@ import org.apache.comet.shims.CometExprTraitShim
  * fuses Arrow input reads, Spark expression evaluation, and Arrow output writes into one
  * Janino-compiled method per `(expression, schema)` pair.
  *
- * The kernel is generic over Catalyst expressions and does not assume the bound tree came from a
- * `ScalaUDF`. Today's only consumer is [[org.apache.comet.udf.codegen.CometScalaUDFCodegen]].
+ * The kernel compiles any bound Catalyst expression; the tree need not be rooted at a `ScalaUDF`.
+ * Today's only consumer is [[org.apache.comet.udf.codegen.CometScalaUDFCodegen]].
  *
  * Constraints: one output vector per kernel; per-row scalar evaluation only (aggregate, window,
  * generator are rejected by [[canHandle]]).
@@ -52,11 +52,10 @@ import org.apache.comet.shims.CometExprTraitShim
 object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
   /**
-   * Resolve an Arrow vector class by simple name through the same classloader the codegen uses
-   * internally. The `common` module shades `org.apache.arrow` to `org.apache.comet.shaded.arrow`,
-   * so `classOf[VarCharVector]` at a call site in an unshaded module refers to a different
-   * [[Class]] object than the one the codegen pattern-matches against. Tests resolve through
-   * this.
+   * Resolve an Arrow vector class by simple name through the codegen object's own classloader.
+   * Tests use this to refer to vector classes via the same classloader the codegen pattern-
+   * matches against, in case the test classpath ever diverges from the codegen's (e.g. through
+   * future shading rearrangement).
    */
   def vectorClassBySimpleName(name: String): Class[_ <: ValueVector] = name match {
     case "BitVector" => classOf[BitVector]
@@ -234,8 +233,10 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     ctx.INPUT_ROW = "row"
 
     val baseClass = classOf[CometBatchKernel].getName
-    // Resolve shaded Arrow class names so generated source matches the abstract method signature
-    // after Maven relocation.
+    // Resolve Arrow class names at runtime so the generated source matches the method signature
+    // the running classloader sees. The packaged Comet jar relocates `org.apache.arrow` to
+    // `org.apache.comet.shaded.arrow` (see `spark/pom.xml`); `.getName` picks the right name
+    // regardless of whether we run against the shaded jar or the unshaded build output.
     val valueVectorClass = classOf[ValueVector].getName
     val fieldVectorClass = classOf[FieldVector].getName
 

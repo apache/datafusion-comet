@@ -31,9 +31,7 @@ import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowC
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 // Resolve Arrow vector classes through the codegen object so tests see the same `Class` objects
-// the shaded `common` module sees. A direct `classOf[org.apache.arrow.vector.VarCharVector]` here
-// would be the unshaded class from the test classpath, which is not `==` to the shaded class the
-// production pattern-matches against.
+// the codegen pattern-matches against, regardless of any future shading rearrangement.
 
 /**
  * Generated-source inspection tests. These exercise `CometBatchKernelCodegen.generateSource` and
