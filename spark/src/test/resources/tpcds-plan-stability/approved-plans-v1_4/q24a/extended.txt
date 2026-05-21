@@ -1,9 +1,9 @@
 Filter
 :  +- Subquery
-:     +- HashAggregate
+:     +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
 :        +- Exchange
 :           +- HashAggregate
-:              +- HashAggregate
+:              +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
 :                 +- Exchange
 :                    +- HashAggregate
 :                       +- Project
@@ -44,10 +44,10 @@ Filter
 :                                   +- CometProject
 :                                      +- CometFilter
 :                                         +- CometNativeScan parquet spark_catalog.default.customer_address
-+- HashAggregate
++-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
    +- Exchange
       +- HashAggregate
-         +- HashAggregate
+         +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
             +- Exchange
                +- HashAggregate
                   +- Project
