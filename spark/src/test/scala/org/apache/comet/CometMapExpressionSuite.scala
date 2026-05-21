@@ -126,22 +126,24 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("fallback for size with map input") {
+  test("fallback for size with map constructor input") {
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
-        // Use column references in maps to avoid constant folding
+        // Size now supports MapType inputs, this falls back since CreateMap
+        // is not yet supported natively. Use column references to avoid
+        // constant folding.
         checkSparkAnswerAndFallbackReason(
           sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"),
-          "size does not support map inputs")
+          "map is not supported")
       }
     }
   }
 
-  // fails with "map is not supported"
+  // still fails because CreateMap is not supported natively
   ignore("size with map input") {
     withTempDir { dir =>
       withTempView("t1") {

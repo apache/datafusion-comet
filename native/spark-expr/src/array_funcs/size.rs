@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::array::{Array, ArrayRef, Int32Array};
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, Field};
 use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
@@ -56,8 +56,18 @@ impl Default for SparkSizeFunc {
 
 impl SparkSizeFunc {
     pub fn new() -> Self {
+        use DataType::*;
         Self {
-            signature: Signature::any(1, Volatility::Immutable),
+            signature: Signature::uniform(
+                1,
+                vec![
+                    List(Arc::new(Field::new("item", Null, true))),
+                    LargeList(Arc::new(Field::new("item", Null, true))),
+                    FixedSizeList(Arc::new(Field::new("item", Null, true)), -1),
+                    Map(Arc::new(Field::new("entries", Null, true)), false),
+                ],
+                Volatility::Immutable,
+            ),
         }
     }
 }
@@ -142,7 +152,7 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
 
             for i in 0..map_array.len() {
                 if map_array.is_null(i) {
-                    builder.append_null();
+                    builder.append_value(-1); // Spark behavior: return -1 for null
                 } else {
                     let map_len = map_array.value_length(i);
                     builder.append_value(map_len);
