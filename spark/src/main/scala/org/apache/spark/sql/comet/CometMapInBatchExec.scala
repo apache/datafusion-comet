@@ -30,7 +30,9 @@ import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNo
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.python.PythonSQLMetrics
 import org.apache.spark.sql.types.{StructField, StructType}
-import org.apache.spark.sql.vectorized.{ArrowColumnVector, ColumnarBatch}
+import org.apache.spark.sql.vectorized.{ArrowColumnVector, ColumnarBatch, ColumnVector}
+
+import org.apache.comet.vector.CometVector
 
 /**
  * Comet replacement for Spark's `MapInBatchExec` family (`PythonMapInArrowExec` /
@@ -102,10 +104,21 @@ case class CometMapInBatchExec(
         context)
 
       columnarBatchIter.map { batch =>
-        // Python returns a single struct column; flatten to the user's output columns.
+        // Python returns a single struct column; flatten to the user's output columns and
+        // re-wrap each child as CometVector so consumers that expect Comet's vector hierarchy
+        // (e.g. another CometMapInBatchExec stacked on top, or NativeUtil.exportBatch for a
+        // downstream native Comet operator) see the right type. Sharing the underlying Arrow
+        // ValueVector with the original ArrowColumnVector is safe: close() on either ends up
+        // releasing the same buffers, and arrow-vector's release path is idempotent.
         val structVector = batch.column(0).asInstanceOf[ArrowColumnVector]
-        val outputVectors = outputAttrs.indices.map(structVector.getChild)
-        val flattenedBatch = new ColumnarBatch(outputVectors.toArray)
+        val outputVectors: Array[ColumnVector] = outputAttrs.indices.map { i =>
+          val childArrow = structVector.getChild(i)
+          CometVector.getVector(
+            childArrow.getValueVector,
+            /* useDecimal128 */ true,
+            /* dictionaryProvider */ null)
+        }.toArray
+        val flattenedBatch = new ColumnarBatch(outputVectors)
         flattenedBatch.setNumRows(batch.numRows())
         numOutputRows += flattenedBatch.numRows()
         numOutputBatches += 1

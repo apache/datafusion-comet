@@ -759,6 +759,119 @@ def test_map_in_arrow_after_shuffle(spark, tmp_path, accelerated):
     assert out == sorted(rows)
 
 
+def test_chained_map_in_arrow(spark, tmp_path, accelerated):
+    """
+    `df.mapInArrow(udf1).mapInArrow(udf2)` stacks two operators. With the rewrite
+    enabled both become `CometMapInBatchExec`, so the inner one's output feeds
+    the outer one's input. The outer operator's input path expects vectors of
+    `CometDecodedVector` type: if the inner's output is plain `ArrowColumnVector`
+    the outer throws `ClassCastException` on the first batch.
+    """
+    schema = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("value", T.DoubleType()),
+        ]
+    )
+    rows = [(i, float(i)) for i in range(50)]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema).write.parquet(src)
+
+    def add_one(iterator):
+        for batch in iterator:
+            pdf = batch.to_pandas()
+            pdf["value"] = pdf["value"] + 1.0
+            yield pa.RecordBatch.from_pandas(pdf)
+
+    def double_value(iterator):
+        for batch in iterator:
+            pdf = batch.to_pandas()
+            pdf["value"] = pdf["value"] * 2.0
+            yield pa.RecordBatch.from_pandas(pdf)
+
+    result_df = (
+        spark.read.parquet(src)
+        .mapInArrow(add_one, schema)
+        .mapInArrow(double_value, schema)
+    )
+
+    if accelerated:
+        plan = _executed_plan(result_df)
+        assert plan.count("CometMapInBatch") >= 2, (
+            f"expected two CometMapInBatch operators in accelerated plan, got:\n{plan}"
+        )
+
+    out = sorted((r["id"], r["value"]) for r in result_df.collect())
+    expected = sorted((i, (float(i) + 1.0) * 2.0) for i in range(50))
+    assert out == expected
+
+
+def test_filter_on_map_in_arrow_output(spark, tmp_path, accelerated):
+    """
+    A filter on the UDF output column is a downstream Comet operator (when Comet's
+    native filter applies) reading from `CometMapInBatchExec`'s output. If the
+    output were plain `ArrowColumnVector`, NativeUtil.exportBatch's case match
+    would fall to the `case c =>` arm and throw SparkException.
+    """
+    schema = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("value", T.LongType()),
+        ]
+    )
+    rows = [(i, i * 2) for i in range(100)]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = (
+        spark.read.parquet(src).mapInArrow(passthrough, schema).filter("value > 50")
+    )
+
+    out = sorted((r["id"], r["value"]) for r in result_df.collect())
+    expected = sorted((i, i * 2) for i in range(100) if i * 2 > 50)
+    assert out == expected
+
+
+def test_aggregate_on_map_in_arrow_output(spark, tmp_path, accelerated):
+    """
+    `mapInArrow(...).groupBy(...).agg(...)` puts an aggregate over the UDF output.
+    The aggregate is a Comet operator and reads from `CometMapInBatchExec`'s
+    output via NativeUtil.exportBatch when promoted to the native pipeline. If
+    the output were ArrowColumnVector, exportBatch would throw on every batch.
+    """
+    schema = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("grp", T.LongType()),
+            T.StructField("value", T.LongType()),
+        ]
+    )
+    rows = [(i, i % 5, i) for i in range(100)]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = (
+        spark.read.parquet(src)
+        .mapInArrow(passthrough, schema)
+        .groupBy("grp")
+        .agg({"value": "sum"})
+    )
+
+    out = {r["grp"]: r["sum(value)"] for r in result_df.collect()}
+    expected = {}
+    for i in range(100):
+        expected[i % 5] = expected.get(i % 5, 0) + i
+    assert out == expected
+
+
 def test_map_in_arrow_barrier_mode(spark, tmp_path, accelerated):
     """
     `mapInArrow(..., barrier=True)` runs the stage in barrier execution mode
