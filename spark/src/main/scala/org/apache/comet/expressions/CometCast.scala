@@ -151,8 +151,6 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
           if toElementType != DataTypes.IntegerType && toElementType != DataTypes.StringType =>
         unsupported(fromType, toType)
-      case (dt: ArrayType, DataTypes.StringType) if dt.elementType == DataTypes.BinaryType =>
-        Incompatible()
       case (dt: ArrayType, DataTypes.StringType) =>
         isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode)
       case (dt: ArrayType, dt1: ArrayType) =>

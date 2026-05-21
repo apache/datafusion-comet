@@ -1555,9 +1555,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       IntegerType,
       LongType,
       ShortType,
-      // FloatType,
-      // DoubleType,
-      // BinaryType
+      FloatType,
+      DoubleType,
+      BinaryType,
       DecimalType(10, 2),
       DecimalType(38, 18)).foreach { dt =>
       val input = generateArrays(100, dt)
