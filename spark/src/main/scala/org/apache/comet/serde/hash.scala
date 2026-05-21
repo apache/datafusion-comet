@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
 object CometXxHash64 extends CometExpressionSerde[XxHash64] {
   override def convert(
@@ -126,6 +126,9 @@ private object HashUtils {
         isSupportedDataType(expr, a.elementType)
       case m: MapType =>
         isSupportedDataType(expr, m.keyType) && isSupportedDataType(expr, m.valueType)
+      case dt if isTimeType(dt) =>
+        withInfo(expr, s"Unsupported datatype $dt")
+        false
       case _ if !supportedDataType(dt, allowComplex = true) =>
         withInfo(expr, s"Unsupported datatype $dt")
         false

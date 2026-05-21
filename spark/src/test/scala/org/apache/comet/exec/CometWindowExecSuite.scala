@@ -42,8 +42,7 @@ class CometWindowExecSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+        CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true") {
         testFun
       }
     }
