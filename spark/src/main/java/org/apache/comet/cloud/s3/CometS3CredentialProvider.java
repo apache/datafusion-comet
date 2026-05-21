@@ -43,10 +43,10 @@ import java.util.Map;
  * the first {@link #getCredentialsForPath} call. {@link #getCredentialsForPath} may be invoked
  * concurrently from many native worker threads, so implementations must be thread-safe.
  *
- * <p>Comet does not maintain a TTL cache, broadcast catalog state, or schedule refresh. Vendors
- * own caching, refresh, and any executor-side state distribution. Returns credentials or throws;
- * there is no fall-through return value. See the user guide on cloud credential providers for the
- * full contract and examples.
+ * <p>Comet does not maintain a TTL cache, broadcast catalog state, or schedule refresh. Vendors own
+ * caching, refresh, and any executor-side state distribution. Returns credentials or throws; there
+ * is no fall-through return value. See the user guide on cloud credential providers for the full
+ * contract and examples.
  */
 public interface CometS3CredentialProvider {
 
