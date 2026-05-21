@@ -70,6 +70,6 @@ public class TestCometPlainVector {
   }
 
   private static byte[] bytes(String s) {
-    return s.getBytes();
+    return s.getBytes(StandardCharsets.UTF_8);
   }
 }
