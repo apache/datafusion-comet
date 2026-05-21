@@ -38,7 +38,7 @@ You probably do, if any of these are true:
 
 ## Enabling a bridge
 
-A bridge is activated by naming the vendor's class in a Spark config. There is no `META-INF/services` discovery and putting a JAR on the classpath alone has no effect; the config key must be set.
+A bridge is activated by naming the vendor's class in a Spark config. Putting a JAR on the classpath alone has no effect; the config key must be set.
 
 For raw Parquet (the `object_store` path), set the Hadoop S3A config:
 
@@ -87,11 +87,11 @@ Without the config set, no credential-related log lines appear at startup; nativ
 
 **`403 AccessDenied` with the bridge configured.** The provider returned credentials but they were rejected by S3. Most often a region mismatch (see Iceberg section below) or expired session token; enable debug logging on the vendor's class to confirm what it returned.
 
-**Credentials silently going stale during long-running jobs.** The bridge caps opendal's credential cache at 5 minutes when the vendor does not populate `expirationEpochMillis`. Ask the vendor to return a real expiry; the 5-minute floor is a safety net, not a knob.
+**Credentials silently going stale during long-running jobs.** When a vendor returns `expirationEpochMillis=0`, the bridge substitutes a 5-minute expiry before handing the credential to `opendal`, so `opendal`'s cache cannot hold a stale credential indefinitely. Returning a real expiry is preferred; the 5-minute fallback is a safety net, not a knob.
 
 ## Iceberg: explicit S3 region required
 
-With the bridge configured, Comet wires a custom credential loader into `iceberg-storage-opendal`. opendal's built-in S3 region auto-detection only runs when no custom loader is configured, so on the bridge path the region (and endpoint for non-AWS) must be set explicitly on the Spark catalog:
+With the bridge configured, Comet wires a custom credential loader into `iceberg-storage-opendal`. `opendal`'s built-in S3 region auto-detection only runs when no custom loader is configured, so on the bridge path the region (and endpoint for non-AWS) must be set explicitly on the Spark catalog:
 
 ```
 spark.sql.catalog.<catalog>.s3.region        = us-east-1
@@ -135,18 +135,20 @@ Comet does not maintain a TTL cache, broadcast catalog state, or schedule refres
 - When to refresh: proactive timer, on-demand at expiry, on `403` retry, etc.
 - How to distribute driver-only state. Read it from `initialize`'s `catalogProperties` (which Comet has already serialized through the native plan op), call back to a vendor service from the executor, or run your own Spark broadcast inside the class.
 
-`expirationEpochMillis` on the returned `CometS3Credentials` is metadata pass-through, not a Comet-owned cache. Comet forwards it to `object_store` and opendal, which already have their own credential caches and use the expiry to schedule the next refresh. Publish a real expiry when you have one; return `0` if you do not, and a conservative 5-minute floor is applied so a stale credential cannot live indefinitely.
+`expirationEpochMillis` only matters on the Iceberg/`opendal` path. There the bridge implements `reqsign_core::ProvideCredential`, which carries an `expires_in` field that `opendal` uses to schedule the next refresh. Publish a real expiry when you have one. `0` means "unknown"; the bridge then substitutes a 5-minute expiry to bound staleness.
+
+The Parquet/`object_store` path has no expiry concept: `object_store::CredentialProvider` returns just `AwsCredential` (key/secret/token). The bridge is passed to `with_credentials` without a TTL wrapper, so `object_store` calls into the SPI on every request and relies on the vendor's own cache for hit rates. Expiry handling is fully the vendor's responsibility: the vendor decides when its internal cache refreshes. If `object_store` receives a 403 from an expired session token, its retry layer calls `get_credential()` again, giving the vendor another chance to mint fresh credentials.
 
 ### Returned fields
 
-| Field                   | Notes                                             |
-| ----------------------- | ------------------------------------------------- |
-| `accessKeyId`           | Required.                                         |
-| `secretAccessKey`       | Required.                                         |
-| `sessionToken`          | `null` for non-STS credentials.                   |
-| `expirationEpochMillis` | Absolute expiry. `0` means "unknown" (see below). |
+| Field                   | Notes                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `accessKeyId`           | Required.                                                                                                                 |
+| `secretAccessKey`       | Required.                                                                                                                 |
+| `sessionToken`          | `null` for non-STS credentials.                                                                                           |
+| `expirationEpochMillis` | Iceberg path only. `0` means "unknown"; the bridge substitutes a 5-minute expiry. The Parquet path has no expiry concept. |
 
-Provide a real `expirationEpochMillis` whenever you have one. The Iceberg path uses it to decide when `opendal` must re-call the provider for a fresh credential. `0` is treated as unknown and the Iceberg path defaults to a 5-minute refresh to bound staleness.
+Provide a real `expirationEpochMillis` whenever you have one on the Iceberg path. The Parquet path's `object_store::CredentialProvider` does not consume an expiry, and the bridge invokes the SPI on every `get_credential()` call.
 
 ### Returns or throws
 
@@ -236,7 +238,7 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
 }
 ```
 
-`VendedCredentialsProvider` reads `credentials.uri`, the catalog endpoint, and OAuth tokens from the supplied map (Comet forwards the unfiltered FileIO bag to `initialize`), and refreshes through its own `CachedSupplier`. Caching, refresh-near-expiry, and the REST round-trip all live in Iceberg, not in Comet. Comet ships a copy of this class under `spark/src/test` for now; promote it to your runtime classpath alongside `iceberg-aws` and AWS SDK v2.
+`VendedCredentialsProvider` reads `credentials.uri`, the catalog endpoint, and OAuth tokens from the supplied map (Comet forwards the unfiltered FileIO bag to `initialize`), and refreshes through its own `CachedSupplier`. Caching, refresh-near-expiry, and the REST round-trip all live in Iceberg, not in Comet. Comet ships a copy of this class under `spark/src/test` as a reference; copy it into your runtime jar alongside `iceberg-aws` and AWS SDK v2.
 
 ### Access mode
 
@@ -262,4 +264,4 @@ Vendor implementations need the Comet SPI classes at compile time only. Use `pro
 
 ### Iceberg path: error message fidelity
 
-When the bridge is wired into `iceberg-rust`, the outer `reqsign-core::ProvideCredentialChain` currently swallows thrown exceptions into "no credential" before the request reaches opendal. The credential is still not issued and the request still fails, only the message is degraded to an opaque anonymous-request failure. No Comet change fixes this; it is resolved upstream if `iceberg-rust` stops wrapping custom loaders in its outer chain or moves its S3 backend to `object_store`.
+When the bridge is wired into `iceberg-rust`, the outer `reqsign-core::ProvideCredentialChain` currently swallows thrown exceptions into "no credential" before the request reaches `opendal`. The credential is still not issued and the request still fails, only the message is degraded to an opaque anonymous-request failure. No Comet change fixes this; it is resolved upstream if `iceberg-rust` stops wrapping custom loaders in its outer chain or moves its S3 backend to `object_store`.

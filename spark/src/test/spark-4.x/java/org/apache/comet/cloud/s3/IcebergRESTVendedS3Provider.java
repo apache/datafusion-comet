@@ -35,14 +35,9 @@ import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
  * <p>Test scope only, to keep iceberg-aws and AWS SDK v2 off Comet's runtime classpath. Production
  * users should copy this into their own jar.
  *
- * <p>Built only on the Spark 4.x profiles (placed under {@code src/test/spark-4.x}, picked up via
- * {@code shims.majorVerSrc}). Excluded from Spark 3.4 because {@code iceberg-spark-runtime-3.4_*}
- * does not expose {@code VendedCredentialsProvider} on its test classpath. Excluded from Spark 3.5
- * because Comet pins Iceberg 1.8.1 there, and the in-properties short-circuit that the unit test
- * relies on was added in Iceberg 1.9.0 (apache/iceberg#12504); on 1.8.x {@code refreshCredential}
- * always issues an HTTP GET against {@code credentials.uri}.
- *
- * <p>Test exercised in CI against Iceberg 1.10.0 (the Spark 4.x profile pin).
+ * <p>Spark 4.x build only (Iceberg 1.9.0+ is required for the in-properties caching short-circuit
+ * in {@code VendedCredentialsProvider}; earlier pins issue an HTTP GET against {@code
+ * credentials.uri} on every refresh).
  *
  * <p>Activation: set {@code spark.sql.catalog.<cat>.s3.comet.credential.provider.class =
  * org.apache.comet.cloud.s3.IcebergRESTVendedS3Provider}. Comet calls {@link #initialize} once per
@@ -71,7 +66,7 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
     String sessionToken =
         (c instanceof AwsSessionCredentials) ? ((AwsSessionCredentials) c).sessionToken() : null;
     // Expiration is owned by VendedCredentialsProvider's CachedSupplier; we publish 0 so the
-    // native bridge applies its conservative floor to opendal's cache while the inner
+    // native bridge applies its conservative floor to `opendal`'s cache while the inner
     // CachedSupplier handles refresh on its own schedule.
     return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), sessionToken, 0L);
   }

@@ -47,6 +47,7 @@ Benchmarking Guide <benchmarking>
 Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
 Adding a New Spark Version <adding_a_new_spark_version>
+S3 Credential Provider Design <s3-credential-provider-design>
 Supported Spark Expressions <spark_expressions_support>
 Supported Spark Configurations <spark_configs_support>
 Tracing <tracing>
