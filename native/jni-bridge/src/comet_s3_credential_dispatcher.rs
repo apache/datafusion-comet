@@ -52,14 +52,14 @@ impl<'a> CometS3CredentialDispatcher<'a> {
             method_ensure_initialized: env.get_static_method_id(
                 JNIString::new(Self::JVM_CLASS),
                 jni::jni_str!("ensureInitialized"),
-                jni::jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;)V"),
+                jni::jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;)J"),
             )?,
-            method_ensure_initialized_ret: ReturnType::Primitive(Primitive::Void),
+            method_ensure_initialized_ret: ReturnType::Primitive(Primitive::Long),
             method_get_credentials_for_path: env.get_static_method_id(
                 JNIString::new(Self::JVM_CLASS),
                 jni::jni_str!("getCredentialsForPath"),
                 jni::jni_sig!(
-                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)Lorg/apache/comet/cloud/s3/CometS3Credentials;"
+                    "(JLjava/lang/String;Ljava/lang/String;I)Lorg/apache/comet/cloud/s3/CometS3Credentials;"
                 ),
             )?,
             method_get_credentials_for_path_ret: ReturnType::Object,

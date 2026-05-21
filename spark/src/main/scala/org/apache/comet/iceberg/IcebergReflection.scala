@@ -22,6 +22,8 @@ package org.apache.comet.iceberg
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 
+import org.apache.comet.util.ClassLoaders
+
 /**
  * Shared reflection utilities for Iceberg operations.
  *
@@ -101,19 +103,7 @@ object IcebergReflection extends Logging {
    * @return
    *   The loaded Class object
    */
-  def loadClass(className: String): Class[_] = {
-    val classLoader = Thread.currentThread().getContextClassLoader
-    if (classLoader != null) {
-      // scalastyle:off classforname
-      Class.forName(className, true, classLoader)
-      // scalastyle:on classforname
-    } else {
-      // Fallback to default classloader if context classloader is null
-      // scalastyle:off classforname
-      Class.forName(className)
-      // scalastyle:on classforname
-    }
-  }
+  def loadClass(className: String): Class[_] = ClassLoaders.loadClass(className)
 
   /**
    * Searches through class hierarchy to find a method (including protected methods).

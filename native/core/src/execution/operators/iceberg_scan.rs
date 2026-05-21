@@ -43,15 +43,19 @@ use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg_storage_opendal::CustomAwsCredentialLoader;
 use iceberg_storage_opendal::OpenDalStorageFactory;
 
+use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
 use crate::execution::operators::ExecutionError;
-use crate::parquet::objectstore::comet_s3_credential_bridge::{
-    AccessMode, CometS3CredentialBridge, ICEBERG_PROVIDER_CLASS_PROPERTY,
-};
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::FileScanTask;
+
+/// Iceberg-namespaced activation knob for the `CometS3CredentialProvider` SPI, read from a Spark
+/// catalog's `s3.*` property bag (`spark.sql.catalog.<name>.s3.comet.credential.provider.class`).
+/// Mirrors the Hadoop-style `comet.credential.provider.class` used on the Parquet/object_store
+/// path, but lives here because only the Iceberg path consumes it.
+const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.class";
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///

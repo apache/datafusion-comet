@@ -110,22 +110,26 @@ Implement `org.apache.comet.cloud.s3.CometS3CredentialProvider`:
 ```java
 package org.apache.comet.cloud.s3;
 
-public interface CometS3CredentialProvider {
-    /** Called once per (FQCN, dispatchKey) before any per-request call. Optional. */
+public interface CometS3CredentialProvider extends AutoCloseable {
+    /** Called once per (FQCN, dispatchKey, catalogProperties) before any per-request call. Optional. */
     default void initialize(java.util.Map<String, String> catalogProperties) {}
 
-    CometS3Credentials getCredentialsForPath(
-        String bucket, String path, CometS3AccessMode mode) throws Exception;
+    CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) throws Exception;
+
+    /** Invoked from the dispatcher's JVM shutdown hook. Default is a no-op. */
+    @Override default void close() throws Exception {}
 }
 ```
 
-The class must have a public no-arg constructor. `getCredentialsForPath` may be invoked concurrently from many native tokio worker threads; the implementation must be thread-safe.
+The class must have a public no-arg constructor. `getCredentialsForPath` may be invoked concurrently from many native tokio worker threads; the implementation must be thread-safe. The supplied `CometS3CredentialContext` exposes `getBucket()`, `getPath()`, and `getMode()`; future Comet releases may add accessors here without changing the method signature, so vendors compiled against today's API stay binary-compatible.
 
 ### Lifecycle
 
-Comet keys provider instances by `(FQCN, dispatchKey)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the S3 bucket name on the Parquet path. The first time a given key is seen on an executor, Comet reflects the class, calls `initialize(Map)` exactly once, and caches the instance for the JVM lifetime. Two catalogs sharing one provider FQCN therefore get isolated instances with their own `initialize` maps.
+Comet keys provider instances by `(FQCN, dispatchKey, catalogProperties)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the S3 bucket name on the Parquet path. The first time a given key is seen on an executor, Comet reflects the class, calls `initialize(Map)` exactly once, and caches the instance for the JVM lifetime. Two catalogs sharing one provider FQCN therefore get isolated instances with their own `initialize` maps. Including `catalogProperties` in the key matters in multi-tenant JVMs (Spark Connect, Thrift Server, `SparkSession.newSession()`) where two sessions can otherwise collide on the same `(FQCN, dispatchKey)` and have the second session silently use the first session's credentials.
 
 `initialize` should be cheap and non-blocking. Defer real credential fetches (REST round-trips, STS calls) to the first `getCredentialsForPath` invocation. On the Iceberg path the supplied `catalogProperties` carries the unfiltered FileIO bag, including REST-vended fields like `credentials.uri`, OAuth tokens, and any vendor-custom keys you set on the catalog config. The map may contain secrets, so do not log it.
+
+`close()` is invoked from a JVM shutdown hook installed by the dispatcher. The default no-op is fine for stateless providers. Override it to release HTTP clients, scheduled-refresh executors, or STS connection pools. Shutdown hooks are best-effort: a `SIGKILL` or abrupt JVM termination skips them, so do not depend on `close()` for correctness.
 
 ### Caching, refresh, and distribution
 
@@ -160,10 +164,9 @@ If your provider is authoritative only for some paths, resolve the default AWS c
 private final DefaultCredentialsProvider defaultChain = DefaultCredentialsProvider.create();
 
 @Override
-public CometS3Credentials getCredentialsForPath(
-        String bucket, String path, CometS3AccessMode mode) throws Exception {
-    if (handlesPath(bucket, path)) {
-        return mintFromMyVendorService(bucket, path, mode);
+public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) throws Exception {
+    if (handlesPath(ctx.getBucket(), ctx.getPath())) {
+        return mintFromMyVendorService(ctx.getBucket(), ctx.getPath(), ctx.getMode());
     }
     AwsCredentials c = defaultChain.resolveCredentials();
     String token = (c instanceof AwsSessionCredentials)
@@ -184,18 +187,17 @@ public final class MyCometCredentialProvider implements CometS3CredentialProvide
     private final DefaultVendor fallback = ...;
 
     @Override
-    public CometS3Credentials getCredentialsForPath(
-            String bucket, String path, CometS3AccessMode mode) throws Exception {
-        if (bucket.startsWith("data-prod-"))   return prod.fetch(bucket, path, mode);
-        if (bucket.equals("partner-shared"))   return sts.assumeRole(bucket, path, mode);
-        return fallback.fetch(bucket, path);
+    public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) throws Exception {
+        if (ctx.getBucket().startsWith("data-prod-"))   return prod.fetch(ctx);
+        if (ctx.getBucket().equals("partner-shared"))   return sts.assumeRole(ctx);
+        return fallback.fetch(ctx.getBucket(), ctx.getPath());
     }
 }
 ```
 
 Per-bucket Hadoop overrides (`fs.s3a.bucket.<name>.comet.credential.provider.class`) are also available if you prefer to ship multiple vendor classes and pick by bucket in config rather than in code.
 
-For Iceberg deployments where two catalogs share one provider class but need isolated state, configure the same FQCN on both catalogs and read your discriminator from `initialize`'s `catalogProperties`. Each catalog gets its own provider instance because Comet keys by `(FQCN, catalogName)`:
+For Iceberg deployments where two catalogs share one provider class but need isolated state, configure the same FQCN on both catalogs and read your discriminator from `initialize`'s `catalogProperties`. Each catalog gets its own provider instance because Comet keys by `(FQCN, catalogName, catalogProperties)`:
 
 ```java
 public final class MyMultiTenantProvider implements CometS3CredentialProvider {
@@ -207,9 +209,8 @@ public final class MyMultiTenantProvider implements CometS3CredentialProvider {
     }
 
     @Override
-    public CometS3Credentials getCredentialsForPath(
-            String bucket, String path, CometS3AccessMode mode) {
-        return mintForTenant(tenantId, bucket, path, mode);
+    public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) {
+        return mintForTenant(tenantId, ctx.getBucket(), ctx.getPath(), ctx.getMode());
     }
 }
 ```
@@ -228,8 +229,7 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
     }
 
     @Override
-    public CometS3Credentials getCredentialsForPath(
-            String bucket, String path, CometS3AccessMode mode) {
+    public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) {
         AwsCredentials c = provider.resolveCredentials();
         String token = (c instanceof AwsSessionCredentials)
             ? ((AwsSessionCredentials) c).sessionToken() : null;

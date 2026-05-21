@@ -54,8 +54,7 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
   }
 
   @Override
-  public CometS3Credentials getCredentialsForPath(
-      String bucket, String path, CometS3AccessMode mode) {
+  public CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) {
     VendedCredentialsProvider p = provider;
     if (p == null) {
       throw new IllegalStateException(

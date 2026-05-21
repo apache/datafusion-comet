@@ -105,11 +105,10 @@ public final class MinioCometS3CredentialProvider implements CometS3CredentialPr
   }
 
   @Override
-  public CometS3Credentials getCredentialsForPath(
-      String bucket, String path, CometS3AccessMode mode) {
+  public CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) {
     CALL_COUNT.incrementAndGet();
-    LAST_BUCKET.set(bucket);
-    LAST_PATH.set(path);
+    LAST_BUCKET.set(context.getBucket());
+    LAST_PATH.set(context.getPath());
     Credentials c = CREDS.get();
     if (c == null) {
       throw new IllegalStateException(

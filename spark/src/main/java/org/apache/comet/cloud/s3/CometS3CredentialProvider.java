@@ -33,22 +33,15 @@ import java.util.Map;
  * {@code spark.sql.catalog.<catalog>.s3.comet.credential.provider.class} for the Iceberg path. The
  * class must have a public no-arg constructor.
  *
- * <p>Comet keys provider instances by {@code (FQCN, dispatchKey)}, where {@code dispatchKey} is the
- * Spark V2 catalog name on the Iceberg path and the bucket on the Parquet path. The first time a
- * given key is seen on an executor, Comet reflects the class, calls {@link #initialize(Map)} once,
- * and caches the instance. Two catalogs that share one FQCN therefore get isolated instances with
- * their own {@code initialize} maps.
+ * <p>{@link #initialize(Map)} runs once per Comet-cached instance before any {@link
+ * #getCredentialsForPath} call, must be cheap and non-blocking, and may receive secrets in its map.
+ * {@link #getCredentialsForPath} may be invoked concurrently from many native worker threads so
+ * implementations must be thread-safe; it returns credentials or throws (no fall-through).
  *
- * <p>{@link #initialize(Map)} should be cheap and non-blocking; defer real credential fetches to
- * the first {@link #getCredentialsForPath} call. {@link #getCredentialsForPath} may be invoked
- * concurrently from many native worker threads, so implementations must be thread-safe.
- *
- * <p>Comet does not maintain a TTL cache, broadcast catalog state, or schedule refresh. Vendors own
- * caching, refresh, and any executor-side state distribution. Returns credentials or throws; there
- * is no fall-through return value. See the user guide on S3 credential providers for the full
- * contract and examples.
+ * <p>See the user guide on S3 credential providers for caching, refresh, and multi-tenant isolation
+ * guidance.
  */
-public interface CometS3CredentialProvider {
+public interface CometS3CredentialProvider extends AutoCloseable {
 
   /**
    * Called once per {@code (FQCN, dispatchKey)} on each executor before any {@link
@@ -62,11 +55,18 @@ public interface CometS3CredentialProvider {
   default void initialize(Map<String, String> catalogProperties) {}
 
   /**
-   * @param bucket S3 bucket name (no scheme, no path)
-   * @param path object key or prefix, leading slash included (matches the URL path component)
-   * @param mode access intent for this request
+   * @param context per-request context (bucket, path, access mode). Fields can be added to {@link
+   *     CometS3CredentialContext} in future Comet releases without changing this method signature,
+   *     so vendors compiled against today's API stay binary-compatible.
    * @return non-null credentials; {@code null} is a contract violation
    */
-  CometS3Credentials getCredentialsForPath(String bucket, String path, CometS3AccessMode mode)
-      throws Exception;
+  CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) throws Exception;
+
+  /**
+   * Releases vendor-owned resources (HTTP clients, refresh executors, STS connection pools).
+   * Invoked from a best-effort JVM shutdown hook installed by the dispatcher; default no-op suits
+   * stateless providers. The hook swallows exceptions thrown here.
+   */
+  @Override
+  default void close() throws Exception {}
 }

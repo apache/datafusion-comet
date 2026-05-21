@@ -26,8 +26,7 @@ public class NoNoArgCtorProvider implements CometS3CredentialProvider {
   public NoNoArgCtorProvider(String required) {}
 
   @Override
-  public CometS3Credentials getCredentialsForPath(
-      String bucket, String path, CometS3AccessMode mode) {
+  public CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) {
     throw new UnsupportedOperationException("never instantiable");
   }
 }

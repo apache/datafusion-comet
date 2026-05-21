@@ -27,6 +27,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
@@ -42,19 +43,22 @@ public class CometS3CredentialDispatcherTest {
 
   @Before
   public void resetTestProvider() {
+    // Each test starts with an empty dispatcher cache so providers and counters from prior tests
+    // do not leak through closeAll() / initCount / closeCount assertions.
+    CometS3CredentialDispatcher.closeAll();
     TestCometS3CredentialProvider.reset();
   }
 
-  private void init() {
-    CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, DK, Collections.emptyMap());
+  private long init() {
+    return CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, DK, Collections.emptyMap());
   }
 
   @Test
   public void getCredentialsRoundTripsThroughProvider() throws Exception {
-    init();
+    long handle = init();
     CometS3Credentials creds =
         CometS3CredentialDispatcher.getCredentialsForPath(
-            TEST_PROVIDER, DK, "my-bucket", "path/to/object", READ);
+            handle, "my-bucket", "path/to/object", READ);
 
     assertNotNull(creds);
     assertEquals("AKIATEST", creds.getAccessKeyId());
@@ -70,17 +74,17 @@ public class CometS3CredentialDispatcherTest {
 
   @Test
   public void writeModeIsForwarded() throws Exception {
-    init();
-    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, DK, "b", "k", WRITE);
+    long handle = init();
+    CometS3CredentialDispatcher.getCredentialsForPath(handle, "b", "k", WRITE);
     assertEquals(CometS3AccessMode.WRITE, TestCometS3CredentialProvider.lastMode);
   }
 
   @Test
   public void unknownModeRejected() {
-    init();
+    long handle = init();
     assertThrows(
         IllegalArgumentException.class,
-        () -> CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, DK, "b", "k", 99));
+        () -> CometS3CredentialDispatcher.getCredentialsForPath(handle, "b", "k", 99));
   }
 
   @Test
@@ -91,9 +95,6 @@ public class CometS3CredentialDispatcherTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> CometS3CredentialDispatcher.ensureInitialized(null, DK, Collections.emptyMap()));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> CometS3CredentialDispatcher.getCredentialsForPath("", DK, "b", "k", READ));
   }
 
   @Test
@@ -135,8 +136,7 @@ public class CometS3CredentialDispatcherTest {
         assertThrows(
             IllegalStateException.class,
             () ->
-                CometS3CredentialDispatcher.getCredentialsForPath(
-                    TEST_PROVIDER, "never-initialized", "b", "k", READ));
+                CometS3CredentialDispatcher.getCredentialsForPath(Long.MAX_VALUE, "b", "k", READ));
     assertTrue(thrown.getMessage().contains("not initialized"));
   }
 
@@ -145,11 +145,13 @@ public class CometS3CredentialDispatcherTest {
     Map<String, String> props = new HashMap<>();
     props.put("tenant-id", "T1");
 
-    CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "cat-a", props);
-    CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "cat-a", props);
-    CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "cat-a", props);
+    long h1 = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "cat-a", props);
+    long h2 = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "cat-a", props);
+    long h3 = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "cat-a", props);
 
     assertEquals(1, TestCometS3CredentialProvider.initCount.get());
+    assertEquals(h1, h2);
+    assertEquals(h1, h3);
   }
 
   @Test
@@ -159,53 +161,124 @@ public class CometS3CredentialDispatcherTest {
     Map<String, String> propsB = new HashMap<>();
     propsB.put("tenant-id", "T-B");
 
-    CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "iso-cat-a", propsA);
-    CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "iso-cat-b", propsB);
+    long ha = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "iso-cat-a", propsA);
+    long hb = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "iso-cat-b", propsB);
 
+    assertNotEquals(ha, hb);
     assertEquals(2, TestCometS3CredentialProvider.initCount.get());
 
-    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, "iso-cat-a", "b", "k", READ);
+    CometS3CredentialDispatcher.getCredentialsForPath(ha, "b", "k", READ);
     assertEquals("T-A", TestCometS3CredentialProvider.lastTenantSeen);
 
-    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, "iso-cat-b", "b", "k", READ);
+    CometS3CredentialDispatcher.getCredentialsForPath(hb, "b", "k", READ);
+    assertEquals("T-B", TestCometS3CredentialProvider.lastTenantSeen);
+  }
+
+  /**
+   * Multi-tenant collision: two sessions sharing the same FQCN and dispatchKey but configured with
+   * different catalogProperties (e.g. different REST endpoints, rotated tokens) must get distinct
+   * instances. Without the catalogProperties component in the key, the second session would
+   * silently use the first's credentials.
+   */
+  @Test
+  public void distinctCatalogPropertiesIsolateInstances() throws Exception {
+    Map<String, String> propsA = new HashMap<>();
+    propsA.put("tenant-id", "T-A");
+    propsA.put("credentials.uri", "https://rest-a.example/credentials");
+    Map<String, String> propsB = new HashMap<>();
+    propsB.put("tenant-id", "T-B");
+    propsB.put("credentials.uri", "https://rest-b.example/credentials");
+
+    long ha = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "shared-cat", propsA);
+    long hb = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "shared-cat", propsB);
+
+    assertNotEquals(ha, hb);
+    assertEquals(2, TestCometS3CredentialProvider.initCount.get());
+
+    CometS3CredentialDispatcher.getCredentialsForPath(ha, "b", "k", READ);
+    assertEquals("T-A", TestCometS3CredentialProvider.lastTenantSeen);
+
+    CometS3CredentialDispatcher.getCredentialsForPath(hb, "b", "k", READ);
     assertEquals("T-B", TestCometS3CredentialProvider.lastTenantSeen);
   }
 
   @Test
   public void providerExceptionsPropagate() {
-    init();
+    long handle = init();
     IllegalStateException boom = new IllegalStateException("simulated STS failure");
     TestCometS3CredentialProvider.throwOnNext = boom;
 
     Exception thrown =
         assertThrows(
             Exception.class,
-            () ->
-                CometS3CredentialDispatcher.getCredentialsForPath(
-                    TEST_PROVIDER, DK, "b", "k", READ));
+            () -> CometS3CredentialDispatcher.getCredentialsForPath(handle, "b", "k", READ));
     assertSame(boom, thrown);
   }
 
   @Test
   public void nullSessionTokenAllowed() throws Exception {
-    init();
+    long handle = init();
     TestCometS3CredentialProvider.nextResult = new CometS3Credentials("AKIA", "sec", null, 0L);
 
     CometS3Credentials creds =
-        CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, DK, "b", "k", READ);
+        CometS3CredentialDispatcher.getCredentialsForPath(handle, "b", "k", READ);
 
     assertNull(creds.getSessionToken());
   }
 
   @Test
   public void providerReceivesEachCallSeparately() throws Exception {
-    init();
-    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, DK, "b1", "k1", READ);
-    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, DK, "b2", "k2", READ);
-    CometS3CredentialDispatcher.getCredentialsForPath(TEST_PROVIDER, DK, "b3", "k3", READ);
+    long handle = init();
+    CometS3CredentialDispatcher.getCredentialsForPath(handle, "b1", "k1", READ);
+    CometS3CredentialDispatcher.getCredentialsForPath(handle, "b2", "k2", READ);
+    CometS3CredentialDispatcher.getCredentialsForPath(handle, "b3", "k3", READ);
 
     assertEquals(3, TestCometS3CredentialProvider.callCount.get());
     assertEquals("b3", TestCometS3CredentialProvider.lastBucket);
     assertEquals("k3", TestCometS3CredentialProvider.lastPath);
+  }
+
+  /**
+   * The JVM shutdown hook calls {@link CometS3CredentialDispatcher#closeAll()} on every cached
+   * provider. We invoke it directly here since junit cannot exercise a real JVM shutdown.
+   */
+  @Test
+  public void closeAllInvokesEveryProvider() {
+    Map<String, String> propsA = new HashMap<>();
+    propsA.put("tenant-id", "T-A");
+    Map<String, String> propsB = new HashMap<>();
+    propsB.put("tenant-id", "T-B");
+
+    CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "close-a", propsA);
+    CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "close-b", propsB);
+
+    CometS3CredentialDispatcher.closeAll();
+
+    assertEquals(2, TestCometS3CredentialProvider.closeCount.get());
+
+    // After closeAll, handles are no longer registered. Re-init creates a fresh instance.
+    long fresh = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "close-a", propsA);
+    assertEquals(3, TestCometS3CredentialProvider.initCount.get());
+    assertNotNull(fresh);
+  }
+
+  /**
+   * A failing vendor close() must not block other providers from being closed. The dispatcher
+   * swallows exceptions during shutdown so a slow or buggy provider cannot keep an executor JVM
+   * from exiting cleanly.
+   */
+  @Test
+  public void closeAllSwallowsProviderExceptions() {
+    CometS3CredentialDispatcher.ensureInitialized(
+        TEST_PROVIDER, "close-throws-a", Collections.emptyMap());
+    CometS3CredentialDispatcher.ensureInitialized(
+        TEST_PROVIDER, "close-throws-b", Collections.emptyMap());
+
+    TestCometS3CredentialProvider.throwOnClose = new IllegalStateException("simulated cleanup");
+
+    CometS3CredentialDispatcher.closeAll();
+
+    // Both close() invocations ran even though one (the first to be visited) threw.
+    assertEquals(2, TestCometS3CredentialProvider.closeCount.get());
   }
 }

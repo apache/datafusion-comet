@@ -30,7 +30,7 @@ Comet's native scan paths (`object_store` for raw Parquet, `opendal` via `iceber
 - `AWSCredentialsProvider.getCredentials()` (AWS SDK v1) and `AwsCredentialsProvider.resolveCredentials()` (v2) are parameterless. They cannot vend per-path credentials.
 - Reflecting into vendor singletons would encode per-vendor class names and lifecycles in Comet and would silently break on vendor upgrades.
 
-A Comet-specific SPI is the narrowest fit: a single Java method that takes `(bucket, path, mode)` and returns `CometS3Credentials`.
+A Comet-specific SPI is the narrowest fit: a single Java method that takes a `CometS3CredentialContext` (today wrapping `bucket`, `path`, and access `mode`; new fields can be added without breaking vendors compiled against earlier versions) and returns `CometS3Credentials`.
 
 ## Why config-driven activation, not `META-INF/services`
 
@@ -42,13 +42,16 @@ An earlier iteration used `ServiceLoader` discovery. That was rejected because:
 
 Activation is modeled on `parquet.crypto.factory.class` (Parquet Modular Encryption KMS, see Comet #2447): the user names a single vendor class and the vendor dispatches across multiple credential backends inside that class if they need to. This mirrors how Iceberg's `DecryptionPropertiesFactory` already behaves for Parquet keys.
 
-## Why `(FQCN, dispatchKey)` keying
+## Why `(FQCN, dispatchKey, catalogProperties)` keying
 
-Comet caches one provider instance per `(FQCN, dispatchKey)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the bucket on the Parquet path.
+Comet caches one provider instance per `(FQCN, dispatchKey, catalogProperties)` triple. The dispatch key is the Spark V2 catalog name on the Iceberg path and the bucket on the Parquet path.
 
 - Two catalogs that share one provider class (typical in multi-tenant deployments) need isolated `initialize` maps because their `catalogProperties` differ. Without `dispatchKey`, the second `initialize` would either overwrite the first or be silently skipped.
 - The bucket as `dispatchKey` for Parquet gives vendors per-bucket isolation when the same provider is named under several `fs.s3a.bucket.<name>.comet.credential.provider.class` keys.
-- Keying solely by FQCN would force vendors to encode multi-tenant routing in static state. The pair-key keeps each call site independent.
+- `catalogProperties` enters the key to handle multi-tenant JVMs (Spark Connect, Thrift Server, `SparkSession.newSession()`) where two sessions can configure the same provider class against the same `dispatchKey` but with different REST endpoints, OAuth tokens, or vendor keys. Without it the second session would silently use the first session's credentials.
+- Keying solely by FQCN would force vendors to encode multi-tenant routing in static state. The triple-key keeps each call site independent.
+
+`ensureInitialized` returns a `long` handle that the native bridge stashes and replays on every per-request call. Routing per-request lookups by handle avoids re-sending the property bag across JNI on the hot path and unambiguously selects the right provider when the same `(FQCN, dispatchKey)` pair maps to multiple instances.
 
 ## Why fresh construction in `initialize`, not probing a JVM-wide static
 
@@ -93,6 +96,10 @@ The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The
 ## Returns or throws, not a fall-through value
 
 The SPI returns a `CometS3Credentials` or throws. There is no sentinel "I do not know" return. Vendors that are only authoritative for some paths resolve the default AWS chain themselves for the rest and return the result. This matches the contract on every other AWS credential SPI in the JVM ecosystem (AWS SDK v1/v2, Hadoop S3A, Iceberg `VendedCredentialsProvider`).
+
+## Lifecycle: `AutoCloseable` plus a JVM shutdown hook
+
+`CometS3CredentialProvider` extends `AutoCloseable` with a default no-op `close()`. The dispatcher installs a JVM shutdown hook that iterates every cached instance and calls `close()`, swallowing per-provider exceptions so a slow or buggy vendor cannot block other providers from cleaning up. Stateless providers ignore this entirely; vendors that hold long-lived resources (HTTP clients, scheduled-refresh executors, STS connection pools) override `close()` to release them. Shutdown hooks are best-effort, so a `SIGKILL` or abrupt JVM termination skips them; vendors must not rely on `close()` for correctness, only for resource hygiene.
 
 ## Iceberg path: error message fidelity caveat
 

@@ -54,7 +54,9 @@ public class IcebergRESTVendedS3ProviderTest {
     IcebergRESTVendedS3Provider p = new IcebergRESTVendedS3Provider();
     p.initialize(staticVendedProps());
 
-    CometS3Credentials c = p.getCredentialsForPath("bucket", "/k", CometS3AccessMode.READ);
+    CometS3Credentials c =
+        p.getCredentialsForPath(
+            new CometS3CredentialContext("bucket", "/k", CometS3AccessMode.READ));
 
     assertEquals("AKIA_TEST", c.getAccessKeyId());
     assertEquals("secret_TEST", c.getSecretAccessKey());
@@ -68,7 +70,9 @@ public class IcebergRESTVendedS3ProviderTest {
     IcebergRESTVendedS3Provider p = new IcebergRESTVendedS3Provider();
     assertThrows(
         IllegalStateException.class,
-        () -> p.getCredentialsForPath("bucket", "/k", CometS3AccessMode.READ));
+        () ->
+            p.getCredentialsForPath(
+                new CometS3CredentialContext("bucket", "/k", CometS3AccessMode.READ)));
   }
 
   @Test
@@ -76,9 +80,12 @@ public class IcebergRESTVendedS3ProviderTest {
     IcebergRESTVendedS3Provider p = new IcebergRESTVendedS3Provider();
     p.initialize(staticVendedProps());
 
-    CometS3Credentials a = p.getCredentialsForPath("b", "/k", CometS3AccessMode.READ);
-    CometS3Credentials b = p.getCredentialsForPath("b", "/k2", CometS3AccessMode.READ);
-    CometS3Credentials c = p.getCredentialsForPath("b", "/k3", CometS3AccessMode.READ);
+    CometS3Credentials a =
+        p.getCredentialsForPath(new CometS3CredentialContext("b", "/k", CometS3AccessMode.READ));
+    CometS3Credentials b =
+        p.getCredentialsForPath(new CometS3CredentialContext("b", "/k2", CometS3AccessMode.READ));
+    CometS3Credentials c =
+        p.getCredentialsForPath(new CometS3CredentialContext("b", "/k3", CometS3AccessMode.READ));
 
     // CachedSupplier hands out the same identity-equal credential until expiry; we assert by
     // value so the test does not depend on AWS SDK internal caching semantics.

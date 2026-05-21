@@ -15,4 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod s3;
+pub mod credential_bridge;

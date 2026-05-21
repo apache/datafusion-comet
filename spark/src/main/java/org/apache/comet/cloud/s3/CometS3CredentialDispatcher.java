@@ -21,101 +21,109 @@ package org.apache.comet.cloud.s3;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.comet.util.ClassLoaders;
+
 /**
- * JNI entry point invoked from native code to resolve a {@link CometS3CredentialProvider}.
+ * JNI entry point that resolves a {@link CometS3CredentialProvider} for native code.
  *
- * <p>Native code names a vendor class via the activation knob ({@code
- * fs.s3a.comet.credential.provider.class} for the Parquet path, {@code
- * s3.comet.credential.provider.class} on a Spark catalog property for the Iceberg path) and a
- * {@code dispatchKey} that scopes the instance: catalog name on the Iceberg path, bucket name on
- * the Parquet path. Each {@code (FQCN, dispatchKey)} key gets its own instance, so two catalogs
- * sharing one provider class get isolated state.
+ * <p>{@link #ensureInitialized} reflects the named class, runs {@code initialize(Map)} once, and
+ * returns a {@code long} handle. {@link #getCredentialsForPath} takes that handle on every
+ * per-request call. See the design notes in the contributor guide for why the SPI is shaped this
+ * way (keying, multi-tenant isolation, shutdown lifecycle).
  */
 public final class CometS3CredentialDispatcher {
 
   private static final Logger LOG = LoggerFactory.getLogger(CometS3CredentialDispatcher.class);
 
-  private static final ConcurrentHashMap<InstanceKey, CometS3CredentialProvider> INSTANCES =
+  private static final ConcurrentHashMap<InstanceKey, Long> KEY_TO_HANDLE =
       new ConcurrentHashMap<>();
+  private static final ConcurrentHashMap<Long, RegisteredProvider> INSTANCES =
+      new ConcurrentHashMap<>();
+  private static final AtomicLong HANDLE_SEQ = new AtomicLong(1L);
   private static final CometS3AccessMode[] MODES = CometS3AccessMode.values();
+
+  static {
+    Runtime.getRuntime()
+        .addShutdownHook(
+            new Thread(CometS3CredentialDispatcher::closeAll, "comet-s3-credential-shutdown"));
+  }
 
   private CometS3CredentialDispatcher() {}
 
   /**
-   * Reflects and initializes the named provider for {@code (FQCN, dispatchKey)} exactly once per
-   * JVM. Subsequent calls with the same key are no-ops. Native code invokes this synchronously when
-   * {@code CometS3CredentialBridge} is constructed at plan time, before any per-request {@link
-   * #getCredentialsForPath} call. {@code catalogProperties} carries the unfiltered FileIO property
-   * bag on the Iceberg path and is empty on the Parquet path.
+   * Reflects and initializes the named provider on first call for the {@code (FQCN, dispatchKey,
+   * catalogProperties)} triple, and returns a handle reused by subsequent {@link
+   * #getCredentialsForPath} calls.
    */
-  public static void ensureInitialized(
+  public static long ensureInitialized(
       String providerClassName, String dispatchKey, Map<String, String> catalogProperties) {
     if (providerClassName == null || providerClassName.isEmpty()) {
       throw new IllegalArgumentException(
           "providerClassName is empty; native side should not call without a configured class");
     }
-    InstanceKey key = new InstanceKey(providerClassName, dispatchKey == null ? "" : dispatchKey);
-    Map<String, String> props =
-        catalogProperties == null ? Collections.emptyMap() : catalogProperties;
-    INSTANCES.computeIfAbsent(
+    Map<String, String> snapshot =
+        catalogProperties == null
+            ? Collections.emptyMap()
+            : Collections.unmodifiableMap(new HashMap<>(catalogProperties));
+    InstanceKey key =
+        new InstanceKey(providerClassName, dispatchKey == null ? "" : dispatchKey, snapshot);
+    return KEY_TO_HANDLE.computeIfAbsent(
         key,
         k -> {
           CometS3CredentialProvider provider = instantiate(k.providerClassName);
-          provider.initialize(props);
-          return provider;
+          provider.initialize(k.catalogProperties);
+          long handle = HANDLE_SEQ.getAndIncrement();
+          INSTANCES.put(handle, new RegisteredProvider(provider, k));
+          return handle;
         });
   }
 
   /**
-   * Invoked by native code on every per-request credential fetch. The instance must have been
-   * created by a prior {@link #ensureInitialized} call; otherwise this throws. {@code mode} is the
+   * Invoked by native code on every per-request credential fetch. {@code handle} must be a value
+   * returned by a prior {@link #ensureInitialized} call; otherwise this throws. {@code mode} is the
    * {@link CometS3AccessMode} ordinal.
    */
   public static CometS3Credentials getCredentialsForPath(
-      String providerClassName, String dispatchKey, String bucket, String path, int mode)
-      throws Exception {
-    if (providerClassName == null || providerClassName.isEmpty()) {
-      throw new IllegalArgumentException(
-          "providerClassName is empty; native side should not call without a configured class");
-    }
+      long handle, String bucket, String path, int mode) throws Exception {
     if (mode < 0 || mode >= MODES.length) {
       throw new IllegalArgumentException("Invalid CometS3AccessMode ordinal: " + mode);
     }
-    InstanceKey key = new InstanceKey(providerClassName, dispatchKey == null ? "" : dispatchKey);
-    CometS3CredentialProvider provider = INSTANCES.get(key);
-    if (provider == null) {
+    RegisteredProvider registered = INSTANCES.get(handle);
+    if (registered == null) {
       throw new IllegalStateException(
-          "CometS3CredentialProvider "
-              + providerClassName
-              + " (dispatchKey="
-              + key.dispatchKey
-              + ") was not initialized; ensureInitialized must be called before"
-              + " getCredentialsForPath");
+          "CometS3CredentialProvider handle "
+              + handle
+              + " was not initialized; "
+              + "ensureInitialized must be called before getCredentialsForPath");
     }
     CometS3AccessMode accessMode = MODES[mode];
     if (LOG.isDebugEnabled()) {
       LOG.debug(
-          "Fetching credentials via {} (dispatchKey={}) for bucket={} path={} mode={}",
-          providerClassName,
-          key.dispatchKey,
+          "Fetching credentials via {} (dispatchKey={}, handle={}) for bucket={} path={} mode={}",
+          registered.key.providerClassName,
+          registered.key.dispatchKey,
+          handle,
           bucket,
           path,
           accessMode);
     }
-    return provider.getCredentialsForPath(bucket, path, accessMode);
+    return registered.provider.getCredentialsForPath(
+        new CometS3CredentialContext(bucket, path, accessMode));
   }
 
   private static CometS3CredentialProvider instantiate(String providerClassName) {
     Class<?> clazz;
     try {
-      clazz = Class.forName(providerClassName);
+      clazz = ClassLoaders.loadClass(providerClassName);
     } catch (ClassNotFoundException e) {
       throw new IllegalStateException(
           "CometS3CredentialProvider class not found: "
@@ -140,13 +148,33 @@ public final class CometS3CredentialDispatcher {
     }
   }
 
+  /** Visible for tests; otherwise invoked from the JVM shutdown hook. */
+  static void closeAll() {
+    for (RegisteredProvider registered : INSTANCES.values()) {
+      try {
+        registered.provider.close();
+      } catch (Throwable t) {
+        LOG.warn(
+            "Exception from {} (dispatchKey={}).close() during shutdown",
+            registered.key.providerClassName,
+            registered.key.dispatchKey,
+            t);
+      }
+    }
+    INSTANCES.clear();
+    KEY_TO_HANDLE.clear();
+  }
+
   private static final class InstanceKey {
     final String providerClassName;
     final String dispatchKey;
+    final Map<String, String> catalogProperties;
 
-    InstanceKey(String providerClassName, String dispatchKey) {
+    InstanceKey(
+        String providerClassName, String dispatchKey, Map<String, String> catalogProperties) {
       this.providerClassName = providerClassName;
       this.dispatchKey = dispatchKey;
+      this.catalogProperties = catalogProperties;
     }
 
     @Override
@@ -155,12 +183,23 @@ public final class CometS3CredentialDispatcher {
       if (!(o instanceof InstanceKey)) return false;
       InstanceKey other = (InstanceKey) o;
       return providerClassName.equals(other.providerClassName)
-          && dispatchKey.equals(other.dispatchKey);
+          && dispatchKey.equals(other.dispatchKey)
+          && catalogProperties.equals(other.catalogProperties);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(providerClassName, dispatchKey);
+      return Objects.hash(providerClassName, dispatchKey, catalogProperties);
+    }
+  }
+
+  private static final class RegisteredProvider {
+    final CometS3CredentialProvider provider;
+    final InstanceKey key;
+
+    RegisteredProvider(CometS3CredentialProvider provider, InstanceKey key) {
+      this.provider = provider;
+      this.key = key;
     }
   }
 }

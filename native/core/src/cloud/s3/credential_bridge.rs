@@ -15,39 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! JNI bridge to the `CometS3CredentialDispatcher` SPI, exposed as
-//! `object_store::CredentialProvider` and `reqsign_core::ProvideCredential` for the raw Parquet
-//! and Iceberg scan paths respectively.
-//!
-//! The bridge is activated by setting `fs.s3a.comet.credential.provider.class` (optionally
-//! per-bucket) in the Hadoop configuration. The vendor's named class is instantiated once on
-//! first use inside the JVM dispatcher and reused for the executor lifetime.
+//! JNI bridge to the JVM `CometS3CredentialDispatcher` SPI, exposed as
+//! `object_store::CredentialProvider` (raw Parquet path) and `reqsign_core::ProvideCredential`
+//! (Iceberg via `opendal`).
 //!
 //! ```text
 //!   JVM                                        Native (Rust)
 //!   ---                                        -------------
 //!
-//!   fs.s3a.comet.credential.provider.class     s3.rs (object_store)
-//!         |                                    iceberg_scan.rs (opendal)
-//!         v                                              |
-//!   CometS3CredentialDispatcher                          v
-//!   (per-class instance cache)                  CometS3CredentialBridge
-//!         ^                                       impl object_store::CredentialProvider
-//!         |                                       impl reqsign_core::ProvideCredential
+//!   spark.hadoop.fs.s3a.comet.credential       parquet/objectstore/s3.rs (object_store)
+//!     .provider.class                          execution/operators/iceberg_scan.rs (opendal)
 //!         |                                              |
-//!         +<---- JNI call ----------------------------+
-//!         |   getCredentialsForPath(className, bucket, path, mode ordinal)
+//!         v                                              v
+//!   CometS3CredentialDispatcher                  CometS3CredentialBridge
+//!         ^                                              |
+//!         |   ensureInitialized -> long handle           |
+//!         +<--- getCredentialsForPath(handle, ...) ------+
 //!         v
-//!   vendor CometS3CredentialProvider
-//!         |
-//!         v
-//!   CometS3Credentials POJO
-//!         |
-//!         +------- JNI field reads ---------------->+
-//!                                                   |
-//!                                                   v
-//!                                        AwsCredential / IcebergAwsCredential
-//!                                        (used to sign S3 requests)
+//!   vendor CometS3CredentialProvider -> CometS3Credentials
 //! ```
 
 use crate::execution::operators::ExecutionError;
@@ -71,15 +56,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
-use url::Url;
-
-/// Hadoop-style config key (without `fs.s3a.` prefix) naming the vendor `CometS3CredentialProvider`
-/// FQCN. Iceberg's catalog properties use the same suffix under their `s3.` namespace.
-pub(crate) const PROVIDER_CLASS_PROPERTY: &str = "comet.credential.provider.class";
-
-/// Iceberg-namespaced form of [`PROVIDER_CLASS_PROPERTY`], read from a Spark catalog's `s3.*`
-/// property bag (`spark.sql.catalog.<name>.s3.comet.credential.provider.class`).
-pub(crate) const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.class";
 
 /// Cap on opendal's credential cache when the provider does not report an expiry. Prevents the
 /// executor from holding a stale credential for the entire job lifetime.
@@ -98,33 +74,22 @@ pub enum AccessMode {
     Write = 1,
 }
 
-/// Resolve the configured provider class for the given bucket via `super::s3::get_config_trimmed`,
-/// which already implements the per-bucket-then-global `fs.s3a.` lookup. Returns the trimmed FQCN
-/// if non-empty.
-pub fn lookup_provider_class<'a>(
-    configs: &'a HashMap<String, String>,
-    bucket: &str,
-) -> Option<&'a str> {
-    super::s3::get_config_trimmed(configs, bucket, PROVIDER_CLASS_PROPERTY)
-        .filter(|s| !s.is_empty())
-}
-
-/// Per-request credential provider that delegates to the Java SPI via JNI. Constructed once per S3
-/// store or FileIO; calls `ensureInitialized` synchronously at construction so the JVM provider
-/// instance is ready before any per-request fetch.
+/// Per-scan credential provider that delegates to the JVM SPI via JNI.
 ///
-/// The four String arguments threaded through every `getCredentialsForPath` call (provider class,
-/// dispatch key, bucket, path) are immutable for the bridge's lifetime, so we cache them once at
-/// construction as JNI global refs to avoid per-call `env.new_string` allocations on the hot path.
+/// `handle` is the JVM-allocated identity for the `(provider_class, dispatch_key,
+/// catalog_properties)` triple, returned by `ensureInitialized` at construction. Per-request
+/// calls carry `(handle, bucket, path, mode)`, which lets the JVM disambiguate multi-tenant
+/// providers without re-sending the property bag and saves one JNI string allocation on the hot
+/// path. `bucket` and `path` are immutable for the bridge's lifetime so we cache them as JNI
+/// global refs.
 pub struct CometS3CredentialBridge {
     provider_class: String,
     dispatch_key: String,
     bucket: String,
     path: String,
     mode: AccessMode,
-    /// Cached JNI globals for the four constant String arguments to `getCredentialsForPath`.
-    provider_class_jstr: Arc<Global<JString<'static>>>,
-    dispatch_key_jstr: Arc<Global<JString<'static>>>,
+    handle: i64,
+    /// Cached JNI globals for the two constant String arguments to `getCredentialsForPath`.
     bucket_jstr: Arc<Global<JString<'static>>>,
     path_jstr: Arc<Global<JString<'static>>>,
 }
@@ -134,6 +99,7 @@ impl fmt::Debug for CometS3CredentialBridge {
         f.debug_struct("CometS3CredentialBridge")
             .field("provider_class", &self.provider_class)
             .field("dispatch_key", &self.dispatch_key)
+            .field("handle", &self.handle)
             .field("bucket", &self.bucket)
             .field("path", &self.path)
             .field("mode", &self.mode)
@@ -142,10 +108,9 @@ impl fmt::Debug for CometS3CredentialBridge {
 }
 
 impl CometS3CredentialBridge {
-    /// Construct the bridge and run a one-shot `ensureInitialized` call against the JVM
-    /// dispatcher. `dispatch_key` scopes provider instances on the JVM side: bucket name on the
-    /// Parquet path, catalog name on the Iceberg path. `catalog_properties` is forwarded to
-    /// `CometS3CredentialProvider.initialize(Map)` exactly once per `(class, dispatchKey)` pair.
+    /// Run `ensureInitialized` synchronously and stash the returned handle for the bridge's
+    /// lifetime. `dispatch_key` is the bucket on the Parquet path, the catalog name on the Iceberg
+    /// path. `catalog_properties` is forwarded into the vendor's `initialize(Map)`.
     pub fn new(
         provider_class: impl Into<String>,
         dispatch_key: impl Into<String>,
@@ -159,76 +124,35 @@ impl CometS3CredentialBridge {
         let bucket = bucket.into();
         let path = path.into();
 
-        let (provider_class_jstr, dispatch_key_jstr, bucket_jstr, path_jstr) =
-            JVMClasses::with_env(|env| -> Result<_, ExecutionError> {
-                let pc = env.new_string(&provider_class).map_err(|e| {
-                    ExecutionError::GeneralError(format!("new_string(provider_class): {e}"))
-                })?;
-                let dk = env.new_string(&dispatch_key).map_err(|e| {
-                    ExecutionError::GeneralError(format!("new_string(dispatch_key): {e}"))
-                })?;
-                let b = env.new_string(&bucket).map_err(|e| {
-                    ExecutionError::GeneralError(format!("new_string(bucket): {e}"))
-                })?;
-                let p = env
-                    .new_string(&path)
-                    .map_err(|e| ExecutionError::GeneralError(format!("new_string(path): {e}")))?;
-                let pc_g = Arc::new(jni_new_global_ref!(env, pc).map_err(|e| {
-                    ExecutionError::GeneralError(format!("global_ref(provider_class): {e}"))
-                })?);
-                let dk_g = Arc::new(jni_new_global_ref!(env, dk).map_err(|e| {
-                    ExecutionError::GeneralError(format!("global_ref(dispatch_key): {e}"))
-                })?);
-                let b_g = Arc::new(jni_new_global_ref!(env, b).map_err(|e| {
+        let (bucket_jstr, path_jstr) = JVMClasses::with_env(|env| -> Result<_, ExecutionError> {
+            let b = env
+                .new_string(&bucket)
+                .map_err(|e| ExecutionError::GeneralError(format!("new_string(bucket): {e}")))?;
+            let p = env
+                .new_string(&path)
+                .map_err(|e| ExecutionError::GeneralError(format!("new_string(path): {e}")))?;
+            let b_g =
+                Arc::new(jni_new_global_ref!(env, b).map_err(|e| {
                     ExecutionError::GeneralError(format!("global_ref(bucket): {e}"))
                 })?);
-                let p_g =
-                    Arc::new(jni_new_global_ref!(env, p).map_err(|e| {
-                        ExecutionError::GeneralError(format!("global_ref(path): {e}"))
-                    })?);
-                Ok((pc_g, dk_g, b_g, p_g))
-            })?;
+            let p_g = Arc::new(
+                jni_new_global_ref!(env, p)
+                    .map_err(|e| ExecutionError::GeneralError(format!("global_ref(path): {e}")))?,
+            );
+            Ok((b_g, p_g))
+        })?;
 
-        ensure_initialized(&provider_class, &dispatch_key, catalog_properties)?;
+        let handle = ensure_initialized(&provider_class, &dispatch_key, catalog_properties)?;
         Ok(Self {
             provider_class,
             dispatch_key,
             bucket,
             path,
             mode,
-            provider_class_jstr,
-            dispatch_key_jstr,
+            handle,
             bucket_jstr,
             path_jstr,
         })
-    }
-
-    /// Shared constructor for the s3.rs and iceberg_scan.rs call sites. Returns `Ok(None)` when no
-    /// provider class is configured so callers can fall through to their default credential path.
-    pub fn for_url(
-        url: &Url,
-        configs: &HashMap<String, String>,
-        mode: AccessMode,
-        dispatch_key: &str,
-        catalog_properties: &HashMap<String, String>,
-    ) -> Result<Option<Self>, ExecutionError> {
-        let bucket = match url.host_str() {
-            Some(b) => b,
-            None => return Ok(None),
-        };
-        let provider_class = match lookup_provider_class(configs, bucket) {
-            Some(c) => c.to_string(),
-            None => return Ok(None),
-        };
-        Self::new(
-            provider_class,
-            dispatch_key,
-            bucket,
-            url.path(),
-            mode,
-            catalog_properties,
-        )
-        .map(Some)
     }
 
     fn fetch_raw(&self) -> Result<RawCredentials, ExecutionError> {
@@ -238,8 +162,7 @@ impl CometS3CredentialBridge {
             let creds_obj: JObject = unsafe {
                 jni_static_call!(env,
                     comet_s3_credential_dispatcher.get_credentials_for_path(
-                        self.provider_class_jstr.as_obj(),
-                        self.dispatch_key_jstr.as_obj(),
+                        self.handle,
                         self.bucket_jstr.as_obj(),
                         self.path_jstr.as_obj(),
                         mode
@@ -287,8 +210,8 @@ fn ensure_initialized(
     provider_class: &str,
     dispatch_key: &str,
     catalog_properties: &HashMap<String, String>,
-) -> Result<(), ExecutionError> {
-    JVMClasses::with_env(|env| -> Result<(), ExecutionError> {
+) -> Result<i64, ExecutionError> {
+    JVMClasses::with_env(|env| -> Result<i64, ExecutionError> {
         let provider_class_jstr = env.new_string(provider_class).map_err(|e| {
             ExecutionError::GeneralError(format!("new_string(provider_class): {e}"))
         })?;
@@ -297,14 +220,14 @@ fn ensure_initialized(
             .map_err(|e| ExecutionError::GeneralError(format!("new_string(dispatch_key): {e}")))?;
         let props_obj = build_java_string_map(env, catalog_properties)?;
 
-        unsafe {
+        let handle: i64 = unsafe {
             jni_static_call!(env,
                 comet_s3_credential_dispatcher.ensure_initialized(
                     &provider_class_jstr, &dispatch_key_jstr, &props_obj
-                ) -> ()
-            )?;
-        }
-        Ok(())
+                ) -> i64
+            )?
+        };
+        Ok(handle)
     })
 }
 

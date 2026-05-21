@@ -15,4 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Cloud-side helpers shared across Comet's native scan paths.
+//!
+//! Today this hosts the JNI bridge to the JVM `CometS3CredentialDispatcher` SPI, which is reused
+//! by the raw Parquet (`object_store`) path and the Iceberg (`opendal` via `iceberg-rust`) path.
+
 pub mod s3;
