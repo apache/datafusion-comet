@@ -174,6 +174,7 @@ of expressions that be disabled.
 | Rand           | `rand`         |
 | Randn          | `randn`        |
 | Remainder      | `%`            |
+| Rint           | `rint`         |
 | Round          | `round`        |
 | Sec            | `sec`          |
 | Signum         | `signum`       |
