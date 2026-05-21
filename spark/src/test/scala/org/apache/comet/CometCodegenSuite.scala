@@ -646,7 +646,15 @@ class CometCodegenSuite
   }
 
   test("ScalaUDF over Decimal(38, 10) routes through the BigDecimal slow path") {
-    spark.udf.register("decIdLong", (d: java.math.BigDecimal) => d)
+    // Pin the return type to Decimal(38, 10). TypeTag inference for `BigDecimal` would default to
+    // Decimal(38, 18), and under Spark 4 ANSI the encoder's CheckOverflow throws on the 28-digit
+    // boundary value below when rescaling 10 -> 18.
+    spark.udf.register(
+      "decIdLong",
+      new UDF1[java.math.BigDecimal, java.math.BigDecimal] {
+        override def call(d: java.math.BigDecimal): java.math.BigDecimal = d
+      },
+      DecimalType(38, 10))
     withDecimalTable(
       "DECIMAL(38, 10)",
       Seq(
