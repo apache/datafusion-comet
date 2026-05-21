@@ -43,6 +43,7 @@ to read more.
    Supported Data Types <datatypes>
    Supported Operators <operators>
    Supported Expressions <expressions>
+   ScalaUDF and Java UDF Support <scala_java_udfs>
    Configuration Settings <configs>
    Compatibility Guide <compatibility/index>
    Understanding Comet Plans <understanding-comet-plans>

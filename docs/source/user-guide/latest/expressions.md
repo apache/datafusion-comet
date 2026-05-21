@@ -101,6 +101,7 @@ of expressions that be disabled.
 
 | Expression       | SQL                          |
 | ---------------- | ---------------------------- |
+| ConvertTimezone  | `convert_timezone`           |
 | CurrentTimeZone  | `current_timezone`           |
 | DateAdd          | `date_add`                   |
 | DateDiff         | `datediff`                   |
@@ -115,6 +116,7 @@ of expressions that be disabled.
 | LastDay          | `last_day`                   |
 | LocalTimestamp   | `localtimestamp`             |
 | MakeDate         | `make_date`                  |
+| MakeTime         | `make_time`                  |
 | Minute           | `minute`                     |
 | NextDay          | `next_day`                   |
 | Second           | `second`                     |
@@ -131,6 +133,8 @@ of expressions that be disabled.
 | DayOfYear        | `dayofyear`                  |
 | WeekOfYear       | `weekofyear`                 |
 | Quarter          | `quarter`                    |
+| ToTime           | `to_time`                    |
+| TryToTime        | `try_to_time`                |
 
 ## Math Expressions
 
@@ -156,6 +160,7 @@ of expressions that be disabled.
 | Divide         | `/`            |
 | Exp            | `exp`          |
 | Expm1          | `expm1`        |
+| Factorial      | `factorial`    |
 | Floor          | `floor`        |
 | Hex            | `hex`          |
 | IntegralDivide | `div`          |
@@ -170,6 +175,7 @@ of expressions that be disabled.
 | Randn          | `randn`        |
 | Remainder      | `%`            |
 | Round          | `round`        |
+| Sec            | `sec`          |
 | Signum         | `signum`       |
 | Sin            | `sin`          |
 | Sinh           | `sinh`         |
