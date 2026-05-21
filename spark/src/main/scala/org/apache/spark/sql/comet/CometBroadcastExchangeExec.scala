@@ -90,8 +90,11 @@ case class CometBroadcastExchangeExec(
     // CometBroadcastExchanges with identical Comet children but different originalPlans
     // produce different broadcast values, so their canonical forms must differ to
     // prevent AQE's ReusedExchange from incorrectly merging them. See issue #4242.
+    // Canonicalize mode as well: HashedRelationBroadcastMode carries join-key expressions
+    // with non-canonical exprIds, so two semantically equivalent broadcasts would otherwise
+    // miss legitimate reuse opportunities (matches Spark's BroadcastExchangeExec).
     val canonicalOriginal = if (originalPlan != null) originalPlan.canonicalized else null
-    CometBroadcastExchangeExec(canonicalOriginal, null, mode, child.canonicalized)
+    CometBroadcastExchangeExec(canonicalOriginal, null, mode.canonicalized, child.canonicalized)
   }
 
   override def runtimeStatistics: Statistics = {
