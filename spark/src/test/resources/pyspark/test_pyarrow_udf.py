@@ -335,6 +335,245 @@ def test_map_in_arrow_decimal_type(spark, tmp_path, accelerated):
     assert out == set(rows)
 
 
+@pytest.mark.parametrize(
+    "precision,scale",
+    [
+        (1, 0),
+        (9, 0),
+        (9, 4),
+        (17, 8),
+        (18, 0),
+        (18, 18),
+        (19, 0),
+        (28, 14),
+        (38, 0),
+        (38, 18),
+        (38, 38),
+    ],
+)
+def test_map_in_arrow_decimal_precision_sweep(
+    spark, tmp_path, accelerated, precision, scale
+):
+    """
+    Spark's `BaseFixedWidthVector` handles short decimals (precision <= 18, long-backed) and long
+    decimals (precision >= 19, 16-byte `FixedSizeBinary`) on different code paths. The 18/19
+    boundary is where buffer-width assumptions in `copyVector` can hide bugs. Sweep over
+    representative precisions and scale extremes (0, half, max).
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("amount", T.DecimalType(precision, scale)),
+        ]
+    )
+    integer_digits = precision - scale
+    abs_int = (10**integer_digits - 1) if integer_digits > 0 else 0
+    abs_frac = (10**scale - 1) if scale > 0 else 0
+    largest = Decimal(f"{abs_int}.{abs_frac:0{scale}d}") if scale else Decimal(abs_int)
+    rows = [
+        (1, Decimal(0)),
+        (2, largest),
+        (3, -largest),
+        (4, None),
+    ]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = {(r["id"], r["amount"]) for r in result_df.collect()}
+    assert out == set(rows)
+
+
+@pytest.mark.parametrize("null_fraction", [0.0, 0.01, 0.5, 0.99, 1.0])
+def test_map_in_arrow_null_density_sweep(
+    spark, tmp_path, accelerated, null_fraction
+):
+    """
+    Validity-buffer memcpy is where Arrow Java vector copies historically break. Sweep null
+    density across the corner cases: all-non-null, sparse-null, half-null, sparse-non-null,
+    all-null. Catches off-by-one in validity packing and edge cases where source/destination
+    null counts diverge.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("value", T.LongType()),
+        ]
+    )
+    n = 256
+    rows = [
+        (i, None if (i * 9973) % 100 < int(null_fraction * 100) else i * 2)
+        for i in range(n)
+    ]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = sorted((r["id"], r["value"]) for r in result_df.collect())
+    assert out == sorted(rows)
+
+
+def test_map_in_arrow_multi_batch_per_partition(spark, tmp_path, accelerated):
+    """
+    Force many small batches in a single partition so the writer/unloader exercises the
+    persistent destination IPC root over multiple batches. Catches buffer-reuse bugs and
+    variable-width data-buffer growth across batches that single-batch tests miss.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("s", T.StringType()),
+        ]
+    )
+    n = 4000
+    rows = [(i, f"row_{i}" if i % 7 != 0 else None) for i in range(n)]
+    src = str(tmp_path / "src.parquet")
+    # Single partition; small arrow batch limit forces ~250 batches per partition.
+    spark.createDataFrame(rows, schema_in).coalesce(1).write.parquet(src)
+
+    prev_records = spark.conf.get("spark.sql.execution.arrow.maxRecordsPerBatch")
+    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", "16")
+    try:
+
+        def passthrough(iterator):
+            for batch in iterator:
+                yield batch
+
+        result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+        _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+        out = sorted((r["id"], r["s"]) for r in result_df.collect())
+        assert out == sorted(rows)
+    finally:
+        spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", prev_records)
+
+
+def test_map_in_arrow_wide_schema(spark, tmp_path, accelerated):
+    """
+    50-column mixed-type schema. The bulk-copy path walks a flattened addresses[] array indexed
+    across the whole vector tree; off-by-one in flattening logic surfaces at depth * width.
+    """
+    fields = [T.StructField("id", T.LongType())]
+    for i in range(15):
+        fields.append(T.StructField(f"i{i}", T.IntegerType()))
+    for i in range(15):
+        fields.append(T.StructField(f"d{i}", T.DoubleType()))
+    for i in range(15):
+        fields.append(T.StructField(f"s{i}", T.StringType()))
+    for i in range(4):
+        fields.append(T.StructField(f"b{i}", T.BooleanType()))
+    assert len(fields) == 50
+    schema_in = T.StructType(fields)
+
+    rows = []
+    for i in range(60):
+        row = [i]
+        row += [i + k if k % 3 != 0 else None for k in range(15)]
+        row += [float(i + k) * 0.5 if k % 4 != 0 else None for k in range(15)]
+        row += [f"s{i}_{k}" if k % 5 != 0 else None for k in range(15)]
+        row += [bool((i + k) % 2) for k in range(4)]
+        rows.append(tuple(row))
+
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def passthrough(iterator):
+        for batch in iterator:
+            yield batch
+
+    result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = sorted(tuple(r[name] for name in schema_in.names) for r in result_df.collect())
+    assert out == sorted(rows)
+
+
+def test_map_in_arrow_zero_row_batch_in_stream(spark, tmp_path, accelerated):
+    """
+    A non-empty stream that contains a 0-row batch mid-stream. The existing empty-input test
+    filters everything out so the operator sees zero batches; this one keeps later batches so
+    the writer must handle a 0-row batch and continue. setValueCount(0) + validity buffer
+    sizing are the candidates that can break here.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("value", T.LongType()),
+        ]
+    )
+    rows = [(i, i * 3) for i in range(50)]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).coalesce(1).write.parquet(src)
+
+    def emit_with_empty(iterator):
+        for batch in iterator:
+            # Yield an empty record batch first, then the real one.
+            yield batch.slice(0, 0)
+            yield batch
+
+    result_df = spark.read.parquet(src).mapInArrow(emit_with_empty, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = sorted((r["id"], r["value"]) for r in result_df.collect())
+    assert out == sorted(rows)
+
+
+def test_map_in_arrow_transforming_array(spark, tmp_path, accelerated):
+    """
+    Mutating UDF over a complex type: reverse each array. Catches symmetric encode/decode
+    mistakes that a passthrough UDF would invert and hide.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("nums", T.ArrayType(T.IntegerType())),
+        ]
+    )
+    rows = [
+        (1, [1, 2, 3, 4]),
+        (2, [None, 5, None]),
+        (3, []),
+        (4, None),
+        (5, [42]),
+    ]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def reverse_arrays(iterator):
+        for batch in iterator:
+            pdf = batch.to_pandas()
+            pdf["nums"] = pdf["nums"].apply(
+                lambda lst: list(reversed(lst)) if lst is not None else None
+            )
+            yield pa.RecordBatch.from_pandas(pdf)
+
+    result_df = spark.read.parquet(src).mapInArrow(reverse_arrays, schema_in)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    def _norm(row):
+        nums = row["nums"]
+        return (row["id"], None if nums is None else tuple(nums))
+
+    out = {_norm(r) for r in result_df.collect()}
+    expected = set()
+    for id_, nums in rows:
+        rev = None if nums is None else tuple(reversed(nums))
+        expected.add((id_, rev))
+    assert out == expected
+
+
 def test_map_in_arrow_date_and_timestamp(spark, tmp_path, accelerated):
     schema_in = T.StructType(
         [
