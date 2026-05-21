@@ -23,11 +23,13 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType, TimeType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
@@ -92,6 +94,16 @@ trait CometExprShim extends CommonStringExprs {
         val Seq(bin, charset, _, _) = s.arguments
         stringDecode(expr, charset, bin, inputs, binding)
 
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            s.functionName == "makeTime" &&
+            s.arguments.size == 3 &&
+            s.dataType.isInstanceOf[TimeType] =>
+        val childExprs = s.arguments.map(exprToProtoInternal(_, inputs, binding))
+        val optExpr =
+          scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
+        optExprWithInfo(optExpr, expr, s.arguments: _*)
+
       case expr @ ToPrettyString(child, timeZoneId) =>
         val castSupported = CometCast.isSupported(
           child.dataType,
@@ -132,9 +144,9 @@ trait CometExprShim extends CommonStringExprs {
         val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
         optExprWithInfo(optExpr, wb, wb.children: _*)
 
-      // In Spark 4.0, StructsToJson is a RuntimeReplaceable whose replacement is
-      // Invoke(Literal(StructsToJsonEvaluator), "evaluate", ...). Reconstruct the
-      // original StructsToJson and recurse so support-level checks apply.
+      // In Spark 4.x, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
+      // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression
+      // and recurse so support-level checks apply.
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
@@ -142,6 +154,36 @@ trait CometExprShim extends CommonStringExprs {
               StructsToJson(evaluator.options, child, evaluator.timeZoneId),
               inputs,
               binding)
+          case (Literal(evaluator: ParseUrlEvaluator, _), "evaluate", args) =>
+            val parseUrl = ParseUrl(args, evaluator.failOnError)
+            val result = exprToProtoInternal(parseUrl, inputs, binding)
+            if (result.isEmpty) {
+              parseUrl
+                .getTagValue(CometExplainInfo.EXTENSION_INFO)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+            }
+            result
+          case (Literal(parser: ToTimeParser, _), "parse", args)
+              if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty && args.size == 1 =>
+            val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
+            val optExpr =
+              scalarFunctionExprToProtoWithReturnType("to_time", i.dataType, true, childExprs: _*)
+            optExprWithInfo(optExpr, i, args: _*)
+          case _ => None
+        }
+
+      // try_to_time resolves to TryEval(Invoke(Literal(ToTimeParser), "parse", ...))
+      case TryEval(i: Invoke) =>
+        (i.targetObject, i.functionName, i.arguments) match {
+          case (Literal(parser: ToTimeParser, _), "parse", args)
+              if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty && args.size == 1 =>
+            val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
+            val optExpr = scalarFunctionExprToProtoWithReturnType(
+              "to_time",
+              i.dataType,
+              false,
+              childExprs: _*)
+            optExprWithInfo(optExpr, expr, args: _*)
           case _ => None
         }
 

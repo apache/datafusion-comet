@@ -30,7 +30,6 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
-      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
@@ -41,7 +40,6 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
-      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
@@ -63,7 +61,7 @@ jobs:
   # Fast lint check - gates all other jobs
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
@@ -77,7 +75,7 @@ jobs:
   lint-java:
     needs: lint
     name: Lint Java (${{ matrix.profile.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
       env:
@@ -103,7 +101,6 @@ jobs:
           # spark-4.2 profiles.
       fail-fast: false
     steps:
-      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
@@ -154,7 +151,7 @@ jobs:
   build-spark-4-1:
     needs: lint
     name: Build Spark 4.1, JDK 17
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
@@ -183,17 +180,16 @@ jobs:
   build-native:
     needs: lint
     name: Build Native Library
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=8,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
-      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
       - uses: actions/checkout@v6
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17  # JDK only needed for common module proto generation
+          jdk-version: 17  # JDK only needed for JVM module proto generation
 
       - name: Restore Cargo cache
         uses: actions/cache/restore@v5
@@ -236,12 +232,10 @@ jobs:
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
-      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
-
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
@@ -285,32 +279,22 @@ jobs:
           - name: "Spark 3.4, JDK 11, Scala 2.12"
             java_version: "11"
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
-            scan_impl: "auto"
 
           - name: "Spark 3.5, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.13"
-            scan_impl: "native_iceberg_compat"
-
-          - name: "Spark 4.0, JDK 17"
-            java_version: "17"
-            maven_opts: "-Pspark-4.0"
-            scan_impl: "auto"
 
           - name: "Spark 4.0, JDK 21"
             java_version: "21"
             maven_opts: "-Pspark-4.0"
-            scan_impl: "auto"
 
           - name: "Spark 4.1, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.1"
-            scan_impl: "auto"
 
           - name: "Spark 4.2, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.2"
-            scan_impl: "auto"
         suite:
           - name: "fuzz"
             value: |
@@ -318,6 +302,7 @@ jobs:
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.comet.CometFuzzIcebergSuite
               org.apache.comet.CometFuzzMathSuite
+              org.apache.comet.CometCodegenFuzzSuite
               org.apache.comet.DataGeneratorSuite
           - name: "shuffle"
             value: |
@@ -337,11 +322,13 @@ jobs:
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
               org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
+              org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
           - name: "csv"
             value: |
@@ -394,20 +381,22 @@ jobs:
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
+              org.apache.comet.CometCodegenSuite
+              org.apache.comet.CometCodegenSourceSuite
+              org.apache.comet.CometCodegenHOFSuite
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
       fail-fast: false
-    name: ${{ matrix.profile.name }}/${{ matrix.profile.scan_impl }} [${{ matrix.suite.name }}]
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
       env:
         JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
 
     steps:
-      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
@@ -437,10 +426,9 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          artifact_name: ${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ matrix.profile.scan_impl }}
+          artifact_name: ${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           suites: ${{ matrix.suite.name == 'sql' && matrix.profile.name == 'Spark 3.4, JDK 11, Scala 2.12' && '' || matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
-          scan_impl: ${{ matrix.profile.scan_impl }}
           upload-test-reports: true
           skip-native-build: true
 
@@ -448,14 +436,12 @@ jobs:
   verify-benchmark-results-tpch:
     needs: build-native
     name: Verify TPC-H Results
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     env:
       JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
     steps:
-      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
-
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
@@ -504,7 +490,7 @@ jobs:
   verify-benchmark-results-tpcds:
     needs: build-native
     name: Verify TPC-DS Results (${{ matrix.join }})
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     env:
@@ -514,8 +500,6 @@ jobs:
         join: [sort_merge, broadcast, hash]
       fail-fast: false
     steps:
-      - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
-
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
