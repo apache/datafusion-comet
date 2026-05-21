@@ -73,8 +73,7 @@ help contributors find bugs in their area of expertise.
 | `area:ffi`         | Arrow FFI / JNI boundary                  |
 | `area:ci`          | CI/CD, GitHub Actions, build tooling      |
 
-The following pre-existing labels also serve as area indicators: `native_datafusion`,
-`native_iceberg_compat`, `spark 4`, `spark sql tests`.
+The following pre-existing labels also serve as area indicators: `spark 4`, `spark sql tests`.
 
 ## Triage Process
 
@@ -109,9 +108,8 @@ Periodically review open bugs to ensure priorities are still accurate:
    crashes, because crashes are at least visible.
 2. **User-reported over test-only.** A bug hit by a real user on a real workload takes priority
    over one found only in test suites.
-3. **Core path over experimental.** Bugs in the default scan mode (`native_comet`) or widely-used
-   expressions take priority over bugs in experimental features like `native_datafusion` or
-   `native_iceberg_compat`.
+3. **Core path over experimental.** Bugs in widely-used expressions and operators take priority over
+   bugs in experimental features.
 4. **Production safety over feature completeness.** Fixing a data corruption bug is more important
    than adding support for a new expression.
 

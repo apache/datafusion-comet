@@ -31,6 +31,9 @@ class CometPluginsSuite extends CometTestBase {
     conf.set("spark.executor.memory", "1G")
     conf.set("spark.executor.memoryOverhead", "2G")
     conf.set("spark.plugins", "org.apache.spark.CometPlugin")
+    conf.set(
+      "spark.shuffle.manager",
+      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
     conf.set("spark.comet.enabled", "true")
     conf.set("spark.comet.exec.enabled", "true")
     conf.set("spark.comet.exec.onHeap.enabled", "true")

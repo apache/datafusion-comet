@@ -24,10 +24,11 @@ use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_isnan,
-    spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
-    spark_unscaled_value, EvalMode, SparkArrayCompact, SparkArrayPositionFunc, SparkArraysOverlap,
-    SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate,
-    SparkSecondsToTimestamp, SparkSizeFunc,
+    spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad,
+    spark_to_time, spark_unhex, spark_unscaled_value, EvalMode, SparkArrayCompact,
+    SparkArrayPositionFunc, SparkArraysOverlap, SparkContains, SparkDateDiff,
+    SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime, SparkSecondsToTimestamp,
+    SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -197,6 +198,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_map_sort);
             make_comet_scalar_udf!("spark_map_sort", func, without data_type)
         }
+        "to_time" => {
+            make_comet_scalar_udf!("to_time", spark_to_time, without data_type, fail_on_error)
+        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
@@ -215,6 +219,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(JsonArrayLength::default())),

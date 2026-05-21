@@ -257,9 +257,10 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
-      // Fully native scan for V1
-      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        convertToComet(scan, CometNativeScan).getOrElse(scan)
+      // Fully native scan for V1. CometScanExec must always convert to a native scan; the JVM
+      // fallback path has been removed. If conversion fails, fall back to the original Spark scan.
+      case scan: CometScanExec =>
+        convertToComet(scan, CometNativeScan).getOrElse(scan.wrapped)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
       // Only handle scans with native metadata; other scans fall through to isCometScan
