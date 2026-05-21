@@ -17,25 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Expression Compatibility
+# URL Expressions
 
-Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
-`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
-the [Comet Supported Expressions Guide](../../expressions.md) for more information on this configuration setting.
-
-Compatibility notes are grouped by expression category:
-
-```{toctree}
-:maxdepth: 2
-
-aggregate
-array
-datetime
-map
-math
-misc
-string
-struct
-url
-cast
-```
+<!--BEGIN:EXPR_COMPAT[url]-->
+<!--END:EXPR_COMPAT-->
