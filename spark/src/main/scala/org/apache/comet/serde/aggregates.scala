@@ -638,6 +638,8 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
 
 object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilterAggregate] {
 
+  override def supportsMixedPartialFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bloomFilter: BloomFilterAggregate,
