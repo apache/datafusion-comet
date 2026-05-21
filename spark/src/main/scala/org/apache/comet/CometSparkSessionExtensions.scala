@@ -114,6 +114,14 @@ class CometSparkSessionExtensions
 object CometSparkSessionExtensions extends Logging {
   lazy val isBigEndian: Boolean = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN)
 
+  // isCometLoaded is invoked once per plan rule application, so the shuffle-manager
+  // warning would otherwise fire many times per session. Track SQLConf identities we
+  // have already warned for; the weak map drops entries when the session is GC'd.
+  private val warnedMissingShuffleManager: java.util.Set[SQLConf] =
+    java.util.Collections.synchronizedSet(
+      java.util.Collections.newSetFromMap(
+        new java.util.WeakHashMap[SQLConf, java.lang.Boolean]()))
+
   /**
    * Checks whether Comet extension should be loaded for Spark.
    */
@@ -128,12 +136,14 @@ object CometSparkSessionExtensions extends Logging {
     }
 
     if (COMET_EXEC_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
-      logWarning(
-        "Comet extension is disabled because spark.shuffle.manager is not set to " +
-          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager. " +
-          "Comet provides limited benefit without its shuffle manager. " +
-          s"Set ${COMET_EXEC_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
-          "Spark's default shuffle manager.")
+      if (warnedMissingShuffleManager.add(conf)) {
+        logWarning(
+          "Comet extension is disabled because spark.shuffle.manager is not set to " +
+            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager. " +
+            "Comet provides limited benefit without its shuffle manager. " +
+            s"Set ${COMET_EXEC_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
+            "Spark's default shuffle manager.")
+      }
       return false
     }
 
