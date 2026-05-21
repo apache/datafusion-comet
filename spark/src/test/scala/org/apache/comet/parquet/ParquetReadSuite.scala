@@ -993,9 +993,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // TypeUtil.checkParquetType, BINARY case). The native_datafusion scan
     // must do the same in its schema adapter rather than letting DataFusion's
     // cast silently parse the bytes or reinterpret them.
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
       withTempPath { dir =>
         val path = dir.getCanonicalPath
         Seq("a", "b", "c").toDF("c").write.parquet(path)
@@ -1013,9 +1011,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("native_datafusion rejects BINARY (no decimal annotation) read as DecimalType") {
     // Regression guard for https://github.com/apache/datafusion-comet/issues/4351,
     // mirroring the BINARY -> DECIMAL(37, 1) iteration in SPARK-34212.
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
       withTempPath { dir =>
         val path = dir.getCanonicalPath
         // CAST('1.2' AS BINARY) writes BYTE_ARRAY with no decimal annotation.
@@ -1044,9 +1040,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // Regression guard for #4089 and #4343. Spark's `isDecimalTypeMatched`
     // accepts decimal-to-decimal only when `scaleIncrease >= 0` AND
     // `precisionIncrease >= scaleIncrease`.
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
       val cases = Seq(
         // (file_p, file_s, read_p, read_s)
         (10, 2, 5, 0), // #4089: scale narrows.
@@ -1072,9 +1066,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("native_datafusion rejects integer read as too-narrow decimal") {
     // Regression guard for #4344. Spark's `canReadAsDecimal` requires
     // `precision - scale >= 10` for INT32 sources and `>= 20` for INT64.
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
       // INT32 source (Byte/Short/Int all written as INT32 by Spark).
       Seq("byte", "short", "int").foreach { writeType =>
         withTempPath { dir =>
@@ -1097,9 +1089,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("native_datafusion rejects primitive Parquet conversions Spark rejects") {
     // Regression guard for #4297. `getUpdater` has no branch for these
     // (write_type, read_type) pairs.
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
       val cases = Seq(
         ("bigint", "8589934592", "int"),
         ("double", "1e40", "float"),
@@ -1410,15 +1400,10 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  def testScanner(
-      cometEnabled: String,
-      cometNativeScanImpl: String,
-      scanner: String,
-      v1: Option[String] = None): Unit = {
+  def testScanner(cometEnabled: String, scanner: String, v1: Option[String] = None): Unit = {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> cometEnabled,
       CometConf.COMET_EXEC_ENABLED.key -> cometEnabled,
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> cometNativeScanImpl,
       SQLConf.USE_V1_SOURCE_LIST.key -> v1.getOrElse("")) {
       withParquetTable(Seq((Long.MaxValue, 1), (Long.MaxValue, 2)), "tbl") {
         val df = spark.sql("select * from tbl")
@@ -1504,10 +1489,9 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   // Based on Spark ParquetFieldIdIOSuite.test("Parquet reads infer fields using field ids
-  // correctly"). Forces SCAN_NATIVE_DATAFUSION so we can prove that the gate in CometScanRule
-  // is removed and that the native_datafusion scan resolves columns by field id rather than by
-  // name (the read schema names differ from what is in the file).
-  test("native_datafusion: read by Parquet field id when names differ") {
+  // correctly"). Verifies that Comet's native Parquet scan resolves columns by field id
+  // rather than by name (the read schema names differ from what is in the file).
+  test("read by Parquet field id when names differ") {
     val writeSchema = StructType(
       Seq(
         StructField("random", IntegerType, nullable = true, withId(1)),
@@ -1518,9 +1502,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         StructField("b", IntegerType, nullable = true, withId(1))))
     val writeData = Seq(Row(100, "text"), Row(200, "more"))
 
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
         spark
           .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
@@ -1534,9 +1516,9 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   // Based on Spark ParquetFieldIdIOSuite.test("SPARK-38094: absence of field ids: reading nested
-  // schema"). Exercises ID matching at every nesting level (struct, array<struct>, map) under
-  // SCAN_NATIVE_DATAFUSION. Names differ from the file at every level.
-  test("native_datafusion: read nested types by Parquet field id when names differ") {
+  // schema"). Exercises ID matching at every nesting level (struct, array<struct>, map). Names
+  // differ from the file at every level.
+  test("read nested types by Parquet field id when names differ") {
     val writeSchema = StructType(
       Seq(StructField(
         "outer",
@@ -1581,9 +1563,7 @@ abstract class ParquetReadSuite extends CometTestBase {
       Row(Row(1, Seq(Row("x", 10), Row("y", 20)), Map("k1" -> 100))),
       Row(Row(2, Seq(Row("z", 30)), Map("k2" -> 200, "k3" -> 300))))
 
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
         spark
           .createDataFrame(spark.sparkContext.parallelize(data), writeSchema)
@@ -1596,14 +1576,12 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // Verbatim port of Spark `ParquetFieldIdIOSuite.test("multiple id matches")`, pinned to
-  // `SCAN_NATIVE_DATAFUSION` so the shim error path is exercised on both 3.x and 4.x.
-  // The stock suite is the CI signal but it requires the Spark test jars and
-  // `withAllParquetReaders`; keeping a copy here lets us iterate locally.
+  // Verbatim port of Spark `ParquetFieldIdIOSuite.test("multiple id matches")` so the shim
+  // error path is exercised on both 3.x and 4.x. The stock suite is the CI signal but it
+  // requires the Spark test jars and `withAllParquetReaders`; keeping a copy here lets us
+  // iterate locally.
   test("multiple id matches") {
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
         val readSchema =
           new StructType()
@@ -1633,11 +1611,9 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   // Verbatim port of Spark `ParquetFieldIdIOSuite.test("read parquet file without ids")`,
-  // pinned to `SCAN_NATIVE_DATAFUSION` for the same reason as the duplicate-id test above.
+  // for the same reason as the duplicate-id test above.
   test("read parquet file without ids") {
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
         val readSchema =
           new StructType()
@@ -1702,30 +1678,22 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   }
 
   test("Test V1 parquet scan uses respective scanner") {
-    Seq(
-      ("false", CometConf.SCAN_NATIVE_DATAFUSION, "FileScan parquet"),
-      ("true", CometConf.SCAN_NATIVE_DATAFUSION, "CometNativeScan")).foreach {
-      case (cometEnabled, cometNativeScanImpl, expectedScanner) =>
-        testScanner(
-          cometEnabled,
-          cometNativeScanImpl,
-          scanner = expectedScanner,
-          v1 = Some("parquet"))
+    Seq(("false", "FileScan parquet"), ("true", "CometNativeScan")).foreach {
+      case (cometEnabled, expectedScanner) =>
+        testScanner(cometEnabled, scanner = expectedScanner, v1 = Some("parquet"))
     }
   }
 
   test("test V1 parquet native scan -- case insensitive") {
     withTempPath { path =>
       spark.range(10).toDF("a").write.parquet(path.toString)
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
-        withTable("test") {
-          sql("create table test (A long) using parquet options (path '" + path + "')")
-          val df = sql("select A from test")
-          checkSparkAnswer(df)
-          // TODO: pushed down filters do not used schema adapter in datafusion, will cause empty result
-          // val df = sql("select * from test where A > 5")
-          // checkSparkAnswer(df)
-        }
+      withTable("test") {
+        sql("create table test (A long) using parquet options (path '" + path + "')")
+        val df = sql("select A from test")
+        checkSparkAnswer(df)
+        // TODO: pushed down filters do not used schema adapter in datafusion, will cause empty result
+        // val df = sql("select * from test where A > 5")
+        // checkSparkAnswer(df)
       }
     }
   }
@@ -1743,9 +1711,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           nullEnabled = false)
       }
       Seq(true, false).foreach { pushDown =>
-        withSQLConf(
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString) {
+        withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString) {
           Seq(
             ("_1 = true", Math.ceil(rows.toDouble / 2)), // Boolean
             ("_2 = 1", Math.ceil(rows.toDouble / 256)), // Byte
@@ -1791,12 +1757,13 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   }
 
   test("read basic complex types") {
-    Seq(true, false).foreach(dictionaryEnabled => {
-      withTempPath { dir =>
-        val path = new Path(dir.toURI.toString, "complex_types.parquet")
-        makeParquetFileComplexTypes(path, dictionaryEnabled, 10)
-        withParquetTable(path.toUri.toString, "complex_types") {
-          withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+    // Array indexing in the queries below would throw INVALID_ARRAY_INDEX under ANSI.
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      Seq(true, false).foreach(dictionaryEnabled => {
+        withTempPath { dir =>
+          val path = new Path(dir.toURI.toString, "complex_types.parquet")
+          makeParquetFileComplexTypes(path, dictionaryEnabled, 10)
+          withParquetTable(path.toUri.toString, "complex_types") {
             checkSparkAnswerAndOperator(sql("select * from complex_types"))
             // First level
             checkSparkAnswerAndOperator(sql(
@@ -1830,8 +1797,8 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
                   "from complex_types"))
           }
         }
-      }
-    })
+      })
+    }
   }
 
   test("reading ancient dates before 1582") {
@@ -1841,20 +1808,18 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     val file =
       getResourceParquetFilePath("test-data/before_1582_date_v3_2_0.snappy.parquet")
 
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
-      val df = spark.read.parquet(file)
+    val df = spark.read.parquet(file)
 
-      // Verify Comet scan is in the plan
-      val plan = df.queryExecution.executedPlan
-      checkCometOperators(plan)
+    // Verify Comet scan is in the plan
+    val plan = df.queryExecution.executedPlan
+    checkCometOperators(plan)
 
-      // Verify all 8 rows are read and contain dates before 1582
-      val rows = df.collect()
-      assert(rows.length == 8, s"Expected 8 rows, got ${rows.length}")
-      rows.foreach { row =>
-        val date = row.getDate(0)
-        assert(date.toLocalDate.getYear < 1582, s"Expected date before 1582, got $date")
-      }
+    // Verify all 8 rows are read and contain dates before 1582
+    val rows = df.collect()
+    assert(rows.length == 8, s"Expected 8 rows, got ${rows.length}")
+    rows.foreach { row =>
+      val date = row.getDate(0)
+      assert(date.toLocalDate.getYear < 1582, s"Expected date before 1582, got $date")
     }
   }
 
