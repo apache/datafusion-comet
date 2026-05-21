@@ -19,7 +19,7 @@ under the License.
 
 # S3 Credential Provider SPI: Design Notes
 
-This page captures why the `org.apache.comet.cloud.s3.CometS3CredentialProvider` SPI is shaped the way it is. The user-facing contract and operator setup live in the user guide page on cloud credential providers; this page is for maintainers and reviewers who want the design rationale.
+This page captures why the `org.apache.comet.cloud.s3.CometS3CredentialProvider` SPI is shaped the way it is. The user-facing contract and operator setup live in the user guide page on S3 credential providers; this page is for maintainers and reviewers who want the design rationale.
 
 ## The gap the SPI fills
 

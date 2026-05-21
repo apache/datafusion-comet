@@ -17,7 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Cloud Credential Providers
+# S3 Credential Providers
 
 Comet's native S3 readers normally fetch credentials from the standard AWS credential chain (static keys, instance profiles, environment variables, etc.). Some clusters use a vendor-managed mechanism instead, where credentials are issued per request based on a JWT or per S3 path. For those clusters, Comet supports loading a vendor-supplied bridge class that routes every native credential request through the vendor's Java code.
 

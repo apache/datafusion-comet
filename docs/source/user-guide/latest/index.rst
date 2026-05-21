@@ -50,5 +50,5 @@ to read more.
    Tuning Guide <tuning>
    Metrics Guide <metrics>
    Iceberg Guide <iceberg>
-   Cloud Credential Providers <cloud-credential-providers>
+   S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>

@@ -45,7 +45,7 @@ import java.util.Map;
  *
  * <p>Comet does not maintain a TTL cache, broadcast catalog state, or schedule refresh. Vendors own
  * caching, refresh, and any executor-side state distribution. Returns credentials or throws; there
- * is no fall-through return value. See the user guide on cloud credential providers for the full
+ * is no fall-through return value. See the user guide on S3 credential providers for the full
  * contract and examples.
  */
 public interface CometS3CredentialProvider {
