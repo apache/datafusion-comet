@@ -61,6 +61,7 @@ impl SparkBitArray {
         self.word_size() as u64 * 64
     }
 
+    #[allow(dead_code)] // used by tests and kept for future production callers
     pub fn byte_size(&self) -> usize {
         self.word_size() * 8
     }
@@ -74,6 +75,7 @@ impl SparkBitArray {
         self.bit_count
     }
 
+    #[allow(dead_code)] // used by tests
     pub fn to_bytes(&self) -> Vec<u8> {
         Vec::from(self.data.to_byte_slice())
     }
@@ -84,6 +86,7 @@ impl SparkBitArray {
 
     // Combines SparkBitArrays, however other is a &[u8] because we anticipate to come from an
     // Arrow ScalarValue::Binary which is a byte vector underneath, rather than a word vector.
+    #[allow(dead_code)] // used by tests
     pub fn merge_bits(&mut self, other: &[u8]) {
         assert_eq!(self.byte_size(), other.len());
         let mut bit_count: usize = 0;
