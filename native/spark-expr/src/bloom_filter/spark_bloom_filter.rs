@@ -17,6 +17,7 @@
 
 use arrow::array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
 use arrow::datatypes::ToByteSlice;
+use datafusion::common::{DataFusionError, Result as DFResult};
 use std::cmp;
 
 use crate::bloom_filter::spark_bit_array;
@@ -275,56 +276,61 @@ impl SparkBloomFilter {
         self.spark_serialization()
     }
 
-    pub fn merge_filter(&mut self, other: &[u8]) {
+    pub fn merge_filter(&mut self, other: &[u8]) -> DFResult<()> {
         let mut offset = 0;
 
         let version_int = read_num_be_bytes!(i32, 4, other[offset..]);
         offset += 4;
-        assert_eq!(
-            version_int,
-            self.version.to_int(),
-            "BloomFilter merge: version mismatch (got {}, expected {})",
-            version_int,
-            self.version.to_int(),
-        );
+        if version_int != self.version.to_int() {
+            return Err(DataFusionError::Internal(format!(
+                "BloomFilter merge: version mismatch (got {}, expected {})",
+                version_int,
+                self.version.to_int(),
+            )));
+        }
 
         let num_hash = read_num_be_bytes!(i32, 4, other[offset..]) as u32;
         offset += 4;
-        assert_eq!(
-            num_hash, self.num_hash_functions,
-            "BloomFilter merge: num_hash_functions mismatch (got {}, expected {})",
-            num_hash, self.num_hash_functions,
-        );
+        if num_hash != self.num_hash_functions {
+            return Err(DataFusionError::Internal(format!(
+                "BloomFilter merge: num_hash_functions mismatch (got {}, expected {})",
+                num_hash, self.num_hash_functions,
+            )));
+        }
 
         if let SparkBloomFilterVersion::V2 = self.version {
             let seed = read_num_be_bytes!(i32, 4, other[offset..]);
             offset += 4;
-            assert_eq!(
-                seed, self.seed,
-                "BloomFilter merge: seed mismatch (got {}, expected {})",
-                seed, self.seed,
-            );
+            if seed != self.seed {
+                return Err(DataFusionError::Internal(format!(
+                    "BloomFilter merge: seed mismatch (got {}, expected {})",
+                    seed, self.seed,
+                )));
+            }
         }
 
         let num_words = read_num_be_bytes!(i32, 4, other[offset..]) as usize;
         offset += 4;
-        assert_eq!(
-            num_words,
-            self.bits.word_size(),
-            "BloomFilter merge: num_words mismatch (got {}, expected {})",
-            num_words,
-            self.bits.word_size(),
-        );
-
-        let words = self.bits.data();
-        let mut merged = Vec::with_capacity(words.len());
-        for word in words.into_iter() {
-            let incoming = read_num_be_bytes!(i64, 8, other[offset..]) as u64;
-            offset += 8;
-            merged.push(word | incoming);
+        if num_words != self.bits.word_size() {
+            return Err(DataFusionError::Internal(format!(
+                "BloomFilter merge: num_words mismatch (got {}, expected {})",
+                num_words,
+                self.bits.word_size(),
+            )));
         }
-        // `SparkBitArray::new` recomputes `bit_count` from the words.
-        self.bits = SparkBitArray::new(merged);
+
+        let expected_bytes = num_words * 8;
+        if other.len() - offset < expected_bytes {
+            return Err(DataFusionError::Internal(format!(
+                "BloomFilter merge: truncated bit array (got {} bytes, expected {})",
+                other.len() - offset,
+                expected_bytes,
+            )));
+        }
+
+        self.bits
+            .merge_be_words(&other[offset..offset + expected_bytes]);
+        Ok(())
     }
 }
 
@@ -453,7 +459,7 @@ mod tests {
         }
 
         let mut b = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
-        b.merge_filter(&a.state_as_bytes());
+        b.merge_filter(&a.state_as_bytes()).unwrap();
 
         for v in [1_i64, 7, 42, 99, -3, i64::MAX] {
             assert!(b.might_contain_long(v), "missing {v} after merge");
@@ -471,7 +477,7 @@ mod tests {
         }
 
         let mut b = SparkBloomFilter::new(SparkBloomFilterVersion::V2, num_hash, num_bits, 0);
-        b.merge_filter(&a.state_as_bytes());
+        b.merge_filter(&a.state_as_bytes()).unwrap();
 
         for v in [11_i64, 222, 3333] {
             assert!(b.might_contain_long(v));
@@ -489,46 +495,47 @@ mod tests {
         a.put_long(123);
 
         let mut b = SparkBloomFilter::new(SparkBloomFilterVersion::V2, num_hash, num_bits, seed);
-        b.merge_filter(&a.state_as_bytes());
+        b.merge_filter(&a.state_as_bytes()).unwrap();
 
         assert!(b.might_contain_long(123));
     }
 
+    fn assert_merge_err_contains(filter: &mut SparkBloomFilter, buf: &[u8], needle: &str) {
+        let err = filter.merge_filter(buf).unwrap_err().to_string();
+        assert!(err.contains(needle), "expected `{needle}` in error: {err}");
+    }
+
     #[test]
-    #[should_panic(expected = "version mismatch")]
     fn merge_rejects_version_mismatch() {
         let num_bits = 1024;
         let num_hash = optimal_num_hash_functions(100, num_bits);
         let a = SparkBloomFilter::new(SparkBloomFilterVersion::V2, num_hash, num_bits, 0);
         let mut b = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
-        b.merge_filter(&a.state_as_bytes());
+        assert_merge_err_contains(&mut b, &a.state_as_bytes(), "version mismatch");
     }
 
     #[test]
-    #[should_panic(expected = "num_hash_functions mismatch")]
     fn merge_rejects_num_hash_mismatch() {
         let num_bits = 1024;
         let a = SparkBloomFilter::new(SparkBloomFilterVersion::V1, 5, num_bits, 0);
         let mut b = SparkBloomFilter::new(SparkBloomFilterVersion::V1, 7, num_bits, 0);
-        b.merge_filter(&a.state_as_bytes());
+        assert_merge_err_contains(&mut b, &a.state_as_bytes(), "num_hash_functions mismatch");
     }
 
     #[test]
-    #[should_panic(expected = "seed mismatch")]
     fn merge_rejects_seed_mismatch_v2() {
         let num_bits = 1024;
         let num_hash = optimal_num_hash_functions(100, num_bits);
         let a = SparkBloomFilter::new(SparkBloomFilterVersion::V2, num_hash, num_bits, 1);
         let mut b = SparkBloomFilter::new(SparkBloomFilterVersion::V2, num_hash, num_bits, 2);
-        b.merge_filter(&a.state_as_bytes());
+        assert_merge_err_contains(&mut b, &a.state_as_bytes(), "seed mismatch");
     }
 
     #[test]
-    #[should_panic(expected = "num_words mismatch")]
     fn merge_rejects_num_words_mismatch() {
         let num_hash = 5;
         let a = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, 512, 0);
         let mut b = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, 1024, 0);
-        b.merge_filter(&a.state_as_bytes());
+        assert_merge_err_contains(&mut b, &a.state_as_bytes(), "num_words mismatch");
     }
 }

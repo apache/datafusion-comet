@@ -65,6 +65,19 @@ impl SparkBitArray {
     pub fn data(&self) -> Vec<u64> {
         self.data.clone()
     }
+
+    /// OR-merge `incoming` (big-endian `u64` words, one per word in `self`) into
+    /// `self.data` in place and refresh `bit_count` in the same pass. The caller
+    /// is responsible for ensuring `incoming.len() == self.word_size() * 8`.
+    pub fn merge_be_words(&mut self, incoming: &[u8]) {
+        debug_assert_eq!(self.data.len() * 8, incoming.len());
+        let mut bit_count: usize = 0;
+        for (word, chunk) in self.data.iter_mut().zip(incoming.chunks_exact(8)) {
+            *word |= u64::from_be_bytes(chunk.try_into().unwrap());
+            bit_count += word.count_ones() as usize;
+        }
+        self.bit_count = bit_count;
+    }
 }
 
 pub fn num_words(num_bits: usize) -> usize {

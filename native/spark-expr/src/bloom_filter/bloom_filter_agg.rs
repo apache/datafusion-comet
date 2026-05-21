@@ -173,7 +173,6 @@ impl Accumulator for SparkBloomFilter {
         );
         assert_eq!(states[0].len(), 1);
         let state_sv = downcast_value!(states[0], BinaryArray);
-        self.merge_filter(state_sv.value_data());
-        Ok(())
+        self.merge_filter(state_sv.value_data())
     }
 }
