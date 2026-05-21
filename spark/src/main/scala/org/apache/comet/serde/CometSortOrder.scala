@@ -27,6 +27,10 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
+      " floating-point types is not 100% compatible with Spark")
+
   override def getSupportLevel(expr: SortOrder): SupportLevel = {
 
     if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&

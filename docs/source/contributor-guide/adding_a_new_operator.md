@@ -414,7 +414,7 @@ mod tests {
 
 ### Step 7: Update Documentation
 
-Add your operator to the supported operators list in `docs/source/user-guide/latest/compatibility.md` or similar documentation.
+Add your operator to the supported operators list in `docs/source/user-guide/latest/compatibility/operators.md` or similar documentation.
 
 ## Implementing a Sink Operator
 

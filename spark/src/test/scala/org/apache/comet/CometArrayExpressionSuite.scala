@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArrayUnion}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -243,7 +243,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val df = spark.read
           .parquet(path.toString)
           .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-          .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
+          .withColumn("idx", org.apache.spark.sql.functions.udf((_: Int) => 1).apply(col("_4")))
           .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
         checkSparkAnswerAndFallbackReasons(
           df.select("arrUnsupportedArgs"),
@@ -426,21 +426,19 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_union") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayUnion]) -> "true") {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          withTempView("t1") {
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, n = 10000)
-            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-            checkSparkAnswerAndOperator(
-              spark.sql("SELECT array_union(array(_2, _3, _4), array(_3, _4)) FROM t1"))
-            checkSparkAnswerAndOperator(sql("SELECT array_union(array(_18), array(_19)) from t1"))
-            checkSparkAnswerAndOperator(spark.sql(
-              "SELECT array_union(array(CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), _2, _3)) FROM t1"))
-            checkSparkAnswerAndOperator(spark.sql(
-              "SELECT array_union(array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3)) FROM t1"))
-          }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, n = 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_union(array(_2, _3, _4), array(_3, _4)) FROM t1"))
+          checkSparkAnswerAndOperator(sql("SELECT array_union(array(_18), array(_19)) from t1"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT array_union(array(CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), _2, _3)) FROM t1"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT array_union(array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3)) FROM t1"))
         }
       }
     }
@@ -763,6 +761,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
             checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, null) from t1"))
             checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, 0) from t1"))
+            checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, -1) from t1"))
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_repeat(cast(_3 as string), -5) from t1"))
             checkSparkAnswerAndOperator(
               sql("SELECT array_repeat(_2, 5) from t1 where _2 is not null"))
             checkSparkAnswerAndOperator(

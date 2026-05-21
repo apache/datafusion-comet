@@ -45,4 +45,4 @@ not supported by Comet will fall back to regular Spark execution.
 | UnionExec                         | Yes               |                                                                                                                    |
 | WindowExec                        | No                | Disabled by default due to known correctness issues.                                                               |
 
-[Comet Compatibility Guide]: compatibility.md
+[Comet Compatibility Guide]: compatibility/operators.md

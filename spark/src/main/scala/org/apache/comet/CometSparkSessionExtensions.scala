@@ -32,13 +32,55 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
-import org.apache.comet.rules.{CometExecRule, CometScanRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
  * CometDriverPlugin will register an instance of this class with Spark.
  *
- * This class is responsible for injecting Comet rules and extensions into Spark.
+ * Comet rules are injected into Spark's rule pipeline at several extension points. The execution
+ * order differs between AQE and non-AQE paths:
+ *
+ * Non-AQE (QueryExecution.preparations):
+ * {{{
+ *   1. PlanDynamicPruningFilters    -- Spark creates non-AQE DPP (SubqueryBroadcastExec)
+ *   2. PlanSubqueries               -- Spark creates SubqueryExec for scalar subqueries
+ *   3. EnsureRequirements            -- Spark inserts shuffles/sorts
+ *   4. ApplyColumnarRulesAndInsertTransitions:
+ *      a. preColumnarTransitions:   CometScanRule, CometExecRule
+ *         - CometExecRule.convertSubqueryBroadcasts converts SubqueryBroadcastExec to
+ *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
+ *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
+ *      c. postColumnarTransitions:  EliminateRedundantTransitions
+ *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
+ * }}}
+ *
+ * AQE (AdaptiveSparkPlanExec, Spark 3.5+):
+ * {{{
+ *   Initial plan:
+ *     PlanAdaptiveSubqueries:       creates SubqueryAdaptiveBroadcastExec (SAB) for AQE DPP
+ *     queryStagePreparationRules:   CometScanRule, CometExecRule
+ *       - CometExecRule.convertSubqueryBroadcasts wraps SABs in
+ *         CometSubqueryAdaptiveBroadcastExec to prevent Spark's
+ *         PlanAdaptiveDynamicPruningFilters from replacing DPP with Literal.TrueLiteral
+ *
+ *   Per stage (optimizeQueryStage + postStageCreationRules):
+ *     1. queryStageOptimizerRules:
+ *        a. PlanAdaptiveDynamicPruningFilters (Spark) -- skips wrapped SABs
+ *        b. ReuseAdaptiveSubquery (Spark)
+ *        c. CometPlanAdaptiveDynamicPruningFilters   -- converts wrapped SABs to
+ *           CometSubqueryBroadcastExec with BroadcastQueryStageExec for broadcast reuse
+ *        d. CometReuseSubquery                       -- deduplicates converted subqueries
+ *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
+ *        a. preColumnarTransitions: CometScanRule, CometExecRule (no-ops, already converted)
+ *        b. insertTransitions
+ *        c. postColumnarTransitions: EliminateRedundantTransitions
+ * }}}
+ *
+ * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
+ * and CometPlanAdaptiveDynamicPruningFilters/CometReuseSubquery are not registered. AQE DPP scans
+ * fall back to Spark so that Spark's PlanAdaptiveDynamicPruningFilters handles them natively
+ * (with DPP).
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
@@ -47,8 +89,14 @@ class CometSparkSessionExtensions
   override def apply(extensions: SparkSessionExtensions): Unit = {
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
+    // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
+    // Registered before CometScanRule/CometExecRule so tags are in place when conversion runs.
+    // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
+    injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
+    injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
@@ -130,6 +178,14 @@ object CometSparkSessionExtensions extends Logging {
 
   def isSpark40Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.0"
+  }
+
+  def isSpark41Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "4.1"
+  }
+
+  def isSpark42Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "4.2"
   }
 
   /**

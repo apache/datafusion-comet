@@ -1310,7 +1310,7 @@ pub fn process_sorted_row_partition(
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
-) -> Result<(i64, Option<u32>), CometError> {
+) -> Result<(i64, Option<u32>, i64), CometError> {
     // The current row number we are reading
     let mut current_row = 0;
     // Total number of bytes written
@@ -1339,6 +1339,9 @@ pub fn process_sorted_row_partition(
 
     // Reusable buffer for serialized batch data
     let mut frozen: Vec<u8> = Vec::new();
+
+    // Single ipc_time accumulates encode + compression time across all batches.
+    let ipc_time = Time::default();
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1371,8 +1374,6 @@ pub fn process_sorted_row_partition(
         frozen.clear();
         let mut cursor = Cursor::new(&mut frozen);
 
-        // we do not collect metrics in Native_writeSortedFileNative
-        let ipc_time = Time::default();
         let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
         written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
 
@@ -1384,7 +1385,11 @@ pub fn process_sorted_row_partition(
         current_row += n;
     }
 
-    Ok((written as i64, current_checksum.map(|c| c.finalize())))
+    Ok((
+        written as i64,
+        current_checksum.map(|c| c.finalize()),
+        ipc_time.value() as i64,
+    ))
 }
 
 fn builder_to_array(
