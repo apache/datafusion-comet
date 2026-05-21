@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -82,14 +81,19 @@ impl datafusion::physical_plan::ExecutionPlan for DebugExecutionDataStream {
     fn name(&self) -> &str {
         "DebugExecutionDataStream"
     }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
     fn properties(&self) -> &Arc<datafusion::physical_plan::PlanProperties> {
         self.inner.properties()
     }
     fn children(&self) -> Vec<&Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
         vec![&self.inner]
+    }
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &dyn PhysicalExpr,
+        ) -> Result<datafusion::common::tree_node::TreeNodeRecursion>,
+    ) -> Result<datafusion::common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
     }
     fn with_new_children(
         self: Arc<Self>,
@@ -155,9 +159,6 @@ impl Hash for DebugExecutionDataPhyExpr {
 }
 
 impl PhysicalExpr for DebugExecutionDataPhyExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
         self.inner.data_type(input_schema)
     }

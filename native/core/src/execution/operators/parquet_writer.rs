@@ -18,7 +18,6 @@
 //! Parquet writer operator for writing RecordBatches to Parquet files
 
 use std::{
-    any::Any,
     collections::HashMap,
     fmt,
     fmt::{Debug, Formatter},
@@ -39,9 +38,10 @@ use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::{
+    common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
     execution::context::TaskContext,
-    physical_expr::EquivalenceProperties,
+    physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
@@ -404,10 +404,6 @@ impl DisplayAs for ParquetWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ParquetWriterExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ParquetWriterExec"
     }
@@ -426,6 +422,13 @@ impl ExecutionPlan for ParquetWriterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

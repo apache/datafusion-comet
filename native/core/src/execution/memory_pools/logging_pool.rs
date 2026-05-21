@@ -19,6 +19,7 @@ use datafusion::execution::memory_pool::{
     MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
 };
 use log::{info, warn};
+use std::fmt::{self, Display};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -36,7 +37,17 @@ impl LoggingMemoryPool {
     }
 }
 
+impl Display for LoggingMemoryPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LoggingMemoryPool(task={})", self.task_attempt_id)
+    }
+}
+
 impl MemoryPool for LoggingMemoryPool {
+    fn name(&self) -> &str {
+        "LoggingMemoryPool"
+    }
+
     fn register(&self, consumer: &MemoryConsumer) {
         info!(
             "[Task {}] MemoryPool[{}].register()",

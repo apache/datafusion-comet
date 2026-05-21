@@ -22,7 +22,7 @@ use datafusion::common::{internal_datafusion_err, DataFusionError};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::{any::Any, fmt::Debug};
+use std::fmt::Debug;
 
 macro_rules! extract_date_part {
     ($struct_name:ident, $fn_name:expr, $date_part_variant:ident) => {
@@ -44,10 +44,6 @@ macro_rules! extract_date_part {
         }
 
         impl ScalarUDFImpl for $struct_name {
-            fn as_any(&self) -> &dyn Any {
-                self
-            }
-
             fn name(&self) -> &str {
                 $fn_name
             }

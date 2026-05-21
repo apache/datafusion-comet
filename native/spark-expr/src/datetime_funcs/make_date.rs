@@ -23,7 +23,6 @@ use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 /// Spark-compatible make_date function.
@@ -75,10 +74,6 @@ fn make_date(year: i32, month: i32, day: i32) -> Option<i32> {
 }
 
 impl ScalarUDFImpl for SparkMakeDate {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "make_date"
     }

@@ -25,7 +25,8 @@ use crate::partitioners::{
 use crate::{CometPartitioning, CompressionCodec};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
@@ -40,7 +41,6 @@ use datafusion::{
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use std::{
-    any::Any,
     fmt,
     fmt::{Debug, Formatter},
     sync::Arc,
@@ -119,11 +119,6 @@ impl DisplayAs for ShuffleWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ShuffleWriterExec {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ShuffleWriterExec"
     }
@@ -143,6 +138,27 @@ impl ExecutionPlan for ShuffleWriterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        let mut tnr = TreeNodeRecursion::Continue;
+        match &self.partitioning {
+            CometPartitioning::Hash(exprs, _) => {
+                for expr in exprs {
+                    tnr = tnr.visit_sibling(|| f(expr.as_ref()))?;
+                }
+            }
+            CometPartitioning::RangePartitioning(ordering, _, _, _) => {
+                for sort_expr in ordering.iter() {
+                    tnr = tnr.visit_sibling(|| f(sort_expr.expr.as_ref()))?;
+                }
+            }
+            CometPartitioning::SinglePartition | CometPartitioning::RoundRobin(_, _) => {}
+        }
+        Ok(tnr)
     }
 
     fn with_new_children(

@@ -16,7 +16,7 @@
 // under the License.
 
 use std::{
-    fmt::{Debug, Formatter, Result as FmtResult},
+    fmt::{Debug, Display, Formatter, Result as FmtResult},
     sync::Arc,
 };
 
@@ -83,10 +83,20 @@ impl CometFairMemoryPool {
     }
 }
 
+impl Display for CometFairMemoryPool {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "CometFairMemoryPool")
+    }
+}
+
 unsafe impl Send for CometFairMemoryPool {}
 unsafe impl Sync for CometFairMemoryPool {}
 
 impl MemoryPool for CometFairMemoryPool {
+    fn name(&self) -> &str {
+        "CometFairMemoryPool"
+    }
+
     fn register(&self, _: &MemoryConsumer) {
         let mut state = self.state.lock();
         state.num = state

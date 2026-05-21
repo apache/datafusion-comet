@@ -265,7 +265,6 @@ impl PhysicalPlanner {
                     let literal =
                         self.create_expr(partition_value, Arc::<Schema>::clone(&empty_schema))?;
                     literal
-                        .as_any()
                         .downcast_ref::<DataFusionLiteral>()
                         .ok_or_else(|| {
                             GeneralError("Expected literal of partition value".to_string())
@@ -459,11 +458,7 @@ impl PhysicalPlanner {
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
                 // but only if its output type matches CheckOverflow's declared type
-                if child
-                    .as_any()
-                    .downcast_ref::<WideDecimalBinaryExpr>()
-                    .is_some()
-                {
+                if child.downcast_ref::<WideDecimalBinaryExpr>().is_some() {
                     let child_type = child.data_type(&input_schema)?;
                     if child_type == data_type {
                         return Ok(child);
@@ -472,7 +467,7 @@ impl PhysicalPlanner {
 
                 // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check
                 // Only fuse when the Cast target type matches the CheckOverflow output type
-                if let Some(cast) = child.as_any().downcast_ref::<Cast>() {
+                if let Some(cast) = child.downcast_ref::<Cast>() {
                     if let (
                         DataType::Decimal128(p_out, s_out),
                         Ok(DataType::Decimal128(_p_in, s_in)),
@@ -1319,12 +1314,10 @@ impl PhysicalPlanner {
                         .iter()
                         .map(|expr| {
                             let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
-                            let df_literal = literal
-                                .as_any()
-                                .downcast_ref::<DataFusionLiteral>()
-                                .ok_or_else(|| {
-                                GeneralError("Expected literal of default value.".to_string())
-                            })?;
+                            let df_literal =
+                                literal.downcast_ref::<DataFusionLiteral>().ok_or_else(|| {
+                                    GeneralError("Expected literal of default value.".to_string())
+                                })?;
                             Ok(df_literal.value().clone())
                         })
                         .collect();
@@ -1892,7 +1885,7 @@ impl PhysicalPlanner {
                         hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
 
                     let mut additional_native_plans = vec![];
-                    if swapped_hash_join.as_any().is::<ProjectionExec>() {
+                    if swapped_hash_join.is::<ProjectionExec>() {
                         // a projection was added to the hash join
                         additional_native_plans.push(Arc::clone(swapped_hash_join.children()[0]));
                     }
@@ -2752,8 +2745,7 @@ impl PhysicalPlanner {
                             &boundary_row.partition_bounds[col_idx],
                             Arc::clone(&input_schema),
                         )?;
-                        let literal_expr =
-                            expr.as_any().downcast_ref::<Literal>().expect("Literal");
+                        let literal_expr = expr.downcast_ref::<Literal>().expect("Literal");
                         col_values.push(literal_expr.value().clone());
                     }
                 }
@@ -2863,12 +2855,7 @@ impl PhysicalPlanner {
                     // TODO this should try and find scalar
                     let arguments = args
                         .iter()
-                        .map(|e| {
-                            e.as_ref()
-                                .as_any()
-                                .downcast_ref::<Literal>()
-                                .map(|lit| lit.value())
-                        })
+                        .map(|e| e.downcast_ref::<Literal>().map(|lit| lit.value()))
                         .collect::<Vec<_>>();
 
                     let args = ReturnFieldArgs {
@@ -2972,7 +2959,7 @@ fn expr_to_columns(
 
     expr.apply(&mut |expr: &Arc<dyn PhysicalExpr>| {
         Ok({
-            if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+            if let Some(column) = expr.downcast_ref::<Column>() {
                 if column.index() > left_field_len + right_field_len {
                     return Err(DataFusionError::Internal(format!(
                         "Column index {} out of range",
@@ -3023,7 +3010,7 @@ impl TreeNodeRewriter for JoinFilterRewriter<'_> {
     type Node = Arc<dyn PhysicalExpr>;
 
     fn f_down(&mut self, node: Self::Node) -> datafusion::common::Result<Transformed<Self::Node>> {
-        if let Some(column) = node.as_any().downcast_ref::<Column>() {
+        if let Some(column) = node.downcast_ref::<Column>() {
             if column.index() < self.left_field_len {
                 // left side
                 let new_index = self
