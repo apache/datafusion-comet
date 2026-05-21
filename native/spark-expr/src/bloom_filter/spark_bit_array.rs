@@ -15,9 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::datatypes::ToByteSlice;
-use std::iter::zip;
-
 /// A simple bit array implementation that simulates the behavior of Spark's BitArray which is
 /// used in the BloomFilter implementation. Some methods are not implemented as they are not
 /// required for the current use case.
@@ -61,46 +58,12 @@ impl SparkBitArray {
         self.word_size() as u64 * 64
     }
 
-    #[allow(dead_code)] // used by tests and kept for future production callers
-    pub fn byte_size(&self) -> usize {
-        self.word_size() * 8
-    }
-
     pub fn word_size(&self) -> usize {
         self.data.len()
     }
 
-    #[allow(dead_code)] // this is only called from tests
-    pub fn cardinality(&self) -> usize {
-        self.bit_count
-    }
-
-    #[allow(dead_code)] // used by tests
-    pub fn to_bytes(&self) -> Vec<u8> {
-        Vec::from(self.data.to_byte_slice())
-    }
-
     pub fn data(&self) -> Vec<u64> {
         self.data.clone()
-    }
-
-    // Combines SparkBitArrays, however other is a &[u8] because we anticipate to come from an
-    // Arrow ScalarValue::Binary which is a byte vector underneath, rather than a word vector.
-    #[allow(dead_code)] // used by tests
-    pub fn merge_bits(&mut self, other: &[u8]) {
-        assert_eq!(self.byte_size(), other.len());
-        let mut bit_count: usize = 0;
-        // For each word, merge the bits into self, and accumulate a new bit_count.
-        for i in zip(
-            self.data.iter_mut(),
-            other
-                .chunks(8)
-                .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap())),
-        ) {
-            *i.0 |= i.1;
-            bit_count += i.0.count_ones() as usize;
-        }
-        self.bit_count = bit_count;
     }
 }
 
@@ -111,6 +74,41 @@ pub fn num_words(num_bits: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
+    use arrow::datatypes::ToByteSlice;
+    use std::iter::zip;
+
+    impl SparkBitArray {
+        fn byte_size(&self) -> usize {
+            self.word_size() * 8
+        }
+
+        fn cardinality(&self) -> usize {
+            self.bit_count
+        }
+
+        fn to_bytes(&self) -> Vec<u8> {
+            Vec::from(self.data.to_byte_slice())
+        }
+
+        /// Combines SparkBitArrays, however other is a &[u8] because we anticipate to come from
+        /// an Arrow ScalarValue::Binary which is a byte vector underneath, rather than a word
+        /// vector.
+        fn merge_bits(&mut self, other: &[u8]) {
+            assert_eq!(self.byte_size(), other.len());
+            let mut bit_count: usize = 0;
+            // For each word, merge the bits into self, and accumulate a new bit_count.
+            for i in zip(
+                self.data.iter_mut(),
+                other
+                    .chunks(8)
+                    .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap())),
+            ) {
+                *i.0 |= i.1;
+                bit_count += i.0.count_ones() as usize;
+            }
+            self.bit_count = bit_count;
+        }
+    }
 
     #[test]
     fn test_spark_bit_array() {
