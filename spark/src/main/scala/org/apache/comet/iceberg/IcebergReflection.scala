@@ -776,8 +776,10 @@ object CometIcebergNativeScanMetadata extends Logging {
       }
     } catch {
       case e: Exception =>
-        logWarning(s"Iceberg reflection: Table.name() not callable on ${table.getClass.getName}; " +
-          s"native S3 credential dispatch will fall back to bucket-keyed isolation: ${e.getMessage}")
+        logWarning(
+          s"Iceberg reflection: Table.name() not callable on ${table.getClass.getName}. " +
+            "Native S3 credential dispatch will fall back to bucket-keyed isolation: " +
+            s"${e.getMessage}")
         None
     }
   }
