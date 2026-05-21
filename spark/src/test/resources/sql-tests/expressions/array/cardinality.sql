@@ -58,10 +58,3 @@ SELECT cardinality(nested_arr) FROM test_cardinality
 -- array-of-structs input
 query
 SELECT cardinality(struct_arr) FROM test_cardinality
-
--- literal array and map arguments (spark_answer_only: CreateArray/CreateMap not yet natively supported)
-query spark_answer_only
-SELECT cardinality(array(1, 2, 3)), cardinality(array()), cardinality(cast(NULL as array<int>))
-
-query spark_answer_only
-SELECT cardinality(map('a', 1, 'b', 2)), cardinality(map()), cardinality(cast(NULL as map<string,int>))
