@@ -28,12 +28,18 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
- * Spark 3.4 shim for the PyArrow UDF acceleration support.
+ * Spark 3.x stub for the PyArrow UDF acceleration support.
  *
- * Spark 3.4 lacks several APIs that the optimization relies on (`isBarrier` on `MapInBatchExec`,
- * `arrowUseLargeVarTypes`, `JobArtifactSet`, the modern `ArrowPythonRunner` constructor), so the
- * matchers return `None` and the runner factory throws. The optimization is effectively a no-op
- * on Spark 3.4.
+ * The columnar runner introduced in #4234 only targets Spark 4.0+. On Spark 3.4 / 3.5 the matchers
+ * return `None`, the rewrite does not fire, and vanilla Spark handles `mapInArrow` /
+ * `mapInPandas` unchanged. The runner factory throws; it is never called because the matchers
+ * always return `None`. 3.x support can be added later if there is user demand.
+ *
+ * Shared across spark-3.4 and spark-3.5 because both are identical: 3.4 lacks the modern
+ * `ArrowPythonRunner` constructor and `arrowUseLargeVarTypes`, and 3.5's `PythonArrowInput`
+ * trait has a different contract (`writeIteratorToArrowStream` one-shot vs 4.x's
+ * `writeNextBatchToArrowStream` batch-at-a-time), so neither version can host the columnar input
+ * implementation without a separate rewrite.
  */
 trait ShimCometMapInBatch {
 
@@ -41,11 +47,11 @@ trait ShimCometMapInBatch {
 
   protected def matchMapInPandas(plan: SparkPlan): Option[MapInBatchInfo] = None
 
-  /** Stub; never constructed on Spark 3.4 because the matchers always return `None`. */
+  /** Stub; never constructed on Spark 3.x because the matchers always return `None`. */
   protected case class RunnerInputs()
 
   protected def runnerInputs(pythonUDF: PythonUDF, conf: SQLConf): RunnerInputs =
-    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.4")
+    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.x")
 
   protected def computeArrowPython(
       runnerInputs: RunnerInputs,
@@ -56,5 +62,5 @@ trait ShimCometMapInBatch {
       batchIter: Iterator[Iterator[ColumnarBatch]],
       partitionId: Int,
       context: TaskContext): Iterator[ColumnarBatch] =
-    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.4")
+    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.x")
 }

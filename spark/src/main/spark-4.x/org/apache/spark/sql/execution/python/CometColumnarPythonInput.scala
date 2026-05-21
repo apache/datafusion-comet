@@ -53,10 +53,18 @@ private[python] trait CometColumnarPythonInput extends PythonArrowInput[Iterator
 
   private var currentGroup: Iterator[ColumnarBatch] = _
 
-  // Read the codec name via raw config key so this compiles against Spark 4.0 (which lacks
-  // SQLConf.arrowCompressionCodec) as well as 4.1/4.2. The codec instances are obtained
-  // through CompressionCodec.Factory (arrow-vector) rather than importing the concrete
-  // Lz4CompressionCodec / ZstdCompressionCodec from the separate arrow-compression artifact.
+  // Constructed once per task: `root` (the trait's persistent destination IPC root) and
+  // `cometCodec` are both stable across the partition. `getRecordBatch` reads the current
+  // contents of `root.getFieldVectors` on every call, so re-using the unloader is safe.
+  private lazy val batchUnloader: VectorUnloader =
+    new VectorUnloader(root, /* includeNullCount */ true, cometCodec, /* alignBuffers */ true)
+
+  // Read the codec name via raw config key. Spark 4.0.x has no `SQLConf.arrowCompressionCodec`
+  // accessor at all (it was added after the 4.0 line was cut), so a typed `ShimSQLConf`
+  // forwarder would still need a stringly-typed fallback for the 4.0 build. The codec instances
+  // are obtained through `CompressionCodec.Factory` (arrow-vector) rather than importing the
+  // concrete `Lz4CompressionCodec` / `ZstdCompressionCodec` from the separate
+  // arrow-compression artifact, which Comet does not depend on.
   private lazy val cometCodec: CompressionCodec = {
     val factory = CompressionCodec.Factory.INSTANCE
     SQLConf.get.getConfString("spark.sql.execution.arrow.compression.codec", "none") match {
@@ -112,8 +120,6 @@ private[python] trait CometColumnarPythonInput extends PythonArrowInput[Iterator
     Platform.setMemory(structVec.getValidityBuffer.memoryAddress(), 0xff.toByte, validityBytes)
     root.setRowCount(numRows)
 
-    val batchUnloader =
-      new VectorUnloader(root, /* includeNullCount */ true, cometCodec, /* alignBuffers */ true)
     val recordBatch = batchUnloader.getRecordBatch
     try {
       val writeChannel = new WriteChannel(Channels.newChannel(dataOut))
