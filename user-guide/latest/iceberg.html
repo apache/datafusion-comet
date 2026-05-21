@@ -396,6 +396,7 @@ under the License.
 <li class="toctree-l3"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="operators.html">Supported Operators</a></li>
 <li class="toctree-l3"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="compatibility/index.html">Compatibility Guide</a></li>
 <li class="toctree-l3"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
@@ -621,6 +622,24 @@ transforms falls back)</p></li>
 <li><p>Dynamic Partition Pruning under Adaptive Query Execution (non-AQE DPP is supported);
 see <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3510">#3510</a></p></li>
 </ul>
+</section>
+<section id="iceberg-udfs">
+<h3>Iceberg UDFs<a class="headerlink" href="#iceberg-udfs" title="Link to this heading">#</a></h3>
+<p>Iceberg ships several <code class="docutils literal notranslate"><span class="pre">ScalaUDF</span></code>s that surface in user queries and maintenance actions:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">IcebergSpark.registerBucketUDF</span></code> and <code class="docutils literal notranslate"><span class="pre">registerTruncateUDF</span></code> register <code class="docutils literal notranslate"><span class="pre">bucket(N,</span> <span class="pre">col)</span></code> and
+<code class="docutils literal notranslate"><span class="pre">truncate(W,</span> <span class="pre">col)</span></code> for use in <code class="docutils literal notranslate"><span class="pre">SELECT</span></code> / <code class="docutils literal notranslate"><span class="pre">JOIN</span></code> / <code class="docutils literal notranslate"><span class="pre">WHERE</span></code> predicates that align with hidden
+partitioning.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RewriteDataFiles</span></code> with <code class="docutils literal notranslate"><span class="pre">sort-strategy=zorder</span></code> builds a tree of per-type ordered-bytes UDFs
+(<code class="docutils literal notranslate"><span class="pre">INT_ORDERED_BYTES</span></code>, <code class="docutils literal notranslate"><span class="pre">LONG_ORDERED_BYTES</span></code>, …, <code class="docutils literal notranslate"><span class="pre">INTERLEAVE_BYTES</span></code>) over the sort key columns
+during compaction.</p></li>
+</ul>
+<p>By default these UDFs cause the enclosing operator to fall back to Spark, which forces a
+columnar-to-row roundtrip and demotes the surrounding shuffle from <code class="docutils literal notranslate"><span class="pre">CometExchange</span></code> to
+<code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code>. Enabling the experimental
+<a class="reference internal" href="scala_java_udfs.html"><span class="std std-doc">Scala UDF and Java UDF Support</span></a> feature
+(<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=true</span></code>) routes these UDFs through native execution so
+the project, exchange, and sort operators around them stay on the Comet path end-to-end.</p>
 </section>
 <section id="task-input-metrics">
 <h3>Task input metrics<a class="headerlink" href="#task-input-metrics" title="Link to this heading">#</a></h3>
