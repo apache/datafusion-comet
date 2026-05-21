@@ -934,7 +934,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // add repetitive data to trigger dictionary encoding
         Range(0, 100).map(_ => "John Smith")
       withParquetFile(data.zipWithIndex, withDictionary) { file =>
-        withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
+        withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
           spark.read.parquet(file).createOrReplaceTempView(table)
           val query = sql(s"select _2 as id, _1 rlike 'R[a-z]+s [Rr]ose' from $table")
           checkSparkAnswerAndOperator(query)
@@ -1006,7 +1006,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // "Smith$",
         "Smith\\Z",
         "Smith\\z")
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
+      withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
         patterns.foreach { pattern =>
           val query2 = sql(s"select name, '$pattern', name rlike '$pattern' from $table")
           checkSparkAnswerAndOperator(query2)
@@ -1066,7 +1066,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "\\V")
       val qualifiers = Seq("", "+", "*", "?", "{1,}")
 
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
+      withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
         // testing every possible combination takes too long, so we pick some
         // random combinations
         for (_ <- 0 until 100) {

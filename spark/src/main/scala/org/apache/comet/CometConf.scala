@@ -400,15 +400,15 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.regexp.engine")
       .category(CATEGORY_EXEC)
       .doc(
-        s"Selects the engine used to evaluate Spark regular-expression expressions. " +
+        "Selects the engine used to evaluate Spark regular-expression expressions. " +
           s"`$REGEXP_ENGINE_JAVA` (default) routes through a JVM-side UDF " +
-          s"(java.util.regex.Pattern) for Spark-compatible semantics, at the cost of JNI " +
+          "(java.util.regex.Pattern) for Spark-compatible semantics, at the cost of JNI " +
           s"roundtrips per batch; this requires ${COMET_JVM_UDF_ENABLED.key}=true and " +
           s"falls back to Spark otherwise. `$REGEXP_ENGINE_RUST` runs the native DataFusion " +
           "regexp engine when an implementation exists; setting this is itself the opt-in " +
           "for the semantic differences between Java and Rust regex. Affected expressions: " +
           "rlike, regexp_extract, regexp_extract_all, regexp_replace, regexp_instr, and " +
-          s"split (the extract/instr family has no native Rust path; they fall back to Spark " +
+          "split (the extract/instr family has no native Rust path; they fall back to Spark " +
           s"under `$REGEXP_ENGINE_RUST`).")
       .stringConf
       .transform(_.toLowerCase(Locale.ROOT))

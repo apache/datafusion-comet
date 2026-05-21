@@ -36,12 +36,12 @@ The JVM UDF framework is experimental and disabled by default. With pure default
 
 ## Choosing an engine
 
-|                      | Rust engine                             | Java engine (experimental, default)                                                                                  |
-| -------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Compatibility**    | Differs from Java regex (see below)     | 100% compatible with Spark                                                                                           |
-| **Feature coverage** | `rlike`, `regexp_replace`, `split` only | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`)  |
-| **Performance**      | Fully native, no JNI overhead           | One JNI round-trip per batch (Arrow vectors stay columnar)                                                           |
-| **Pattern support**  | Linear-time subset only                 | All Java regex features (backreferences, lookaround, etc.)                                                           |
+|                      | Rust engine                             | Java engine (experimental, default)                                                                                 |
+| -------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **Compatibility**    | Differs from Java regex (see below)     | 100% compatible with Spark                                                                                          |
+| **Feature coverage** | `rlike`, `regexp_replace`, `split` only | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`) |
+| **Performance**      | Fully native, no JNI overhead           | One JNI round-trip per batch (Arrow vectors stay columnar)                                                          |
+| **Pattern support**  | Linear-time subset only                 | All Java regex features (backreferences, lookaround, etc.)                                                          |
 
 The **Rust engine** is faster but cannot match Java regex semantics for every pattern. Because the engine
 choice is itself the opt-in, setting `spark.comet.exec.regexp.engine=rust` declares acceptance of those
