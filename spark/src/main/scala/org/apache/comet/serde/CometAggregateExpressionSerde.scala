@@ -82,6 +82,17 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
   def getSupportLevel(expr: T): SupportLevel = Compatible(None)
 
   /**
+   * Whether this aggregate's intermediate buffer format is compatible between Spark and Comet,
+   * making it safe to run the Partial in one engine and the Final in the other. Aggregates with
+   * simple single-value buffers (MIN, MAX, bitwise) are safe; those with complex or
+   * differently-encoded buffers (AVG, SUM with decimals, CollectSet, Variance) are not. COUNT is
+   * intentionally excluded: mixed COUNT partial/final regressed AQE's
+   * PropagateEmptyRelationAfterAQE pattern (which matches BaseAggregateExec only) and the Spark
+   * 4.0 count-bug decorrelation for correlated IN subqueries.
+   */
+  def supportsMixedPartialFinal: Boolean = false
+
+  /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
    *
