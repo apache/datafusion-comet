@@ -19,6 +19,8 @@
 
 package org.apache.comet.vector;
 
+import java.nio.charset.StandardCharsets;
+
 import org.junit.Test;
 
 import org.apache.arrow.memory.RootAllocator;
