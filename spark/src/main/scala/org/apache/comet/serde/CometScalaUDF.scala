@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Literal, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, KnownNotNull, Literal, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
@@ -28,27 +28,39 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
+import org.apache.comet.udf.CometUDFRegistry
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Routes scalar `ScalaUDF` (Scala and Java UDFs) through the codegen dispatcher.
- * `ScalaUDF.doGenCode` emits compilable Java that invokes the user function via
- * `ctx.addReferenceObj`; the dispatcher serializes the bound tree, the closure serializer carries
- * the function reference across the wire, and the Janino-compiled kernel invokes it in a tight
- * batch loop.
+ * Routes scalar `ScalaUDF` (Scala and Java UDFs) through one of two native paths.
  *
- * Not covered:
+ * If the UDF name has a user-supplied [[org.apache.comet.udf.CometUDF]] registered in
+ * [[CometUDFRegistry]], emit a `JvmScalarUdf` that targets the registered class directly. The
+ * native side passes each argument as an Arrow vector and the user implementation produces the
+ * output vector.
+ *
+ * Otherwise, route through the Janino codegen dispatcher. `ScalaUDF.doGenCode` emits compilable
+ * Java that invokes the user function via `ctx.addReferenceObj`; the dispatcher serializes the
+ * bound tree, the closure serializer carries the function reference across the wire, and the
+ * Janino-compiled kernel invokes it in a tight batch loop. Gated by
+ * [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]]; when disabled, unregistered ScalaUDFs fall back
+ * to Spark.
+ *
+ * Not covered by either path:
  *   - Aggregate UDFs (`ScalaAggregator`, `TypedImperativeAggregate`, legacy UDAF).
  *   - Table UDFs and generators.
  *   - Python / Pandas UDFs.
  *   - Hive `GenericUDF` / `SimpleUDF`.
- *
- * Gated by [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]]. When disabled, plans containing a
- * `ScalaUDF` fall back to Spark for the enclosing operator.
  */
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
   override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    expr.udfName.flatMap(CometUDFRegistry.get) match {
+      case Some(udfClass) =>
+        return convertRegistered(expr, inputs, binding, udfClass.getName)
+      case None =>
+    }
+
     if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
       withInfo(
         expr,
@@ -93,6 +105,40 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     udfBuilder
       .setReturnType(returnTypeProto)
       .setReturnNullable(expr.nullable)
+    Some(
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setJvmScalarUdf(udfBuilder.build())
+        .build())
+  }
+
+  /**
+   * Build a `JvmScalarUdf` proto that targets a user-registered [[org.apache.comet.udf.CometUDF]]
+   * class directly. Each ScalaUDF child becomes an `args` entry; the native side evaluates them
+   * to Arrow vectors before invoking `evaluate(inputs, numRows)` on a per-task instance.
+   *
+   * Spark wraps UDF arguments in `KnownNotNull` when the UDF declares its inputs non-nullable;
+   * strip those so the underlying expression has a Comet serde mapping.
+   */
+  private def convertRegistered(
+      expr: ScalaUDF,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      className: String): Option[Expr] = {
+    val argProtos = expr.children.map {
+      case KnownNotNull(child) => exprToProtoInternal(child, inputs, binding)
+      case other => exprToProtoInternal(other, inputs, binding)
+    }
+    if (argProtos.exists(_.isEmpty)) {
+      return None
+    }
+    val returnTypeProto = serializeDataType(expr.dataType).getOrElse(return None)
+    val udfBuilder = ExprOuterClass.JvmScalarUdf
+      .newBuilder()
+      .setClassName(className)
+      .setReturnType(returnTypeProto)
+      .setReturnNullable(expr.nullable)
+    argProtos.foreach(p => udfBuilder.addArgs(p.get))
     Some(
       ExprOuterClass.Expr
         .newBuilder()

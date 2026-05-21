@@ -20,6 +20,7 @@
 package org.apache.comet.udf
 
 import org.apache.arrow.vector.ValueVector
+import org.apache.spark.annotation.Unstable
 
 /**
  * Scalar UDF invoked from native execution via JNI. Receives Arrow vectors as input and returns
@@ -43,6 +44,7 @@ import org.apache.arrow.vector.ValueVector
  * per partition and Tokio polls one future per worker, so the per-task instance is never touched
  * concurrently even if the task's future migrates between Tokio workers across batches.
  */
+@Unstable
 trait CometUDF {
   def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector
 }

@@ -44,6 +44,7 @@ to read more.
    Supported Operators <operators>
    Supported Expressions <expressions>
    ScalaUDF and Java UDF Support <scala_java_udfs>
+   Custom Comet UDFs <custom_comet_udfs>
    Configuration Settings <configs>
    Compatibility Guide <compatibility/index>
    Understanding Comet Plans <understanding-comet-plans>
