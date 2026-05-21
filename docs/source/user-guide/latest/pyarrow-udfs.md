@@ -196,8 +196,14 @@ on the unoptimized path.
   destination IPC root, while Comet's source vectors always use 4-byte offsets. The buffer-copy
   path cannot bridge that mismatch, so `EliminateRedundantTransitions` skips the rewrite and
   vanilla Spark handles the operation.
-- The current implementation copies Comet's vector buffers into Spark's allocator one
-  buffer at a time. True zero-copy via `TransferPair` is blocked on Comet's Parquet
-  readers allocating from `ArrowUtils.rootAllocator` (rather than each reader
-  constructing its own independent `RootAllocator`). Tracked in
-  [#4294](https://github.com/apache/datafusion-comet/issues/4294).
+- Each batch is copied twice on the JVM side: once from Comet's vectors into Spark's
+  destination IPC root (per-buffer `setBytes`), and a second time inside the IPC writer when
+  `VectorUnloader` / `MessageSerializer.serialize` walks the root and writes bytes to the
+  pipe to the Python worker. The pipe write is structural (Spark's transport to Python is
+  fork + pipe + Arrow IPC, so the buffer bytes must reach the pipe at least once); dropping
+  the first copy by serialising directly from Comet's vectors is tracked in
+  [#4294](https://github.com/apache/datafusion-comet/issues/4294). Even after that,
+  true zero-copy at the JVM boundary is blocked because Comet's source `FieldVector`s are
+  imported from native via Arrow C Data Interface (their buffers route `release` through FFI),
+  while Spark's destination IPC root is a child of `ArrowUtils.rootAllocator`. The two
+  reference managers cannot share buffers via `TransferPair`.
