@@ -215,7 +215,7 @@
 ### datetime_funcs
 
 - [ ] add_months
-- [ ] convert_timezone
+- [x] convert_timezone
 - [ ] curdate
 - [ ] current_date
 - [ ] current_time
@@ -413,7 +413,7 @@
 - [ ] randstr
 - [ ] rint
 - [x] round
-- [ ] sec
+- [x] sec
 - [x] shiftleft
 - [x] sign
 - [x] signum
@@ -596,7 +596,7 @@
 
 ### url_funcs
 
-- [ ] parse_url
+- [x] parse_url (Incompatible: native diverges from Spark on edge cases)
 - [x] try_url_decode
   - 4.0.1, 2026-05-05
 - [x] url_decode
