@@ -695,7 +695,7 @@ index e1a2fd33c7c..632f4b695df 100644
              }
            assert(scanOption.isDefined)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-index b27122a8de2..17e066170c6 100644
+index b27122a8de2..3c690dbe788 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 @@ -267,7 +267,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
@@ -704,7 +704,7 @@ index b27122a8de2..17e066170c6 100644
  
 -  test("SPARK-33853: explain codegen - check presence of subquery") {
 +  test("SPARK-33853: explain codegen - check presence of subquery",
-+      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4098")) {
++      IgnoreComet("Comet plan has a different WholeStageCodegen subtree count")) {
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
        withTempView("df") {
          val df1 = spark.range(1, 100)
