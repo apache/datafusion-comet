@@ -61,6 +61,7 @@ use datafusion_spark::function::map::str_to_map::SparkStrToMap;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::factorial::SparkFactorial;
 use datafusion_spark::function::math::hex::SparkHex;
+use datafusion_spark::function::math::rint::SparkRint;
 use datafusion_spark::function::math::trigonometry::SparkCsc;
 use datafusion_spark::function::math::trigonometry::SparkSec;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
@@ -68,6 +69,8 @@ use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
+use datafusion_spark::function::url::parse_url::ParseUrl as SparkParseUrl;
+use datafusion_spark::function::url::try_parse_url::TryParseUrl as SparkTryParseUrl;
 use datafusion_spark::function::url::try_url_decode::TryUrlDecode as SparkTryUrlDecode;
 use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
 use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
@@ -600,8 +603,11 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryUrlDecode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCsc::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkParseUrl::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryParseUrl::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFactorial::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSec::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkRint::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
 }
 

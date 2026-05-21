@@ -125,6 +125,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
     classOf[Remainder] -> CometRemainder,
+    classOf[Rint] -> CometScalarFunction("rint"),
     classOf[Round] -> CometRound,
     classOf[Sec] -> CometScalarFunction("sec"),
     classOf[Signum] -> CometScalarFunction("signum"),
@@ -250,6 +251,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[WeekOfYear] -> CometWeekOfYear,
       classOf[Quarter] -> CometQuarter)
 
+  private[comet] val urlExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[ParseUrl] -> CometParseUrl)
+
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)
 
@@ -265,6 +269,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[MakeDecimal] -> CometMakeDecimal,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
     classOf[ScalarSubquery] -> CometScalarSubquery,
+    classOf[ScalaUDF] -> CometScalaUDF,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[SortOrder] -> CometSortOrder,
     classOf[StaticInvoke] -> CometStaticInvoke,
@@ -277,7 +282,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     mathExpressions ++ hashExpressions ++ stringExpressions ++
       conditionalExpressions ++ mapExpressions ++ predicateExpressions ++
       structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++
-      temporalExpressions ++ conversionExpressions
+      temporalExpressions ++ conversionExpressions ++ urlExpressions
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -302,6 +307,24 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Sum] -> CometSum,
     classOf[VariancePop] -> CometVariancePop,
     classOf[VarianceSamp] -> CometVarianceSamp)
+
+  /**
+   * Returns true if all aggregate expressions in the list have intermediate buffer formats that
+   * are compatible between Spark and Comet, making it safe to run Partial in one engine and Final
+   * in the other.
+   */
+  def allAggsSupportMixedExecution(aggExprs: Seq[AggregateExpression]): Boolean = {
+    aggExprs.forall { aggExpr =>
+      val fn = aggExpr.aggregateFunction
+      aggrSerdeMap.get(fn.getClass) match {
+        case Some(handler) =>
+          handler
+            .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+            .supportsMixedPartialFinal
+        case None => false
+      }
+    }
+  }
 
   //  A unique id for each expression. ~used to look up QueryContext during error creation.
   private val exprIdCounter = new AtomicLong(0)
@@ -380,6 +403,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
     case _ =>
       false
+  }
+
+  /**
+   * Returns true if the given data type is or contains a `MapType` at any nesting level. Arrow's
+   * row format (used by DataFusion's grouped hash aggregate for composite group keys) does not
+   * support `Map`, so grouping on any type that transitively contains a map would crash in native
+   * execution.
+   */
+  def containsMapType(dt: DataType): Boolean = dt match {
+    case _: MapType => true
+    case a: ArrayType => containsMapType(a.elementType)
+    case s: StructType => s.fields.exists(f => containsMapType(f.dataType))
+    case _ => false
   }
 
   /**
