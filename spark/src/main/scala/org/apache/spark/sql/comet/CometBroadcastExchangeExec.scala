@@ -90,6 +90,10 @@ case class CometBroadcastExchangeExec(
     // CometBroadcastExchanges with identical Comet children but different originalPlans
     // produce different broadcast values, so their canonical forms must differ to
     // prevent AQE's ReusedExchange from incorrectly merging them. See issue #4242.
+    // Keying only on originalPlan.output is not sufficient — Spark canonicalization
+    // rewrites alias names to "none", so count+1 vs count-1 output attributes become
+    // indistinguishable; the discriminator lives in the Add/Subtract expression nodes
+    // deep inside the canonicalized plan tree.
     // Canonicalize mode as well: HashedRelationBroadcastMode carries join-key expressions
     // with non-canonical exprIds, so two semantically equivalent broadcasts would otherwise
     // miss legitimate reuse opportunities (matches Spark's BroadcastExchangeExec).
@@ -254,13 +258,15 @@ case class CometBroadcastExchangeExec(
     obj match {
       case other: CometBroadcastExchangeExec =>
         this.originalPlan == other.originalPlan &&
+        this.output == other.output &&
+        this.mode == other.mode &&
         this.child == other.child
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(child)
+  override def hashCode(): Int = Objects.hashCode(originalPlan, output, mode, child)
 
   override def stringArgs: Iterator[Any] = Iterator(output, child)
 
