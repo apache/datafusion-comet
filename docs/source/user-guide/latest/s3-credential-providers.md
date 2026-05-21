@@ -256,7 +256,7 @@ Vendor implementations need the Comet SPI classes at compile time only. Use `pro
 ```xml
 <dependency>
   <groupId>org.apache.datafusion</groupId>
-  <artifactId>comet-common-spark${spark.version.short}_${scala.binary.version}</artifactId>
+  <artifactId>comet-spark-spark${spark.version.short}_${scala.binary.version}</artifactId>
   <version>${comet.version}</version>
   <scope>provided</scope>
 </dependency>

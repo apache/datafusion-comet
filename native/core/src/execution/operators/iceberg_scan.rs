@@ -51,10 +51,8 @@ use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::FileScanTask;
 
-/// Iceberg-namespaced activation knob for the `CometS3CredentialProvider` SPI, read from a Spark
-/// catalog's `s3.*` property bag (`spark.sql.catalog.<name>.s3.comet.credential.provider.class`).
-/// Mirrors the Hadoop-style `comet.credential.provider.class` used on the Parquet/object_store
-/// path, but lives here because only the Iceberg path consumes it.
+/// Activation key for the `CometS3CredentialProvider` SPI on the Iceberg path, read from a Spark
+/// catalog's `s3.*` property bag.
 const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.class";
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
@@ -71,9 +69,8 @@ pub struct IcebergScanExec {
     /// may contain OAuth tokens, REST `credentials.uri`, and other secrets the credential bridge
     /// needs. Redacted in `Debug` so plan dumps and tracing do not leak credentials.
     catalog_properties: HashMap<String, String>,
-    /// Spark V2 catalog name; forwarded as dispatchKey to the credential bridge so multiple
-    /// catalogs sharing one provider FQCN get isolated provider instances. Empty when the table
-    /// has no catalog identity.
+    /// Spark V2 catalog name; forwarded as dispatchKey to the credential bridge. Empty when the
+    /// table has no catalog identity.
     catalog_name: String,
     /// Pre-planned file scan tasks
     tasks: Vec<FileScanTask>,
@@ -269,10 +266,8 @@ impl IcebergScanExec {
 
 const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
 
-/// Wires the configured Comet credential provider into opendal's S3 service for this scan, or
-/// returns `None` so opendal falls back to its default credential chain. Iceberg passes its
-/// per-catalog properties (`spark.sql.catalog.<name>.*` after Spark stripping), so the activation
-/// key here is `s3.comet.credential.provider.class` to match Iceberg's `s3.*` namespace.
+/// Wires the configured Comet credential provider into opendal's S3 service, or returns `None`
+/// so opendal falls back to its default credential chain.
 fn build_s3_credential_loader(
     metadata_location: &str,
     catalog_properties: &HashMap<String, String>,
@@ -284,10 +279,8 @@ fn build_s3_credential_loader(
         .get(ICEBERG_PROVIDER_CLASS_PROPERTY)
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())?;
-    // Catalog name scopes provider instances on the JVM dispatcher so two catalogs sharing one
-    // provider class get isolated state. Falls back to the bucket when the table has no catalog
-    // identity (e.g. HadoopTables loaded by raw path), keeping the previous behavior in that
-    // case.
+    // Fall back to the bucket when the table has no catalog identity (e.g. HadoopTables loaded by
+    // raw path).
     let dispatch_key: &str = if catalog_name.is_empty() {
         bucket
     } else {

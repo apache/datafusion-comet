@@ -22,50 +22,32 @@ package org.apache.comet.cloud.s3;
 import java.util.Map;
 
 /**
- * SPI for supplying AWS credentials to Comet's native S3 readers, which bypass Spark's Hadoop S3A
- * code path. Vendors implement this when path-aware or vendor-managed credential mechanisms cannot
- * be reached through the standard parameterless {@code AWSCredentialsProvider.getCredentials()}
- * contract.
+ * SPI for supplying AWS credentials to Comet's native S3 readers, which bypass Hadoop S3A. See the
+ * user guide (operator setup, vendor contract) and the contributor-guide design notes for the
+ * rationale.
  *
- * <p>Vendors register an implementation by setting {@code
- * spark.hadoop.fs.s3a.comet.credential.provider.class} (or the per-bucket form {@code
- * spark.hadoop.fs.s3a.bucket.<name>.comet.credential.provider.class}) for the Parquet path, or
- * {@code spark.sql.catalog.<catalog>.s3.comet.credential.provider.class} for the Iceberg path. The
- * class must have a public no-arg constructor.
- *
- * <p>{@link #initialize(Map)} runs once per Comet-cached instance before any {@link
- * #getCredentialsForPath} call, must be cheap and non-blocking, and may receive secrets in its map.
- * {@link #getCredentialsForPath} may be invoked concurrently from many native worker threads so
- * implementations must be thread-safe; it returns credentials or throws (no fall-through).
- *
- * <p>See the user guide on S3 credential providers for caching, refresh, and multi-tenant isolation
- * guidance.
+ * <p>{@link #getCredentialsForPath} may be invoked concurrently from many native worker threads;
+ * implementations must be thread-safe. It returns credentials or throws (no fall-through).
  */
 public interface CometS3CredentialProvider extends AutoCloseable {
 
   /**
-   * Called once per {@code (FQCN, dispatchKey)} on each executor before any {@link
-   * #getCredentialsForPath} call. The {@code catalogProperties} map carries the full FileIO
-   * property bag for the Iceberg path (including {@code credentials.uri}, OAuth tokens, vendor keys
-   * like {@code tenant-id}) and is empty on the Parquet path. The default no-op keeps Parquet
-   * vendors source-compatible.
+   * Called once per Comet-cached instance before any {@link #getCredentialsForPath} call. Must be
+   * cheap and non-blocking. On the Iceberg path the map carries the unfiltered FileIO bag; on the
+   * Parquet path it is empty.
    *
-   * @param catalogProperties unfiltered FileIO/catalog properties; may contain secrets, do not log
+   * @param catalogProperties may contain secrets, do not log
    */
   default void initialize(Map<String, String> catalogProperties) {}
 
   /**
-   * @param context per-request context (bucket, path, access mode). Fields can be added to {@link
-   *     CometS3CredentialContext} in future Comet releases without changing this method signature,
-   *     so vendors compiled against today's API stay binary-compatible.
    * @return non-null credentials; {@code null} is a contract violation
    */
   CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) throws Exception;
 
   /**
-   * Releases vendor-owned resources (HTTP clients, refresh executors, STS connection pools).
-   * Invoked from a best-effort JVM shutdown hook installed by the dispatcher; default no-op suits
-   * stateless providers. The hook swallows exceptions thrown here.
+   * Invoked from the dispatcher's best-effort JVM shutdown hook. Default no-op suits stateless
+   * providers; override to release HTTP clients, refresh executors, etc.
    */
   @Override
   default void close() throws Exception {}

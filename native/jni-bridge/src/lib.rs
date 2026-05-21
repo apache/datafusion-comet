@@ -236,8 +236,6 @@ pub struct JVMClasses<'a> {
     /// `None` if the class is not on the classpath.
     pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
     /// JNI handles for the CometS3CredentialDispatcher SPI and the CometS3Credentials POJO.
-    /// Always present (the classes ship in `comet-common`); whether a vendor provider is actually
-    /// registered is a separate runtime check.
     pub comet_s3_credential_dispatcher: CometS3CredentialDispatcher<'a>,
 }
 

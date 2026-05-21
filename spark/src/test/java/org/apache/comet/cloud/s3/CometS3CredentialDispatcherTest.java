@@ -174,12 +174,7 @@ public class CometS3CredentialDispatcherTest {
     assertEquals("T-B", TestCometS3CredentialProvider.lastTenantSeen);
   }
 
-  /**
-   * Multi-tenant collision: two sessions sharing the same FQCN and dispatchKey but configured with
-   * different catalogProperties (e.g. different REST endpoints, rotated tokens) must get distinct
-   * instances. Without the catalogProperties component in the key, the second session would
-   * silently use the first's credentials.
-   */
+  /** Multi-tenant collision: same FQCN and dispatchKey, different catalogProperties; isolated. */
   @Test
   public void distinctCatalogPropertiesIsolateInstances() throws Exception {
     Map<String, String> propsA = new HashMap<>();
@@ -238,10 +233,6 @@ public class CometS3CredentialDispatcherTest {
     assertEquals("k3", TestCometS3CredentialProvider.lastPath);
   }
 
-  /**
-   * The JVM shutdown hook calls {@link CometS3CredentialDispatcher#closeAll()} on every cached
-   * provider. We invoke it directly here since junit cannot exercise a real JVM shutdown.
-   */
   @Test
   public void closeAllInvokesEveryProvider() {
     Map<String, String> propsA = new HashMap<>();
@@ -256,17 +247,12 @@ public class CometS3CredentialDispatcherTest {
 
     assertEquals(2, TestCometS3CredentialProvider.closeCount.get());
 
-    // After closeAll, handles are no longer registered. Re-init creates a fresh instance.
     long fresh = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, "close-a", propsA);
     assertEquals(3, TestCometS3CredentialProvider.initCount.get());
     assertNotNull(fresh);
   }
 
-  /**
-   * A failing vendor close() must not block other providers from being closed. The dispatcher
-   * swallows exceptions during shutdown so a slow or buggy provider cannot keep an executor JVM
-   * from exiting cleanly.
-   */
+  /** A failing vendor close() must not block other providers from being closed. */
   @Test
   public void closeAllSwallowsProviderExceptions() {
     CometS3CredentialDispatcher.ensureInitialized(

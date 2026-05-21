@@ -17,23 +17,7 @@
 
 //! JNI bridge to the JVM `CometS3CredentialDispatcher` SPI, exposed as
 //! `object_store::CredentialProvider` (raw Parquet path) and `reqsign_core::ProvideCredential`
-//! (Iceberg via `opendal`).
-//!
-//! ```text
-//!   JVM                                        Native (Rust)
-//!   ---                                        -------------
-//!
-//!   spark.hadoop.fs.s3a.comet.credential       parquet/objectstore/s3.rs (object_store)
-//!     .provider.class                          execution/operators/iceberg_scan.rs (opendal)
-//!         |                                              |
-//!         v                                              v
-//!   CometS3CredentialDispatcher                  CometS3CredentialBridge
-//!         ^                                              |
-//!         |   ensureInitialized -> long handle           |
-//!         +<--- getCredentialsForPath(handle, ...) ------+
-//!         v
-//!   vendor CometS3CredentialProvider -> CometS3Credentials
-//! ```
+//! (Iceberg via `opendal`). See `docs/source/contributor-guide/s3-credential-provider-design.md`.
 
 use crate::execution::operators::ExecutionError;
 use crate::jvm_bridge::{jni_new_global_ref, jni_static_call, JVMClasses};
@@ -61,27 +45,22 @@ use std::time::Duration;
 /// executor from holding a stale credential for the entire job lifetime.
 const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
 
-/// Once-per-process latch for the "missing expiry" warning; bridges are per-scan so a per-bridge
-/// latch would log once per scan on the same misbehaving provider.
+/// Once-per-process latch for the "missing expiry" warning. Bridges are per-scan, so a per-bridge
+/// latch would re-log on every scan.
 static WARNED_MISSING_EXPIRY: OnceCell<()> = OnceCell::new();
 
 /// Access intent forwarded to the Java SPI. Ordinal must match the JVM `CometS3AccessMode` enum.
 #[derive(Debug, Clone, Copy)]
 pub enum AccessMode {
     Read = 0,
-    /// No native write path yet; kept so the SPI contract is complete.
     #[allow(dead_code)]
     Write = 1,
 }
 
-/// Per-scan credential provider that delegates to the JVM SPI via JNI.
-///
-/// `handle` is the JVM-allocated identity for the `(provider_class, dispatch_key,
-/// catalog_properties)` triple, returned by `ensureInitialized` at construction. Per-request
-/// calls carry `(handle, bucket, path, mode)`, which lets the JVM disambiguate multi-tenant
-/// providers without re-sending the property bag and saves one JNI string allocation on the hot
-/// path. `bucket` and `path` are immutable for the bridge's lifetime so we cache them as JNI
-/// global refs.
+/// Per-scan credential provider that delegates to the JVM SPI via JNI. `handle` is the JVM-side
+/// identity for the `(provider_class, dispatch_key, catalog_properties)` triple returned by
+/// `ensureInitialized`. `bucket_jstr` / `path_jstr` are interned once at construction to avoid
+/// per-call `new_string` allocations on the hot path.
 pub struct CometS3CredentialBridge {
     provider_class: String,
     dispatch_key: String,
@@ -89,7 +68,6 @@ pub struct CometS3CredentialBridge {
     path: String,
     mode: AccessMode,
     handle: i64,
-    /// Cached JNI globals for the two constant String arguments to `getCredentialsForPath`.
     bucket_jstr: Arc<Global<JString<'static>>>,
     path_jstr: Arc<Global<JString<'static>>>,
 }
@@ -108,9 +86,6 @@ impl fmt::Debug for CometS3CredentialBridge {
 }
 
 impl CometS3CredentialBridge {
-    /// Run `ensureInitialized` synchronously and stash the returned handle for the bridge's
-    /// lifetime. `dispatch_key` is the bucket on the Parquet path, the catalog name on the Iceberg
-    /// path. `catalog_properties` is forwarded into the vendor's `initialize(Map)`.
     pub fn new(
         provider_class: impl Into<String>,
         dispatch_key: impl Into<String>,
@@ -232,7 +207,7 @@ fn ensure_initialized(
 }
 
 /// Construct a `java.util.HashMap<String,String>` and populate it. Called once per bridge at
-/// construction (per-scan), so the per-call HashMap/put cost is amortized away from the hot path.
+/// construction, so per-call HashMap/put cost stays off the hot path.
 fn build_java_string_map<'a>(
     env: &mut jni::Env<'a>,
     map: &HashMap<String, String>,

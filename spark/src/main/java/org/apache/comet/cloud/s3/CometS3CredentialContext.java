@@ -24,9 +24,8 @@ import java.util.Objects;
 /**
  * Per-request context passed to {@link
  * CometS3CredentialProvider#getCredentialsForPath(CometS3CredentialContext)}. New fields can be
- * added here without breaking vendors compiled against earlier Comet versions, so the SPI method
- * signature does not change when Comet learns to forward additional per-request information (e.g.
- * region, write-target ARN).
+ * added here without changing the SPI method signature, so vendors compiled against earlier
+ * versions stay binary-compatible.
  */
 public final class CometS3CredentialContext {
 

@@ -22,12 +22,9 @@ package org.apache.comet.cloud.s3;
 import java.util.Objects;
 
 /**
- * Credentials returned by a {@link CometS3CredentialProvider}. Fields are read back over JNI by
- * name, so the field names are part of the cross-language contract.
- *
- * <p>{@code sessionToken} is null for non-STS credentials. {@code expirationEpochMillis} of {@code
- * 0} means "unknown"; the Iceberg path then caps opendal's cache at a short fallback to avoid
- * serving stale credentials for the executor lifetime.
+ * Credentials returned by a {@link CometS3CredentialProvider}. Field names are read back over JNI
+ * by name and are part of the cross-language contract. {@code sessionToken} is null for non-STS
+ * credentials; {@code expirationEpochMillis} of {@code 0} means "unknown".
  */
 public final class CometS3Credentials {
 

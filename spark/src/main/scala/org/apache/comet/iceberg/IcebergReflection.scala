@@ -664,10 +664,8 @@ object IcebergReflection extends Logging {
  * @param catalogProperties
  *   Catalog properties for FileIO (S3 credentials, regions, etc.)
  * @param catalogName
- *   Spark V2 catalog name that loaded this table, if it can be derived. Forwarded as
- *   `dispatchKey` to the native CometS3CredentialBridge so two catalogs sharing one provider FQCN
- *   get isolated provider instances. `None` when the table has no catalog identity (e.g.
- *   HadoopTables loaded by raw path).
+ *   Spark V2 catalog name forwarded as `dispatchKey` to CometS3CredentialBridge. `None` when the
+ *   table has no catalog identity (e.g. HadoopTables loaded by raw path).
  */
 case class CometIcebergNativeScanMetadata(
     table: Any,
@@ -740,20 +738,16 @@ object CometIcebergNativeScanMetadata extends Logging {
   }
 
   /**
-   * Best-effort extraction of the Spark V2 catalog name from an Iceberg `Table`. Iceberg's
-   * `Table.name()` returns `catalog.namespace.table` for tables loaded through a catalog. We
-   * intersect that name against the V2 catalogs Spark has registered so a value like `s3.foo` is
-   * not mistaken for a catalog `s3` when no such catalog exists. Falls back to the dotted-prefix
-   * split when the catalog manager is not reachable or the name does not match. Returns `None`
-   * when the table has no catalog identity (e.g. HadoopTables loaded by raw path) or when
-   * reflection fails.
+   * Extracts the Spark V2 catalog name from an Iceberg `Table`. `Table.name()` returns
+   * `catalog.namespace.table` for tables loaded through a catalog; we intersect against the
+   * registered V2 catalogs so a value like `s3.foo` is not mistaken for a catalog `s3`. Returns
+   * `None` for HadoopTables loaded by raw path or when reflection fails.
    */
   private[iceberg] def deriveCatalogName(table: Any): Option[String] =
     deriveCatalogName(table, registeredCatalogNames _)
 
   /**
-   * Test seam for [[deriveCatalogName(table:Any)]]. The `knownCatalogNames` thunk lets tests
-   * inject a fixed catalog set without bootstrapping a SparkSession.
+   * Test seam that lets tests inject a fixed catalog set without bootstrapping a SparkSession.
    */
   private[iceberg] def deriveCatalogName(
       table: Any,
@@ -773,15 +767,6 @@ object CometIcebergNativeScanMetadata extends Logging {
     }
   }
 
-  /**
-   * Calls Iceberg's public `Table.name()` reflectively. Uses `getMethod` so the interface default
-   * is reachable when a concrete table class does not override it. Matches the pattern used for
-   * `Field.name()` / `Column.name()` elsewhere in this file.
-   *
-   * `name()` is a default method on `org.apache.iceberg.Table`. A thrown exception here means the
-   * classpath is wrong or the object is not actually an Iceberg Table, so log at `warn` to make
-   * it visible. A `null` return is legitimate (anonymous tables) and not noteworthy.
-   */
   private def invokeTableName(table: Any): Option[String] = {
     try {
       table.getClass.getMethod("name").invoke(table) match {
@@ -791,10 +776,8 @@ object CometIcebergNativeScanMetadata extends Logging {
       }
     } catch {
       case e: Exception =>
-        logWarning(
-          s"Iceberg reflection: Table.name() not callable on ${table.getClass.getName}; " +
-            "native S3 credential dispatch will fall back to bucket-keyed isolation: " +
-            s"${e.getMessage}")
+        logWarning(s"Iceberg reflection: Table.name() not callable on ${table.getClass.getName}; " +
+          s"native S3 credential dispatch will fall back to bucket-keyed isolation: ${e.getMessage}")
         None
     }
   }

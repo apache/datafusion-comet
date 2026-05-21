@@ -79,9 +79,7 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    // Parquet path: dispatch_key = bucket (matches the per-bucket override config namespace);
-    // catalog_properties is empty since vendors on the Parquet path read from Hadoop conf, not
-    // catalog props.
+    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
     let empty_props: HashMap<String, String> = HashMap::new();
     let bridge = match lookup_provider_class(configs, bucket) {
         Some(provider_class) => match CometS3CredentialBridge::new(
@@ -322,14 +320,10 @@ pub(super) fn get_config_trimmed<'a>(
     get_config(configs, bucket, property).map(|s| s.trim())
 }
 
-/// Hadoop-style config key (without `fs.s3a.` prefix) naming the vendor `CometS3CredentialProvider`
-/// FQCN. Looked up via [`get_config_trimmed`] so the per-bucket override
-/// (`fs.s3a.bucket.<name>.comet.credential.provider.class`) is honored before the global
-/// (`fs.s3a.comet.credential.provider.class`).
+/// Activation key (without `fs.s3a.` prefix) naming the vendor `CometS3CredentialProvider` FQCN.
+/// Per-bucket override is honored via [`get_config_trimmed`].
 const PROVIDER_CLASS_PROPERTY: &str = "comet.credential.provider.class";
 
-/// Returns the configured `CometS3CredentialProvider` FQCN for the given bucket, or `None` when
-/// no provider is registered. Trims surrounding whitespace and treats an empty string as unset.
 fn lookup_provider_class<'a>(
     configs: &'a HashMap<String, String>,
     bucket: &str,

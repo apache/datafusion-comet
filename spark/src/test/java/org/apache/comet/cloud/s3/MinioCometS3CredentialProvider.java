@@ -26,7 +26,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Test-only {@link CometS3CredentialProvider} registered via {@code META-INF/services}. Returns
+ * Test-only {@link CometS3CredentialProvider} named via {@code
+ * spark.hadoop.fs.s3a.comet.credential.provider.class} (and the per-catalog Iceberg form). Returns
  * Minio's static credentials once {@link #installCredentials} has been called and counts every
  * invocation so suites can assert the bridge was actually used.
  */
