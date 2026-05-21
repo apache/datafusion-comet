@@ -63,6 +63,12 @@ def spark():
         .config("spark.plugins", "org.apache.spark.CometPlugin")
         .config("spark.comet.enabled", "true")
         .config("spark.comet.exec.enabled", "true")
+        # spark.comet.exec.shuffle.enabled defaults to true, and
+        # CometSparkSessionExtensions.isCometLoaded refuses to register Comet's rules
+        # at all when shuffle is on but spark.shuffle.manager is not the Comet manager.
+        # These tests do not need Comet shuffle, so disable it explicitly to keep
+        # Comet's scan and exec rules active without configuring shuffle.
+        .config("spark.comet.exec.shuffle.enabled", "false")
         .config("spark.memory.offHeap.enabled", "true")
         .config("spark.memory.offHeap.size", "2g")
         .getOrCreate()
