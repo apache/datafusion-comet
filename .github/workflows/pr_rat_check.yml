@@ -18,18 +18,18 @@
 name: RAT License Check
 
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  # Literal suffix keeps the group unique when this workflow is invoked via
+  # `workflow_call` from build_and_test.yml, since github.workflow then
+  # resolves to the caller's name.
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-rat
   cancel-in-progress: true
 
 permissions:
   contents: read
 
-# No paths-ignore: this workflow must run for ALL changes including docs
 on:
-  push:
-    branches:
-      - main
-  pull_request:
+  # Called by build_and_test.yml on every branch push. No inputs.
+  workflow_call:
   workflow_dispatch:
 
 jobs:

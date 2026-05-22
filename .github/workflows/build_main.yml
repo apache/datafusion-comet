@@ -17,19 +17,23 @@
 
 # Fork-side entry workflow.
 #
-# Mirrors apache/spark's build_main.yml + build_and_test.yml split: this is
-# the *only* workflow that fires from a contributor's branch push. It then
-# orchestrates the per-area workflows via `workflow_call`, so a push produces
-# a single CI run with all jobs nested under it. The upstream
-# apache/datafusion-comet repo detects this run via notify_test_workflow.yml
-# and surfaces its status as a "Build" check on the PR;
-# update_build_status.yml polls and syncs the check.
+# Mirrors apache/spark's build_main.yml + build_and_test.yml split exactly:
+# this is a thin wrapper that fires on every branch push in a contributor's
+# fork. Its single `call-build-and-test` job (display name "Run") delegates
+# to build_and_test.yml, so the rendered check names follow Spark's
+# convention — e.g. "Run / Check changes" for the precondition.
+#
+# The upstream apache/datafusion-comet repo detects this run via
+# notify_test_workflow.yml and surfaces its status as a "Build" check on
+# the PR; update_build_status.yml polls and syncs the check.
 #
 # COUPLING — keep the following in sync if this file is renamed or
 # restructured:
 #   - notify_test_workflow.yml looks up runs by file id 'build_main.yml'.
-#   - notify_test_workflow.yml deep-links to a check named "Check changes",
-#     which is the display name of the `precondition` job below.
+#   - notify_test_workflow.yml deep-links to a check named
+#     "Run / Check changes": "Run" is the display name of the
+#     `call-build-and-test` job below, "Check changes" is the display name
+#     of the `precondition` job in build_and_test.yml.
 #
 # The workflow name "Build" is intentionally generic to match Spark's
 # convention — GitHub's check-suite-from-workflow mapping picks an arbitrary
@@ -48,19 +52,15 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  # Match Spark exactly: trigger on every branch push with no path filter.
+  # build_and_test.yml fans out to lightweight checks (rat, markdown,
+  # benchmark, missing-suites, validate-workflows) as well as the heavy
+  # build/test jobs, and the upstream "Build" check is created from any
+  # detected fork run — so any path-based skip here would leave PRs
+  # touching only those paths in a permanently-pending check state.
   push:
     branches:
       - '**'
-    paths-ignore:
-      - "benchmarks/**"
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
 
 # Default token permissions for every job and every called reusable workflow.
 # `contents: read` is the minimum needed for actions/checkout against a
@@ -70,42 +70,6 @@ permissions:
   contents: read
 
 jobs:
-  # Lightweight marker job. Its display name "Check changes" is what
-  # notify_test_workflow.yml deep-links to from the upstream PR check, so the
-  # contributor lands on something meaningful instead of the bare actions
-  # page. Doubles as a `needs:` gate for the dispatchers below.
-  precondition:
-    name: Check changes
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-
-  build-linux:
-    name: PR Build (Linux)
-    needs: precondition
-    uses: ./.github/workflows/pr_build_linux.yml
-
-  build-macos:
-    name: PR Build (macOS)
-    needs: precondition
-    uses: ./.github/workflows/pr_build_macos.yml
-
-  spark-sql:
-    name: Spark SQL Tests
-    needs: precondition
-    uses: ./.github/workflows/spark_sql_test.yml
-
-  spark-sql-iceberg:
-    name: Spark SQL (native Iceberg)
-    needs: precondition
-    uses: ./.github/workflows/spark_sql_test_native_iceberg_compat.yml
-
-  iceberg-spark:
-    name: Iceberg Spark
-    needs: precondition
-    uses: ./.github/workflows/iceberg_spark_test.yml
-
-  miri:
-    name: Miri
-    needs: precondition
-    uses: ./.github/workflows/miri.yml
+  call-build-and-test:
+    name: Run
+    uses: ./.github/workflows/build_and_test.yml

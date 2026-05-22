@@ -18,13 +18,16 @@
 name: Check Markdown Formatting
 
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  # Literal suffix keeps the group unique when this workflow is invoked via
+  # `workflow_call` from build_and_test.yml, since github.workflow then
+  # resolves to the caller's name.
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-markdown
   cancel-in-progress: true
 
 on:
-  pull_request:
-    paths:
-      - '**.md'
+  # Called by build_and_test.yml on every branch push. No inputs.
+  workflow_call:
+  workflow_dispatch:
 
 jobs:
   prettier-check:

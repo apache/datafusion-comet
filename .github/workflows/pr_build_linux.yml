@@ -19,13 +19,13 @@ name: PR Build (Linux)
 
 concurrency:
   # Literal suffix keeps the group unique when this workflow is invoked via
-  # `workflow_call` from build_main.yml, since github.workflow then
+  # `workflow_call` from build_and_test.yml, since github.workflow then
   # resolves to the caller's name.
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-pr-build-linux
   cancel-in-progress: true
 
 on:
-  # Called by build_main.yml on every branch push. No inputs.
+  # Called by build_and_test.yml on every branch push. No inputs.
   workflow_call:
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow

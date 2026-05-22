@@ -27,11 +27,14 @@
 # The workflow name is intentionally generic — GitHub's check-suite logic
 # associates check runs with an arbitrary workflow in the repo.
 #
-# COUPLING — these strings must stay in sync with build_main.yml:
+# COUPLING — these strings must stay in sync with build_main.yml /
+# build_and_test.yml:
 #   - `id: 'build_main.yml'` below: the lookup uses the workflow's filename.
 #     If build_main.yml is ever renamed, update this id too.
-#   - `r.name === "Check changes"` filter further down: the deep-link target
-#     is the display name of the `precondition` job in build_main.yml.
+#   - `r.name === "Run / Check changes"` filter further down: "Run" is the
+#     display name of build_main.yml's `call-build-and-test` job;
+#     "Check changes" is the display name of build_and_test.yml's
+#     `precondition` job.
 #
 # SECURITY: pull_request_target runs with repo secrets. This script never
 # checks out or executes fork code — it only makes GitHub API calls.
@@ -125,10 +128,12 @@ jobs:
 
               // Prefer the granular precondition check so users click into
               // a meaningful sub-view rather than the top-level actions page.
-              // The "Check changes" name comes from the precondition job in
-              // build_main.yml — keep these strings in sync.
+              // The "Run / Check changes" name comes from build_main.yml's
+              // `call-build-and-test` job (display name "Run") calling
+              // build_and_test.yml's `precondition` job (display name
+              // "Check changes") — keep these strings in sync.
               const check_runs = await github.request(check_run_endpoint, check_run_params)
-              const check_run_head = check_runs.data.check_runs.filter(r => r.name === "Check changes")[0]
+              const check_run_head = check_runs.data.check_runs.filter(r => r.name === "Run / Check changes")[0]
 
               if (check_run_head && check_run_head.head_sha != context.payload.pull_request.head.sha) {
                 throw new Error('There was a new unsynced commit pushed. Please retrigger the workflow.');
