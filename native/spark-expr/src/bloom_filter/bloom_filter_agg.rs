@@ -25,7 +25,7 @@ use crate::bloom_filter::spark_bloom_filter::{SparkBloomFilter, SparkBloomFilter
 use arrow::array::ArrayRef;
 use arrow::array::BinaryArray;
 use datafusion::common::{downcast_value, ScalarValue};
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{AggregateUDFImpl, Signature};
 use datafusion::physical_expr::expressions::Literal;
@@ -141,8 +141,16 @@ impl Accumulator for SparkBloomFilter {
                 ScalarValue::Utf8(Some(value)) => {
                     self.put_binary(value.as_bytes());
                 }
-                _ => {
-                    unreachable!()
+                // Spark's BloomFilterAggregate.update ignores null inputs.
+                ScalarValue::Int8(None)
+                | ScalarValue::Int16(None)
+                | ScalarValue::Int32(None)
+                | ScalarValue::Int64(None)
+                | ScalarValue::Utf8(None) => {}
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "bloom_filter_agg received an unsupported input type: {other:?}"
+                    )));
                 }
             }
             Ok(())

@@ -247,7 +247,10 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
 
-        val sparkPlan = createSparkPlan(spark, "SELECT bloom_filter_agg(id) FROM test_data")
+        // Cast to bigint: Spark 3.4's bloom_filter_agg only accepts a long-typed first
+        // argument; later versions widened it to any integral type.
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT bloom_filter_agg(CAST(id AS BIGINT)) FROM test_data")
 
         val originalObjectAggCount = countOperators(sparkPlan, classOf[ObjectHashAggregateExec])
         assert(originalObjectAggCount == 2)
@@ -283,7 +286,10 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
 
-        val sparkPlan = createSparkPlan(spark, "SELECT bloom_filter_agg(id) FROM test_data")
+        // Cast to bigint: Spark 3.4's bloom_filter_agg only accepts a long-typed first
+        // argument; later versions widened it to any integral type.
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT bloom_filter_agg(CAST(id AS BIGINT)) FROM test_data")
 
         val originalObjectAggCount = countOperators(sparkPlan, classOf[ObjectHashAggregateExec])
         assert(originalObjectAggCount == 2)

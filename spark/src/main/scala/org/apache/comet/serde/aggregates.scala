@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
@@ -649,8 +649,20 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
     // We ignore mutableAggBufferOffset and inputAggBufferOffset because they are
     // implementation details for Spark's ObjectHashAggregate.
     val childExpr = exprToProto(bloomFilter.child, inputs, binding)
-    val numItemsExpr = exprToProto(bloomFilter.estimatedNumItemsExpression, inputs, binding)
-    val numBitsExpr = exprToProto(bloomFilter.numBitsExpression, inputs, binding)
+    // Spark's BloomFilterAggregate caps numItems / numBits at the configured maxima
+    // (its `estimatedNumItems` / `numBits` lazy vals). Comet's native aggregate stores
+    // these as i32, so an uncapped Long literal (e.g. the Long.MaxValue cases in
+    // BloomFilterAggregateQuerySuite) would wrap to a bogus negative size and abort the
+    // executor with a multi-exabyte allocation. Apply the same cap here so the native
+    // side always receives a sane, Spark-equivalent value.
+    val numItems = math.min(
+      bloomFilter.estimatedNumItemsExpression.eval().asInstanceOf[Number].longValue,
+      conf.getConf(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_ITEMS))
+    val numBits = math.min(
+      bloomFilter.numBitsExpression.eval().asInstanceOf[Number].longValue,
+      conf.getConf(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_BITS))
+    val numItemsExpr = exprToProto(Literal(numItems, LongType), inputs, binding)
+    val numBitsExpr = exprToProto(Literal(numBits, LongType), inputs, binding)
     val dataType = serializeDataType(bloomFilter.dataType)
 
     if (childExpr.isDefined &&
