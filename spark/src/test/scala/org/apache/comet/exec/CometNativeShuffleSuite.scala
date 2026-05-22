@@ -224,6 +224,12 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     checkShuffleAnswer(shuffled, 1)
   }
 
+  test("native shuffle with Map[_, NullType] column") {
+    val df = spark.sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
+    val shuffled = df.repartition(2, $"id")
+    checkShuffleAnswer(shuffled, 1)
+  }
+
   test("fix: Comet native shuffle with binary data") {
     withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
       val df = sql("SELECT cast(cast(_1 as STRING) as BINARY) as binary, _2 FROM tbl")

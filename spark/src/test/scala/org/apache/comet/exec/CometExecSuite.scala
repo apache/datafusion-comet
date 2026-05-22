@@ -3944,13 +3944,15 @@ class CometExecSuite extends CometTestBase {
     assume(
       org.apache.comet.CometSparkSessionExtensions.isSpark41Plus,
       "TimeType requires Spark 4.1+")
-    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-      // Spark 4.1's row encoder cannot serialize TIME columns to the JVM, so we cannot
-      // collect rows. count() exercises the LocalRelation -> scan path without materializing
-      // the TIME value, which is sufficient to verify the fallback (without the fallback the
-      // CometLocalTableScanExec ArrowWriter would crash on TimeType).
-      val cnt = spark.sql("SELECT TIME '12:34:56' AS t, 1 AS id").count()
-      assert(cnt == 1)
+    // spark.sql.timeType.enabled defaults to Utils.isTesting; enable explicitly so the
+    // row encoder accepts TIME (matches Spark's own TimeFunctionsSuiteBase setup).
+    withSQLConf(
+      "spark.sql.timeType.enabled" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      // VALUES folds to a LocalRelation, exercising the CometLocalTableScanExec convert
+      // path; the TimeType column should drive the schema-level fallback.
+      val df = spark.sql("SELECT * FROM VALUES (TIME '12:34:56'), (TIME '01:02:03') AS t(c)")
+      checkSparkAnswer(df)
     }
   }
 
