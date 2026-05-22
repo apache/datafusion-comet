@@ -699,16 +699,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_USE_DECIMAL_128: ConfigEntry[Boolean] = conf("spark.comet.use.decimal128")
-    .internal()
-    .category(CATEGORY_EXEC)
-    .doc("If true, Comet will always use 128 bits to represent a decimal value, regardless of " +
-      "its precision. If false, Comet will use 32, 64 and 128 bits respectively depending on " +
-      "the precision. N.B. this is NOT a user-facing config but should be inferred and set by " +
-      "Comet itself.")
-    .booleanConf
-    .createWithDefault(false)
-
   val COMET_USE_LAZY_MATERIALIZATION: ConfigEntry[Boolean] = conf(
     "spark.comet.use.lazyMaterialization")
     .internal()
