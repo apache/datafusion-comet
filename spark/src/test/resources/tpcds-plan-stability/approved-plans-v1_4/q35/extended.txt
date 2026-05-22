@@ -1,5 +1,5 @@
 TakeOrderedAndProject
-+- HashAggregate
++-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
    +- Exchange
       +- HashAggregate
          +- Project
