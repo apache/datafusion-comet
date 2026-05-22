@@ -108,15 +108,7 @@ class CometWindowExecSuite extends CometTestBase {
         val cometShuffles = collect(df2.queryExecution.executedPlan) {
           case _: CometShuffleExchangeExec => true
         }
-        if (shuffleMode == "jvm" || shuffleMode == "auto") {
-          assert(cometShuffles.length == 1)
-        } else {
-          // we fall back to Spark for shuffle because we do not support
-          // native shuffle with a LocalTableScan input, and we do not fall
-          // back to Comet columnar shuffle due to
-          // https://github.com/apache/datafusion-comet/issues/1248
-          assert(cometShuffles.isEmpty)
-        }
+        assert(cometShuffles.length == 1)
       }
     }
   }

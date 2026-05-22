@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -27,11 +29,13 @@ import org.apache.spark.sql.comet.CometLocalTableScanExec.createMetricsIterator
 import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.types.{DataType, NullType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
+import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometSink
 
@@ -104,13 +108,37 @@ case class CometLocalTableScanExec(
   override def hashCode(): Int = Objects.hashCode(originalPlan, originalPlan.schema, output)
 }
 
-object CometLocalTableScanExec extends CometSink[LocalTableScanExec] {
+object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTypeSupport {
 
   // uses CometArrowConverters, which re-uses arrays
   override def isFfiSafe: Boolean = false
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
+
+  // CometArrowConverters / ArrowWriter support NullType (via Utils.toArrowType +
+  // NullWriter). Other types not on DataTypeSupport's allow list (e.g. TimeType,
+  // intervals) lack ArrowWriter coverage and must fall back to Spark.
+  override def isTypeSupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = dt match {
+    case _: NullType => true
+    case _ => super.isTypeSupported(dt, name, fallbackReasons)
+  }
+
+  override def convert(
+      op: LocalTableScanExec,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[Operator] = {
+    val fallbackReasons = new ListBuffer[String]()
+    if (!isSchemaSupported(op.schema, fallbackReasons)) {
+      withInfo(op, fallbackReasons.mkString("; "))
+      None
+    } else {
+      super.convert(op, builder, childOp: _*)
+    }
+  }
 
   override def createExec(nativeOp: Operator, op: LocalTableScanExec): CometNativeExec = {
     CometScanWrapper(nativeOp, CometLocalTableScanExec(op, op.rows, op.output))
