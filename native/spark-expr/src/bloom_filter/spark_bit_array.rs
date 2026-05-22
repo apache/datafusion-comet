@@ -66,6 +66,11 @@ impl SparkBitArray {
         self.data.clone()
     }
 
+    /// Number of set bits in the array. Mirrors Spark's `BitArray.cardinality()`.
+    pub fn cardinality(&self) -> usize {
+        self.bit_count
+    }
+
     /// OR-merge `incoming` (big-endian `u64` words, one per word in `self`) into
     /// `self.data` in place and refresh `bit_count` in the same pass. The caller
     /// is responsible for ensuring `incoming.len() == self.word_size() * 8`.
@@ -93,10 +98,6 @@ mod test {
     impl SparkBitArray {
         fn byte_size(&self) -> usize {
             self.word_size() * 8
-        }
-
-        fn cardinality(&self) -> usize {
-            self.bit_count
         }
 
         fn to_bytes(&self) -> Vec<u8> {

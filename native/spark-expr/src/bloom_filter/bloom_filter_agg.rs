@@ -158,6 +158,13 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
+        // Spark's BloomFilterAggregate.eval returns NULL when no bit is set,
+        // i.e. the aggregate saw no non-null input. Mirror that here so an
+        // empty-input bloom_filter_agg yields NULL rather than a serialized
+        // empty filter.
+        if self.cardinality() == 0 {
+            return Ok(ScalarValue::Binary(None));
+        }
         Ok(ScalarValue::Binary(Some(self.spark_serialization())))
     }
 
@@ -182,5 +189,33 @@ impl Accumulator for SparkBloomFilter {
         assert_eq!(states[0].len(), 1);
         let state_sv = downcast_value!(states[0], BinaryArray);
         self.merge_filter(state_sv.value_data())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spark's BloomFilterAggregate.eval returns NULL when the filter saw no
+    /// non-null input (cardinality 0); an untouched accumulator must match.
+    #[test]
+    fn evaluate_empty_filter_yields_null() {
+        let num_bits = 1024;
+        let num_hash = spark_bloom_filter::optimal_num_hash_functions(100, num_bits);
+        let mut acc = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::Binary(None));
+    }
+
+    /// A filter with at least one set bit serializes to a non-null binary.
+    #[test]
+    fn evaluate_non_empty_filter_yields_binary() {
+        let num_bits = 1024;
+        let num_hash = spark_bloom_filter::optimal_num_hash_functions(100, num_bits);
+        let mut acc = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
+        acc.put_long(42);
+        assert!(matches!(
+            acc.evaluate().unwrap(),
+            ScalarValue::Binary(Some(_))
+        ));
     }
 }

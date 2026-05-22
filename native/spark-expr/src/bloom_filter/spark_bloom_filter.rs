@@ -272,6 +272,13 @@ impl SparkBloomFilter {
             .collect()
     }
 
+    /// Number of set bits in the underlying bit array. Mirrors Spark's
+    /// `BloomFilter.cardinality()`: a filter that has seen no non-null input
+    /// has cardinality 0.
+    pub fn cardinality(&self) -> usize {
+        self.bits.cardinality()
+    }
+
     pub fn state_as_bytes(&self) -> Vec<u8> {
         self.spark_serialization()
     }
