@@ -49,27 +49,24 @@ abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
 
   testStandardAndLegacyModes("decimals") {
-    Seq(true, false).foreach { useDecimal128 =>
-      Seq(16, 1024).foreach { batchSize =>
-        withSQLConf(
-          CometConf.COMET_EXEC_ENABLED.key -> false.toString,
-          CometConf.COMET_USE_DECIMAL_128.key -> useDecimal128.toString,
-          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
-          var combinations = Seq((5, 2), (1, 0), (18, 10), (18, 17), (19, 0), (38, 37))
-          // If ANSI mode is on, the combination (1, 1) will cause a runtime error. Otherwise, the
-          // decimal RDD contains all null values and should be able to read back from Parquet.
+    Seq(16, 1024).foreach { batchSize =>
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> false.toString,
+        CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+        var combinations = Seq((5, 2), (1, 0), (18, 10), (18, 17), (19, 0), (38, 37))
+        // If ANSI mode is on, the combination (1, 1) will cause a runtime error. Otherwise, the
+        // decimal RDD contains all null values and should be able to read back from Parquet.
 
-          if (!SQLConf.get.ansiEnabled) {
-            combinations = combinations ++ Seq((1, 1))
-          }
-          for ((precision, scale) <- combinations; useDictionary <- Seq(false, true)) {
-            withTempPath { dir =>
-              val data = makeDecimalRDD(1000, DecimalType(precision, scale), useDictionary)
-              data.write.parquet(dir.getCanonicalPath)
-              readParquetFile(dir.getCanonicalPath) { df =>
-                {
-                  checkAnswer(df, data.collect().toSeq)
-                }
+        if (!SQLConf.get.ansiEnabled) {
+          combinations = combinations ++ Seq((1, 1))
+        }
+        for ((precision, scale) <- combinations; useDictionary <- Seq(false, true)) {
+          withTempPath { dir =>
+            val data = makeDecimalRDD(1000, DecimalType(precision, scale), useDictionary)
+            data.write.parquet(dir.getCanonicalPath)
+            readParquetFile(dir.getCanonicalPath) { df =>
+              {
+                checkAnswer(df, data.collect().toSeq)
               }
             }
           }

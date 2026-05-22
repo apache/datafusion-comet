@@ -526,7 +526,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
-  test("fix: StreamReader should always set useDecimal128 as true") {
+  test("fix: StreamReader should read shuffled decimal columns as Decimal128") {
     Seq(10, 201).foreach { numPartitions =>
       withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
         withTempPath { dir =>

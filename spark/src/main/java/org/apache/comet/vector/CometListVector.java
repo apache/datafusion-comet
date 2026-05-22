@@ -33,14 +33,13 @@ public class CometListVector extends CometDecodedVector {
   final ColumnVector dataColumnVector;
   final DictionaryProvider dictionaryProvider;
 
-  public CometListVector(
-      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
-    super(vector, vector.getField(), useDecimal128);
+  public CometListVector(ValueVector vector, DictionaryProvider dictionaryProvider) {
+    super(vector, vector.getField());
 
     this.listVector = ((ListVector) vector);
     this.dataVector = listVector.getDataVector();
     this.dictionaryProvider = dictionaryProvider;
-    this.dataColumnVector = getVector(dataVector, useDecimal128, dictionaryProvider);
+    this.dataColumnVector = getVector(dataVector, dictionaryProvider);
   }
 
   @Override
@@ -57,6 +56,6 @@ public class CometListVector extends CometDecodedVector {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
 
-    return new CometListVector(tp.getTo(), useDecimal128, dictionaryProvider);
+    return new CometListVector(tp.getTo(), dictionaryProvider);
   }
 }
