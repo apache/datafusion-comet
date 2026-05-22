@@ -38,8 +38,7 @@ use datafusion_datasource::TableSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Initializes a DataSourceExec plan with a ParquetSource. This may be used by either the
-/// `native_datafusion` scan or the `native_iceberg_compat` scan.
+/// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
 ///
 ///   `required_schema`: Schema to be projected by the scan.
 ///

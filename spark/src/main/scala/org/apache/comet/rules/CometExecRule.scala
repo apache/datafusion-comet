@@ -187,9 +187,6 @@ case class CometExecRule(session: SparkSession)
       case s: ShuffleExchangeExec =>
         CometShuffleExchangeExec.shuffleSupported(s) match {
           case Some(CometNativeShuffle) =>
-            // Switch to use Decimal128 regardless of precision, since Arrow native execution
-            // doesn't support Decimal32 and Decimal64 yet.
-            conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
             CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
           case Some(CometColumnarShuffle) =>
             CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)

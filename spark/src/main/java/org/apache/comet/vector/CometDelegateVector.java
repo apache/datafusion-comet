@@ -33,15 +33,11 @@ public class CometDelegateVector extends CometVector {
   protected CometVector delegate;
 
   public CometDelegateVector(DataType dataType) {
-    this(dataType, null, false);
+    this(dataType, null);
   }
 
-  public CometDelegateVector(DataType dataType, boolean useDecimal128) {
-    this(dataType, null, useDecimal128);
-  }
-
-  public CometDelegateVector(DataType dataType, CometVector delegate, boolean useDecimal128) {
-    super(dataType, useDecimal128);
+  public CometDelegateVector(DataType dataType, CometVector delegate) {
+    super(dataType);
     if (delegate instanceof CometDelegateVector) {
       throw new IllegalArgumentException("cannot have nested delegation");
     }
