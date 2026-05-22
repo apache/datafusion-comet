@@ -44,6 +44,10 @@ on:
       - ".github/workflows/spark_sql_test_reusable.yml"
       - ".github/actions/setup-builder/**"
       - ".github/actions/setup-spark-builder/**"
+  # On-demand PR runs: a committer adds the `run-spark-3.4-tests` label
+  # and the workflow runs against the PR's merge ref. Works for forks.
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       collect-fallback-logs:
@@ -54,6 +58,7 @@ on:
 
 jobs:
   spark-sql:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-spark-3.4-tests'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '3.4'
