@@ -40,13 +40,12 @@ public abstract class CometDecodedVector extends CometVector {
   private byte validityByteCache;
   protected boolean isUuid;
 
-  protected CometDecodedVector(ValueVector vector, Field valueField, boolean useDecimal128) {
-    this(vector, valueField, useDecimal128, false);
+  protected CometDecodedVector(ValueVector vector, Field valueField) {
+    this(vector, valueField, false);
   }
 
-  protected CometDecodedVector(
-      ValueVector vector, Field valueField, boolean useDecimal128, boolean isUuid) {
-    super(Utils.fromArrowField(valueField), useDecimal128);
+  protected CometDecodedVector(ValueVector vector, Field valueField, boolean isUuid) {
+    super(Utils.fromArrowField(valueField));
     this.valueVector = vector;
     this.numNulls = valueVector.getNullCount();
     this.numValues = valueVector.getValueCount();

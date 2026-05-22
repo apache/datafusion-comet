@@ -34,6 +34,8 @@ import org.apache.comet.shims.CometEvalModeUtil
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
+  override def supportsMixedPartialFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: Min,
@@ -80,6 +82,8 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 }
 
 object CometMax extends CometAggregateExpressionSerde[Max] {
+
+  override def supportsMixedPartialFinal: Boolean = true
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -319,6 +323,8 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
 }
 
 object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
+  override def supportsMixedPartialFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bitAnd: BitAndAgg,
@@ -353,6 +359,8 @@ object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
 }
 
 object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
+  override def supportsMixedPartialFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bitOr: BitOrAgg,
@@ -387,6 +395,8 @@ object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
 }
 
 object CometBitXOrAgg extends CometAggregateExpressionSerde[BitXorAgg] {
+  override def supportsMixedPartialFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bitXor: BitXorAgg,

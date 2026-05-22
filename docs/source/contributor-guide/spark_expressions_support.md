@@ -411,7 +411,7 @@
 - [x] randn
 - [ ] random
 - [ ] randstr
-- [ ] rint
+- [x] rint
 - [x] round
 - [x] sec
 - [x] shiftleft
@@ -596,7 +596,7 @@
 
 ### url_funcs
 
-- [ ] parse_url
+- [x] parse_url (Incompatible: native diverges from Spark on edge cases)
 - [x] try_url_decode
   - 4.0.1, 2026-05-05
 - [x] url_decode

@@ -49,27 +49,24 @@ abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
 
   testStandardAndLegacyModes("decimals") {
-    Seq(true, false).foreach { useDecimal128 =>
-      Seq(16, 1024).foreach { batchSize =>
-        withSQLConf(
-          CometConf.COMET_EXEC_ENABLED.key -> false.toString,
-          CometConf.COMET_USE_DECIMAL_128.key -> useDecimal128.toString,
-          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
-          var combinations = Seq((5, 2), (1, 0), (18, 10), (18, 17), (19, 0), (38, 37))
-          // If ANSI mode is on, the combination (1, 1) will cause a runtime error. Otherwise, the
-          // decimal RDD contains all null values and should be able to read back from Parquet.
+    Seq(16, 1024).foreach { batchSize =>
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> false.toString,
+        CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+        var combinations = Seq((5, 2), (1, 0), (18, 10), (18, 17), (19, 0), (38, 37))
+        // If ANSI mode is on, the combination (1, 1) will cause a runtime error. Otherwise, the
+        // decimal RDD contains all null values and should be able to read back from Parquet.
 
-          if (!SQLConf.get.ansiEnabled) {
-            combinations = combinations ++ Seq((1, 1))
-          }
-          for ((precision, scale) <- combinations; useDictionary <- Seq(false, true)) {
-            withTempPath { dir =>
-              val data = makeDecimalRDD(1000, DecimalType(precision, scale), useDictionary)
-              data.write.parquet(dir.getCanonicalPath)
-              readParquetFile(dir.getCanonicalPath) { df =>
-                {
-                  checkAnswer(df, data.collect().toSeq)
-                }
+        if (!SQLConf.get.ansiEnabled) {
+          combinations = combinations ++ Seq((1, 1))
+        }
+        for ((precision, scale) <- combinations; useDictionary <- Seq(false, true)) {
+          withTempPath { dir =>
+            val data = makeDecimalRDD(1000, DecimalType(precision, scale), useDictionary)
+            data.write.parquet(dir.getCanonicalPath)
+            readParquetFile(dir.getCanonicalPath) { df =>
+              {
+                checkAnswer(df, data.collect().toSeq)
               }
             }
           }
@@ -698,7 +695,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           checkSparkAnswer(df)
 
           // Missing optional struct field with nested required field
-          // TODO: This produces incorrect results in native_datafusion
+          // TODO: This produces incorrect results in the native Parquet scan
           //          df = sql("select a, c.c1 from complex_types")
           //          checkSparkAnswer(df)
 
@@ -711,7 +708,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // TODO: This test fails for native_datafusion
+  // TODO: This test fails for the native Parquet scan
   ignore(" Missing optional struct field with nested required field") {
     Seq(true, false).foreach { dictionaryEnabled =>
       def makeRawParquetFile(path: Path): Unit = {
@@ -760,7 +757,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
         withParquetTable(spark.read.format("parquet").load(path.toString), "complex_types") {
           // Missing optional struct field with nested required field
-          // TODO: This produces incorrect results in native_datafusion
+          // TODO: This produces incorrect results in the native Parquet scan
           val df = sql("select a, c.c1 from complex_types")
           checkSparkAnswer(df)
 
@@ -986,11 +983,11 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("native_datafusion rejects string read as non-string/binary type") {
+  test("native scan rejects string read as non-string/binary type") {
     // Regression guard for https://github.com/apache/datafusion-comet/issues/4088.
     // Spark's vectorized reader rejects reading a Parquet BINARY column as
     // anything except StringType, BinaryType, or a binary-encoded decimal (see
-    // TypeUtil.checkParquetType, BINARY case). The native_datafusion scan
+    // TypeUtil.checkParquetType, BINARY case). The native Parquet scan
     // must do the same in its schema adapter rather than letting DataFusion's
     // cast silently parse the bytes or reinterpret them.
     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
@@ -1008,7 +1005,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("native_datafusion rejects BINARY (no decimal annotation) read as DecimalType") {
+  test("native scan rejects BINARY (no decimal annotation) read as DecimalType") {
     // Regression guard for https://github.com/apache/datafusion-comet/issues/4351,
     // mirroring the BINARY -> DECIMAL(37, 1) iteration in SPARK-34212.
     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
@@ -1036,7 +1033,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("native_datafusion rejects incompatible decimal precision/scale") {
+  test("native scan rejects incompatible decimal precision/scale") {
     // Regression guard for #4089 and #4343. Spark's `isDecimalTypeMatched`
     // accepts decimal-to-decimal only when `scaleIncrease >= 0` AND
     // `precisionIncrease >= scaleIncrease`.
@@ -1063,7 +1060,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("native_datafusion rejects integer read as too-narrow decimal") {
+  test("native scan rejects integer read as too-narrow decimal") {
     // Regression guard for #4344. Spark's `canReadAsDecimal` requires
     // `precision - scale >= 10` for INT32 sources and `>= 20` for INT64.
     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
@@ -1086,7 +1083,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("native_datafusion rejects primitive Parquet conversions Spark rejects") {
+  test("native scan rejects primitive Parquet conversions Spark rejects") {
     // Regression guard for #4297. `getUpdater` has no branch for these
     // (write_type, read_type) pairs.
     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
