@@ -109,5 +109,6 @@ User Guide <user-guide/index>
 Contributor Guide <contributor-guide/index>
 Changelog <changelog/index>
 Comparison with Gluten <about/gluten_comparison>
+Versioning Policy <about/versioning_policy>
 ASF Links <asf/index>
 ```

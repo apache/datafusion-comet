@@ -23,9 +23,6 @@ import java.time.{Duration, Period}
 
 import scala.util.Random
 
-import org.scalactic.source.Position
-import org.scalatest.Tag
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
@@ -43,15 +40,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
-
-  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
-    super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
-        testFun
-      }
-    }
-  }
 
   val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
     """[ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
@@ -139,7 +127,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("compare true/false to negative zero") {
     Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "false",
+        "parquet.enable.dictionary" -> dictionary.toString) {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col1 boolean, col2 float) using parquet")
@@ -165,6 +155,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("decimals divide by zero") {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "false",
         SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> "false",
         "parquet.enable.dictionary" -> dictionary.toString) {
         withTempPath { dir =>
@@ -184,12 +175,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Integral Division Overflow Handling Matches Spark Behavior") {
-    withTable("t1") {
-      val value = Long.MinValue
-      sql("create table t1(c1 long, c2 short) using parquet")
-      sql(s"insert into t1 values($value, -1)")
-      val res = sql("select c1 div c2 from t1 order by c1")
-      checkSparkAnswerAndOperator(res)
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withTable("t1") {
+        val value = Long.MinValue
+        sql("create table t1(c1 long, c2 short) using parquet")
+        sql(s"insert into t1 values($value, -1)")
+        val res = sql("select c1 div c2 from t1 order by c1")
+        checkSparkAnswerAndOperator(res)
+      }
     }
   }
 
@@ -414,19 +407,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("try_divide") {
-    val data = Seq((15121991, 0))
-    withParquetTable(data, "tbl") {
-      checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
-      checkSparkAnswerAndOperator("""
-            |SELECT
-            |  try_divide(10, 0),
-            |  try_divide(NULL, 5),
-            |  try_divide(5, NULL),
-            |  try_divide(-2147483648, -1),
-            |  try_divide(-9223372036854775808, -1),
-            |  try_divide(DECIMAL('9999999999999999999999999999'), 0.1)
-            |  from tbl
-            |""".stripMargin)
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      val data = Seq((15121991, 0))
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
+        checkSparkAnswerAndOperator("""
+              |SELECT
+              |  try_divide(10, 0),
+              |  try_divide(NULL, 5),
+              |  try_divide(5, NULL),
+              |  try_divide(-2147483648, -1),
+              |  try_divide(-9223372036854775808, -1),
+              |  try_divide(DECIMAL('9999999999999999999999999999'), 0.1)
+              |  from tbl
+              |""".stripMargin)
+      }
     }
   }
 
@@ -1707,6 +1702,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("from_unixtime") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "false",
         "parquet.enable.dictionary" -> dictionary.toString,
         CometConf.getExprAllowIncompatConfigKey(classOf[FromUnixTime]) -> "true") {
         val table = "test"
@@ -1746,6 +1742,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("Decimal binary ops multiply is aligned to Spark") {
     Seq(true, false).foreach { allowPrecisionLoss =>
       withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "false",
         "spark.sql.decimalOperations.allowPrecisionLoss" -> allowPrecisionLoss.toString) {
 
         testSingleLineQuery(
@@ -1840,6 +1837,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         sql(s"insert into $table values $values")
         Seq(true, false).foreach { allowPrecisionLoss =>
           withSQLConf(
+            SQLConf.ANSI_ENABLED.key -> "false",
             "spark.sql.decimalOperations.allowPrecisionLoss" -> allowPrecisionLoss.toString) {
             val a = makeNum(p1, s1)
             val b = makeNum(p2, s2)
@@ -1869,15 +1867,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
 
-    // Supported boolean values as true by both Arrow and Spark
-    testCastedColumn(inputValues = Seq("t", "true", "y", "yes", "1", "T", "TrUe", "Y", "YES"))
-    // Supported boolean values as false by both Arrow and Spark
-    testCastedColumn(inputValues = Seq("f", "false", "n", "no", "0", "F", "FaLSe", "N", "No"))
-    // Supported boolean values by Arrow but not Spark
-    testCastedColumn(inputValues =
-      Seq("TR", "FA", "tr", "tru", "ye", "on", "fa", "fal", "fals", "of", "off"))
-    // Invalid boolean casting values for Arrow and Spark
-    testCastedColumn(inputValues = Seq("car", "Truck"))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      // Supported boolean values as true by both Arrow and Spark
+      testCastedColumn(inputValues = Seq("t", "true", "y", "yes", "1", "T", "TrUe", "Y", "YES"))
+      // Supported boolean values as false by both Arrow and Spark
+      testCastedColumn(inputValues = Seq("f", "false", "n", "no", "0", "F", "FaLSe", "N", "No"))
+      // Supported boolean values by Arrow but not Spark
+      testCastedColumn(inputValues =
+        Seq("TR", "FA", "tr", "tru", "ye", "on", "fa", "fal", "fals", "of", "off"))
+      // Invalid boolean casting values for Arrow and Spark
+      testCastedColumn(inputValues = Seq("car", "Truck"))
+    }
   }
 
   test("explain comet") {
@@ -2516,7 +2516,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
         val df = spark.read.parquet(dir.toString())
@@ -2546,7 +2545,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
         val df = spark.read.parquet(dir.toString())
@@ -3076,7 +3074,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
         SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
         SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString,
         // SPARK-53535 (Spark 4.1+) flipped the default to "false", which preserves the parent
@@ -3104,12 +3101,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test length function") {
-    withTable("t1") {
-      sql(
-        "create table t1 using parquet as select cast(id as string) as c1, cast(id as binary) as c2 from range(10)")
-      // FIXME: Change checkSparkAnswer to checkSparkAnswerAndOperator after resolving
-      //  https://github.com/apache/datafusion-comet/issues/2348
-      checkSparkAnswer("select length(c1), length(c2) AS x FROM t1 ORDER BY c1")
+    // cast(id as binary) is rejected by Spark 4 ANSI analyzer
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withTable("t1") {
+        sql(
+          "create table t1 using parquet as select cast(id as string) as c1, cast(id as binary) as c2 from range(10)")
+        // FIXME: Change checkSparkAnswer to checkSparkAnswerAndOperator after resolving
+        //  https://github.com/apache/datafusion-comet/issues/2348
+        checkSparkAnswer("select length(c1), length(c2) AS x FROM t1 ORDER BY c1")
+      }
     }
   }
 

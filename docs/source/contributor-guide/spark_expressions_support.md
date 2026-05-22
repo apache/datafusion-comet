@@ -215,7 +215,7 @@
 ### datetime_funcs
 
 - [ ] add_months
-- [ ] convert_timezone
+- [x] convert_timezone
 - [ ] curdate
 - [ ] current_date
 - [ ] current_time
@@ -238,10 +238,14 @@
 - [x] dayofyear
 - [x] extract
 - [x] from_unixtime
-- [ ] from_utc_timestamp
+- [x] from_utc_timestamp
+  - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-12): baseline.
+  - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
+  - Known divergence: Comet's native timezone parser does not accept Spark's legacy zone forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). Such timezones throw a native parse error at execution.
 - [x] hour
 - [x] last_day
-- [ ] localtimestamp
+- [x] localtimestamp
 - [x] make_date
 - [ ] make_dt_interval
 - [ ] make_interval
@@ -270,7 +274,11 @@
 - [ ] to_timestamp_ltz
 - [ ] to_timestamp_ntz
 - [ ] to_unix_timestamp
-- [ ] to_utc_timestamp
+- [x] to_utc_timestamp
+  - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-12): baseline.
+  - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
+  - Known divergence: Comet's native timezone parser does not accept Spark's legacy zone forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). Such timezones throw a native parse error at execution.
 - [x] trunc
 - [ ] try_make_interval
 - [ ] try_make_timestamp
@@ -377,7 +385,10 @@
 - [ ] e
 - [x] exp
 - [x] expm1
-- [ ] factorial
+- [x] factorial
+  - 3.4.3 (audited 2026-05-15): identical to v3.5.8.
+  - 3.5.8 (audited 2026-05-15): canonical reference; `extends UnaryExpression with ImplicitCastInputTypes with NullIntolerant`. Returns NULL for NULL input or values outside `[0, 20]`.
+  - 4.0.1 (audited 2026-05-15): `NullIntolerant` trait replaced by `nullIntolerant: Boolean` method override; behavior unchanged.
 - [x] floor
 - [x] greatest
 - [x] hex
@@ -400,9 +411,9 @@
 - [x] randn
 - [ ] random
 - [ ] randstr
-- [ ] rint
+- [x] rint
 - [x] round
-- [ ] sec
+- [x] sec
 - [x] shiftleft
 - [x] sign
 - [x] signum
@@ -585,7 +596,7 @@
 
 ### url_funcs
 
-- [ ] parse_url
+- [x] parse_url (Incompatible: native diverges from Spark on edge cases)
 - [x] try_url_decode
   - 4.0.1, 2026-05-05
 - [x] url_decode
