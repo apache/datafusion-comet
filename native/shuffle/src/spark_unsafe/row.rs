@@ -28,8 +28,8 @@ use arrow::array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
         Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
-        Int64Builder, Int8Builder, ListBuilder, MapBuilder, StringBuilder, StringDictionaryBuilder,
-        StructBuilder, TimestampMicrosecondBuilder,
+        Int64Builder, Int8Builder, ListBuilder, MapBuilder, NullBuilder, StringBuilder,
+        StringDictionaryBuilder, StructBuilder, TimestampMicrosecondBuilder,
     },
     types::Int32Type,
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
@@ -266,6 +266,10 @@ pub(super) fn append_field(
         DataType::Date32 => {
             append_field_to_builder!(Date32Builder, |builder: &mut Date32Builder| builder
                 .append_value(row.get_date(idx)));
+        }
+        DataType::Null => {
+            let field_builder = get_field_builder!(struct_builder, NullBuilder, idx);
+            field_builder.append_null();
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             append_field_to_builder!(
@@ -1148,6 +1152,12 @@ fn append_columns(
                     .append_value(row.get_date(idx))
             );
         }
+        DataType::Null => {
+            let null_builder = downcast_builder_ref!(NullBuilder, builder);
+            for _ in row_start..row_end {
+                null_builder.append_null();
+            }
+        }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             append_column_to_builder!(
                 TimestampMicrosecondBuilder,
@@ -1252,6 +1262,7 @@ fn make_builders(
             }
         }
         DataType::Date32 => Box::new(Date32Builder::with_capacity(row_num)),
+        DataType::Null => Box::new(NullBuilder::new()),
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))
         }
