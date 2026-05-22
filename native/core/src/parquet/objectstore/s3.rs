@@ -81,32 +81,29 @@ pub fn create_store(
 
     // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
     let empty_props: HashMap<String, String> = HashMap::new();
-    let bridge = match lookup_provider_class(configs, bucket) {
-        Some(provider_class) => match CometS3CredentialBridge::new(
-            provider_class,
-            bucket,
-            bucket,
-            url.path(),
-            AccessMode::Read,
-            &empty_props,
-        ) {
-            Ok(b) => Some(b),
-            Err(e) => {
-                log::warn!(
-                    "Failed to initialize CometS3CredentialBridge for {bucket}: {e}; \
-                     falling back to default credential chain"
-                );
-                None
+    builder = match lookup_provider_class(configs, bucket) {
+        Some(provider_class) => {
+            // Fail rather than fall back to the default chain, which could resolve to the wrong
+            // identity for a user who explicitly named a provider.
+            let bridge = CometS3CredentialBridge::new(
+                provider_class,
+                bucket,
+                bucket,
+                url.path(),
+                AccessMode::Read,
+                &empty_props,
+            )
+            .map_err(|e| object_store::Error::Generic {
+                store: "S3",
+                source: format!("CometS3CredentialBridge init failed for {bucket}: {e}").into(),
+            })?;
+            builder.with_credentials(Arc::new(bridge))
+        }
+        None => {
+            match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {
+                Some(provider) => builder.with_credentials(Arc::new(provider)),
+                None => builder.with_skip_signature(true),
             }
-        },
-        None => None,
-    };
-    builder = if let Some(bridge) = bridge {
-        builder.with_credentials(Arc::new(bridge))
-    } else {
-        match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {
-            Some(provider) => builder.with_credentials(Arc::new(provider)),
-            None => builder.with_skip_signature(true),
         }
     };
 

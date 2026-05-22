@@ -61,6 +61,11 @@ pub enum AccessMode {
 /// identity for the `(provider_class, dispatch_key, catalog_properties)` triple returned by
 /// `ensureInitialized`. `bucket_jstr` / `path_jstr` are interned once at construction to avoid
 /// per-call `new_string` allocations on the hot path.
+///
+/// Granularity: although the JVM SPI accepts `(bucket, path)`, neither
+/// `object_store::CredentialProvider::get_credential` nor
+/// `reqsign_core::ProvideCredential::provide_credential` carries a per-request path, so the
+/// effective identity is per-bucket (Parquet) or per-table-location (Iceberg).
 pub struct CometS3CredentialBridge {
     provider_class: String,
     dispatch_key: String,
