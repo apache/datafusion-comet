@@ -38,16 +38,6 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val children = expr.children
-    children(1) match {
-      case Literal(count: Number, _) if count.longValue() <= 0 =>
-        // Match Spark: repeat(s, n) with n <= 0 returns "" (or NULL if s is NULL)
-        val ifExpr = If(
-          IsNull(children(0)),
-          Literal.create(null, StringType),
-          Literal(UTF8String.EMPTY_UTF8, StringType))
-        return exprToProtoInternal(ifExpr, inputs, binding)
-      case _ =>
-    }
     val leftCast = Cast(children(0), StringType)
     val rightCast = Cast(children(1), LongType)
     val leftExpr = exprToProtoInternal(leftCast, inputs, binding)

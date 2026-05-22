@@ -43,3 +43,7 @@ SELECT repeat('namaste', -1), repeat('namaste', -100), repeat('a', 0), repeat(NU
 -- non-positive literal count over a column
 query
 SELECT repeat(s, -1), repeat(s, 0) FROM test_repeat
+
+-- non-literal count (column expression)
+query
+SELECT repeat(s, -n) FROM test_repeat
