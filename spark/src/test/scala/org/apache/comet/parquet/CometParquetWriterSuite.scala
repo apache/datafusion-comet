@@ -712,4 +712,32 @@ class CometParquetWriterSuite extends CometTestBase {
     rows
   }
 
+  test("native writer rejects non-Arrow CometExec children (regression for #3524)") {
+    withTempDir { dir =>
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+
+        val out = new File(dir, "literal_write").getAbsolutePath
+        val df = Seq((1, "a"), (2, "b")).toDF("id", "v")
+
+        val plan = captureWritePlan(p => df.write.parquet(p), out)
+
+        val hasNativeWrite = plan.exists {
+          case _: CometNativeWriteExec => true
+          case d: DataWritingCommandExec =>
+            d.child.exists(_.isInstanceOf[CometNativeWriteExec])
+          case _ => false
+        }
+        assert(
+          !hasNativeWrite,
+          s"CometNativeWriteExec must NOT wrap a CometLocalTableScanExec child:\n${plan.treeString}")
+
+        assert(spark.read.parquet(out).count() == 2)
+      }
+    }
+  }
+
 }
