@@ -21,6 +21,7 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, FromUnixTime, Literal}
 import org.apache.spark.sql.catalyst.util.TimestampFormatter
+import org.apache.spark.sql.types.StringType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
