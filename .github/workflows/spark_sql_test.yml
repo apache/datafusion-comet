@@ -142,11 +142,9 @@ jobs:
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
-        config:
-          - {spark-short: '3.4', spark-full: '3.4.3', java: 11}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11}
-          - {spark-short: '4.0', spark-full: '4.0.2', java: 21}
-          - {spark-short: '4.1', spark-full: '4.1.1', java: 17}
+        # On pull requests, test only Spark 3.5 and 4.1 to reduce CI load.
+        # Pushes to main and manual workflow_dispatch runs use the full matrix.
+        config: ${{ fromJSON(github.event_name == 'pull_request' && '[{"spark-short":"3.5","spark-full":"3.5.8","java":11},{"spark-short":"4.1","spark-full":"4.1.1","java":17}]' || '[{"spark-short":"3.4","spark-full":"3.4.3","java":11},{"spark-short":"3.5","spark-full":"3.5.8","java":11},{"spark-short":"4.0","spark-full":"4.0.2","java":21},{"spark-short":"4.1","spark-full":"4.1.1","java":17}]') }}
       fail-fast: false
     name: spark-sql-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
     runs-on: ubuntu-24.04
