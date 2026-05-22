@@ -19,7 +19,8 @@
 #
 
 # Runs Apache Spark's SQL test suites locally with Comet enabled, reproducing
-# the spark_sql_test.yml GitHub Actions workflow for Spark 4.1.
+# the spark_sql_test.yml GitHub Actions workflow. The Spark version is selected
+# with SPARK_VERSION (see config.sh); it defaults to 4.1.1.
 #
 # -e is intentionally not set: when running all module shards, one failing
 # shard must not stop the rest. Build and setup failures are checked
@@ -42,14 +43,17 @@ Arguments:
            or 'all' to run every shard sequentially (default).
 
 Environment variables:
+  SPARK_VERSION       Spark version to test: 3.4.3, 3.5.8, 4.0.2, or 4.1.1
+                      (default: 4.1.1).
   SKIP_BUILD=1        Skip the Comet build; reuse existing artifacts.
   SKIP_SPARK_SETUP=1  Skip the Spark clone/reset/diff step.
-  COMET_SPARK_DIR     Spark checkout path (default: \$HOME/.cache/datafusion-comet/apache-spark).
+  COMET_SPARK_DIR     Spark checkout path
+                      (default: \$HOME/.cache/datafusion-comet/apache-spark-<version>).
   SPARK_REF           Git ref for the Spark sources (default: v$SPARK_VERSION).
   SBT_MEM             sbt heap size in MB (default: 4096).
   LC_ALL              Locale for the sbt run (default: C.UTF-8; use en_US.UTF-8 on macOS).
   PYSPARK_PYTHON      Python interpreter for Spark. Defaults to a nonexistent
-                      path so Spark 4.1's Python data source probe is skipped
+                      path so Spark 4.x's Python data source probe is skipped
                       (it can hang on machines that have python3). Export a
                       real interpreter to run the Python-dependent suites.
 EOF
@@ -124,8 +128,20 @@ else
 fi
 
 # --- Run the selected module shards ----------------------------------------
-log_dir="$SCRIPT_DIR/logs"
+# Logs are namespaced by Spark version so runs of different versions do not
+# overwrite each other.
+log_dir="$SCRIPT_DIR/logs/$SPARK_VERSION"
 mkdir -p "$log_dir"
+
+# Spark 4.x's DataSourceManager probes for Python data sources during query
+# analysis by spawning a Python worker. The CI amd64/rust container has no
+# python3, so the probe is skipped there. On a developer machine that does
+# have python3 (every macOS install does) the worker can hang indefinitely:
+# the JVM-side read has no idle timeout by default, so suites such as
+# GlobalTempViewSuite stall forever instead of failing fast. Point PySpark at
+# a nonexistent interpreter so the probe is skipped, matching CI. A developer
+# who wants the Python suites can export PYSPARK_PYTHON themselves.
+no_python="/nonexistent/comet-disable-python-datasources"
 
 results=()
 overall_status=0
@@ -143,25 +159,27 @@ for m in "${modules_to_run[@]}"; do
   # Stale Parquet cache workaround (mirrors spark_sql_test.yml).
   rm -rf "$maven_repo/org/apache/parquet"
 
-  # Spark 4.1's DataSourceManager probes for Python data sources during query
-  # analysis by spawning a Python worker. The CI amd64/rust container has no
-  # python3, so the probe is skipped there. On a developer machine that does
-  # have python3 (every macOS install does) the worker can hang indefinitely:
-  # the JVM-side read has no idle timeout by default, so suites such as
-  # GlobalTempViewSuite stall forever instead of failing fast. Point PySpark at
-  # a nonexistent interpreter so the probe is skipped, matching CI. A developer
-  # who wants the Python suites can export PYSPARK_PYTHON themselves.
-  no_python="/nonexistent/comet-disable-python-datasources"
-
   (
     cd "$COMET_SPARK_DIR" || exit 1
-    NOLINT_ON_COMPILE=true \
-    ENABLE_COMET=true \
-    ENABLE_COMET_ONHEAP=true \
-    ENABLE_COMET_LOG_FALLBACK_REASONS=false \
-    SERIAL_SBT_TESTS=1 \
-    PYSPARK_DRIVER_PYTHON="${PYSPARK_DRIVER_PYTHON:-$no_python}" \
-    PYSPARK_PYTHON="${PYSPARK_PYTHON:-$no_python}" \
+
+    # Environment shared by every Spark version.
+    sbt_env=(
+      NOLINT_ON_COMPILE=true
+      ENABLE_COMET=true
+      ENABLE_COMET_ONHEAP=true
+      ENABLE_COMET_LOG_FALLBACK_REASONS=false
+      PYSPARK_DRIVER_PYTHON="${PYSPARK_DRIVER_PYTHON:-$no_python}"
+      PYSPARK_PYTHON="${PYSPARK_PYTHON:-$no_python}"
+    )
+    # Per-version test-group isolation (see config.sh): Spark 4.0 forks a
+    # dedicated JVM per leak-prone suite; every other version runs serially.
+    if [ -n "$DEDICATED_JVM_SUITES" ]; then
+      sbt_env+=("DEDICATED_JVM_SBT_TESTS=$DEDICATED_JVM_SUITES")
+    else
+      sbt_env+=("SERIAL_SBT_TESTS=1")
+    fi
+
+    env "${sbt_env[@]}" \
       build/sbt -Dsbt.log.noformat=true -mem "$SBT_MEM" \
         'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
         "$sbt_args"

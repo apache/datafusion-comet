@@ -26,18 +26,46 @@
 # shellcheck disable=SC2034
 
 # --- Spark version under test ----------------------------------------------
-SPARK_VERSION="4.1.1"
-SPARK_SHORT="4.1"
+# Override with SPARK_VERSION=<full-version>. Each supported version has a
+# matching dev/diffs/<version>.diff and mirrors a spark_sql_test.yml CI config.
+SPARK_VERSION="${SPARK_VERSION:-4.1.1}"
+
+# Per-version settings copied from the spark_sql_test.yml CI matrix: the short
+# version (Maven/sbt profile suffix) and the JDK major version CI uses.
+case "$SPARK_VERSION" in
+  3.4.3) SPARK_SHORT="3.4"; REQUIRED_JDK="11" ;;
+  3.5.8) SPARK_SHORT="3.5"; REQUIRED_JDK="11" ;;
+  4.0.2) SPARK_SHORT="4.0"; REQUIRED_JDK="21" ;;
+  4.1.1) SPARK_SHORT="4.1"; REQUIRED_JDK="17" ;;
+  *)
+    echo "ERROR: unsupported SPARK_VERSION '$SPARK_VERSION'." >&2
+    echo "       Supported versions: 3.4.3, 3.5.8, 4.0.2, 4.1.1" >&2
+    exit 1
+    ;;
+esac
 
 # Git ref checked out for the Spark sources. Defaults to the released tag.
 SPARK_REF="${SPARK_REF:-v${SPARK_VERSION}}"
 
-# JDK major version the CI workflow uses for this Spark version.
-REQUIRED_JDK="17"
+# Test-group isolation, mirroring spark_sql_test.yml. Every CI config sets
+# SERIAL_SBT_TESTS=1 except Spark 4.0 (JDK 21), which instead leaves it unset
+# and forks a dedicated JVM per leak-prone Parquet/Orc suite to work around a
+# cross-suite file-stream leak under JDK 21 (Comet issue #4327). run.sh reads
+# DEDICATED_JVM_SUITES: when non-empty it passes DEDICATED_JVM_SBT_TESTS and
+# omits SERIAL_SBT_TESTS; when empty it passes SERIAL_SBT_TESTS=1.
+DEDICATED_JVM_SUITES=""
+if [ "$SPARK_SHORT" = "4.0" ]; then
+  DEDICATED_JVM_SUITES="\
+org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,\
+org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,\
+org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,\
+org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite"
+fi
 
 # --- Paths -----------------------------------------------------------------
-# Persistent apache/spark checkout. Reused across runs to avoid re-cloning.
-COMET_SPARK_DIR="${COMET_SPARK_DIR:-$HOME/.cache/datafusion-comet/apache-spark}"
+# Persistent apache/spark checkout, namespaced by Spark version so switching
+# versions does not reset away each version's compiled target/ artifacts.
+COMET_SPARK_DIR="${COMET_SPARK_DIR:-$HOME/.cache/datafusion-comet/apache-spark-${SPARK_VERSION}}"
 
 # Directory containing these scripts, and the Comet repository root.
 COMET_SQL_TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
