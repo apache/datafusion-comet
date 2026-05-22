@@ -369,6 +369,8 @@ object CometShuffleExchangeExec
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType =>
         true
+      case dt if isTimeType(dt) =>
+        true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType))
       case ArrayType(elementType, _) =>
