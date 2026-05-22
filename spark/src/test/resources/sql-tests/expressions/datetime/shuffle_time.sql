@@ -17,10 +17,8 @@
 
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
--- Comet's native round-robin shuffle is off by default (it assigns partitions differently
--- from Spark); enable it so the round-robin Exchange offloads and we actually exercise the
--- TimeType serialization gate. Row order is normalized in comparison, so results still match.
 -- Config: spark.comet.native.shuffle.partitioning.roundrobin.enabled=true
+-- ConfigMatrix: spark.comet.exec.shuffle.mode=native,jvm
 
 statement
 CREATE TABLE test_time_shuffle(hours int, minutes int, secs decimal(16,6)) USING parquet
@@ -31,5 +29,12 @@ INSERT INTO test_time_shuffle VALUES (12, 30, 45.123456), (0, 0, 0.0), (23, 59, 
 
 query
 SELECT /*+ REPARTITION(3) */ make_time(hours, minutes, secs) AS t FROM test_time_shuffle
+
 query
 SELECT /*+ REPARTITION(3) */ hours, make_time(hours, minutes, secs) AS t, secs FROM test_time_shuffle
+
+query
+SELECT /*+ REPARTITION(3) */ named_struct('t', make_time(hours, minutes, secs)) AS s FROM test_time_shuffle
+
+query
+SELECT /*+ REPARTITION(3) */ array(make_time(hours, minutes, secs)) AS arr FROM test_time_shuffle

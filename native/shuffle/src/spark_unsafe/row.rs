@@ -29,7 +29,7 @@ use arrow::array::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
         Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
         Int64Builder, Int8Builder, ListBuilder, MapBuilder, StringBuilder, StringDictionaryBuilder,
-        StructBuilder, TimestampMicrosecondBuilder,
+        StructBuilder, Time64NanosecondBuilder, TimestampMicrosecondBuilder,
     },
     types::Int32Type,
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
@@ -274,6 +274,12 @@ pub(super) fn append_field(
                     .append_value(row.get_timestamp(idx))
             );
         }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            append_field_to_builder!(
+                Time64NanosecondBuilder,
+                |builder: &mut Time64NanosecondBuilder| builder.append_value(row.get_long(idx))
+            );
+        }
         DataType::Binary => {
             append_field_to_builder!(BinaryBuilder, |builder: &mut BinaryBuilder| builder
                 .append_value(row.get_binary(idx)));
@@ -433,6 +439,13 @@ fn append_nested_struct_fields_field_major(
                     TimestampMicrosecondBuilder,
                     field_idx,
                     |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
+                );
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                process_field!(
+                    Time64NanosecondBuilder,
+                    field_idx,
+                    |row: &SparkUnsafeRow, idx| row.get_long(idx)
                 );
             }
             DataType::Binary => {
@@ -651,6 +664,9 @@ fn append_list_column_batch(
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             process_primitive_lists!(TimestampMicrosecondBuilder, append_timestamps_to_builder);
+        }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            process_primitive_lists!(Time64NanosecondBuilder, append_time64s_to_builder);
         }
         // For complex element types, fall back to per-row dispatch
         _ => {
@@ -874,6 +890,13 @@ fn append_struct_fields_field_major(
                     TimestampMicrosecondBuilder,
                     field_idx,
                     |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
+                );
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                process_field!(
+                    Time64NanosecondBuilder,
+                    field_idx,
+                    |row: &SparkUnsafeRow, idx| row.get_long(idx)
                 );
             }
             DataType::Binary => {
@@ -1155,6 +1178,13 @@ fn append_columns(
                     .append_value(row.get_timestamp(idx))
             );
         }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            append_column_to_builder!(
+                Time64NanosecondBuilder,
+                |builder: &mut Time64NanosecondBuilder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_long(idx))
+            );
+        }
         DataType::Map(field, _) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
@@ -1254,6 +1284,9 @@ fn make_builders(
         DataType::Date32 => Box::new(Date32Builder::with_capacity(row_num)),
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))
+        }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            Box::new(Time64NanosecondBuilder::with_capacity(row_num))
         }
         DataType::Map(field, _) => {
             let (key_field, value_field, map_field_names) = get_map_key_value_fields(field)?;
