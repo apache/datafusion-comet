@@ -38,6 +38,8 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
 
   override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
     expr.format match {
+      case Literal(null, _) =>
+        Compatible(None)
       case Literal(fmt, _) =>
         val formatStr = fmt.toString
         val defaultPattern = TimestampFormatter.defaultPattern
@@ -55,6 +57,12 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
       expr: FromUnixTime,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    expr.format match {
+      case Literal(null, _) =>
+        // from_unixtime is null-intolerant, so NULL format yields NULL
+        return exprToProtoInternal(Literal.create(null, StringType), inputs, binding)
+      case _ =>
+    }
     val secExpr = exprToProtoInternal(expr.sec, inputs, binding)
     // TODO: DataFusion toChar does not support Spark datetime pattern format
     // https://github.com/apache/datafusion/issues/16577

@@ -33,3 +33,13 @@ SELECT from_unixtime(0)
 
 query expect_fallback(Datetime pattern format: yyyy-MM-dd is unsupported)
 SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
+
+-- null format literal
+query
+SELECT from_unixtime(t, NULL) FROM test_from_unix_time
+
+query
+SELECT from_unixtime(1718451045, NULL)
+
+query
+SELECT from_unixtime(1718451045, CAST(NULL AS STRING))
