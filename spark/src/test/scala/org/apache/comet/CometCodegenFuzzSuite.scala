@@ -308,10 +308,16 @@ class CometCodegenFuzzSuite
     }
   }
 
-  private def probeCardinality(accessor: String, viewName: String): Unit = {
+  private def probeCardinality(accessor: String, dt: DataType, viewName: String): Unit = {
+    // `Size` only supports `ArrayType` in Comet, so for `MapType` we route through `map_keys` to
+    // reach a `Size(ArrayType)`. Spark still calls `getMap` on the column vector to extract the
+    // keys, which is the accessor path this probe is intended to exercise.
+    val sizeExpr = dt match {
+      case _: MapType => s"size(map_keys($accessor))"
+      case _ => s"cardinality($accessor)"
+    }
     assertCodegenRan {
-      checkSparkAnswerAndOperator(
-        s"SELECT $cardinalityProbeUdf(cardinality($accessor)) FROM $viewName")
+      checkSparkAnswerAndOperator(s"SELECT $cardinalityProbeUdf($sizeExpr) FROM $viewName")
     }
   }
 
@@ -323,13 +329,14 @@ class CometCodegenFuzzSuite
   private def probeComplexColumn(field: StructField, viewName: String): Unit = {
     field.dataType match {
       case _: ArrayType | _: MapType =>
-        probeCardinality(field.name, viewName)
+        probeCardinality(field.name, field.dataType, viewName)
 
       case st: StructType =>
         for (subField <- st.fields) {
           val accessor = s"${field.name}.${subField.name}"
           subField.dataType match {
-            case _: ArrayType | _: MapType => probeCardinality(accessor, viewName)
+            case _: ArrayType | _: MapType =>
+              probeCardinality(accessor, subField.dataType, viewName)
             case dt if !isComplexType(dt) =>
               val udfName = s"id_${field.name}_${subField.name}"
               registerIdentityUdfFor(dt, udfName).foreach { _ =>

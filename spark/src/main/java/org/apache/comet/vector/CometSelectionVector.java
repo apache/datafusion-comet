@@ -71,8 +71,7 @@ public class CometSelectionVector extends CometVector {
    * @throws IllegalArgumentException if any index is out of bounds
    */
   public CometSelectionVector(CometVector values, int[] indices, int numValues) {
-    // Use the values vector's datatype, useDecimal128, and dictionary provider
-    super(values.dataType(), values.useDecimal128);
+    super(values.dataType());
 
     this.values = values;
     this.selectionIndices = indices;
@@ -97,8 +96,7 @@ public class CometSelectionVector extends CometVector {
     }
     indicesVector.setValueCount(numValues);
 
-    this.indices =
-        CometVector.getVector(indicesVector, values.useDecimal128, values.getDictionaryProvider());
+    this.indices = CometVector.getVector(indicesVector, values.getDictionaryProvider());
   }
 
   /**

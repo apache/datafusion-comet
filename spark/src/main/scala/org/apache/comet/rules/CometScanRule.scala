@@ -182,14 +182,14 @@ case class CometScanRule(session: SparkSession)
           return scanExec
         }
 
-        nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
+        nativeScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
 
       case _ =>
         withInfo(scanExec, s"Unsupported relation ${scanExec.relation}")
     }
   }
 
-  private def nativeDataFusionScan(
+  private def nativeScan(
       plan: SparkPlan,
       session: SparkSession,
       scanExec: FileSourceScanExec,
