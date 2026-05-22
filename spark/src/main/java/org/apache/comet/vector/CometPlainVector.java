@@ -149,7 +149,7 @@ public class CometPlainVector extends CometDecodedVector {
         return UTF8String.fromString(convertToUuid(result).toString());
       }
     } else {
-      throw new RuntimeException("Unsupported UTF8 vector type: " + valueVector.getName());
+      throw new IllegalStateException("Unsupported UTF8 vector type: " + valueVector.getName());
     }
   }
 
@@ -166,7 +166,7 @@ public class CometPlainVector extends CometDecodedVector {
       length = fixedWidthVector.getTypeWidth();
       offset = rowId * length;
     } else {
-      throw new RuntimeException("Unsupported binary vector type: " + valueVector.getName());
+      throw new IllegalStateException("Unsupported binary vector type: " + valueVector.getName());
     }
     byte[] result = new byte[length];
     Platform.copyMemory(
