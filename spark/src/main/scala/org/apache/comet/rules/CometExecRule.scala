@@ -191,6 +191,13 @@ case class CometExecRule(session: SparkSession)
 
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
 
+  private def producesArrowOutput(plan: SparkPlan): Boolean = plan match {
+    case _: CometNativeExec   => true
+    case u: CometUnionExec    => u.children.forall(producesArrowOutput)
+    case c: CometCoalesceExec => producesArrowOutput(c.child)
+    case _                    => false
+  }
+
   // spotless:off
 
   /**
@@ -670,17 +677,17 @@ case class CometExecRule(session: SparkSession)
   private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (isOperatorEnabled(serde, op)) {
-      // For operators that require native children (like writes), check if all data-producing
-      // children are CometExec (which includes CometNativeExec and sink operators like
-      // CometUnionExec, CometCoalesceExec, etc.). This prevents runtime failures when the
-      // native operator expects Arrow arrays but receives non-Arrow data.
+      // Operators with requiresNativeChildren (like the native parquet writer) consume Arrow
+      // batches from the JNI plan. Only CometNativeExec and pass-through sinks that forward
+      // such batches unchanged (CometUnionExec, CometCoalesceExec) are safe; other CometExec
+      // subclasses (CometLocalTableScanExec, CometCollectLimitExec, CometTakeOrderedAndProjectExec)
+      // produce row-format ColumnarBatches and would crash the native operator at runtime.
       if (serde.requiresNativeChildren && op.children.nonEmpty) {
-        // Get the actual data-producing children (unwrap WriteFilesExec if present)
         val dataProducingChildren = op.children.flatMap {
           case writeFiles: WriteFilesExec => Seq(writeFiles.child)
           case other => Seq(other)
         }
-        if (!dataProducingChildren.forall(_.isInstanceOf[CometExec])) {
+        if (!dataProducingChildren.forall(producesArrowOutput)) {
           withInfo(op, "Cannot perform native operation because input is not in Arrow format")
           return None
         }
