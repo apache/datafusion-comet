@@ -8,17 +8,27 @@
  */
 
 /* ─── Google Fonts ─────────────────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Fonts are loaded via <link> in _templates/layout.html using the
+   print→all swap pattern so they don't block first paint. The system
+   font stack in --comet-font / --comet-mono is the fallback while the
+   web fonts are still loading. */
 
 /* ─── Shared tokens ────────────────────────────────────────────────── */
 :root {
-  --comet-accent:      #e8650a;
-  --comet-accent-dim:  rgba(232, 101, 10, 0.10);
-  --comet-accent-lite: #f07830;
+  --comet-accent:      #e8650a;                       /* brand orange — buttons, backgrounds, large headings */
+  --comet-accent-lite: #f07830;                       /* hover variant */
+  --comet-accent-dim:  rgba(232, 101, 10, 0.10);      /* translucent fill */
+  --comet-accent-text: #a84808;                       /* AA-passing variant for small text on light bg (~5.9:1) — default */
   --comet-radius:      6px;
   --comet-font:        'Inter', system-ui, -apple-system, sans-serif;
   --comet-mono:        'JetBrains Mono', 'Fira Code', monospace;
   --comet-sidebar-w:   280px;
+}
+
+/* In dark mode the lighter orange has plenty of contrast on near-black,
+   so use it as the text variant instead of the darkened light-mode one. */
+html[data-theme="dark"] {
+  --comet-accent-text: #f07830;                       /* 5.1:1 on #0a0a0a */
 }
 
 /* ─── PST overrides — LIGHT ────────────────────────────────────────── */
@@ -34,9 +44,9 @@ html[data-theme="light"] {
   --pst-color-border:             #e2e2e6;
   --pst-color-border-muted:       #ebebee;
   --pst-color-heading:            #111111;
-  --pst-color-inline-code:        #e8650a;
-  --pst-color-inline-code-links:  #e8650a;
-  --pst-color-link:               #e8650a;
+  --pst-color-inline-code:        #a84808;
+  --pst-color-inline-code-links:  #a84808;
+  --pst-color-link:               #a84808;
   --pst-color-link-hover:         #f07830;
   --pst-font-family-base:         var(--comet-font);
   --pst-font-family-monospace:    var(--comet-mono);
@@ -491,7 +501,7 @@ html[data-theme="dark"] .bd-sidebar form.bd-search {
 }
 
 html[data-theme="light"] .bd-links mark.comet-hl {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
 }
 
 /* ── Toggle button — real <button> injected via JS ── */
@@ -579,7 +589,7 @@ html[data-theme="light"] .bd-links mark.comet-hl {
 }
 
 html[data-theme="light"] .bd-links li.current:not(:has(li.current)) > a.current.reference {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
 }
 
 /* Ancestor li.current items (parents of the active page) — strip highlight */
@@ -708,7 +718,7 @@ html[data-theme="light"] .bd-links li.current:not(:has(li.current)) > a.current.
 .bd-sidebar-secondary .page-toc a.reference.active,
 .bd-sidebar-secondary nav.bd-toc li.active > a.reference,
 .bd-sidebar-secondary .page-toc li.active > a.reference {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
   border-left-color: var(--comet-accent) !important;
   font-weight: 600 !important;
 }
@@ -779,7 +789,7 @@ a.headerlink {
   transition: opacity 120ms ease !important;
   font-size: 0.75em !important;
   margin-left: 4px !important;
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
 }
 *:hover > a.headerlink { opacity: 0.45 !important; }
 a.headerlink:hover { opacity: 1 !important; }
@@ -792,7 +802,7 @@ article p, article li {
 /* Content links */
 article a.reference.external,
 article a.reference.internal {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
   text-decoration: none !important;
   border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
   transition: border-color 120ms ease !important;
@@ -950,7 +960,7 @@ div.caution {
   border-color: rgba(232,101,10,0.28) !important;
 }
 div.important p.admonition-title,
-div.caution   p.admonition-title { color: var(--comet-accent) !important; }
+div.caution   p.admonition-title { color: var(--comet-accent-text) !important; }
 
 /* ─── PREV / NEXT NAV ──────────────────────────────────────────────── */
 footer.prev-next-footer {
@@ -1062,7 +1072,7 @@ footer.comet-footer {
   width: max-content;
 }
 
-.comet-footer__col a:hover { color: var(--comet-accent); }
+.comet-footer__col a:hover { color: var(--comet-accent-text); }
 
 /* Legal bar: hairline divider, two quiet lines, plenty of breathing room */
 .comet-footer__legal {
@@ -1091,7 +1101,7 @@ footer.comet-footer {
 }
 
 .comet-footer__legal a:hover {
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   border-bottom-color: var(--comet-accent);
 }
 
@@ -1140,7 +1150,7 @@ footer.comet-footer {
   color: var(--pst-color-text-muted) !important;
   text-decoration: none !important;
 }
-.bd-breadcrumbs a:hover { color: var(--comet-accent) !important; }
+.bd-breadcrumbs a:hover { color: var(--comet-accent-text) !important; }
 
 /* Hide the home icon — the Comet logo in the navbar already does this job */
 .bd-breadcrumbs .breadcrumb-home {
@@ -1197,15 +1207,38 @@ body:has(.comet-hero) article.bd-article {
   padding: 0 !important;
 }
 
-/* Hide page chrome on the landing page — the hero+sections replace them.
-   The H1 is wrapped in a <section> by MyST, so we have to descend deeper
-   than `article > h1`. The prev/next footer is meaningless on a marketing
-   page that links out to specific docs via cards/CTAs. */
-body:has(.comet-hero) article.bd-article > section:first-of-type > h1:first-of-type,
+/* Landing page: hide chrome that doesn't belong on a marketing page.
+   The H1 stays (now lives inside the hero as the project's brand statement)
+   so we no longer hide it. */
 body:has(.comet-hero) .bd-breadcrumbs,
 body:has(.comet-hero) footer.prev-next-footer,
 body:has(.comet-hero) .prev-next-area {
   display: none !important;
+}
+
+/* Hero H1 — the project brand statement, prominent at the top of the hero */
+body:has(.comet-hero) .comet-hero__inner h1 {
+  font-family: var(--comet-font) !important;
+  font-size: clamp(2.6rem, 5vw, 4rem) !important;
+  font-weight: 700 !important;
+  line-height: 1.05 !important;
+  letter-spacing: -0.035em !important;
+  margin: 0 0 18px 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  color: var(--pst-color-heading) !important;
+  text-align: center;
+}
+
+.comet-hero__tagline {
+  font-family: var(--comet-font) !important;
+  font-size: clamp(1.25rem, 2.5vw, 1.7rem) !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.01em !important;
+  line-height: 1.3 !important;
+  color: var(--comet-accent) !important;
+  margin: 0 0 22px 0 !important;
+  text-align: center;
 }
 
 body:has(.comet-hero) .bd-main {
@@ -1281,7 +1314,7 @@ body:has(.comet-hero) .bd-main {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   margin: 0 0 18px 0;
 }
 
@@ -1299,7 +1332,7 @@ body:has(.comet-hero) .bd-main {
 }
 
 .comet-hero__title-accent {
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
 }
 
 .comet-hero__lede {
@@ -1350,7 +1383,7 @@ body:has(.comet-hero) .bd-main {
 
 .comet-cta--secondary:hover {
   border-color: var(--comet-accent) !important;
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
 }
 
 .comet-hero__meta {
@@ -1406,7 +1439,7 @@ html[data-theme="dark"] .comet-install__cmd {
 }
 
 .comet-install__hint a {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
   text-decoration: none !important;
   border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
 }
@@ -1433,7 +1466,7 @@ html[data-theme="dark"] .comet-install__cmd {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   margin: 0 0 14px 0;
 }
 
@@ -1476,7 +1509,7 @@ html[data-theme="dark"] .comet-install__cmd {
 }
 
 .comet-perf__detail a {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
   text-decoration: none !important;
   border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
 }
@@ -1575,7 +1608,7 @@ html[data-theme="dark"] .comet-cards {
 .comet-card__cta {
   font-size: 13.5px !important;
   font-weight: 600 !important;
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
   margin: 0 !important;
   display: flex;
   align-items: center;
@@ -1600,7 +1633,7 @@ html[data-theme="dark"] .comet-cards {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   margin: 0 0 14px 0;
 }
 
@@ -1634,7 +1667,7 @@ html[data-theme="dark"] .comet-cards {
 }
 
 .comet-arch__links a {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
   text-decoration: none !important;
   font-weight: 500 !important;
   border-bottom: 1px solid transparent !important;
@@ -1763,7 +1796,7 @@ html[data-theme="dark"] .comet-cards {
 }
 
 .comet-terminal__body .term-prompt {
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   margin-right: 6px;
   user-select: none;
 }
@@ -1783,7 +1816,7 @@ html[data-theme="dark"] .comet-cards {
 
 .comet-terminal__body .term-blink {
   display: inline-block;
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   animation: term-blink 1s steps(2, end) infinite;
 }
 
@@ -1821,7 +1854,7 @@ html[data-theme="dark"] .comet-cards {
 }
 
 .comet-prose__lede a {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
   text-decoration: none !important;
   border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
 }
@@ -1843,7 +1876,7 @@ html[data-theme="dark"] .comet-cards {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   margin: 0 0 14px 0;
 }
 
@@ -1923,7 +1956,7 @@ html[data-theme="dark"] .comet-feature--alt {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   margin: 0 0 14px 0;
 }
 
@@ -1957,7 +1990,7 @@ html[data-theme="dark"] .comet-feature--alt {
 }
 
 .comet-feature__links a {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
   text-decoration: none !important;
   font-weight: 600 !important;
   border-bottom: 1px solid transparent !important;
@@ -2015,7 +2048,7 @@ html[data-theme="dark"] .comet-feature--alt {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   margin: 0 0 14px 0;
 }
 
@@ -2088,7 +2121,7 @@ html[data-theme="dark"] .comet-community {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--comet-accent);
+  color: var(--comet-accent-text);
   margin: 0 0 14px 0;
 }
 
@@ -2100,7 +2133,7 @@ html[data-theme="dark"] .comet-community {
 }
 
 .comet-community__body a {
-  color: var(--comet-accent) !important;
+  color: var(--comet-accent-text) !important;
   text-decoration: none !important;
   border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
 }
@@ -2133,4 +2166,138 @@ html[data-theme="dark"] .comet-community {
   .comet-terminal { margin: 24px auto; }
   .comet-terminal__body { font-size: 11.5px !important; padding: 16px 16px 18px !important; }
   .comet-terminal__title { display: none; }
+}
+
+/* ─── MOBILE NAVBAR (≤ 991px) ──────────────────────────────────────── */
+/* PST uses its own sidebar-toggle (hamburger) button for mobile nav.
+   Our `display: flex !important` on .col-lg-9 overrides Bootstrap's
+   responsive hiding, so 5 nav links overflow horizontally on phones.
+   Fix: hide the entire center+end column on small screens and let the
+   primary-toggle button open the sidebar. */
+@media (max-width: 991.98px) {
+  .col-lg-9.navbar-header-items {
+    display: none !important;
+  }
+  .bd-header.navbar,
+  header.bd-header {
+    padding: 0 12px !important;
+  }
+}
+
+/* ─── TABLET (≤ 768px) ─────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* Article: tighter side padding */
+  .bd-article-container {
+    padding: 24px 20px 56px !important;
+  }
+
+  /* Tables: wrap in a scrollable container */
+  .bd-article-container table.docutils {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+    width: max-content;
+    min-width: 100%;
+  }
+
+  /* Prevent wide pre/code blocks from breaking layout */
+  .bd-article-container div.highlight pre,
+  .bd-article-container div[class*="highlight-"] pre {
+    overflow-x: auto;
+  }
+
+  /* Community 2-col: collapse to single column */
+  .comet-community__inner--two {
+    grid-template-columns: 1fr !important;
+    gap: 32px !important;
+  }
+
+  /* Perf figure: smaller padding */
+  .comet-perf__figure,
+  .comet-arch__figure,
+  .comet-feature__figure {
+    padding: 16px !important;
+  }
+}
+
+/* ─── SMALL MOBILE (≤ 480px) ───────────────────────────────────────── */
+@media (max-width: 480px) {
+  /* Article: minimal side padding */
+  .bd-article-container {
+    padding: 18px 14px 44px !important;
+  }
+
+  /* Hero: compact on very small screens */
+  .comet-hero,
+  .comet-hero--terminal {
+    padding: 36px 0 24px;
+  }
+
+  /* Hero CTAs: stack vertically, full-width */
+  .comet-hero__ctas {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .comet-cta {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+
+  /* Terminal: smallest readable size */
+  .comet-terminal__body {
+    font-size: 10px !important;
+    padding: 12px 10px 14px !important;
+  }
+
+  /* Install cmd: smaller font, allow wrapping for long lines */
+  .comet-install__cmd {
+    font-size: 12px !important;
+    padding: 14px 14px !important;
+    white-space: pre-wrap !important;
+    word-break: break-all !important;
+  }
+
+  /* All inner section wrappers: minimal padding */
+  .comet-hero__inner,
+  .comet-install__inner,
+  .comet-perf__inner,
+  .comet-cards__inner,
+  .comet-arch__inner,
+  .comet-feature__inner,
+  .comet-prose__inner,
+  .comet-community__inner,
+  .comet-foot-cta__inner {
+    padding: 0 14px;
+  }
+
+  /* Section vertical spacing: very compact */
+  .comet-install,
+  .comet-perf,
+  .comet-cards,
+  .comet-arch,
+  .comet-feature,
+  .comet-prose,
+  .comet-community,
+  .comet-foot-cta {
+    padding: 36px 0;
+  }
+
+  /* Footer: single column, tighter */
+  .comet-footer__links {
+    grid-template-columns: 1fr !important;
+    gap: 16px !important;
+  }
+  .comet-footer__inner {
+    padding: 32px 16px 24px !important;
+  }
+  .comet-footer__legal {
+    padding: 14px 16px 20px !important;
+  }
+
+  /* Foot CTA: tighter padding */
+  .comet-foot-cta {
+    padding: 56px 0;
+  }
 }

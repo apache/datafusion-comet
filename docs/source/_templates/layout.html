@@ -23,6 +23,25 @@ under the License.
 
 {% extends "pydata_sphinx_theme/layout.html" %}
 
+{# Font loading: use the print→all swap pattern so Google Fonts doesn't
+   block first paint. preconnect warms up the connection; the stylesheet
+   is requested non-blocking and then promoted to apply once loaded. The
+   <noscript> fallback covers JS-disabled browsers. #}
+{% block extrahead %}
+{{ super() }}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      media="print" onload="this.media='all'">
+<noscript>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+</noscript>
+{% endblock %}
+
 {% block footer %}
 <footer class="comet-footer" role="contentinfo">
   <div class="comet-footer__inner">
@@ -31,10 +50,14 @@ under the License.
     <a class="comet-footer__brand" href="{{ pathto('index') }}" aria-label="Apache DataFusion Comet — home">
       <img src="{{ pathto('_static/images/DataFusionComet-Logo-Light.png', 1) }}"
            class="comet-footer__logo only-light"
-           alt="Apache DataFusion Comet" />
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
       <img src="{{ pathto('_static/images/DataFusionComet-Logo-Dark.png', 1) }}"
            class="comet-footer__logo only-dark pst-js-only"
-           alt="Apache DataFusion Comet" />
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
     </a>
 
     <!-- Two compact link columns: documentation + community -->

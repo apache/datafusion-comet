@@ -17,19 +17,19 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Apache DataFusion Comet
-
 <section class="comet-hero comet-hero--terminal">
 <div class="comet-hero__inner">
-<p class="comet-hero__eyebrow">Apache DataFusion Comet</p>
-<h1 class="comet-hero__title">A high-performance accelerator for Apache Spark</h1>
+
+# Apache DataFusion Comet
+
+<p class="comet-hero__tagline">A high-performance accelerator for Apache Spark</p>
 <p class="comet-hero__lede">
 Runs your existing Spark queries on the Apache DataFusion native engine, no code changes required. Also accelerates Parquet scans for Apache Iceberg.
 </p>
 
 <div class="comet-terminal" aria-label="Sample terminal session showing how to enable Comet">
 <div class="comet-terminal__bar">
-<span class="comet-terminal__dots"><i></i><i></i><i></i></span>
+<span class="comet-terminal__dots" aria-hidden="true"><i></i><i></i><i></i></span>
 <span class="comet-terminal__title">spark-shell &mdash; comet enabled</span>
 </div>
 <pre class="comet-terminal__body"><span class="term-line term-comment"># Download the Comet plugin for your Spark / Scala version</span>
@@ -45,7 +45,7 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 <span class="term-line term-indent">--conf spark.memory.offHeap.enabled=true \</span>
 <span class="term-line term-indent">--conf spark.memory.offHeap.size=4g</span>
 <span class="term-line term-spacer"></span>
-<span class="term-line term-comment">// Your existing Spark queries — now executed natively via DataFusion</span>
+<span class="term-line term-comment">// Your existing Spark queries — now accelerated by Comet via Apache DataFusion</span>
 <span class="term-line"><span class="term-prompt">scala&gt;</span> spark.sql(<span class="term-str">"SELECT category, COUNT(*) FROM events GROUP BY category"</span>).show()</span>
 <span class="term-line term-cursor"><span class="term-prompt">scala&gt;</span> <span class="term-blink">▍</span></span></pre>
 </div>
@@ -66,7 +66,10 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 <p class="comet-perf__detail">The chart below shows Comet accelerating TPC-DS @ 1 TB. See the <a href="https://datafusion.apache.org/comet/contributor-guide/benchmarking.html">Comet Benchmarking Guide</a> for the full per-query breakdown and reproduction methodology.</p>
 </div>
 <figure class="comet-perf__figure">
-<img src="_static/images/benchmark-results/0.16.0/tpcds_allqueries.png" alt="Total time to run all TPC-DS queries — Comet versus stock Apache Spark" />
+<img src="_static/images/benchmark-results/0.16.0/tpcds_allqueries.png"
+     width="1000" height="600"
+     loading="lazy" decoding="async"
+     alt="Total time to run all TPC-DS queries — Comet versus stock Apache Spark" />
 <figcaption>Total time to run all queries (lower is better).</figcaption>
 </figure>
 </div>
@@ -88,12 +91,25 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 <section class="comet-feature comet-feature--alt">
 <div class="comet-feature__inner">
 <div class="comet-feature__copy">
+<p class="comet-feature__eyebrow">Use Commodity Hardware</p>
+<h2 class="comet-feature__title">No GPUs. No FPGAs. No vendor lock-in.</h2>
+<p class="comet-feature__body">Comet leverages commodity hardware, eliminating the need for costly hardware upgrades or specialized hardware accelerators, such as GPUs or FPGA. By maximizing the utilization of commodity hardware, Comet ensures cost-effectiveness and scalability for your Spark deployments.</p>
+</div>
+</div>
+</section>
+
+<section class="comet-feature">
+<div class="comet-feature__inner">
+<div class="comet-feature__copy">
 <p class="comet-feature__eyebrow">Architecture</p>
 <h2 class="comet-feature__title">Tight integration with Apache DataFusion.</h2>
-<p class="comet-feature__body">The diagram below shows an overview of Comet's architecture: how the Comet plugin intercepts Spark physical plans, translates supported operators into a protocol-buffer representation, and hands them to the Apache DataFusion native engine for execution.</p>
+<p class="comet-feature__body">Comet tightly integrates with the core Apache DataFusion project, leveraging its powerful execution engine. The diagram below shows how the Comet plugin intercepts Spark physical plans, translates supported operators into a protocol-buffer representation, and hands them to the Apache DataFusion native engine for execution.</p>
 </div>
 <figure class="comet-feature__figure">
-<img src="_static/images/comet-overview.png" alt="Comet architecture overview diagram showing the bridge between Apache Spark and Apache DataFusion" />
+<img src="_static/images/comet-overview.png"
+     width="2569" height="2006"
+     loading="lazy" decoding="async"
+     alt="Comet architecture overview diagram showing the bridge between Apache Spark and Apache DataFusion" />
 <figcaption>Comet Overview</figcaption>
 </figure>
 <p class="comet-feature__links">
