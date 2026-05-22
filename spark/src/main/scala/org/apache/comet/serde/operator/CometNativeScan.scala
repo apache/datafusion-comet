@@ -41,7 +41,7 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 /**
- * Validation and serde logic for `native_datafusion` scans.
+ * Validation and serde logic for Comet's native Parquet scan.
  */
 object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 

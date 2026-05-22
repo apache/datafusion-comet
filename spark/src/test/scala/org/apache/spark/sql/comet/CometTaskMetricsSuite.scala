@@ -191,7 +191,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("native_datafusion scan reports task-level input metrics matching Spark") {
+  test("native scan reports task-level input metrics matching Spark") {
     val totalRows = 10000
     withTempPath { dir =>
       spark

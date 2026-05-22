@@ -40,17 +40,16 @@ public class CometPlainVector extends CometDecodedVector {
 
   private boolean isReused;
 
-  public CometPlainVector(ValueVector vector, boolean useDecimal128) {
-    this(vector, useDecimal128, false);
+  public CometPlainVector(ValueVector vector) {
+    this(vector, false);
   }
 
-  public CometPlainVector(ValueVector vector, boolean useDecimal128, boolean isUuid) {
-    this(vector, useDecimal128, isUuid, false);
+  public CometPlainVector(ValueVector vector, boolean isUuid) {
+    this(vector, isUuid, false);
   }
 
-  public CometPlainVector(
-      ValueVector vector, boolean useDecimal128, boolean isUuid, boolean isReused) {
-    super(vector, vector.getField(), useDecimal128, isUuid);
+  public CometPlainVector(ValueVector vector, boolean isUuid, boolean isReused) {
+    super(vector, vector.getField(), isUuid);
     // NullType doesn't have data buffer.
     if (vector instanceof NullVector) {
       this.valueBufferAddress = -1;
@@ -184,7 +183,7 @@ public class CometPlainVector extends CometDecodedVector {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
 
-    return new CometPlainVector(tp.getTo(), useDecimal128);
+    return new CometPlainVector(tp.getTo());
   }
 
   private static UUID convertToUuid(byte[] buf) {
