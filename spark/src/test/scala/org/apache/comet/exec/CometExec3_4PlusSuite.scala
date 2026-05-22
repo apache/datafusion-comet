@@ -29,6 +29,7 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{BloomFilterMightContain, Expression, ExpressionInfo}
+import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.util.sketch.BloomFilter
 
@@ -42,6 +43,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
   import testImplicits._
 
   val func_might_contain = new FunctionIdentifier("might_contain")
+  val func_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
 
   override def beforeAll(): Unit = {
     super.beforeAll()
@@ -51,12 +53,23 @@ class CometExec3_4PlusSuite extends CometTestBase {
         func_might_contain,
         new ExpressionInfo(classOf[BloomFilterMightContain].getName, "might_contain"),
         (children: Seq[Expression]) => BloomFilterMightContain(children.head, children(1)))
+      // Register 'bloom_filter_agg' to builtin.
+      spark.sessionState.functionRegistry.registerFunction(
+        func_bloom_filter_agg,
+        new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+        (children: Seq[Expression]) =>
+          children.size match {
+            case 1 => new BloomFilterAggregate(children.head)
+            case 2 => new BloomFilterAggregate(children.head, children(1))
+            case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+          })
     }
   }
 
   override def afterAll(): Unit = {
     if (!isSpark42Plus) {
       spark.sessionState.functionRegistry.dropFunction(func_might_contain)
+      spark.sessionState.functionRegistry.dropFunction(func_bloom_filter_agg)
     }
     super.afterAll()
   }
@@ -181,6 +194,24 @@ class CometExec3_4PlusSuite extends CometTestBase {
       // check with scalar subquery
       checkSparkAnswerAndOperator(s"""
            |SELECT might_contain((select first(col2) as col2 from $table), col1) FROM $table
+           |""".stripMargin)
+    }
+  }
+
+  test("bloom_filter_agg caps oversized numItems / numBits like Spark") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col1 long) using parquet")
+      sql(s"insert into $table values (1), (2), (3), (201), (null)")
+      // numItems / numBits exceed the Int range. Spark's BloomFilterAggregate caps
+      // them at maxNumItems / maxNumBits; Comet must apply the same cap, otherwise the
+      // oversized values truncate to a negative i32 and abort the executor with a
+      // multi-exabyte allocation.
+      checkSparkAnswerAndOperator(s"""
+           |SELECT bloom_filter_agg(col1,
+           |  cast(9223372036854775807 as long),
+           |  cast(9223372036854775807 as long)) FROM $table
            |""".stripMargin)
     }
   }
