@@ -42,6 +42,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
@@ -67,8 +68,6 @@ use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
-use datafusion_spark::function::url::parse_url::ParseUrl as SparkParseUrl;
-use datafusion_spark::function::url::try_parse_url::TryParseUrl as SparkTryParseUrl;
 use datafusion_spark::function::url::try_url_decode::TryUrlDecode as SparkTryUrlDecode;
 use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
 use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
@@ -601,8 +600,8 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryUrlDecode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCsc::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkParseUrl::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryParseUrl::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(CometParseUrl::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(CometTryParseUrl::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFactorial::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSec::default()));
 }

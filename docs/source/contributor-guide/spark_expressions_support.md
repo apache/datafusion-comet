@@ -596,7 +596,7 @@
 
 ### url_funcs
 
-- [x] parse_url (Incompatible: native diverges from Spark on edge cases)
+- [x] parse_url
 - [x] try_url_decode
   - 4.0.1, 2026-05-05
 - [x] url_decode
