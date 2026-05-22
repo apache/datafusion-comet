@@ -78,6 +78,15 @@ PASS/FAIL summary is printed at the end.
 | `SPARK_REF`        | `v4.1.1`                                  | Git ref checked out for the Spark sources. |
 | `SBT_MEM`          | `4096`                                    | sbt heap size in MB. |
 | `LC_ALL`           | `C.UTF-8`                                 | Locale for the sbt run. Use `en_US.UTF-8` on macOS if `C.UTF-8` is unavailable. |
+| `PYSPARK_PYTHON`   | a nonexistent path                        | Python interpreter for Spark. The default skips Spark 4.1's Python data source probe, which can hang on machines that have `python3`. Export a real interpreter to run the Python-dependent suites. |
+
+> **Note on Python:** Spark 4.1 probes for Python data sources during query
+> analysis by spawning a Python worker. The CI `amd64/rust` container has no
+> `python3`, so the probe is skipped. On a developer machine that has `python3`
+> the worker can hang indefinitely (the JVM-side read has no idle timeout),
+> stalling suites such as `GlobalTempViewSuite`. `run.sh` therefore points
+> `PYSPARK_PYTHON` / `PYSPARK_DRIVER_PYTHON` at a nonexistent path by default so
+> the probe is skipped, matching CI.
 
 ## How it works
 

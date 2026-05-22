@@ -48,6 +48,10 @@ Environment variables:
   SPARK_REF           Git ref for the Spark sources (default: v$SPARK_VERSION).
   SBT_MEM             sbt heap size in MB (default: 4096).
   LC_ALL              Locale for the sbt run (default: C.UTF-8; use en_US.UTF-8 on macOS).
+  PYSPARK_PYTHON      Python interpreter for Spark. Defaults to a nonexistent
+                      path so Spark 4.1's Python data source probe is skipped
+                      (it can hang on machines that have python3). Export a
+                      real interpreter to run the Python-dependent suites.
 EOF
 }
 
@@ -139,6 +143,16 @@ for m in "${modules_to_run[@]}"; do
   # Stale Parquet cache workaround (mirrors spark_sql_test.yml).
   rm -rf "$maven_repo/org/apache/parquet"
 
+  # Spark 4.1's DataSourceManager probes for Python data sources during query
+  # analysis by spawning a Python worker. The CI amd64/rust container has no
+  # python3, so the probe is skipped there. On a developer machine that does
+  # have python3 (every macOS install does) the worker can hang indefinitely:
+  # the JVM-side read has no idle timeout by default, so suites such as
+  # GlobalTempViewSuite stall forever instead of failing fast. Point PySpark at
+  # a nonexistent interpreter so the probe is skipped, matching CI. A developer
+  # who wants the Python suites can export PYSPARK_PYTHON themselves.
+  no_python="/nonexistent/comet-disable-python-datasources"
+
   (
     cd "$COMET_SPARK_DIR" || exit 1
     NOLINT_ON_COMPILE=true \
@@ -146,6 +160,8 @@ for m in "${modules_to_run[@]}"; do
     ENABLE_COMET_ONHEAP=true \
     ENABLE_COMET_LOG_FALLBACK_REASONS=false \
     SERIAL_SBT_TESTS=1 \
+    PYSPARK_DRIVER_PYTHON="${PYSPARK_DRIVER_PYTHON:-$no_python}" \
+    PYSPARK_PYTHON="${PYSPARK_PYTHON:-$no_python}" \
       build/sbt -Dsbt.log.noformat=true -mem "$SBT_MEM" \
         'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
         "$sbt_args"
