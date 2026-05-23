@@ -172,6 +172,8 @@ jobs:
           - name: "parquet"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
+              org.apache.comet.parquet.CometParquetWriter2PCSuite
+              org.apache.comet.parquet.CometParquetWriterCommitSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
               org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
