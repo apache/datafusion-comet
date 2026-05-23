@@ -30,7 +30,13 @@ import org.apache.parquet.Preconditions;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.UTF8String;
 
-/** A column vector whose elements are plainly decoded. */
+/**
+ * A {@link CometDecodedVector} for scalar (non-dictionary, non-complex) columns.
+ *
+ * <p>Reads values directly from the Arrow data buffer via {@link Platform} unsafe operations rather
+ * than Arrow's per-element getters. This is the hot path for native execution output. Optionally
+ * decodes 16-byte FixedSizeBinary values as Java {@link UUID}s when {@code isUuid} is set.
+ */
 public class CometPlainVector extends CometDecodedVector {
   private final long valueBufferAddress;
   private final boolean isBaseFixedWidthVector;
@@ -38,17 +44,11 @@ public class CometPlainVector extends CometDecodedVector {
   private byte booleanByteCache;
   private int booleanByteCacheIndex = -1;
 
-  private boolean isReused;
-
   public CometPlainVector(ValueVector vector) {
     this(vector, false);
   }
 
   public CometPlainVector(ValueVector vector, boolean isUuid) {
-    this(vector, isUuid, false);
-  }
-
-  public CometPlainVector(ValueVector vector, boolean isUuid, boolean isReused) {
     super(vector, vector.getField(), isUuid);
     // NullType doesn't have data buffer.
     if (vector instanceof NullVector) {
@@ -58,21 +58,6 @@ public class CometPlainVector extends CometDecodedVector {
     }
 
     isBaseFixedWidthVector = valueVector instanceof BaseFixedWidthVector;
-    this.isReused = isReused;
-  }
-
-  public boolean isReused() {
-    return isReused;
-  }
-
-  public void setReused(boolean isReused) {
-    this.isReused = isReused;
-  }
-
-  @Override
-  public void setNumNulls(int numNulls) {
-    super.setNumNulls(numNulls);
-    this.booleanByteCacheIndex = -1;
   }
 
   @Override
