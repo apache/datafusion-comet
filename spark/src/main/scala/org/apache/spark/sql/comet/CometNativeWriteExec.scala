@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import java.io.ByteArrayOutputStream
 
-
+import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
@@ -106,7 +106,7 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
 
     // Execute native write operation
     childRDD.mapPartitionsInternal { iter =>
-      val partitionId = org.apache.spark.TaskContext.getPartitionId()
+      val partitionId = TaskContext.getPartitionId()
 
       val nativeMetrics = CometMetricNode.fromCometPlan(this)
       // Register before CometExecIterator so completion listeners run after iterator close
