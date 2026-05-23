@@ -22,9 +22,10 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateArray, CreateMap, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, Size, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, Size, Unevaluable, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
@@ -60,6 +61,26 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       expr: org.apache.spark.sql.catalyst.expressions.Expression,
       specs: ArrowColumnSpec*): String =
     CometBatchKernelCodegen.generateSource(expr, specs.toIndexedSeq).body
+
+  test("NullIntolerant short-circuit uses isNullAt for CometPlainVector-wrapped columns") {
+    // Primitive Arrow vectors (timestamp / int / float / ...) are wrapped in `CometPlainVector`
+    // at input-cast time. The short-circuit must call `isNullAt(i)`, not `isNull(i)`, otherwise
+    // Janino fails to compile the kernel with "method isNull not declared". Verified end-to-end
+    // by `CometTemporalExpressionSuite` date_format tests over `TimeStampMicroTZVector` inputs.
+    val tsVec = CometBatchKernelCodegen.vectorClassBySimpleName("TimeStampMicroTZVector")
+    val spec = ArrowColumnSpec(tsVec, nullable = true)
+    val expr = DateFormatClass(
+      BoundReference(0, TimestampType, nullable = true),
+      Literal(UTF8String.fromString("yyyy-MM-dd EEEE"), StringType),
+      Some("UTC"))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(spec)).body
+    assert(
+      src.contains("if (this.col0.isNullAt(i))"),
+      s"expected short-circuit to use isNullAt for CometPlainVector-wrapped col0; got:\n$src")
+    assert(
+      !src.contains("if (this.col0.isNull(i))"),
+      s"expected no raw Arrow isNull on the CometPlainVector-wrapped col0; got:\n$src")
+  }
 
   test("non-nullable column emits literal-false isNullAt case") {
     val expr = Length(BoundReference(0, StringType, nullable = false))
