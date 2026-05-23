@@ -411,7 +411,7 @@
 - [x] randn
 - [ ] random
 - [ ] randstr
-- [ ] rint
+- [x] rint
 - [x] round
 - [x] sec
 - [x] shiftleft

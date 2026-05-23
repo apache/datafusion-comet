@@ -25,27 +25,41 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - "benchmarks/**"
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-      - "spark-integration/**"
+    paths:
+      - "native/**/src/**"
+      - "native/**/Cargo.toml"
+      - "native/Cargo.lock"
+      - "!native/hdfs/**"
+      - "!native/fs-hdfs/**"
+      - "common/src/main/**"
+      - "common/pom.xml"
+      - "spark/src/main/**"
+      - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "spark/pom.xml"
+      - "dev/diffs/iceberg/**"
+      - "pom.xml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/iceberg_spark_test.yml"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-iceberg-builder/**"
   pull_request:
-    paths-ignore:
-      - "benchmarks/**"
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-      - "spark-integration/**"
+    paths:
+      - "native/**/src/**"
+      - "native/**/Cargo.toml"
+      - "native/Cargo.lock"
+      - "!native/hdfs/**"
+      - "!native/fs-hdfs/**"
+      - "common/src/main/**"
+      - "common/pom.xml"
+      - "spark/src/main/**"
+      - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "spark/pom.xml"
+      - "dev/diffs/iceberg/**"
+      - "pom.xml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/iceberg_spark_test.yml"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-iceberg-builder/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:

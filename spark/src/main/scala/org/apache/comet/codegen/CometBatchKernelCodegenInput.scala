@@ -452,8 +452,7 @@ private[codegen] object CometBatchKernelCodegenInput {
       out: mutable.ArrayBuffer[String]): Unit = spec match {
     case sc: ScalarColumnSpec =>
       if (wrapsInCometPlainVector(sc.vectorClass)) {
-        // `useDecimal128 = true` matches Spark's 128-bit decimal storage.
-        out += s"this.$path = new $cometPlainVectorName($source, true);"
+        out += s"this.$path = new $cometPlainVectorName($source);"
       } else {
         out += s"this.$path = (${sc.vectorClass.getName}) $source;"
       }
