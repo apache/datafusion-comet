@@ -120,3 +120,23 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
         .build())
   }
 }
+
+/**
+ * Convenience base for serdes that route a non-ScalaUDF Spark expression through the codegen
+ * dispatcher. Delegates `convert` to [[CometScalaUDF.emitJvmCodegenDispatch]] and marks the
+ * expression `Compatible()` because the dispatcher runs Spark's own `doGenCode` inside the
+ * kernel: behavior matches Spark exactly when
+ * [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] is enabled, and the operator falls back to
+ * Spark cleanly when it is not.
+ */
+class CometCodegenDispatch[T <: Expression] extends CometExpressionSerde[T] {
+  override def getSupportLevel(expr: T): SupportLevel = Compatible()
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Runs via the Arrow-direct codegen dispatcher when " +
+      "spark.comet.exec.scalaUDF.codegen.enabled=true. Default behavior falls back to Spark.")
+  override def convert(
+      expr: T,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] =
+    CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+}
