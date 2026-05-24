@@ -1080,19 +1080,22 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       nullable = true)
 
     val cases: Seq[(String, Expression, IndexedSeq[ArrowColumnSpec])] = Seq(
-      ("AddMonths",
+      (
+        "AddMonths",
         AddMonths(
           BoundReference(0, DateType, nullable = true),
           BoundReference(1, IntegerType, nullable = true)),
         IndexedSeq(dateCol, intCol)),
-      ("MonthsBetween",
+      (
+        "MonthsBetween",
         MonthsBetween(
           BoundReference(0, TimestampType, nullable = true),
           BoundReference(1, TimestampType, nullable = true),
           Literal(true),
           Some("UTC")),
         IndexedSeq(tsCol, tsCol)),
-      ("MakeTimestamp",
+      (
+        "MakeTimestamp",
         MakeTimestamp(
           BoundReference(0, IntegerType, nullable = true),
           BoundReference(1, IntegerType, nullable = true),
@@ -1103,22 +1106,28 @@ class CometCodegenSourceSuite extends AnyFunSuite {
           timezone = None,
           timeZoneId = Some("UTC")),
         IndexedSeq(intCol, intCol, intCol, intCol, intCol, decCol)),
-      ("MillisToTimestamp",
+      (
+        "MillisToTimestamp",
         MillisToTimestamp(BoundReference(0, LongType, nullable = true)),
         IndexedSeq(longCol)),
-      ("MicrosToTimestamp",
+      (
+        "MicrosToTimestamp",
         MicrosToTimestamp(BoundReference(0, LongType, nullable = true)),
         IndexedSeq(longCol)),
-      ("UnixSeconds",
+      (
+        "UnixSeconds",
         UnixSeconds(BoundReference(0, TimestampType, nullable = true)),
         IndexedSeq(tsCol)),
-      ("UnixMillis",
+      (
+        "UnixMillis",
         UnixMillis(BoundReference(0, TimestampType, nullable = true)),
         IndexedSeq(tsCol)),
-      ("UnixMicros",
+      (
+        "UnixMicros",
         UnixMicros(BoundReference(0, TimestampType, nullable = true)),
         IndexedSeq(tsCol)),
-      ("ToUnixTimestamp",
+      (
+        "ToUnixTimestamp",
         ToUnixTimestamp(
           BoundReference(0, StringType, nullable = true),
           Literal(UTF8String.fromString("yyyy-MM-dd HH:mm:ss"), StringType),
