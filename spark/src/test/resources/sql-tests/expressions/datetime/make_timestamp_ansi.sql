@@ -17,29 +17,27 @@
 
 -- ANSI mode: make_timestamp throws on out-of-range argument values. With the codegen
 -- dispatcher enabled, Spark's own MakeTimestamp.doGenCode produces the throw site, so
--- Comet's kernel raises the same exception as Spark. The expect_error substring matches
--- the DATETIME_FIELD_OUT_OF_BOUNDS error class that Spark 3.5+ wraps all three cases in
--- (the inner JDK message text varies: "Invalid value for MonthOfYear", "Invalid date
--- 'FEBRUARY 30'", "Invalid value for HourOfDay"); the error class is the only stable
--- common substring.
+-- Comet's kernel raises the same exception as Spark. The expect_error substrings target
+-- the inner JDK java.time.DateTimeException message text (which is wrapped in a
+-- SparkDateTimeException whose getMessage() preserves it). The driver-formatted error
+-- class string `DATETIME_FIELD_OUT_OF_BOUNDS` is NOT preserved when the exception is
+-- thrown from a task on the executor side (only the wrapped `Job aborted ... Lost task
+-- ... SparkDateTimeException: <inner message>` form is preserved), so we match the JDK
+-- field names which are stable from Spark 3.4 through 4.x.
 -- Config: spark.sql.session.timeZone=UTC
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
--- The DATETIME_FIELD_OUT_OF_BOUNDS error class was standardized in Spark 3.5; earlier
--- versions wrap the JDK DateTimeException with a generic _LEGACY_ERROR_TEMP_ code whose
--- message does not contain that substring.
--- MinSparkVersion: 3.5
 
 -- month out of range
-query expect_error(DATETIME_FIELD_OUT_OF_BOUNDS)
+query expect_error(MonthOfYear)
 SELECT make_timestamp(2024, 13, 1, 0, 0, 0)
 
 -- day out of range
-query expect_error(DATETIME_FIELD_OUT_OF_BOUNDS)
+query expect_error(Invalid date)
 SELECT make_timestamp(2024, 2, 30, 0, 0, 0)
 
 -- hour out of range
-query expect_error(DATETIME_FIELD_OUT_OF_BOUNDS)
+query expect_error(HourOfDay)
 SELECT make_timestamp(2024, 6, 15, 25, 0, 0)
 
 -- Sentinel: a valid input must still execute on the Comet codegen path. If the dispatcher
