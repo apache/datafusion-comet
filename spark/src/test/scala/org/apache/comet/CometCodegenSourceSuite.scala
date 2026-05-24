@@ -22,7 +22,7 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, Size, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -1052,6 +1052,85 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       !src.contains("if (isNullAt(0)) return null;"),
       s"expected no null guard on non-nullable map field; got:\n$src")
+  }
+
+  // Bucket 4 datetime expressions routed through CometCodegenDispatch. Each entry pairs a
+  // bound Catalyst expression with the Arrow column specs the kernel would see at runtime.
+  // The test asserts `generateSource` returns a non-empty body, which means Spark's own
+  // `doGenCode` succeeded under the codegen context (no NotImplementedError, no rewrite to
+  // a CodegenFallback path).
+  test("Bucket 4 datetime expressions produce non-empty generated kernel source") {
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val longCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("BigIntVector"),
+      nullable = true)
+    val decCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector"),
+      nullable = true)
+    val dateCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DateDayVector"),
+      nullable = true)
+    val tsCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("TimeStampMicroTZVector"),
+      nullable = true)
+    val strCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("VarCharVector"),
+      nullable = true)
+
+    val cases: Seq[(String, Expression, IndexedSeq[ArrowColumnSpec])] = Seq(
+      ("AddMonths",
+        AddMonths(
+          BoundReference(0, DateType, nullable = true),
+          BoundReference(1, IntegerType, nullable = true)),
+        IndexedSeq(dateCol, intCol)),
+      ("MonthsBetween",
+        MonthsBetween(
+          BoundReference(0, TimestampType, nullable = true),
+          BoundReference(1, TimestampType, nullable = true),
+          Literal(true),
+          Some("UTC")),
+        IndexedSeq(tsCol, tsCol)),
+      ("MakeTimestamp",
+        MakeTimestamp(
+          BoundReference(0, IntegerType, nullable = true),
+          BoundReference(1, IntegerType, nullable = true),
+          BoundReference(2, IntegerType, nullable = true),
+          BoundReference(3, IntegerType, nullable = true),
+          BoundReference(4, IntegerType, nullable = true),
+          BoundReference(5, DecimalType(8, 6), nullable = true),
+          timezone = None,
+          timeZoneId = Some("UTC")),
+        IndexedSeq(intCol, intCol, intCol, intCol, intCol, decCol)),
+      ("MillisToTimestamp",
+        MillisToTimestamp(BoundReference(0, LongType, nullable = true)),
+        IndexedSeq(longCol)),
+      ("MicrosToTimestamp",
+        MicrosToTimestamp(BoundReference(0, LongType, nullable = true)),
+        IndexedSeq(longCol)),
+      ("UnixSeconds",
+        UnixSeconds(BoundReference(0, TimestampType, nullable = true)),
+        IndexedSeq(tsCol)),
+      ("UnixMillis",
+        UnixMillis(BoundReference(0, TimestampType, nullable = true)),
+        IndexedSeq(tsCol)),
+      ("UnixMicros",
+        UnixMicros(BoundReference(0, TimestampType, nullable = true)),
+        IndexedSeq(tsCol)),
+      ("ToUnixTimestamp",
+        ToUnixTimestamp(
+          BoundReference(0, StringType, nullable = true),
+          Literal(UTF8String.fromString("yyyy-MM-dd HH:mm:ss"), StringType),
+          Some("UTC")),
+        IndexedSeq(strCol)))
+    cases.foreach { case (name, expr, specs) =>
+      val src = CometBatchKernelCodegen.generateSource(expr, specs).body
+      assert(src.nonEmpty, s"$name: expected non-empty generated source")
+      assert(
+        src.contains("public java.lang.Object generate(Object[] references)"),
+        s"$name: generated source missing kernel class entry point")
+    }
   }
 
   test("CacheKey discriminates on ArrowColumnSpec.nullable") {
