@@ -26,3 +26,9 @@ SELECT timestamp_millis(9223372036854775807L)
 
 query expect_error(overflow)
 SELECT timestamp_millis(-9223372036854775808L)
+
+-- Sentinel: confirms Comet ran the expression natively. If the dispatcher silently rejects
+-- MillisToTimestamp, the error queries above pass vacuously via Spark fallback. This valid
+-- query uses `checkSparkAnswerAndOperator` and fails if Comet did not execute it natively.
+query
+SELECT timestamp_millis(1718451045000)

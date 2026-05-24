@@ -130,9 +130,11 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
  */
 class CometCodegenDispatch[T <: Expression] extends CometExpressionSerde[T] {
   override def getSupportLevel(expr: T): SupportLevel = Compatible()
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "Runs via the Arrow-direct codegen dispatcher when " +
-      "spark.comet.exec.scalaUDF.codegen.enabled=true. Default behavior falls back to Spark.")
+  // Intentionally no getCompatibleNotes override: the docs generator emits compat notes under
+  // a heading that promises "no additional configuration required". The dispatcher flag is a
+  // global concern documented elsewhere; tagging each expression here would contradict the
+  // heading. When the flag is off, `convert` returns None with a clear withInfo reason that
+  // shows up in EXPLAIN, which is the right place for that signal.
   override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
     CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
 }

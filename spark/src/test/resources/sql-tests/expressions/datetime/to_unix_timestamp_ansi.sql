@@ -16,13 +16,26 @@
 -- under the License.
 
 -- ANSI mode: to_unix_timestamp throws on parse failure. The codegen dispatcher inherits
--- the throw from Spark's own ToUnixTimestamp.doGenCode.
+-- the throw from Spark's own ToUnixTimestamp.doGenCode. The time parser policy is pinned
+-- to CORRECTED so the JDK java.time formatter (and the CANNOT_PARSE_TIMESTAMP error class)
+-- is exercised regardless of the runtime default — LEGACY uses SimpleDateFormat with a
+-- different exception text.
 -- Config: spark.sql.session.timeZone=UTC
 -- Config: spark.sql.ansi.enabled=true
+-- Config: spark.sql.legacy.timeParserPolicy=CORRECTED
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+-- The CANNOT_PARSE_TIMESTAMP error class was standardized in Spark 3.5; earlier versions
+-- surface a different SparkUpgradeException / DateTimeParseException wording.
+-- MinSparkVersion: 3.5
 
 query expect_error(CANNOT_PARSE_TIMESTAMP)
 SELECT to_unix_timestamp('not a date', 'yyyy-MM-dd')
 
 query expect_error(CANNOT_PARSE_TIMESTAMP)
 SELECT to_unix_timestamp('2024-13-99', 'yyyy-MM-dd')
+
+-- Sentinel: confirms Comet ran the expression natively. If the dispatcher silently rejects
+-- ToUnixTimestamp, the error queries above pass vacuously via Spark fallback. This valid
+-- query uses `checkSparkAnswerAndOperator` and fails if Comet did not execute it natively.
+query
+SELECT to_unix_timestamp('2024-06-15 10:30:45', 'yyyy-MM-dd HH:mm:ss')
