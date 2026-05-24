@@ -69,20 +69,27 @@ case class ExpectError(pattern: String) extends QueryAssertionMode
  * @param tables
  *   Table names extracted from CREATE TABLE statements (for cleanup).
  * @param minSparkVersion
- *   Optional minimum Spark version required to run this test (e.g. "3.5").
+ *   Optional minimum Spark version required to run this test (e.g. "3.5"). The test is
+ *   skipped on older versions.
+ * @param maxSparkVersion
+ *   Optional maximum Spark version this test applies to (e.g. "3.4"). The test is skipped
+ *   on newer versions. Useful for paired fixtures where each version range has its own
+ *   expected error class or output format.
  */
 case class SqlTestFile(
     configs: Seq[(String, String)],
     configMatrix: Seq[(String, Seq[String])],
     records: Seq[SqlTestRecord],
     tables: Seq[String],
-    minSparkVersion: Option[String] = None)
+    minSparkVersion: Option[String] = None,
+    maxSparkVersion: Option[String] = None)
 
 object SqlFileTestParser {
 
   private val ConfigPattern = """--\s*Config:\s*(.+)=(.+)""".r
   private val ConfigMatrixPattern = """--\s*ConfigMatrix:\s*(.+)=(.+)""".r
   private val MinSparkVersionPattern = """--\s*MinSparkVersion:\s*(.+)""".r
+  private val MaxSparkVersionPattern = """--\s*MaxSparkVersion:\s*(.+)""".r
   private val CreateTablePattern = """(?i)CREATE\s+TABLE\s+(\w+)""".r.unanchored
 
   def parse(file: File): SqlTestFile = {
@@ -98,6 +105,7 @@ object SqlFileTestParser {
     var configs = Seq.empty[(String, String)]
     var configMatrix = Seq.empty[(String, Seq[String])]
     var minSparkVersion: Option[String] = None
+    var maxSparkVersion: Option[String] = None
     val records = Seq.newBuilder[SqlTestRecord]
     val tables = Seq.newBuilder[String]
 
@@ -116,6 +124,10 @@ object SqlFileTestParser {
 
         case MinSparkVersionPattern(version) =>
           minSparkVersion = Some(version.trim)
+          lineIdx += 1
+
+        case MaxSparkVersionPattern(version) =>
+          maxSparkVersion = Some(version.trim)
           lineIdx += 1
 
         case "statement" =>
@@ -141,7 +153,13 @@ object SqlFileTestParser {
       }
     }
 
-    SqlTestFile(configs, configMatrix, records.result(), tables.result(), minSparkVersion)
+    SqlTestFile(
+      configs,
+      configMatrix,
+      records.result(),
+      tables.result(),
+      minSparkVersion,
+      maxSparkVersion)
   }
 
   private val FallbackPattern = """query\s+expect_fallback\((.+)\)""".r

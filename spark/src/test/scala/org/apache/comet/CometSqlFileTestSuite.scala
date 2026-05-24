@@ -35,6 +35,31 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     (current(0) == required(0) && current(1) >= required(1))
   }
 
+  /**
+   * Check if the current Spark version is at or below a maximum version. Used by paired
+   * fixtures where each version range has its own expected error class or output format.
+   */
+  private def meetsMaxSparkVersion(maxVersion: String): Boolean = {
+    val current = org.apache.spark.SPARK_VERSION.split("[.-]").take(2).map(_.toInt)
+    val ceiling = maxVersion.split("[.-]").take(2).map(_.toInt)
+    (current(0) < ceiling(0)) ||
+    (current(0) == ceiling(0) && current(1) <= ceiling(1))
+  }
+
+  /**
+   * Build a human-readable reason string describing why a fixture is skipped on the current
+   * Spark version. Returns None when both constraints are satisfied.
+   */
+  private def skipReason(parsed: SqlTestFile): Option[String] = {
+    val minViolation = parsed.minSparkVersion.filter(!meetsMinSparkVersion(_))
+    val maxViolation = parsed.maxSparkVersion.filter(!meetsMaxSparkVersion(_))
+    (minViolation, maxViolation) match {
+      case (Some(m), _) => Some(s"requires Spark >= $m")
+      case (_, Some(m)) => Some(s"requires Spark <= $m")
+      case _ => None
+    }
+  }
+
   private val testResourceDir = {
     val url = getClass.getClassLoader.getResource("sql-tests")
     assert(url != null, "Could not find sql-tests resource directory")
@@ -133,17 +158,18 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val parsed = SqlFileTestParser.parse(file)
     val combinations = configMatrix(parsed.configMatrix)
 
-    // Skip tests that require a newer Spark version
-    val skip = parsed.minSparkVersion.exists(!meetsMinSparkVersion(_))
+    // Skip tests that fall outside the file's declared Spark version range.
+    val skip = skipReason(parsed)
 
     if (combinations.size <= 1) {
       // No matrix or single combination
       test(s"sql-file: $relativePath") {
-        if (skip) {
-          logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
-        } else {
-          val effectiveConfigs = parsed.configs ++ combinations.headOption.getOrElse(Seq.empty)
-          runTestFile(relativePath, parsed.copy(configs = effectiveConfigs))
+        skip match {
+          case Some(reason) =>
+            logInfo(s"SKIPPED ($reason): $relativePath")
+          case None =>
+            val effectiveConfigs = parsed.configs ++ combinations.headOption.getOrElse(Seq.empty)
+            runTestFile(relativePath, parsed.copy(configs = effectiveConfigs))
         }
       }
     } else {
@@ -151,10 +177,11 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       combinations.foreach { matrixConfigs =>
         val label = matrixConfigs.map { case (k, v) => s"$k=$v" }.mkString(", ")
         test(s"sql-file: $relativePath [$label]") {
-          if (skip) {
-            logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
-          } else {
-            runTestFile(relativePath, parsed.copy(configs = parsed.configs ++ matrixConfigs))
+          skip match {
+            case Some(reason) =>
+              logInfo(s"SKIPPED ($reason): $relativePath")
+            case None =>
+              runTestFile(relativePath, parsed.copy(configs = parsed.configs ++ matrixConfigs))
           }
         }
       }
