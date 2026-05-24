@@ -36,8 +36,8 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /**
-   * Check if the current Spark version is at or below a maximum version. Used by paired
-   * fixtures where each version range has its own expected error class or output format.
+   * Check if the current Spark version is at or below a maximum version. Used by paired fixtures
+   * where each version range has its own expected error class or output format.
    */
   private def meetsMaxSparkVersion(maxVersion: String): Boolean = {
     val current = org.apache.spark.SPARK_VERSION.split("[.-]").take(2).map(_.toInt)
@@ -47,8 +47,8 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /**
-   * Build a human-readable reason string describing why a fixture is skipped on the current
-   * Spark version. Returns None when both constraints are satisfied.
+   * Build a human-readable reason string describing why a fixture is skipped on the current Spark
+   * version. Returns None when both constraints are satisfied.
    */
   private def skipReason(parsed: SqlTestFile): Option[String] = {
     val minViolation = parsed.minSparkVersion.filter(!meetsMinSparkVersion(_))

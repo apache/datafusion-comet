@@ -69,12 +69,12 @@ case class ExpectError(pattern: String) extends QueryAssertionMode
  * @param tables
  *   Table names extracted from CREATE TABLE statements (for cleanup).
  * @param minSparkVersion
- *   Optional minimum Spark version required to run this test (e.g. "3.5"). The test is
- *   skipped on older versions.
+ *   Optional minimum Spark version required to run this test (e.g. "3.5"). The test is skipped on
+ *   older versions.
  * @param maxSparkVersion
- *   Optional maximum Spark version this test applies to (e.g. "3.4"). The test is skipped
- *   on newer versions. Useful for paired fixtures where each version range has its own
- *   expected error class or output format.
+ *   Optional maximum Spark version this test applies to (e.g. "3.4"). The test is skipped on
+ *   newer versions. Useful for paired fixtures where each version range has its own expected
+ *   error class or output format.
  */
 case class SqlTestFile(
     configs: Seq[(String, String)],
