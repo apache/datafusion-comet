@@ -356,6 +356,9 @@ impl PhysicalPlanner {
                         DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
                         DataType::List(f) => DataType::List(f).try_into()?,
                         DataType::Null => ScalarValue::Null,
+                        DataType::Duration(TimeUnit::Microsecond) => {
+                            ScalarValue::DurationMicrosecond(None)
+                        }
                         DataType::Time64(TimeUnit::Nanosecond) => {
                             ScalarValue::Time64Nanosecond(None)
                         }

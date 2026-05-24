@@ -116,6 +116,7 @@ of expressions that be disabled.
 | LastDay          | `last_day`                   |
 | LocalTimestamp   | `localtimestamp`             |
 | MakeDate         | `make_date`                  |
+| MakeDTInterval   | `make_dt_interval`           |
 | MakeTime         | `make_time`                  |
 | Minute           | `minute`                     |
 | NextDay          | `next_day`                   |

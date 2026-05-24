@@ -247,7 +247,7 @@
 - [x] last_day
 - [x] localtimestamp
 - [x] make_date
-- [ ] make_dt_interval
+- [x] make_dt_interval
 - [ ] make_interval
 - [ ] make_time
 - [ ] make_timestamp

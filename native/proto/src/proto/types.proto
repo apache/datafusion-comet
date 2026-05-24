@@ -60,6 +60,7 @@ message DataType {
     MAP = 15;
     STRUCT = 16;
     TIME = 17;
+    DURATION_MICROSECOND = 18;
   }
   DataTypeId type_id = 1;
 
