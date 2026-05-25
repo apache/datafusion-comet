@@ -376,7 +376,6 @@ case class StMakeEnvelope(
   override def dataType: DataType = StringType
   override def nullable: Boolean = true
   override def children: Seq[Expression] = Seq(xmin, ymin, xmax, ymax)
-  override def supportCodegen: Boolean = false
   override def eval(input: InternalRow): Any = {
     val xv = xmin.eval(input)
     val yv = ymin.eval(input)
@@ -386,7 +385,6 @@ case class StMakeEnvelope(
     else UTF8String.fromString(CometGeoFallback.makeEnvelope(
       xv.toString.toDouble, yv.toString.toDouble, xv2.toString.toDouble, yv2.toString.toDouble))
   }
-  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = ev
   override protected def withNewChildrenInternal(
       newChildren: IndexedSeq[Expression]): Expression =
     copy(
