@@ -244,15 +244,20 @@ fn struct_to_json(
             let mut any_fields_written = false;
             json.push('{');
             for col_index in 0..string_arrays.len() {
-                let is_null_value = string_arrays[col_index].is_null(row_index);
-                if !is_null_value || (is_null_value && !ignore_null_fields) {
-                    if any_fields_written {
-                        json.push(',');
-                    }
-                    // quoted field name
-                    json.push('"');
-                    json.push_str(&field_names[col_index]);
-                    json.push_str("\":");
+                let is_null = string_arrays[col_index].is_null(row_index);
+                if is_null && ignore_null_fields {
+                    continue;
+                }
+                if any_fields_written {
+                    json.push(',');
+                }
+                // quoted field name
+                json.push('"');
+                json.push_str(&field_names[col_index]);
+                json.push_str("\":");
+                if is_null {
+                    json.push_str("null");
+                } else {
                     // value
                     let string_value = string_arrays[col_index].value(row_index);
                     if is_string[col_index] || is_infinity(string_value) || is_nan(string_value) {
@@ -262,8 +267,8 @@ fn struct_to_json(
                     } else {
                         json.push_str(string_value);
                     }
-                    any_fields_written = true;
                 }
+                any_fields_written = true;
             }
             json.push('}');
             builder.append_value(&json);
