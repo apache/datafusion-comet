@@ -341,7 +341,8 @@ case class StGeomFromGeoJson(child: Expression) extends UnaryExpression with Nul
 }
 
 case class StPoint(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     UTF8String.fromString(s"POINT(${g1.toString} ${g2.toString})")
@@ -359,7 +360,8 @@ case class StPoint(left: Expression, right: Expression)
 
 
 case class StMakeLine(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     UTF8String.fromString(CometGeoFallback.makeLine(g1.toString, g2.toString))
@@ -409,7 +411,8 @@ case class StAsGeoJson(child: Expression) extends UnaryExpression with NullIntol
 // ---- Additional predicates -----------------------------------------------
 
 case class StCovers(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.covers(g1.toString, g2.toString)
@@ -426,7 +429,8 @@ case class StCovers(left: Expression, right: Expression)
 }
 
 case class StCoveredBy(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.coveredBy(g1.toString, g2.toString)
@@ -443,7 +447,8 @@ case class StCoveredBy(left: Expression, right: Expression)
 }
 
 case class StEquals(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.equals(g1.toString, g2.toString)
@@ -460,7 +465,8 @@ case class StEquals(left: Expression, right: Expression)
 }
 
 case class StTouches(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.touches(g1.toString, g2.toString)
@@ -477,7 +483,8 @@ case class StTouches(left: Expression, right: Expression)
 }
 
 case class StCrosses(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.crosses(g1.toString, g2.toString)
@@ -494,7 +501,8 @@ case class StCrosses(left: Expression, right: Expression)
 }
 
 case class StDisjoint(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.disjoint(g1.toString, g2.toString)
@@ -511,7 +519,8 @@ case class StDisjoint(left: Expression, right: Expression)
 }
 
 case class StOverlaps(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.overlaps(g1.toString, g2.toString)
@@ -530,7 +539,8 @@ case class StOverlaps(left: Expression, right: Expression)
 // ---- Additional measurements ---------------------------------------------
 
 case class StDistanceSphere(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = DoubleType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.distanceSphere(g1.toString, g2.toString)
@@ -559,7 +569,8 @@ case class StPerimeter(child: Expression) extends UnaryExpression with NullIntol
 }
 
 case class StHausdorffDistance(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = DoubleType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.hausdorffDistance(g1.toString, g2.toString)
@@ -578,7 +589,8 @@ case class StHausdorffDistance(left: Expression, right: Expression)
 // ---- Additional transformations ------------------------------------------
 
 case class StSimplifyPreserveTopology(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g: Any, t: Any): Any =
     UTF8String.fromString(CometGeoFallback.simplifyPreserveTopology(
@@ -628,7 +640,8 @@ case class StBoundary(child: Expression) extends UnaryExpression with NullIntole
 // ---- Additional set operations -------------------------------------------
 
 case class StDifference(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     UTF8String.fromString(CometGeoFallback.difference(g1.toString, g2.toString))
@@ -646,7 +659,8 @@ case class StDifference(left: Expression, right: Expression)
 }
 
 case class StSymDifference(left: Expression, right: Expression)
-    extends BinaryExpression with NullIntolerant {
+    extends BinaryExpression
+    with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     UTF8String.fromString(CometGeoFallback.symDifference(g1.toString, g2.toString))
