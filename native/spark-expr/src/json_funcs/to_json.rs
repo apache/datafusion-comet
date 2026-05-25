@@ -244,14 +244,8 @@ fn struct_to_json(
             let mut any_fields_written = false;
             json.push('{');
             for col_index in 0..string_arrays.len() {
-                if string_arrays[col_index].is_null(row_index) && !ignore_null_fields {
-                    // quoted field name
-                    json.push('"');
-                    json.push_str(&field_names[col_index]);
-                    json.push_str("\":");
-                    json.push_str("null");
-                    json.push(',');
-                } else if !string_arrays[col_index].is_null(row_index) {
+                let is_null_value = string_arrays[col_index].is_null(row_index);
+                if !is_null_value || (is_null_value && !ignore_null_fields) {
                     if any_fields_written {
                         json.push(',');
                     }
