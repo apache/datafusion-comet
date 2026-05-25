@@ -27,7 +27,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::scalar::ScalarValue;
 use geo::{Coord, LineString, Point, Polygon};
-use wkt::{ToWkt, TryFromWkt};
+use wkt::TryFromWkt;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct StBuffer {
@@ -82,7 +82,7 @@ impl ScalarUDFImpl for StBuffer {
             .map(|g| {
                 let wkt = g?;
                 let geom = geo::Geometry::<f64>::try_from_wkt_str(wkt).ok()?;
-                Some(buffer_geometry(&geom, distance, 32).wkt_string())
+                Some(geom_to_wkt(&buffer_geometry(&geom, distance, 32)))
             })
             .collect();
 
@@ -101,6 +101,33 @@ fn point_circle(cx: f64, cy: f64, radius: f64, segments: usize) -> Polygon<f64> 
         })
         .collect();
     Polygon::new(LineString::from(coords), vec![])
+}
+
+fn coords_to_wkt(coords: &[Coord<f64>]) -> String {
+    let pts: Vec<String> = coords
+        .iter()
+        .map(|c| format!("{} {}", c.x, c.y))
+        .collect();
+    format!("({})", pts.join(","))
+}
+
+fn geom_to_wkt(geom: &geo::Geometry<f64>) -> String {
+    match geom {
+        geo::Geometry::Polygon(p) => {
+            format!("POLYGON({})", coords_to_wkt(p.exterior().0.as_slice()))
+        }
+        geo::Geometry::MultiPolygon(mp) => {
+            let parts: Vec<String> = mp
+                .iter()
+                .map(|p| coords_to_wkt(p.exterior().0.as_slice()))
+                .collect();
+            format!("MULTIPOLYGON(({}))", parts.join("),("))
+        }
+        other => {
+            use wkt::ToWkt;
+            other.wkt_string()
+        }
+    }
 }
 
 fn buffer_geometry(geom: &geo::Geometry<f64>, distance: f64, segments: usize) -> geo::Geometry<f64> {
