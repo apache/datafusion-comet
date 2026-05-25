@@ -108,3 +108,4 @@ pub fn register_geo_functions(ctx: &SessionContext) {
     ctx.register_udf(ScalarUDF::new_from_impl(st_x::StX::default()));
     ctx.register_udf(ScalarUDF::new_from_impl(st_y::StY::default()));
 }
+
