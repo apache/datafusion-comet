@@ -21,8 +21,10 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, BooleanArray, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
-use geo::Intersects;
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
+use geo::relate::Relate;
 use wkt::TryFromWkt;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -70,7 +72,8 @@ impl ScalarUDFImpl for StIntersects {
                 (Some(g1), Some(g2)) => {
                     let a = geo::Geometry::<f64>::try_from_wkt_str(g1).ok()?;
                     let b = geo::Geometry::<f64>::try_from_wkt_str(g2).ok()?;
-                    Some(a.intersects(&b))
+                    // DE-9IM: NOT Disjoint — any part of a shares space with any part of b.
+                    Some(!a.relate(&b).is_disjoint())
                 }
                 _ => None,
             })

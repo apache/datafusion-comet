@@ -21,8 +21,10 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, BooleanArray, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
-use geo::Within;
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
+use geo::relate::Relate;
 use wkt::TryFromWkt;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -70,7 +72,9 @@ impl ScalarUDFImpl for StWithin {
                 (Some(g1), Some(g2)) => {
                     let inner = geo::Geometry::<f64>::try_from_wkt_str(g1).ok()?;
                     let outer = geo::Geometry::<f64>::try_from_wkt_str(g2).ok()?;
-                    Some(inner.is_within(&outer))
+                    // DE-9IM: TF*FF**** — inner's interior intersects outer's interior,
+                    // and inner has no part outside outer. Matches OGC/Sedona ST_Within.
+                    Some(inner.relate(&outer).is_within())
                 }
                 _ => None,
             })

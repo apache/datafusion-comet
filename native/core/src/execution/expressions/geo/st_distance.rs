@@ -21,8 +21,11 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, Float64Array, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use geo::EuclideanDistance;
+use geo::relate::Relate;
 use wkt::TryFromWkt;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -70,7 +73,14 @@ impl ScalarUDFImpl for StDistance {
                 (Some(g1), Some(g2)) => {
                     let a = geo::Geometry::<f64>::try_from_wkt_str(g1).ok()?;
                     let b = geo::Geometry::<f64>::try_from_wkt_str(g2).ok()?;
-                    Some(a.euclidean_distance(&b))
+                    // If geometries intersect, distance is 0.0 by definition.
+                    // Otherwise use EuclideanDistance which correctly measures
+                    // nearest-point distance between disjoint geometries.
+                    if a.relate(&b).is_intersects() {
+                        Some(0.0)
+                    } else {
+                        Some(a.euclidean_distance(&b))
+                    }
                 }
                 _ => None,
             })
