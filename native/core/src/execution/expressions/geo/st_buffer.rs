@@ -100,6 +100,8 @@ fn point_circle(cx: f64, cy: f64, radius: f64, segments: usize) -> Polygon<f64> 
             }
         })
         .collect();
+    eprintln!("DEBUG point_circle: first coord = {:?}", coords.first());
+    eprintln!("DEBUG point_circle: coords len = {}", coords.len());
     Polygon::new(LineString::from(coords), vec![])
 }
 
@@ -114,7 +116,10 @@ fn coords_to_wkt(coords: &[Coord<f64>]) -> String {
 fn geom_to_wkt(geom: &geo::Geometry<f64>) -> String {
     match geom {
         geo::Geometry::Polygon(p) => {
-            format!("POLYGON({})", coords_to_wkt(p.exterior().0.as_slice()))
+            let ext = p.exterior();
+            eprintln!("DEBUG geom_to_wkt: exterior coords len = {}", ext.0.len());
+            eprintln!("DEBUG geom_to_wkt: first coord = {:?}", ext.0.first());
+            format!("POLYGON({})", coords_to_wkt(ext.0.as_slice()))
         }
         geo::Geometry::MultiPolygon(mp) => {
             let parts: Vec<String> = mp
