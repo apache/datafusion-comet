@@ -344,7 +344,7 @@ case class StPoint(left: Expression, right: Expression)
     extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(x: Any, y: Any): Any =
-    UTF8String.fromString(s"POINT(${x.toString} ${y.toString})")
+    UTF8String.fromString("POINT(" + x.toString + " " + y.toString + ")")
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     defineCodeGen(ctx, ev, (x, y) =>
       s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
