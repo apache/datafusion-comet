@@ -40,7 +40,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -1915,6 +1915,112 @@ trait CometHashJoin {
       withInfo(join, allExprs: _*)
       None
     }
+  }
+}
+
+case class CometBroadcastNestedLoopJoinExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    override val outputOrdering: Seq[SortOrder],
+    joinType: JoinType,
+    condition: Option[Expression],
+    buildSide: BuildSide,
+    override val left: SparkPlan,
+    override val right: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBinaryExec {
+
+  override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
+    this.copy(left = newLeft, right = newRight)
+}
+
+object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNestedLoopJoinExec] {
+
+  /**
+   * Get the optional Comet configuration entry that is used to enable or disable native support
+   * for this operator.
+   */
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = {
+    Some(CometConf.COMET_EXEC_HASH_JOIN_ENABLED)
+  }
+
+  /**
+   * Convert a Spark operator into a protocol buffer representation that can be passed into native
+   * code.
+   *
+   * @param op
+   *   The Spark operator.
+   * @param builder
+   *   The protobuf builder for the operator.
+   * @param childOp
+   *   Child operators that have already been converted to Comet.
+   * @return
+   *   Protocol buffer representation, or None if the operator could not be converted. In this
+   *   case it is expected that the input operator will have been tagged with reasons why it could
+   *   not be converted.
+   */
+  override def convert(
+      op: BroadcastNestedLoopJoinExec,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[Operator] = {
+
+    val buildSide = op.buildSide match {
+      case BuildLeft => OperatorOuterClass.BuildSide.BuildLeft
+      case BuildRight => OperatorOuterClass.BuildSide.BuildRight
+    }
+
+    val join = op.joinType
+    val joinType = {
+      import OperatorOuterClass.JoinType
+      join match {
+        case Inner => JoinType.Inner
+        case LeftOuter => JoinType.LeftOuter
+        case RightOuter => JoinType.RightOuter
+        case FullOuter => JoinType.FullOuter
+        case LeftSemi => JoinType.LeftSemi
+        case LeftAnti => JoinType.LeftAnti
+        case _ =>
+          // Spark doesn't support other join types
+          withInfo(op, s"Unsupported join type $join")
+          return None
+      }
+    }
+
+    val joinCondition = op.condition.map({ cond =>
+      val condProto = exprToProto(cond, op.left.output ++ op.right.output)
+      if (condProto.isEmpty) {
+        withInfo(op, cond)
+        return None
+      }
+      condProto.get
+    })
+
+    val joinBuilder = OperatorOuterClass.BroadcastNestedLoopJoin
+      .newBuilder()
+      .setJoinType(joinType)
+      .setBuildSide(buildSide)
+
+    joinCondition.foreach(joinBuilder.setCondition)
+
+    Some(builder.setBroadcastNestedLoopJoin(joinBuilder).build())
+  }
+
+  override def createExec(
+      nativeOp: Operator,
+      op: BroadcastNestedLoopJoinExec): CometNativeExec = {
+
+    CometBroadcastNestedLoopJoinExec(
+      nativeOp,
+      op,
+      op.output,
+      op.outputOrdering,
+      op.joinType,
+      op.condition,
+      op.buildSide,
+      op.left,
+      op.right,
+      SerializedPlan(None))
   }
 }
 

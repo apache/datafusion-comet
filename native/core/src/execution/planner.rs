@@ -134,6 +134,7 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
+use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use url::Url;
 
 // For clippy error on type_complexity.
@@ -1197,6 +1198,40 @@ impl PhysicalPlanner {
                     ))
                 }
             }
+
+            OpStruct::BroadcastNestedLoopJoin(bnlj) => {
+                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
+                    inputs,
+                    &[],
+                    &[],
+                    &[],
+                    bnlj.join_type,
+                    &bnlj.condition,
+                    partition_count
+                )?;
+
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
+
+                let nested_loop_join = Arc::new(NestedLoopJoinExec::try_new(
+                    left,
+                    right,
+                    join_params.join_filter,
+                    &join_params.join_type,
+                    None
+                )?);
+
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        nested_loop_join,
+                        vec![join_params.left, join_params.right],
+                    )),
+                ))
+            }
+
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
                 let num = limit.limit;
