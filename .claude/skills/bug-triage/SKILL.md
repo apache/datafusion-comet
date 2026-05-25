@@ -65,8 +65,7 @@ For each issue, review the title and body and determine:
 2. **Area labels** (zero or more): from the area table in the guide
    (`area:writer`, `area:shuffle`, `area:aggregation`, `area:scan`,
    `area:expressions`, `area:ffi`, `area:ci`) plus the pre-existing area
-   indicators (`native_datafusion`, `native_iceberg_compat`, `spark 4`,
-   `spark sql tests`).
+   indicators (`spark 4`, `spark sql tests`).
 3. **Escalation note**: if the issue matches an escalation trigger from the
    guide (e.g., a `priority:high` crash that may also produce wrong results),
    note it in the summary.
