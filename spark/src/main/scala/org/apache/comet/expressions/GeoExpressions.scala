@@ -735,131 +735,131 @@ object GeoExpressions {
       builder)
 
   val stContainsInfo: FunctionDescription =
-    desc("st_contains", classOf[StContains], args => StContains(args(0), args(1)))
+    desc("st_contains", classOf[StContains], (args) => StContains(args(0), args(1)))
 
   val stIntersectsInfo: FunctionDescription =
-    desc("st_intersects", classOf[StIntersects], args => StIntersects(args(0), args(1)))
+    desc("st_intersects", classOf[StIntersects], (args) => StIntersects(args(0), args(1)))
 
   val stWithinInfo: FunctionDescription =
-    desc("st_within", classOf[StWithin], args => StWithin(args(0), args(1)))
+    desc("st_within", classOf[StWithin], (args) => StWithin(args(0), args(1)))
 
   val stDistanceInfo: FunctionDescription =
-    desc("st_distance", classOf[StDistance], args => StDistance(args(0), args(1)))
+    desc("st_distance", classOf[StDistance], (args) => StDistance(args(0), args(1)))
 
   val stAreaInfo: FunctionDescription =
-    desc("st_area", classOf[StArea], args => StArea(args(0)))
+    desc("st_area", classOf[StArea], (args) => StArea(args(0)))
 
   val stCentroidInfo: FunctionDescription =
-    desc("st_centroid", classOf[StCentroid], args => StCentroid(args(0)))
+    desc("st_centroid", classOf[StCentroid], (args) => StCentroid(args(0)))
 
   val stLengthInfo: FunctionDescription =
-    desc("st_length", classOf[StLength], args => StLength(args(0)))
+    desc("st_length", classOf[StLength], (args) => StLength(args(0)))
 
   val stIsEmptyInfo: FunctionDescription =
-    desc("st_isempty", classOf[StIsEmpty], args => StIsEmpty(args(0)))
+    desc("st_isempty", classOf[StIsEmpty], (args) => StIsEmpty(args(0)))
 
   val stGeometryTypeInfo: FunctionDescription =
-    desc("st_geometrytype", classOf[StGeometryType], args => StGeometryType(args(0)))
+    desc("st_geometrytype", classOf[StGeometryType], (args) => StGeometryType(args(0)))
 
   val stNumPointsInfo: FunctionDescription =
-    desc("st_numpoints", classOf[StNumPoints], args => StNumPoints(args(0)))
+    desc("st_numpoints", classOf[StNumPoints], (args) => StNumPoints(args(0)))
 
   val stXInfo: FunctionDescription =
-    desc("st_x", classOf[StX], args => StX(args(0)))
+    desc("st_x", classOf[StX], (args) => StX(args(0)))
 
   val stYInfo: FunctionDescription =
-    desc("st_y", classOf[StY], args => StY(args(0)))
+    desc("st_y", classOf[StY], (args) => StY(args(0)))
 
   val stEnvelopeInfo: FunctionDescription =
-    desc("st_envelope", classOf[StEnvelope], args => StEnvelope(args(0)))
+    desc("st_envelope", classOf[StEnvelope], (args) => StEnvelope(args(0)))
 
   val stConvexHullInfo: FunctionDescription =
-    desc("st_convexhull", classOf[StConvexHull], args => StConvexHull(args(0)))
+    desc("st_convexhull", classOf[StConvexHull], (args) => StConvexHull(args(0)))
 
   val stSimplifyInfo: FunctionDescription =
-    desc("st_simplify", classOf[StSimplify], args => StSimplify(args(0), args(1)))
+    desc("st_simplify", classOf[StSimplify], (args) => StSimplify(args(0), args(1)))
 
   val stBufferInfo: FunctionDescription =
-    desc("st_buffer", classOf[StBuffer], args => StBuffer(args(0), args(1)))
+    desc("st_buffer", classOf[StBuffer], (args) => StBuffer(args(0), args(1)))
 
   val stUnionInfo: FunctionDescription =
-    desc("st_union", classOf[StUnion], args => StUnion(args(0), args(1)))
+    desc("st_union", classOf[StUnion], (args) => StUnion(args(0), args(1)))
 
   val stIntersectionInfo: FunctionDescription =
-    desc("st_intersection", classOf[StIntersection], args => StIntersection(args(0), args(1)))
+    desc("st_intersection", classOf[StIntersection], (args) => StIntersection(args(0), args(1)))
 
   val stGeomFromWktInfo: FunctionDescription =
-    desc("st_geomfromwkt", classOf[StGeomFromWkt], args => StGeomFromWkt(args(0)))
+    desc("st_geomfromwkt", classOf[StGeomFromWkt], (args) => StGeomFromWkt(args(0)))
 
   val stGeomFromGeoJsonInfo: FunctionDescription =
-    desc("st_geomfromgeojson", classOf[StGeomFromGeoJson], args => StGeomFromGeoJson(args(0)))
+    desc("st_geomfromgeojson", classOf[StGeomFromGeoJson], (args) => StGeomFromGeoJson(args(0)))
 
   val stPointInfo: FunctionDescription =
-    desc("st_point", classOf[StPoint], args => StPoint(args(0), args(1)))
+    desc("st_point", classOf[StPoint], (args) => StPoint(args(0), args(1)))
 
   val stMakeEnvelopeInfo: FunctionDescription =
     desc(
       "st_makeenvelope",
       classOf[StMakeEnvelope],
-      args => StMakeEnvelope(args(0), args(1), args(2), args(3)))
+      (args) => StMakeEnvelope(args(0), args(1), args(2), args(3)))
 
   val stMakeLineInfo: FunctionDescription =
-    desc("st_makeline", classOf[StMakeLine], args => StMakeLine(args(0), args(1)))
+    desc("st_makeline", classOf[StMakeLine], (args) => StMakeLine(args(0), args(1)))
 
   val stAsTextInfo: FunctionDescription =
-    desc("st_astext", classOf[StAsText], args => StAsText(args(0)))
+    desc("st_astext", classOf[StAsText], (args) => StAsText(args(0)))
 
   val stAsGeoJsonInfo: FunctionDescription =
-    desc("st_asgeojson", classOf[StAsGeoJson], args => StAsGeoJson(args(0)))
+    desc("st_asgeojson", classOf[StAsGeoJson], (args) => StAsGeoJson(args(0)))
 
   val stCoversInfo: FunctionDescription =
-    desc("st_covers", classOf[StCovers], args => StCovers(args(0), args(1)))
+    desc("st_covers", classOf[StCovers], (args) => StCovers(args(0), args(1)))
 
   val stCoveredByInfo: FunctionDescription =
-    desc("st_coveredby", classOf[StCoveredBy], args => StCoveredBy(args(0), args(1)))
+    desc("st_coveredby", classOf[StCoveredBy], (args) => StCoveredBy(args(0), args(1)))
 
   val stEqualsInfo: FunctionDescription =
-    desc("st_equals", classOf[StEquals], args => StEquals(args(0), args(1)))
+    desc("st_equals", classOf[StEquals], (args) => StEquals(args(0), args(1)))
 
   val stTouchesInfo: FunctionDescription =
-    desc("st_touches", classOf[StTouches], args => StTouches(args(0), args(1)))
+    desc("st_touches", classOf[StTouches], (args) => StTouches(args(0), args(1)))
 
   val stCrossesInfo: FunctionDescription =
-    desc("st_crosses", classOf[StCrosses], args => StCrosses(args(0), args(1)))
+    desc("st_crosses", classOf[StCrosses], (args) => StCrosses(args(0), args(1)))
 
   val stDisjointInfo: FunctionDescription =
-    desc("st_disjoint", classOf[StDisjoint], args => StDisjoint(args(0), args(1)))
+    desc("st_disjoint", classOf[StDisjoint], (args) => StDisjoint(args(0), args(1)))
 
   val stOverlapsInfo: FunctionDescription =
-    desc("st_overlaps", classOf[StOverlaps], args => StOverlaps(args(0), args(1)))
+    desc("st_overlaps", classOf[StOverlaps], (args) => StOverlaps(args(0), args(1)))
 
   val stDistanceSphereInfo: FunctionDescription =
-    desc("st_distancesphere", classOf[StDistanceSphere], args => StDistanceSphere(args(0), args(1)))
+    desc("st_distancesphere", classOf[StDistanceSphere], (args) => StDistanceSphere(args(0), args(1)))
 
   val stPerimeterInfo: FunctionDescription =
-    desc("st_perimeter", classOf[StPerimeter], args => StPerimeter(args(0)))
+    desc("st_perimeter", classOf[StPerimeter], (args) => StPerimeter(args(0)))
 
   val stHausdorffDistanceInfo: FunctionDescription =
     desc(
       "st_hausdorffdistance",
       classOf[StHausdorffDistance],
-      args => StHausdorffDistance(args(0), args(1)))
+      (args) => StHausdorffDistance(args(0), args(1)))
 
   val stSimplifyPreserveTopologyInfo: FunctionDescription =
     desc(
       "st_simplifypreservetopology",
       classOf[StSimplifyPreserveTopology],
-      args => StSimplifyPreserveTopology(args(0), args(1)))
+      (args) => StSimplifyPreserveTopology(args(0), args(1)))
 
   val stFlipCoordinatesInfo: FunctionDescription =
-    desc("st_flipcoordinates", classOf[StFlipCoordinates], args => StFlipCoordinates(args(0)))
+    desc("st_flipcoordinates", classOf[StFlipCoordinates], (args) => StFlipCoordinates(args(0)))
 
   val stBoundaryInfo: FunctionDescription =
-    desc("st_boundary", classOf[StBoundary], args => StBoundary(args(0)))
+    desc("st_boundary", classOf[StBoundary], (args) => StBoundary(args(0)))
 
   val stDifferenceInfo: FunctionDescription =
-    desc("st_difference", classOf[StDifference], args => StDifference(args(0), args(1)))
+    desc("st_difference", classOf[StDifference], (args) => StDifference(args(0), args(1)))
 
   val stSymDifferenceInfo: FunctionDescription =
-    desc("st_symdifference", classOf[StSymDifference], args => StSymDifference(args(0), args(1)))
+    desc("st_symdifference", classOf[StSymDifference], (args) => StSymDifference(args(0), args(1)))
 }
