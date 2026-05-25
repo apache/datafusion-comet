@@ -79,6 +79,7 @@ serde_json = "1.0"
 uuid = "1.23.0"
 geo = "0.28"
 geoarrow = "0.8"
+geojson = { version = "0.24", features = ["geo-types"] }
 geos = { version = "8.3", features = ["static"] }
 wkt = "0.11"
 

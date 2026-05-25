@@ -23,7 +23,7 @@ import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 
-import org.apache.comet.expressions.{StArea, StBuffer, StCentroid, StContains, StConvexHull, StDistance, StEnvelope, StGeometryType, StIntersection, StIntersects, StIsEmpty, StLength, StNumPoints, StSimplify, StUnion, StWithin, StX, StY}
+import org.apache.comet.expressions.{StArea, StAsGeoJson, StAsText, StBoundary, StBuffer, StCentroid, StContains, StConvexHull, StCoveredBy, StCovers, StCrosses, StDifference, StDisjoint, StDistance, StDistanceSphere, StEnvelope, StEquals, StFlipCoordinates, StGeomFromGeoJson, StGeomFromWkt, StGeometryType, StHausdorffDistance, StIntersection, StIntersects, StIsEmpty, StLength, StMakeEnvelope, StMakeLine, StNumPoints, StOverlaps, StPerimeter, StPoint, StSimplify, StSimplifyPreserveTopology, StSymDifference, StTouches, StUnion, StWithin, StX, StY}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
@@ -54,7 +54,29 @@ private[serde] object CometGeoExpr {
       classOf[StSimplify] -> new CometGeoScalarFunc("st_simplify"),
       classOf[StBuffer] -> new CometGeoScalarFunc("st_buffer"),
       classOf[StUnion] -> new CometGeoScalarFunc("st_union"),
-      classOf[StIntersection] -> new CometGeoScalarFunc("st_intersection"))
+      classOf[StIntersection] -> new CometGeoScalarFunc("st_intersection"),
+      classOf[StGeomFromWkt] -> new CometGeoScalarFunc("st_geomfromwkt"),
+      classOf[StGeomFromGeoJson] -> new CometGeoScalarFunc("st_geomfromgeojson"),
+      classOf[StPoint] -> new CometGeoScalarFunc("st_point"),
+      classOf[StMakeEnvelope] -> new CometGeoScalarFunc("st_makeenvelope"),
+      classOf[StMakeLine] -> new CometGeoScalarFunc("st_makeline"),
+      classOf[StAsText] -> new CometGeoScalarFunc("st_astext"),
+      classOf[StAsGeoJson] -> new CometGeoScalarFunc("st_asgeojson"),
+      classOf[StCovers] -> new CometGeoScalarFunc("st_covers"),
+      classOf[StCoveredBy] -> new CometGeoScalarFunc("st_coveredby"),
+      classOf[StEquals] -> new CometGeoScalarFunc("st_equals"),
+      classOf[StTouches] -> new CometGeoScalarFunc("st_touches"),
+      classOf[StCrosses] -> new CometGeoScalarFunc("st_crosses"),
+      classOf[StDisjoint] -> new CometGeoScalarFunc("st_disjoint"),
+      classOf[StOverlaps] -> new CometGeoScalarFunc("st_overlaps"),
+      classOf[StDistanceSphere] -> new CometGeoScalarFunc("st_distancesphere"),
+      classOf[StPerimeter] -> new CometGeoScalarFunc("st_perimeter"),
+      classOf[StHausdorffDistance] -> new CometGeoScalarFunc("st_hausdorffdistance"),
+      classOf[StSimplifyPreserveTopology] -> new CometGeoScalarFunc("st_simplifypreservetopology"),
+      classOf[StFlipCoordinates] -> new CometGeoScalarFunc("st_flipcoordinates"),
+      classOf[StBoundary] -> new CometGeoScalarFunc("st_boundary"),
+      classOf[StDifference] -> new CometGeoScalarFunc("st_difference"),
+      classOf[StSymDifference] -> new CometGeoScalarFunc("st_symdifference"))
 
     val sedonaEntries: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Seq(
       "org.apache.sedona.sql.utils.expressions.ST_Contains" -> "st_contains",
