@@ -24,18 +24,22 @@ import scala.util.Try
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{
+  exprToProtoInternal,
+  optExprWithInfo,
+  scalarFunctionExprToProto
+}
 
 /**
  * Serde for Sedona ST_ expressions that maps them to native Comet geo UDFs.
  *
- * Sedona is an optional dependency — this file compiles without it on the classpath.
+ * Sedona is an optional dependency - this file compiles without it on the classpath.
  * Entries are only added to exprSerdeMap when the Sedona classes are present at runtime.
  */
 private[serde] object CometGeoExpr {
 
   /**
-   * Build the map of Sedona expression class → serde.
+   * Build the map of Sedona expression class to serde.
    * Returns an empty map when Sedona is not on the classpath.
    */
   def buildSerdeMap(): Map[Class[_ <: Expression], CometExpressionSerde[_]] = {
@@ -47,7 +51,9 @@ private[serde] object CometGeoExpr {
       "org.apache.sedona.sql.utils.expressions.ST_Area" -> "st_area",
       "org.apache.sedona.sql.utils.expressions.ST_Centroid" -> "st_centroid").flatMap {
       case (className, funcName) =>
+        // scalastyle:off classforname
         Try(Class.forName(className).asInstanceOf[Class[Expression]])
+        // scalastyle:on classforname
           .toOption
           .map(cls => cls -> new CometGeoScalarFunc(funcName))
     }.toMap
