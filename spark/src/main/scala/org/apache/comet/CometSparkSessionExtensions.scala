@@ -25,7 +25,6 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.comet._
@@ -89,8 +88,10 @@ class CometSparkSessionExtensions
     with Logging
     with ShimCometSparkSessionExtensions {
   override def apply(extensions: SparkSessionExtensions): Unit = {
-    extensions.injectResolutionRule { session => CometGeoFunctions(session) }
-    extensions.injectColumnar { session => CometScanColumnar(session) }
+    extensions.injectColumnar { session =>
+      CometGeoFunctions.registerAll(session)
+      CometScanColumnar(session)
+    }
     extensions.injectColumnar { session => CometExecColumnar(session) }
     // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
     // Registered before CometScanRule/CometExecRule so tags are in place when conversion runs.
@@ -113,53 +114,50 @@ class CometSparkSessionExtensions
       EliminateRedundantTransitions(session)
   }
 
-  // Registers geo UDFs with Spark's function catalog so they resolve in SQL.
-  // When Comet is active the ScalaUDF is intercepted and routed to the native Rust path.
-  // The lambda bodies are the JVM fallback (used only when Comet is disabled/falls back).
-  case class CometGeoFunctions(session: SparkSession) extends Rule[LogicalPlan] {
-    private val registered = new java.util.concurrent.atomic.AtomicBoolean(false)
+}
 
-    override def apply(plan: LogicalPlan): LogicalPlan = {
-      if (registered.compareAndSet(false, true)) {
-        // scalastyle:off null
-        session.udf.register(
-          "st_contains",
-          (g1: String, g2: String) => {
-            if (g1 == null || g2 == null) null.asInstanceOf[Boolean]
-            else CometGeoFallback.contains(g1, g2)
-          })
-        session.udf.register(
-          "st_intersects",
-          (g1: String, g2: String) => {
-            if (g1 == null || g2 == null) null.asInstanceOf[Boolean]
-            else CometGeoFallback.intersects(g1, g2)
-          })
-        session.udf.register(
-          "st_within",
-          (g1: String, g2: String) => {
-            if (g1 == null || g2 == null) null.asInstanceOf[Boolean]
-            else CometGeoFallback.within(g1, g2)
-          })
-        session.udf.register(
-          "st_distance",
-          (g1: String, g2: String) => {
-            if (g1 == null || g2 == null) null.asInstanceOf[Double]
-            else CometGeoFallback.distance(g1, g2)
-          })
-        session.udf.register(
-          "st_area",
-          (g: String) => {
-            if (g == null) null.asInstanceOf[Double] else CometGeoFallback.area(g)
-          })
-        session.udf.register(
-          "st_centroid",
-          (g: String) => {
-            if (g == null) null else CometGeoFallback.centroid(g)
-          })
-        // scalastyle:on null
-      }
-      plan
-    }
+// Eagerly registers geo UDFs on the SparkSession so Spark's analyzer can resolve them.
+// Called from injectColumnar which fires at session-build time, before any query runs.
+// When Comet is active the ScalaUDF is intercepted by CometScalaUDF serde and routed
+// to the native Rust path. The lambda bodies only run as JVM fallback.
+private[comet] object CometGeoFunctions {
+  def registerAll(session: SparkSession): Unit = {
+    // scalastyle:off null
+    session.udf.register(
+      "st_contains",
+      (g1: String, g2: String) => {
+        if (g1 == null || g2 == null) null.asInstanceOf[Boolean]
+        else CometGeoFallback.contains(g1, g2)
+      })
+    session.udf.register(
+      "st_intersects",
+      (g1: String, g2: String) => {
+        if (g1 == null || g2 == null) null.asInstanceOf[Boolean]
+        else CometGeoFallback.intersects(g1, g2)
+      })
+    session.udf.register(
+      "st_within",
+      (g1: String, g2: String) => {
+        if (g1 == null || g2 == null) null.asInstanceOf[Boolean]
+        else CometGeoFallback.within(g1, g2)
+      })
+    session.udf.register(
+      "st_distance",
+      (g1: String, g2: String) => {
+        if (g1 == null || g2 == null) null.asInstanceOf[Double]
+        else CometGeoFallback.distance(g1, g2)
+      })
+    session.udf.register(
+      "st_area",
+      (g: String) => {
+        if (g == null) null.asInstanceOf[Double] else CometGeoFallback.area(g)
+      })
+    session.udf.register(
+      "st_centroid",
+      (g: String) => {
+        if (g == null) null else CometGeoFallback.centroid(g)
+      })
+    // scalastyle:on null
   }
 }
 
