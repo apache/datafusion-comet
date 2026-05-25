@@ -343,10 +343,12 @@ case class StGeomFromGeoJson(child: Expression) extends UnaryExpression with Nul
 case class StPoint(left: Expression, right: Expression)
     extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = StringType
-  override def nullSafeEval(x: Any, y: Any): Any =
-    UTF8String.fromString("POINT(" + x.toString + " " + y.toString + ")")
+  override def nullSafeEval(g1: Any, g2: Any): Any =
+    UTF8String.fromString("POINT(" + g1.toString + " " + g2.toString + ")")
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(ctx, ev, (g1, g2) => s"org.apache.spark.unsafe.types.UTF8String.fromString(\"POINT(\" + $g1.toString() + \" \" + $g2.toString() + \")\")")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"\"POINT(\" + $g1.toString() + \" \" + $g2.toString() + \")\")")
   override protected def withNewChildrenInternal(
       newLeft: Expression, newRight: Expression): Expression =
     copy(left = newLeft, right = newRight)
