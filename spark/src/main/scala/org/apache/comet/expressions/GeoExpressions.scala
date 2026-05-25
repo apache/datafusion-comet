@@ -279,16 +279,16 @@ case class StSimplify(left: Expression, right: Expression)
     extends BinaryExpression
     with NullIntolerant {
   override def dataType: DataType = StringType
-  override def nullSafeEval(g1: Any, g2: Any): Any =
-    UTF8String.fromString(CometGeoFallback.simplify(g1.toString, g2.toString.toDouble))
+  override def nullSafeEval(g: Any, t: Any): Any =
+    UTF8String.fromString(CometGeoFallback.simplify(g.toString, t.toString.toDouble))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     defineCodeGen(
       ctx,
       ev,
-      (g1, g2) =>
+      (g, t) =>
         s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".simplify($g1.toString(), Double.parseDouble($g2.toString())))")
+          s".simplify($g.toString(), Double.parseDouble($t.toString())))")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
@@ -298,16 +298,16 @@ case class StBuffer(left: Expression, right: Expression)
     extends BinaryExpression
     with NullIntolerant {
   override def dataType: DataType = StringType
-  override def nullSafeEval(g1: Any, g2: Any): Any =
-    UTF8String.fromString(CometGeoFallback.buffer(g1.toString, g2.toString.toDouble))
+  override def nullSafeEval(g: Any, d: Any): Any =
+    UTF8String.fromString(CometGeoFallback.buffer(g.toString, d.toString.toDouble))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     defineCodeGen(
       ctx,
       ev,
-      (g1, g2) =>
+      (g, d) =>
         s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".buffer($g1.toString(), Double.parseDouble($g2.toString())))")
+          s".buffer($g.toString(), Double.parseDouble($d.toString())))")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
@@ -320,12 +320,9 @@ case class StGeomFromWkt(child: Expression) extends UnaryExpression with NullInt
   override def nullSafeEval(g: Any): Any =
     UTF8String.fromString(CometGeoFallback.geomFromWkt(g.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      g =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.geomFromWkt($g.toString()))")
+    defineCodeGen(ctx, ev, g =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.geomFromWkt($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
 }
@@ -335,53 +332,41 @@ case class StGeomFromGeoJson(child: Expression) extends UnaryExpression with Nul
   override def nullSafeEval(g: Any): Any =
     UTF8String.fromString(CometGeoFallback.geomFromGeoJson(g.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      g =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".geomFromGeoJson($g.toString()))")
+    defineCodeGen(ctx, ev, g =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.geomFromGeoJson($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
 }
 
 case class StPoint(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = StringType
-  override def nullSafeEval(g1: Any, g2: Any): Any =
-    UTF8String.fromString("POINT(" + g1.toString + " " + g2.toString + ")")
+  override def nullSafeEval(x: Any, y: Any): Any =
+    UTF8String.fromString(s"POINT(${x.toString} ${y.toString})")
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"\"POINT(\" + $g1.toString() + \" \" + $g2.toString() + \")\")")
+    defineCodeGen(ctx, ev, (x, y) =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"\"POINT(\" + $x.toString() + \" \" + $y.toString() + \")\")")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 
 case class StMakeLine(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     UTF8String.fromString(CometGeoFallback.makeLine(g1.toString, g2.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".makeLine($g1.toString(), $g2.toString()))")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".makeLine($g1.toString(), $g2.toString()))")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 // ---- Serializers ---------------------------------------------------------
@@ -391,12 +376,9 @@ case class StAsText(child: Expression) extends UnaryExpression with NullIntolera
   override def nullSafeEval(g: Any): Any =
     UTF8String.fromString(CometGeoFallback.asText(g.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      g =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.asText($g.toString()))")
+    defineCodeGen(ctx, ev, g =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.asText($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
 }
@@ -406,12 +388,9 @@ case class StAsGeoJson(child: Expression) extends UnaryExpression with NullIntol
   override def nullSafeEval(g: Any): Any =
     UTF8String.fromString(CometGeoFallback.asGeoJson(g.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      g =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.asGeoJson($g.toString()))")
+    defineCodeGen(ctx, ev, g =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.asGeoJson($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
 }
@@ -419,201 +398,159 @@ case class StAsGeoJson(child: Expression) extends UnaryExpression with NullIntol
 // ---- Additional predicates -----------------------------------------------
 
 case class StCovers(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.covers(g1.toString, g2.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".covers($g1.toString(), $g2.toString())")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".covers($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StCoveredBy(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.coveredBy(g1.toString, g2.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".coveredBy($g1.toString(), $g2.toString())")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".coveredBy($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StEquals(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.equals(g1.toString, g2.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".equals($g1.toString(), $g2.toString())")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".equals($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StTouches(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.touches(g1.toString, g2.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".touches($g1.toString(), $g2.toString())")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".touches($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StCrosses(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.crosses(g1.toString, g2.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".crosses($g1.toString(), $g2.toString())")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".crosses($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StDisjoint(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.disjoint(g1.toString, g2.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".disjoint($g1.toString(), $g2.toString())")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".disjoint($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StOverlaps(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = BooleanType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.overlaps(g1.toString, g2.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".overlaps($g1.toString(), $g2.toString())")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".overlaps($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 // ---- Additional measurements ---------------------------------------------
 
 case class StDistanceSphere(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = DoubleType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.distanceSphere(g1.toString, g2.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".distanceSphere($g1.toString(), $g2.toString())")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".distanceSphere($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StPerimeter(child: Expression) extends UnaryExpression with NullIntolerant {
   override def dataType: DataType = DoubleType
   override def nullSafeEval(g: Any): Any = CometGeoFallback.perimeter(g.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      g => s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.perimeter($g.toString())")
+    defineCodeGen(ctx, ev, g =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.perimeter($g.toString())")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
 }
 
 case class StHausdorffDistance(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = DoubleType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     CometGeoFallback.hausdorffDistance(g1.toString, g2.toString)
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".hausdorffDistance($g1.toString(), $g2.toString())")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".hausdorffDistance($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 // ---- Additional transformations ------------------------------------------
 
 case class StSimplifyPreserveTopology(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = StringType
-  override def nullSafeEval(g1: Any, g2: Any): Any =
+  override def nullSafeEval(g: Any, t: Any): Any =
     UTF8String.fromString(CometGeoFallback.simplifyPreserveTopology(
-      g1.toString, g2.toString.toDouble))
+      g.toString, t.toString.toDouble))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".simplifyPreserveTopology($g1.toString(), Double.parseDouble($g2.toString())))")
+    defineCodeGen(ctx, ev, (g, t) =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".simplifyPreserveTopology($g.toString(), Double.parseDouble($t.toString())))")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StFlipCoordinates(child: Expression) extends UnaryExpression with NullIntolerant {
@@ -621,13 +558,10 @@ case class StFlipCoordinates(child: Expression) extends UnaryExpression with Nul
   override def nullSafeEval(g: Any): Any =
     UTF8String.fromString(CometGeoFallback.flipCoordinates(g.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      g =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".flipCoordinates($g.toString()))")
+    defineCodeGen(ctx, ev, g =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".flipCoordinates($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
 }
@@ -637,12 +571,9 @@ case class StBoundary(child: Expression) extends UnaryExpression with NullIntole
   override def nullSafeEval(g: Any): Any =
     UTF8String.fromString(CometGeoFallback.boundary(g.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      g =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.boundary($g.toString()))")
+    defineCodeGen(ctx, ev, g =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.boundary($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
 }
@@ -650,41 +581,33 @@ case class StBoundary(child: Expression) extends UnaryExpression with NullIntole
 // ---- Additional set operations -------------------------------------------
 
 case class StDifference(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     UTF8String.fromString(CometGeoFallback.difference(g1.toString, g2.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".difference($g1.toString(), $g2.toString()))")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".difference($g1.toString(), $g2.toString()))")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StSymDifference(left: Expression, right: Expression)
-    extends BinaryExpression
-    with NullIntolerant {
+    extends BinaryExpression with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g1: Any, g2: Any): Any =
     UTF8String.fromString(CometGeoFallback.symDifference(g1.toString, g2.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g1, g2) =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".symDifference($g1.toString(), $g2.toString()))")
+    defineCodeGen(ctx, ev, (g1, g2) =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".symDifference($g1.toString(), $g2.toString()))")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 // ---- Registration helpers for SparkSessionExtensions.injectFunction ------
