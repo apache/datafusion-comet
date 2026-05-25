@@ -23,7 +23,7 @@ import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 
-import org.apache.comet.expressions.{StArea, StAsGeoJson, StAsText, StBoundary, StBuffer, StCentroid, StContains, StConvexHull, StCoveredBy, StCovers, StCrosses, StDifference, StDisjoint, StDistance, StDistanceSphere, StEnvelope, StEquals, StFlipCoordinates, StGeomFromGeoJson, StGeomFromWkt, StGeometryType, StHausdorffDistance, StIntersection, StIntersects, StIsEmpty, StLength, StMakeEnvelope, StMakeLine, StNumPoints, StOverlaps, StPerimeter, StPoint, StSimplify, StSimplifyPreserveTopology, StSymDifference, StTouches, StUnion, StWithin, StX, StY}
+import org.apache.comet.expressions.{StArea, StAsGeoJson, StAsText, StBoundary, StBuffer, StCentroid, StContains, StConvexHull, StCoveredBy, StCovers, StCrosses, StDifference, StDisjoint, StDistance, StDistanceSphere, StEnvelope, StEquals, StFlipCoordinates, StGeometryType, StGeomFromGeoJson, StGeomFromWkt, StHausdorffDistance, StIntersection, StIntersects, StIsEmpty, StLength, StMakeEnvelope, StMakeLine, StNumPoints, StOverlaps, StPerimeter, StPoint, StSimplify, StSimplifyPreserveTopology, StSymDifference, StTouches, StUnion, StWithin, StX, StY}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
