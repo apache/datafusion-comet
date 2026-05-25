@@ -368,8 +368,10 @@ case class StMakeEnvelope(
   override def nullable: Boolean = true
   override def children: Seq[Expression] = Seq(xmin, ymin, xmax, ymax)
   override def eval(input: InternalRow): Any = {
-    val xv = xmin.eval(input); val yv = ymin.eval(input)
-    val xv2 = xmax.eval(input); val yv2 = ymax.eval(input)
+    val xv = xmin.eval(input)
+    val yv = ymin.eval(input)
+    val xv2 = xmax.eval(input)
+    val yv2 = ymax.eval(input)
     if (xv == null || yv == null || xv2 == null || yv2 == null) null
     else UTF8String.fromString(CometGeoFallback.makeEnvelope(
       xv.toString.toDouble, yv.toString.toDouble, xv2.toString.toDouble, yv2.toString.toDouble))
