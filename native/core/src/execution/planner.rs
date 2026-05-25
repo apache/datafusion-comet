@@ -106,6 +106,7 @@ use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion_comet_proto::spark_expression::ListLiteral;
@@ -134,7 +135,6 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use url::Url;
 
 // For clippy error on type_complexity.
@@ -1202,12 +1202,12 @@ impl PhysicalPlanner {
             OpStruct::BroadcastNestedLoopJoin(bnlj) => {
                 let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
                     inputs,
-                    &[],
+                    children,
                     &[],
                     &[],
                     bnlj.join_type,
                     &bnlj.condition,
-                    partition_count
+                    partition_count,
                 )?;
 
                 let left = Arc::clone(&join_params.left.native_plan);
@@ -1218,7 +1218,7 @@ impl PhysicalPlanner {
                     right,
                     join_params.join_filter,
                     &join_params.join_type,
-                    None
+                    None,
                 )?);
 
                 Ok((

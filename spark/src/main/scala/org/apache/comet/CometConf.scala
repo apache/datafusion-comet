@@ -254,6 +254,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastExchange", defaultValue = true)
   val COMET_EXEC_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("hashJoin", defaultValue = true)
+  val COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = false)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
