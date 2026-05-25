@@ -70,10 +70,9 @@ impl ScalarUDFImpl for StLength {
                     geo::Geometry::LineString(ls) => ls.euclidean_length(),
                     geo::Geometry::MultiLineString(ml) => ml.euclidean_length(),
                     geo::Geometry::Polygon(p) => p.exterior().euclidean_length(),
-                    geo::Geometry::MultiPolygon(mp) => mp
-                        .iter()
-                        .map(|p| p.exterior().euclidean_length())
-                        .sum(),
+                    geo::Geometry::MultiPolygon(mp) => {
+                        mp.iter().map(|p| p.exterior().euclidean_length()).sum()
+                    }
                     _ => 0.0,
                 };
                 Some(len)

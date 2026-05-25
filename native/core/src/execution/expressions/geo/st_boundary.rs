@@ -21,7 +21,9 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use wkt::{ToWkt, TryFromWkt};
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -38,11 +40,17 @@ impl Default for StBoundary {
 }
 
 impl ScalarUDFImpl for StBoundary {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn name(&self) -> &str { "st_boundary" }
+    fn name(&self) -> &str {
+        "st_boundary"
+    }
 
-    fn signature(&self) -> &Signature { &self.signature }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 
     fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
         Ok(DataType::Utf8)
@@ -60,9 +68,7 @@ impl ScalarUDFImpl for StBoundary {
                 // Boundary of a polygon = its exterior ring as a LineString
                 // Boundary of a LineString = its two endpoints as a MultiPoint
                 let boundary: geo::Geometry<f64> = match geom {
-                    geo::Geometry::Polygon(p) => {
-                        geo::Geometry::LineString(p.exterior().clone())
-                    }
+                    geo::Geometry::Polygon(p) => geo::Geometry::LineString(p.exterior().clone()),
                     geo::Geometry::MultiPolygon(mp) => {
                         let rings: Vec<geo::LineString<f64>> =
                             mp.iter().map(|p| p.exterior().clone()).collect();

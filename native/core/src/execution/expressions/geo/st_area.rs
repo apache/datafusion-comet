@@ -21,7 +21,9 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, Float64Array, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use geo::Area;
 use wkt::TryFromWkt;
 

@@ -21,7 +21,9 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use wkt::TryFromWkt;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -38,11 +40,17 @@ impl Default for StGeomFromWkt {
 }
 
 impl ScalarUDFImpl for StGeomFromWkt {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn name(&self) -> &str { "st_geomfromwkt" }
+    fn name(&self) -> &str {
+        "st_geomfromwkt"
+    }
 
-    fn signature(&self) -> &Signature { &self.signature }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 
     fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
         Ok(DataType::Utf8)

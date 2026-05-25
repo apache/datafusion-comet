@@ -21,7 +21,9 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, Float64Array, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use geo::EuclideanLength;
 use wkt::TryFromWkt;
 
@@ -39,11 +41,17 @@ impl Default for StPerimeter {
 }
 
 impl ScalarUDFImpl for StPerimeter {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn name(&self) -> &str { "st_perimeter" }
+    fn name(&self) -> &str {
+        "st_perimeter"
+    }
 
-    fn signature(&self) -> &Signature { &self.signature }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 
     fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
         Ok(DataType::Float64)
@@ -61,13 +69,19 @@ impl ScalarUDFImpl for StPerimeter {
                 let len = match geom {
                     geo::Geometry::Polygon(p) => {
                         p.exterior().euclidean_length()
-                            + p.interiors().iter().map(|r| r.euclidean_length()).sum::<f64>()
+                            + p.interiors()
+                                .iter()
+                                .map(|r| r.euclidean_length())
+                                .sum::<f64>()
                     }
                     geo::Geometry::MultiPolygon(mp) => mp
                         .iter()
                         .map(|p| {
                             p.exterior().euclidean_length()
-                                + p.interiors().iter().map(|r| r.euclidean_length()).sum::<f64>()
+                                + p.interiors()
+                                    .iter()
+                                    .map(|r| r.euclidean_length())
+                                    .sum::<f64>()
                         })
                         .sum(),
                     _ => 0.0,

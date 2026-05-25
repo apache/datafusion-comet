@@ -22,7 +22,9 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, Float64Array, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use wkt::TryFromWkt;
 
 const EARTH_RADIUS_METERS: f64 = 6_371_008.8;
@@ -44,11 +46,17 @@ impl Default for StDistanceSphere {
 }
 
 impl ScalarUDFImpl for StDistanceSphere {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn name(&self) -> &str { "st_distancesphere" }
+    fn name(&self) -> &str {
+        "st_distancesphere"
+    }
 
-    fn signature(&self) -> &Signature { &self.signature }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 
     fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
         Ok(DataType::Float64)

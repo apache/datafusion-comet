@@ -66,7 +66,10 @@ impl ScalarUDFImpl for StBuffer {
         // Extract distance — may be a scalar literal or a column.
         let distance = scalar_to_f64(&args.args[1]);
         let geom_arrays = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[0]))?;
-        let geom_col = geom_arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
+        let geom_col = geom_arrays[0]
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
 
         let result: StringArray = geom_col
             .iter()
@@ -108,10 +111,7 @@ fn point_circle(cx: f64, cy: f64, radius: f64, segments: usize) -> Polygon<f64> 
 }
 
 fn coords_to_wkt(coords: &[Coord<f64>]) -> String {
-    let pts: Vec<String> = coords
-        .iter()
-        .map(|c| format!("{} {}", c.x, c.y))
-        .collect();
+    let pts: Vec<String> = coords.iter().map(|c| format!("{} {}", c.x, c.y)).collect();
     format!("({})", pts.join(","))
 }
 
@@ -134,7 +134,11 @@ fn geom_to_wkt(geom: &geo::Geometry<f64>) -> String {
     }
 }
 
-fn buffer_geometry(geom: &geo::Geometry<f64>, distance: f64, segments: usize) -> geo::Geometry<f64> {
+fn buffer_geometry(
+    geom: &geo::Geometry<f64>,
+    distance: f64,
+    segments: usize,
+) -> geo::Geometry<f64> {
     match geom {
         geo::Geometry::Point(Point(c)) => {
             geo::Geometry::Polygon(point_circle(c.x, c.y, distance, segments))

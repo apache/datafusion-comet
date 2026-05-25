@@ -21,7 +21,9 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, Float64Array, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use geo::HausdorffDistance;
 use wkt::TryFromWkt;
 
@@ -42,11 +44,17 @@ impl Default for StHausdorffDistance {
 }
 
 impl ScalarUDFImpl for StHausdorffDistance {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn name(&self) -> &str { "st_hausdorffdistance" }
+    fn name(&self) -> &str {
+        "st_hausdorffdistance"
+    }
 
-    fn signature(&self) -> &Signature { &self.signature }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 
     fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
         Ok(DataType::Float64)

@@ -21,7 +21,9 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, BooleanArray, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use geo::relate::Relate;
 use wkt::TryFromWkt;
 
@@ -42,11 +44,17 @@ impl Default for StDisjoint {
 }
 
 impl ScalarUDFImpl for StDisjoint {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn name(&self) -> &str { "st_disjoint" }
+    fn name(&self) -> &str {
+        "st_disjoint"
+    }
 
-    fn signature(&self) -> &Signature { &self.signature }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 
     fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
         Ok(DataType::Boolean)

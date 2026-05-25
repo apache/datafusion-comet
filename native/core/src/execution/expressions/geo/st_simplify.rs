@@ -77,7 +77,10 @@ impl ScalarUDFImpl for StSimplify {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
         let tolerance = scalar_to_f64(&args.args[1]);
         let geom_arrays = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[0]))?;
-        let geom_col = geom_arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
+        let geom_col = geom_arrays[0]
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
 
         let result: StringArray = geom_col
             .iter()
@@ -91,9 +94,7 @@ impl ScalarUDFImpl for StSimplify {
                     geo::Geometry::MultiLineString(ml) => {
                         geo::Geometry::MultiLineString(ml.simplify(&tolerance))
                     }
-                    geo::Geometry::Polygon(p) => {
-                        geo::Geometry::Polygon(p.simplify(&tolerance))
-                    }
+                    geo::Geometry::Polygon(p) => geo::Geometry::Polygon(p.simplify(&tolerance)),
                     geo::Geometry::MultiPolygon(mp) => {
                         geo::Geometry::MultiPolygon(mp.simplify(&tolerance))
                     }

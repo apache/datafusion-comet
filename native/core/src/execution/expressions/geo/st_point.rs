@@ -21,7 +21,9 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, Decimal128Array, Float64Array, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct StPoint {
@@ -37,11 +39,17 @@ impl Default for StPoint {
 }
 
 impl ScalarUDFImpl for StPoint {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn name(&self) -> &str { "st_point" }
+    fn name(&self) -> &str {
+        "st_point"
+    }
 
-    fn signature(&self) -> &Signature { &self.signature }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 
     fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
         Ok(DataType::Utf8)
@@ -74,7 +82,10 @@ fn extract_f64_col(arr: &dyn Array) -> Vec<Option<f64>> {
             DataType::Decimal128(_, s) => *s as i32,
             _ => 0,
         };
-        return a.iter().map(|v| v.map(|n| (n as f64) / 10f64.powi(scale))).collect();
+        return a
+            .iter()
+            .map(|v| v.map(|n| (n as f64) / 10f64.powi(scale)))
+            .collect();
     }
     vec![None; arr.len()]
 }

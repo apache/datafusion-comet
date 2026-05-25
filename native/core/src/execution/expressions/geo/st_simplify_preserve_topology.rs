@@ -21,7 +21,9 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use datafusion::scalar::ScalarValue;
 use geo::SimplifyVwPreserve;
 use wkt::{ToWkt, TryFromWkt};
@@ -56,11 +58,17 @@ impl Default for StSimplifyPreserveTopology {
 }
 
 impl ScalarUDFImpl for StSimplifyPreserveTopology {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn name(&self) -> &str { "st_simplifypreservetopology" }
+    fn name(&self) -> &str {
+        "st_simplifypreservetopology"
+    }
 
-    fn signature(&self) -> &Signature { &self.signature }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 
     fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
         Ok(DataType::Utf8)
@@ -69,7 +77,10 @@ impl ScalarUDFImpl for StSimplifyPreserveTopology {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
         let tolerance = scalar_to_f64(&args.args[1]);
         let geom_arrays = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[0]))?;
-        let col = geom_arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
+        let col = geom_arrays[0]
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
 
         let result: StringArray = col
             .iter()

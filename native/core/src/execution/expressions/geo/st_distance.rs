@@ -24,8 +24,8 @@ use datafusion::common::Result as DataFusionResult;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use geo::EuclideanDistance;
 use geo::relate::Relate;
+use geo::EuclideanDistance;
 use wkt::TryFromWkt;
 
 #[derive(Debug, Hash, Eq, PartialEq)]

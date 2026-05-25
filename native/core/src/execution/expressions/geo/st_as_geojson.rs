@@ -21,7 +21,9 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 use geojson::Geometry as GeoJsonGeometry;
 use wkt::TryFromWkt;
 
@@ -39,11 +41,17 @@ impl Default for StAsGeoJson {
 }
 
 impl ScalarUDFImpl for StAsGeoJson {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn name(&self) -> &str { "st_asgeojson" }
+    fn name(&self) -> &str {
+        "st_asgeojson"
+    }
 
-    fn signature(&self) -> &Signature { &self.signature }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 
     fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
         Ok(DataType::Utf8)
