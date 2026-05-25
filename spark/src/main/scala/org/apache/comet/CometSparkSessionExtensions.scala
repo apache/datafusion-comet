@@ -94,6 +94,18 @@ class CometSparkSessionExtensions
     extensions.injectFunction(GeoExpressions.stDistanceInfo)
     extensions.injectFunction(GeoExpressions.stAreaInfo)
     extensions.injectFunction(GeoExpressions.stCentroidInfo)
+    extensions.injectFunction(GeoExpressions.stLengthInfo)
+    extensions.injectFunction(GeoExpressions.stIsEmptyInfo)
+    extensions.injectFunction(GeoExpressions.stGeometryTypeInfo)
+    extensions.injectFunction(GeoExpressions.stNumPointsInfo)
+    extensions.injectFunction(GeoExpressions.stXInfo)
+    extensions.injectFunction(GeoExpressions.stYInfo)
+    extensions.injectFunction(GeoExpressions.stEnvelopeInfo)
+    extensions.injectFunction(GeoExpressions.stConvexHullInfo)
+    extensions.injectFunction(GeoExpressions.stSimplifyInfo)
+    extensions.injectFunction(GeoExpressions.stBufferInfo)
+    extensions.injectFunction(GeoExpressions.stUnionInfo)
+    extensions.injectFunction(GeoExpressions.stIntersectionInfo)
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
     // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.

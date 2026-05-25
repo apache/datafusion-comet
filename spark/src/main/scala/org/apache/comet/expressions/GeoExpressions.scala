@@ -22,7 +22,7 @@ package org.apache.comet.expressions
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{BinaryExpression, Expression, ExpressionInfo, NullIntolerant, UnaryExpression}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
-import org.apache.spark.sql.types.{BooleanType, DataType, DoubleType, StringType}
+import org.apache.spark.sql.types.{BooleanType, DataType, DoubleType, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 // ---- Binary geo predicates -----------------------------------------------
@@ -99,6 +99,44 @@ case class StDistance(left: Expression, right: Expression)
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
 }
 
+case class StUnion(left: Expression, right: Expression)
+    extends BinaryExpression
+    with NullIntolerant {
+  override def dataType: DataType = StringType
+  override def nullSafeEval(g1: Any, g2: Any): Any =
+    UTF8String.fromString(CometGeoFallback.union(g1.toString, g2.toString))
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      (g1, g2) =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".union($g1.toString(), $g2.toString()))")
+  override protected def withNewChildrenInternal(
+      newLeft: Expression,
+      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+}
+
+case class StIntersection(left: Expression, right: Expression)
+    extends BinaryExpression
+    with NullIntolerant {
+  override def dataType: DataType = StringType
+  override def nullSafeEval(g1: Any, g2: Any): Any =
+    UTF8String.fromString(CometGeoFallback.intersection(g1.toString, g2.toString))
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      (g1, g2) =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".intersection($g1.toString(), $g2.toString()))")
+  override protected def withNewChildrenInternal(
+      newLeft: Expression,
+      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+}
+
 // ---- Unary geo functions --------------------------------------------------
 
 case class StArea(child: Expression) extends UnaryExpression with NullIntolerant {
@@ -128,6 +166,153 @@ case class StCentroid(child: Expression) extends UnaryExpression with NullIntole
     copy(child = newChild)
 }
 
+case class StLength(child: Expression) extends UnaryExpression with NullIntolerant {
+  override def dataType: DataType = DoubleType
+  override def nullSafeEval(g: Any): Any = CometGeoFallback.length(g.toString)
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      g => s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.length($g.toString())")
+  override protected def withNewChildInternal(newChild: Expression): Expression =
+    copy(child = newChild)
+}
+
+case class StIsEmpty(child: Expression) extends UnaryExpression with NullIntolerant {
+  override def dataType: DataType = BooleanType
+  override def nullSafeEval(g: Any): Any = CometGeoFallback.isEmpty(g.toString)
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      g => s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.isEmpty($g.toString())")
+  override protected def withNewChildInternal(newChild: Expression): Expression =
+    copy(child = newChild)
+}
+
+case class StGeometryType(child: Expression) extends UnaryExpression with NullIntolerant {
+  override def dataType: DataType = StringType
+  override def nullSafeEval(g: Any): Any =
+    UTF8String.fromString(CometGeoFallback.geometryType(g.toString))
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".geometryType($g.toString()))")
+  override protected def withNewChildInternal(newChild: Expression): Expression =
+    copy(child = newChild)
+}
+
+case class StNumPoints(child: Expression) extends UnaryExpression with NullIntolerant {
+  override def dataType: DataType = LongType
+  override def nullSafeEval(g: Any): Any = CometGeoFallback.numPoints(g.toString)
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      g => s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.numPoints($g.toString())")
+  override protected def withNewChildInternal(newChild: Expression): Expression =
+    copy(child = newChild)
+}
+
+case class StX(child: Expression) extends UnaryExpression with NullIntolerant {
+  override def dataType: DataType = DoubleType
+  override def nullSafeEval(g: Any): Any = CometGeoFallback.stX(g.toString)
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      g => s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.stX($g.toString())")
+  override protected def withNewChildInternal(newChild: Expression): Expression =
+    copy(child = newChild)
+}
+
+case class StY(child: Expression) extends UnaryExpression with NullIntolerant {
+  override def dataType: DataType = DoubleType
+  override def nullSafeEval(g: Any): Any = CometGeoFallback.stY(g.toString)
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      g => s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.stY($g.toString())")
+  override protected def withNewChildInternal(newChild: Expression): Expression =
+    copy(child = newChild)
+}
+
+case class StEnvelope(child: Expression) extends UnaryExpression with NullIntolerant {
+  override def dataType: DataType = StringType
+  override def nullSafeEval(g: Any): Any =
+    UTF8String.fromString(CometGeoFallback.envelope(g.toString))
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.envelope($g.toString()))")
+  override protected def withNewChildInternal(newChild: Expression): Expression =
+    copy(child = newChild)
+}
+
+case class StConvexHull(child: Expression) extends UnaryExpression with NullIntolerant {
+  override def dataType: DataType = StringType
+  override def nullSafeEval(g: Any): Any =
+    UTF8String.fromString(CometGeoFallback.convexHull(g.toString))
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".convexHull($g.toString()))")
+  override protected def withNewChildInternal(newChild: Expression): Expression =
+    copy(child = newChild)
+}
+
+// st_simplify and st_buffer take two args (geom + numeric param)
+
+case class StSimplify(left: Expression, right: Expression)
+    extends BinaryExpression
+    with NullIntolerant {
+  override def dataType: DataType = StringType
+  override def nullSafeEval(g: Any, t: Any): Any =
+    UTF8String.fromString(CometGeoFallback.simplify(g.toString, t.toString.toDouble))
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      (g, t) =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".simplify($g.toString(), Double.parseDouble($t.toString())))")
+  override protected def withNewChildrenInternal(
+      newLeft: Expression,
+      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+}
+
+case class StBuffer(left: Expression, right: Expression)
+    extends BinaryExpression
+    with NullIntolerant {
+  override def dataType: DataType = StringType
+  override def nullSafeEval(g: Any, d: Any): Any =
+    UTF8String.fromString(CometGeoFallback.buffer(g.toString, d.toString.toDouble))
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(
+      ctx,
+      ev,
+      (g, d) =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".buffer($g.toString(), Double.parseDouble($d.toString())))")
+  override protected def withNewChildrenInternal(
+      newLeft: Expression,
+      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+}
+
 // ---- Registration helpers for SparkSessionExtensions.injectFunction ------
 
 object GeoExpressions {
@@ -143,19 +328,38 @@ object GeoExpressions {
 
   val stContainsInfo: FunctionDescription =
     desc("st_contains", classOf[StContains], args => StContains(args(0), args(1)))
-
   val stIntersectsInfo: FunctionDescription =
     desc("st_intersects", classOf[StIntersects], args => StIntersects(args(0), args(1)))
-
   val stWithinInfo: FunctionDescription =
     desc("st_within", classOf[StWithin], args => StWithin(args(0), args(1)))
-
   val stDistanceInfo: FunctionDescription =
     desc("st_distance", classOf[StDistance], args => StDistance(args(0), args(1)))
-
   val stAreaInfo: FunctionDescription =
     desc("st_area", classOf[StArea], args => StArea(args(0)))
-
   val stCentroidInfo: FunctionDescription =
     desc("st_centroid", classOf[StCentroid], args => StCentroid(args(0)))
+  val stLengthInfo: FunctionDescription =
+    desc("st_length", classOf[StLength], args => StLength(args(0)))
+  val stIsEmptyInfo: FunctionDescription =
+    desc("st_isempty", classOf[StIsEmpty], args => StIsEmpty(args(0)))
+  val stGeometryTypeInfo: FunctionDescription =
+    desc("st_geometrytype", classOf[StGeometryType], args => StGeometryType(args(0)))
+  val stNumPointsInfo: FunctionDescription =
+    desc("st_numpoints", classOf[StNumPoints], args => StNumPoints(args(0)))
+  val stXInfo: FunctionDescription =
+    desc("st_x", classOf[StX], args => StX(args(0)))
+  val stYInfo: FunctionDescription =
+    desc("st_y", classOf[StY], args => StY(args(0)))
+  val stEnvelopeInfo: FunctionDescription =
+    desc("st_envelope", classOf[StEnvelope], args => StEnvelope(args(0)))
+  val stConvexHullInfo: FunctionDescription =
+    desc("st_convexhull", classOf[StConvexHull], args => StConvexHull(args(0)))
+  val stSimplifyInfo: FunctionDescription =
+    desc("st_simplify", classOf[StSimplify], args => StSimplify(args(0), args(1)))
+  val stBufferInfo: FunctionDescription =
+    desc("st_buffer", classOf[StBuffer], args => StBuffer(args(0), args(1)))
+  val stUnionInfo: FunctionDescription =
+    desc("st_union", classOf[StUnion], args => StUnion(args(0), args(1)))
+  val stIntersectionInfo: FunctionDescription =
+    desc("st_intersection", classOf[StIntersection], args => StIntersection(args(0), args(1)))
 }

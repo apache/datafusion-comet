@@ -23,7 +23,7 @@ import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 
-import org.apache.comet.expressions.{StArea, StCentroid, StContains, StDistance, StIntersects, StWithin}
+import org.apache.comet.expressions.{StArea, StBuffer, StCentroid, StContains, StConvexHull, StDistance, StEnvelope, StGeometryType, StIntersection, StIntersects, StIsEmpty, StLength, StNumPoints, StSimplify, StUnion, StWithin, StX, StY}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
@@ -36,23 +36,45 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithIn
 private[serde] object CometGeoExpr {
 
   def buildSerdeMap(): Map[Class[_ <: Expression], CometExpressionSerde[_]] = {
-    // Native Comet geo expression classes - always present.
     val nativeEntries: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
       classOf[StContains] -> new CometGeoScalarFunc("st_contains"),
       classOf[StIntersects] -> new CometGeoScalarFunc("st_intersects"),
       classOf[StWithin] -> new CometGeoScalarFunc("st_within"),
       classOf[StDistance] -> new CometGeoScalarFunc("st_distance"),
       classOf[StArea] -> new CometGeoScalarFunc("st_area"),
-      classOf[StCentroid] -> new CometGeoScalarFunc("st_centroid"))
+      classOf[StCentroid] -> new CometGeoScalarFunc("st_centroid"),
+      classOf[StLength] -> new CometGeoScalarFunc("st_length"),
+      classOf[StIsEmpty] -> new CometGeoScalarFunc("st_isempty"),
+      classOf[StGeometryType] -> new CometGeoScalarFunc("st_geometrytype"),
+      classOf[StNumPoints] -> new CometGeoScalarFunc("st_numpoints"),
+      classOf[StX] -> new CometGeoScalarFunc("st_x"),
+      classOf[StY] -> new CometGeoScalarFunc("st_y"),
+      classOf[StEnvelope] -> new CometGeoScalarFunc("st_envelope"),
+      classOf[StConvexHull] -> new CometGeoScalarFunc("st_convexhull"),
+      classOf[StSimplify] -> new CometGeoScalarFunc("st_simplify"),
+      classOf[StBuffer] -> new CometGeoScalarFunc("st_buffer"),
+      classOf[StUnion] -> new CometGeoScalarFunc("st_union"),
+      classOf[StIntersection] -> new CometGeoScalarFunc("st_intersection"))
 
-    // Optional Sedona ST_ expression classes - present only when Sedona is on the classpath.
     val sedonaEntries: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Seq(
       "org.apache.sedona.sql.utils.expressions.ST_Contains" -> "st_contains",
       "org.apache.sedona.sql.utils.expressions.ST_Intersects" -> "st_intersects",
       "org.apache.sedona.sql.utils.expressions.ST_Distance" -> "st_distance",
       "org.apache.sedona.sql.utils.expressions.ST_Within" -> "st_within",
       "org.apache.sedona.sql.utils.expressions.ST_Area" -> "st_area",
-      "org.apache.sedona.sql.utils.expressions.ST_Centroid" -> "st_centroid").flatMap {
+      "org.apache.sedona.sql.utils.expressions.ST_Centroid" -> "st_centroid",
+      "org.apache.sedona.sql.utils.expressions.ST_Length" -> "st_length",
+      "org.apache.sedona.sql.utils.expressions.ST_IsEmpty" -> "st_isempty",
+      "org.apache.sedona.sql.utils.expressions.ST_GeometryType" -> "st_geometrytype",
+      "org.apache.sedona.sql.utils.expressions.ST_NumPoints" -> "st_numpoints",
+      "org.apache.sedona.sql.utils.expressions.ST_X" -> "st_x",
+      "org.apache.sedona.sql.utils.expressions.ST_Y" -> "st_y",
+      "org.apache.sedona.sql.utils.expressions.ST_Envelope" -> "st_envelope",
+      "org.apache.sedona.sql.utils.expressions.ST_ConvexHull" -> "st_convexhull",
+      "org.apache.sedona.sql.utils.expressions.ST_Simplify" -> "st_simplify",
+      "org.apache.sedona.sql.utils.expressions.ST_Buffer" -> "st_buffer",
+      "org.apache.sedona.sql.utils.expressions.ST_Union" -> "st_union",
+      "org.apache.sedona.sql.utils.expressions.ST_Intersection" -> "st_intersection").flatMap {
       case (className, funcName) =>
         // scalastyle:off classforname
         Try(Class.forName(className).asInstanceOf[Class[Expression]])
