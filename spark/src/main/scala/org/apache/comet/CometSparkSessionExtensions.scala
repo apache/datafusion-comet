@@ -31,9 +31,8 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.expressions.GeoExpressions
-
 import org.apache.comet.CometConf._
+import org.apache.comet.expressions.GeoExpressions
 import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 

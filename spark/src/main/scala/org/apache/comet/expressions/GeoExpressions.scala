@@ -38,7 +38,8 @@ case class StContains(left: Expression, right: Expression)
       ctx,
       ev,
       (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.contains($g1.toString(), $g2.toString())")
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".contains($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
@@ -55,7 +56,8 @@ case class StIntersects(left: Expression, right: Expression)
       ctx,
       ev,
       (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.intersects($g1.toString(), $g2.toString())")
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".intersects($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
@@ -72,7 +74,8 @@ case class StWithin(left: Expression, right: Expression)
       ctx,
       ev,
       (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.within($g1.toString(), $g2.toString())")
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".within($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
@@ -89,7 +92,8 @@ case class StDistance(left: Expression, right: Expression)
       ctx,
       ev,
       (g1, g2) =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.distance($g1.toString(), $g2.toString())")
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".distance($g1.toString(), $g2.toString())")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
