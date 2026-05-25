@@ -366,11 +366,7 @@ case class StGeomFromGeoJson(child: Expression) extends UnaryExpression with Nul
     copy(child = newChild)
 }
 
-case class StMakeEnvelope(
-    xmin: Expression,
-    ymin: Expression,
-    xmax: Expression,
-    ymax: Expression)
+case class StMakeEnvelope(xmin: Expression, ymin: Expression, xmax: Expression, ymax: Expression)
     extends Expression
     with NullIntolerant {
   override def dataType: DataType = StringType
@@ -381,9 +377,16 @@ case class StMakeEnvelope(
     val yv = ymin.eval(input)
     val xv2 = xmax.eval(input)
     val yv2 = ymax.eval(input)
-    if (xv == null || yv == null || xv2 == null || yv2 == null) null
-    else UTF8String.fromString(CometGeoFallback.makeEnvelope(
-      xv.toString.toDouble, yv.toString.toDouble, xv2.toString.toDouble, yv2.toString.toDouble))
+    if (xv == null || yv == null || xv2 == null || yv2 == null) {
+      null
+    } else {
+      UTF8String.fromString(
+        CometGeoFallback.makeEnvelope(
+          xv.toString.toDouble,
+          yv.toString.toDouble,
+          xv2.toString.toDouble,
+          yv2.toString.toDouble))
+    }
   }
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = ev
   override protected def withNewChildrenInternal(
@@ -601,8 +604,7 @@ case class StPerimeter(child: Expression) extends UnaryExpression with NullIntol
     defineCodeGen(
       ctx,
       ev,
-      g =>
-        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.perimeter($g.toString())")
+      g => s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.perimeter($g.toString())")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
 }
