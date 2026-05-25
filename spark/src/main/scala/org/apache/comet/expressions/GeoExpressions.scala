@@ -159,7 +159,8 @@ case class StCentroid(child: Expression) extends UnaryExpression with NullIntole
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.centroid($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
@@ -197,7 +198,8 @@ case class StGeometryType(child: Expression) extends UnaryExpression with NullIn
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
           s".geometryType($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
@@ -248,7 +250,8 @@ case class StEnvelope(child: Expression) extends UnaryExpression with NullIntole
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.envelope($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
@@ -262,7 +265,8 @@ case class StConvexHull(child: Expression) extends UnaryExpression with NullInto
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
           s".convexHull($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
@@ -319,7 +323,8 @@ case class StGeomFromWkt(child: Expression) extends UnaryExpression with NullInt
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.geomFromWkt($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
@@ -333,7 +338,8 @@ case class StGeomFromGeoJson(child: Expression) extends UnaryExpression with Nul
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
           s".geomFromGeoJson($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
@@ -388,7 +394,8 @@ case class StAsText(child: Expression) extends UnaryExpression with NullIntolera
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.asText($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
@@ -402,7 +409,8 @@ case class StAsGeoJson(child: Expression) extends UnaryExpression with NullIntol
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.asGeoJson($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
@@ -616,7 +624,8 @@ case class StFlipCoordinates(child: Expression) extends UnaryExpression with Nul
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
           s".flipCoordinates($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
@@ -631,7 +640,8 @@ case class StBoundary(child: Expression) extends UnaryExpression with NullIntole
     defineCodeGen(
       ctx,
       ev,
-      g => s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+      g =>
+        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$.boundary($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
