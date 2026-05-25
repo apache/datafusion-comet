@@ -263,13 +263,10 @@ case class StConvexHull(child: Expression) extends UnaryExpression with NullInto
   override def nullSafeEval(g: Any): Any =
     UTF8String.fromString(CometGeoFallback.convexHull(g.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      g =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".convexHull($g.toString()))")
+    defineCodeGen(ctx, ev, g =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".convexHull($g.toString()))")
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(child = newChild)
 }
@@ -283,16 +280,13 @@ case class StSimplify(left: Expression, right: Expression)
   override def nullSafeEval(g: Any, t: Any): Any =
     UTF8String.fromString(CometGeoFallback.simplify(g.toString, t.toString.toDouble))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g, t) =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".simplify($g.toString(), Double.parseDouble($t.toString())))")
+    defineCodeGen(ctx, ev, (g, t) =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".simplify($g.toString(), Double.parseDouble($t.toString())))")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 case class StBuffer(left: Expression, right: Expression)
@@ -302,16 +296,13 @@ case class StBuffer(left: Expression, right: Expression)
   override def nullSafeEval(g: Any, d: Any): Any =
     UTF8String.fromString(CometGeoFallback.buffer(g.toString, d.toString.toDouble))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
-    defineCodeGen(
-      ctx,
-      ev,
-      (g, d) =>
-        s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".buffer($g.toString(), Double.parseDouble($d.toString())))")
+    defineCodeGen(ctx, ev, (g, d) =>
+      s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
+        s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+        s".buffer($g.toString(), Double.parseDouble($d.toString())))")
   override protected def withNewChildrenInternal(
-      newLeft: Expression,
-      newRight: Expression): Expression = copy(left = newLeft, right = newRight)
+      newLeft: Expression, newRight: Expression): Expression =
+    copy(left = newLeft, right = newRight)
 }
 
 // ---- Constructors --------------------------------------------------------
