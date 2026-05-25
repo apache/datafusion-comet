@@ -15,7 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, GenericStringArray, ListArray};
+use arrow::array::{
+    Array, ArrayBuilder, ArrayRef, GenericListArray, GenericStringArray, GenericStringBuilder,
+    ListArray, OffsetSizeTrait,
+};
+use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::{
     cast::as_generic_string_array, exec_err, DataFusionError, Result as DataFusionResult,
@@ -115,89 +119,99 @@ fn split_array(
         DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern, e))
     })?;
 
-    let string_array = match string_array.data_type() {
-        DataType::Utf8 => as_generic_string_array::<i32>(string_array)?,
+    match string_array.data_type() {
+        DataType::Utf8 => {
+            split_generic::<i32>(as_generic_string_array::<i32>(string_array)?, &regex, limit)
+        }
         DataType::LargeUtf8 => {
-            // Convert LargeUtf8 to Utf8 for processing
-            let large_array = as_generic_string_array::<i64>(string_array)?;
-            return split_large_string_array(large_array, &regex, limit);
+            split_generic::<i64>(as_generic_string_array::<i64>(string_array)?, &regex, limit)
         }
-        _ => {
-            return exec_err!(
-                "split expects Utf8 or LargeUtf8 string array, got {:?}",
-                string_array.data_type()
-            );
-        }
-    };
+        _ => exec_err!(
+            "split expects Utf8 or LargeUtf8 string array, got {:?}",
+            string_array.data_type()
+        ),
+    }
+}
 
-    // Build the result ListArray
-    let mut offsets: Vec<i32> = Vec::with_capacity(string_array.len() + 1);
-    let mut values: Vec<String> = Vec::new();
-    let mut null_buffer_builder = arrow::array::BooleanBufferBuilder::new(string_array.len());
-    offsets.push(0);
+fn split_generic<O: OffsetSizeTrait>(
+    string_array: &GenericStringArray<O>,
+    regex: &Regex,
+    limit: i32,
+) -> DataFusionResult<ColumnarValue> {
+    let len = string_array.len();
+    let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
+    let mut values_builder = GenericStringBuilder::<O>::new();
+    offsets.push(O::usize_as(0));
 
-    for i in 0..string_array.len() {
-        if string_array.is_null(i) {
-            // NULL input produces NULL in result (Spark behavior)
-            offsets.push(offsets[i]);
-            null_buffer_builder.append(false); // false = NULL
-        } else {
-            let string_val = string_array.value(i);
-            let parts = split_with_regex(string_val, &regex, limit);
-            values.extend(parts);
-            offsets.push(values.len() as i32);
-            null_buffer_builder.append(true); // true = valid
+    // Bulk-NULL: output null mask equals input's, so reuse it instead of
+    // tracking per-row in a NullBufferBuilder. Null rows contribute no parts
+    // (offset does not advance) and the cloned NullBuffer marks them.
+    for i in 0..len {
+        if !string_array.is_null(i) {
+            let s = string_array.value(i);
+            push_split_parts(s, regex, limit, &mut values_builder);
         }
+        offsets.push(O::usize_as(values_builder.len()));
     }
 
-    let values_array = Arc::new(GenericStringArray::<i32>::from(values)) as ArrayRef;
-    let field = Arc::new(Field::new("item", DataType::Utf8, false));
-    let nulls = arrow::buffer::NullBuffer::new(null_buffer_builder.finish());
-    let list_array = ListArray::new(
+    let values_array = Arc::new(values_builder.finish()) as ArrayRef;
+    let item_type = if O::IS_LARGE {
+        DataType::LargeUtf8
+    } else {
+        DataType::Utf8
+    };
+    let field = Arc::new(Field::new("item", item_type, false));
+    let list_array = GenericListArray::<O>::new(
         field,
-        arrow::buffer::OffsetBuffer::new(offsets.into()),
+        OffsetBuffer::new(offsets.into()),
         values_array,
-        Some(nulls),
+        string_array.nulls().cloned(),
     );
 
     Ok(ColumnarValue::Array(Arc::new(list_array)))
 }
 
-fn split_large_string_array(
-    string_array: &GenericStringArray<i64>,
+/// Push the splits of `string` into `builder`. Avoids materializing an
+/// intermediate `Vec<String>` — appends each `&str` slice from the regex
+/// iterator directly (the builder copies into its own buffer).
+fn push_split_parts<O: OffsetSizeTrait>(
+    string: &str,
     regex: &Regex,
     limit: i32,
-) -> DataFusionResult<ColumnarValue> {
-    let mut offsets: Vec<i32> = Vec::with_capacity(string_array.len() + 1);
-    let mut values: Vec<String> = Vec::new();
-    let mut null_buffer_builder = arrow::array::BooleanBufferBuilder::new(string_array.len());
-    offsets.push(0);
-
-    for i in 0..string_array.len() {
-        if string_array.is_null(i) {
-            // NULL input produces NULL in result (Spark behavior)
-            offsets.push(offsets[i]);
-            null_buffer_builder.append(false); // false = NULL
+    builder: &mut GenericStringBuilder<O>,
+) {
+    if limit == 0 {
+        // limit = 0: split all, drop trailing empties. Need to know the end
+        // before pushing, so collect borrowed slices first (no string copies).
+        let mut parts: Vec<&str> = regex.split(string).collect();
+        while parts.last().is_some_and(|s| s.is_empty()) {
+            parts.pop();
+        }
+        if parts.is_empty() {
+            builder.append_value("");
         } else {
-            let string_val = string_array.value(i);
-            let parts = split_with_regex(string_val, regex, limit);
-            values.extend(parts);
-            offsets.push(values.len() as i32);
-            null_buffer_builder.append(true); // true = valid
+            for p in parts {
+                builder.append_value(p);
+            }
+        }
+    } else if limit > 0 {
+        // limit > 0: at most limit-1 splits.
+        let mut last_end = 0;
+        let cap = (limit - 1) as usize;
+        for (count, mat) in regex.find_iter(string).enumerate() {
+            if count >= cap {
+                break;
+            }
+            builder.append_value(&string[last_end..mat.start()]);
+            last_end = mat.end();
+        }
+        builder.append_value(&string[last_end..]);
+    } else {
+        // limit < 0: split all, keep trailing empties.
+        for p in regex.split(string) {
+            builder.append_value(p);
         }
     }
-
-    let values_array = Arc::new(GenericStringArray::<i32>::from(values)) as ArrayRef;
-    let field = Arc::new(Field::new("item", DataType::Utf8, false));
-    let nulls = arrow::buffer::NullBuffer::new(null_buffer_builder.finish());
-    let list_array = ListArray::new(
-        field,
-        arrow::buffer::OffsetBuffer::new(offsets.into()),
-        values_array,
-        Some(nulls),
-    );
-
-    Ok(ColumnarValue::Array(Arc::new(list_array)))
 }
 
 fn split_string(string: &str, pattern: &str, limit: i32) -> DataFusionResult<Vec<String>> {

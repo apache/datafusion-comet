@@ -32,7 +32,6 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.Decimal;
-import org.apache.spark.sql.types.IntegerType;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarArray;
 import org.apache.spark.sql.vectorized.ColumnarMap;
@@ -43,7 +42,6 @@ import org.apache.spark.unsafe.types.UTF8String;
 public abstract class CometVector extends ColumnVector {
   private static final int DECIMAL_BYTE_WIDTH = 16;
   private final byte[] DECIMAL_BYTES = new byte[DECIMAL_BYTE_WIDTH];
-  protected final boolean useDecimal128;
 
   private static final long decimalValOffset;
 
@@ -58,9 +56,8 @@ public abstract class CometVector extends ColumnVector {
     }
   }
 
-  public CometVector(DataType type, boolean useDecimal128) {
+  public CometVector(DataType type) {
     super(type);
-    this.useDecimal128 = useDecimal128;
   }
 
   /**
@@ -86,10 +83,8 @@ public abstract class CometVector extends ColumnVector {
   @Override
   public Decimal getDecimal(int i, int precision, int scale) {
     if (isNullAt(i)) return null;
-    if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
-      return createDecimal(getInt(i), precision, scale);
-    } else if (precision <= Decimal.MAX_LONG_DIGITS()) {
-      return createDecimal(useDecimal128 ? getLongDecimal(i) : getLong(i), precision, scale);
+    if (precision <= Decimal.MAX_LONG_DIGITS()) {
+      return createDecimal(getLongDecimal(i), precision, scale);
     } else {
       byte[] bytes = getBinaryDecimal(i);
       BigInteger bigInteger = new BigInteger(bytes);
@@ -230,37 +225,33 @@ public abstract class CometVector extends ColumnVector {
    * Returns a corresponding `CometVector` implementation based on the given Arrow `ValueVector`.
    *
    * @param vector Arrow `ValueVector`
-   * @param useDecimal128 Whether to use Decimal128 for decimal column
    * @return `CometVector` implementation
    */
-  public static CometVector getVector(
-      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
+  public static CometVector getVector(ValueVector vector, DictionaryProvider dictionaryProvider) {
     if (vector instanceof StructVector) {
-      return new CometStructVector(vector, useDecimal128, dictionaryProvider);
+      return new CometStructVector(vector, dictionaryProvider);
     } else if (vector instanceof MapVector) {
-      return new CometMapVector(vector, useDecimal128, dictionaryProvider);
+      return new CometMapVector(vector, dictionaryProvider);
     } else if (vector instanceof ListVector) {
-      return new CometListVector(vector, useDecimal128, dictionaryProvider);
+      return new CometListVector(vector, dictionaryProvider);
     } else {
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
-      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
+      CometPlainVector cometVector = new CometPlainVector(vector);
 
       if (dictionaryEncoding == null) {
         return cometVector;
       } else {
         Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-        CometPlainVector dictionaryVector =
-            new CometPlainVector(dictionary.getVector(), useDecimal128);
+        CometPlainVector dictionaryVector = new CometPlainVector(dictionary.getVector());
         CometDictionary cometDictionary = new CometDictionary(dictionaryVector);
 
-        return new CometDictionaryVector(
-            cometVector, cometDictionary, dictionaryProvider, useDecimal128);
+        return new CometDictionaryVector(cometVector, cometDictionary, dictionaryProvider);
       }
     }
   }
 
-  protected static CometVector getVector(ValueVector vector, boolean useDecimal128) {
-    return getVector(vector, useDecimal128, null);
+  protected static CometVector getVector(ValueVector vector) {
+    return getVector(vector, null);
   }
 
   private UnsupportedOperationException notImplementedException() {

@@ -258,11 +258,8 @@ class NativeUtil {
       val arrowSchema = schemas(i)
       val arrowArray = arrays(i)
 
-      // Native execution should always have 'useDecimal128' set to true since it doesn't support
-      // other cases.
       arrayVectors += CometVector.getVector(
         importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
-        true,
         dictionaryProvider)
     }
     arrayVectors.toSeq
@@ -305,8 +302,7 @@ object NativeUtil {
   def rootAsBatch(arrowRoot: VectorSchemaRoot, provider: DictionaryProvider): ColumnarBatch = {
     val vectors = (0 until arrowRoot.getFieldVectors.size()).map { i =>
       val vector = arrowRoot.getFieldVectors.get(i)
-      // Native shuffle always uses decimal128.
-      CometVector.getVector(vector, true, provider)
+      CometVector.getVector(vector, provider)
     }
     new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
   }

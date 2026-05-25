@@ -15,59 +15,31 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Spark SQL Tests
+# Reusable Spark SQL test workflow. Invoked once per Spark version by the
+# spark_sql_test_<version>.yml caller workflows. Keep all job logic here so
+# the per-version callers stay thin.
 
-concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
-  cancel-in-progress: true
+name: Spark SQL Tests (reusable)
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "native/**/src/**"
-      - "native/**/Cargo.toml"
-      - "native/Cargo.lock"
-      - "!native/hdfs/**"
-      - "!native/fs-hdfs/**"
-      - "common/src/main/**"
-      - "common/pom.xml"
-      - "spark/src/main/**"
-      - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-      - "spark/pom.xml"
-      - "dev/diffs/**"
-      - "pom.xml"
-      - "rust-toolchain.toml"
-      - ".github/workflows/spark_sql_test.yml"
-      - ".github/actions/setup-builder/**"
-      - ".github/actions/setup-spark-builder/**"
-  pull_request:
-    paths:
-      - "native/**/src/**"
-      - "native/**/Cargo.toml"
-      - "native/Cargo.lock"
-      - "!native/hdfs/**"
-      - "!native/fs-hdfs/**"
-      - "common/src/main/**"
-      - "common/pom.xml"
-      - "spark/src/main/**"
-      - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-      - "spark/pom.xml"
-      - "dev/diffs/**"
-      - "pom.xml"
-      - "rust-toolchain.toml"
-      - ".github/workflows/spark_sql_test.yml"
-      - ".github/actions/setup-builder/**"
-      - ".github/actions/setup-spark-builder/**"
-  # manual trigger
-  # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
-  workflow_dispatch:
+  workflow_call:
     inputs:
+      spark-short:
+        description: 'Spark minor version, e.g. 3.5'
+        required: true
+        type: string
+      spark-full:
+        description: 'Spark full version, e.g. 3.5.8'
+        required: true
+        type: string
+      java:
+        description: 'JDK major version, e.g. 17'
+        required: true
+        type: number
       collect-fallback-logs:
         description: 'Whether to collect Comet fallback reasons from spark sql unit test logs'
         required: false
-        default: 'false'
+        default: false
         type: boolean
 
 env:
@@ -142,13 +114,8 @@ jobs:
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
-        config:
-          - {spark-short: '3.4', spark-full: '3.4.3', java: 11}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11}
-          - {spark-short: '4.0', spark-full: '4.0.2', java: 21}
-          - {spark-short: '4.1', spark-full: '4.1.1', java: 17}
       fail-fast: false
-    name: spark-sql-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
+    name: spark-sql-${{ matrix.module.name }}/spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -158,7 +125,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.config.java }}
+          jdk-version: ${{ inputs.java }}
       - name: Download native library
         uses: actions/download-artifact@v8
         with:
@@ -167,8 +134,8 @@ jobs:
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:
-          spark-version: ${{ matrix.config.spark-full }}
-          spark-short-version: ${{ matrix.config.spark-short }}
+          spark-version: ${{ inputs.spark-full }}
+          spark-short-version: ${{ inputs.spark-short }}
           skip-native-build: true
       - name: Run Spark tests
         run: |
@@ -182,17 +149,17 @@ jobs:
           # Orc source-suite cross-suite file-stream leak under JDK 21
           # (issue #4327). For other rows we keep it set to reduce
           # peak memory on standard 7 GB runners.
-          if [ "${{ matrix.config.spark-short }}" != "4.0" ] || [ "${{ matrix.config.java }}" != "21" ]; then
+          if [ "${{ inputs.spark-short }}" != "4.0" ] || [ "${{ inputs.java }}" != "21" ]; then
             export SERIAL_SBT_TESTS=1
           fi
           # Cap parallel forked test JVMs at 1 so that even when
           # SparkParallelTestGrouping is enabled we don't blow the
           # 7 GB runner budget (each forked test JVM has -Xmx2g).
-          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
+          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ inputs.collect-fallback-logs }} \
             build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
               'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
               ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
-          if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
+          if [ "${{ inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
           fi
         env:
@@ -207,16 +174,16 @@ jobs:
           # thread leaks) under the newer JDKs. project/SparkBuild.scala
           # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
           # listed suite. Empty value is a safe no-op.
-          DEDICATED_JVM_SBT_TESTS: ${{ matrix.config.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
+          DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
       - name: Upload fallback log
-        if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
+        if: ${{ inputs.collect-fallback-logs }}
         uses: actions/upload-artifact@v7
         with:
-          name: fallback-log-spark-sql-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}-jdk${{ matrix.config.java }}
+          name: fallback-log-spark-sql-${{ matrix.module.name }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: "**/fallback.log"
 
   merge-fallback-logs:
-    if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
+    if: ${{ inputs.collect-fallback-logs }}
     name: merge-fallback-logs
     needs: [spark-sql-test]
     runs-on: ubuntu-24.04
@@ -231,5 +198,5 @@ jobs:
       - name: Upload merged fallback log
         uses: actions/upload-artifact@v7
         with:
-          name: all-fallback-log
+          name: all-fallback-log-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: all_fallback.log

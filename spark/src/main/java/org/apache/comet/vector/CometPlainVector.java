@@ -33,6 +33,7 @@ import org.apache.spark.unsafe.types.UTF8String;
 /** A column vector whose elements are plainly decoded. */
 public class CometPlainVector extends CometDecodedVector {
   private final long valueBufferAddress;
+  private final long offsetBufferAddress;
   private final boolean isBaseFixedWidthVector;
 
   private byte booleanByteCache;
@@ -40,17 +41,16 @@ public class CometPlainVector extends CometDecodedVector {
 
   private boolean isReused;
 
-  public CometPlainVector(ValueVector vector, boolean useDecimal128) {
-    this(vector, useDecimal128, false);
+  public CometPlainVector(ValueVector vector) {
+    this(vector, false);
   }
 
-  public CometPlainVector(ValueVector vector, boolean useDecimal128, boolean isUuid) {
-    this(vector, useDecimal128, isUuid, false);
+  public CometPlainVector(ValueVector vector, boolean isUuid) {
+    this(vector, isUuid, false);
   }
 
-  public CometPlainVector(
-      ValueVector vector, boolean useDecimal128, boolean isUuid, boolean isReused) {
-    super(vector, vector.getField(), useDecimal128, isUuid);
+  public CometPlainVector(ValueVector vector, boolean isUuid, boolean isReused) {
+    super(vector, vector.getField(), isUuid);
     // NullType doesn't have data buffer.
     if (vector instanceof NullVector) {
       this.valueBufferAddress = -1;
@@ -59,6 +59,12 @@ public class CometPlainVector extends CometDecodedVector {
     }
 
     isBaseFixedWidthVector = valueVector instanceof BaseFixedWidthVector;
+    if (vector instanceof BaseVariableWidthVector) {
+      this.offsetBufferAddress =
+          ((BaseVariableWidthVector) vector).getOffsetBuffer().memoryAddress();
+    } else {
+      this.offsetBufferAddress = -1;
+    }
     this.isReused = isReused;
   }
 
@@ -124,13 +130,11 @@ public class CometPlainVector extends CometDecodedVector {
   @Override
   public UTF8String getUTF8String(int rowId) {
     if (isNullAt(rowId)) return null;
-    if (!isBaseFixedWidthVector) {
-      BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
-      long offsetBufferAddress = varWidthVector.getOffsetBuffer().memoryAddress();
+    if (offsetBufferAddress != -1) {
       int offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
       int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
       return UTF8String.fromAddress(null, valueBufferAddress + offset, length);
-    } else {
+    } else if (isBaseFixedWidthVector) {
       BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
       int length = fixedWidthVector.getTypeWidth();
       int offset = rowId * length;
@@ -143,6 +147,8 @@ public class CometPlainVector extends CometDecodedVector {
       } else {
         return UTF8String.fromString(convertToUuid(result).toString());
       }
+    } else {
+      throw new IllegalStateException("Unsupported UTF8 vector type: " + valueVector.getName());
     }
   }
 
@@ -151,9 +157,7 @@ public class CometPlainVector extends CometDecodedVector {
     if (isNullAt(rowId)) return null;
     int offset;
     int length;
-    if (valueVector instanceof BaseVariableWidthVector) {
-      BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
-      long offsetBufferAddress = varWidthVector.getOffsetBuffer().memoryAddress();
+    if (offsetBufferAddress != -1) {
       offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
       length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
     } else if (valueVector instanceof BaseFixedWidthVector) {
@@ -161,7 +165,7 @@ public class CometPlainVector extends CometDecodedVector {
       length = fixedWidthVector.getTypeWidth();
       offset = rowId * length;
     } else {
-      throw new RuntimeException("Unsupported binary vector type: " + valueVector.getName());
+      throw new IllegalStateException("Unsupported binary vector type: " + valueVector.getName());
     }
     byte[] result = new byte[length];
     Platform.copyMemory(
@@ -184,7 +188,7 @@ public class CometPlainVector extends CometDecodedVector {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
 
-    return new CometPlainVector(tp.getTo(), useDecimal128);
+    return new CometPlainVector(tp.getTo());
   }
 
   private static UUID convertToUuid(byte[] buf) {
