@@ -834,7 +834,10 @@ object GeoExpressions {
     desc("st_overlaps", classOf[StOverlaps], { args => StOverlaps(args(0), args(1)) })
 
   val stDistanceSphereInfo: FunctionDescription =
-    desc("st_distancesphere", classOf[StDistanceSphere], { args => StDistanceSphere(args(0), args(1)) })
+    desc(
+      "st_distancesphere",
+      classOf[StDistanceSphere],
+      { args => StDistanceSphere(args(0), args(1)) })
 
   val stPerimeterInfo: FunctionDescription =
     desc("st_perimeter", classOf[StPerimeter], { args => StPerimeter(args(0)) })
@@ -859,5 +862,8 @@ object GeoExpressions {
     desc("st_difference", classOf[StDifference], { args => StDifference(args(0), args(1)) })
 
   val stSymDifferenceInfo: FunctionDescription =
-    desc("st_symdifference", classOf[StSymDifference], { args => StSymDifference(args(0), args(1)) })
+    desc(
+      "st_symdifference",
+      classOf[StSymDifference],
+      { args => StSymDifference(args(0), args(1)) })
 }
