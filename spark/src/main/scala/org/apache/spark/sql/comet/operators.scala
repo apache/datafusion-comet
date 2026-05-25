@@ -1942,8 +1942,11 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
    * for this operator.
    */
   override def enabledConfig: Option[ConfigEntry[Boolean]] = {
-    Some(CometConf.COMET_EXEC_HASH_JOIN_ENABLED)
+    Some(CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED)
   }
+
+  override def getSupportLevel(op: BroadcastNestedLoopJoinExec): SupportLevel =
+    Compatible(None)
 
   /**
    * Convert a Spark operator into a protocol buffer representation that can be passed into native
