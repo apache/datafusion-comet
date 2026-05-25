@@ -24,7 +24,8 @@ use datafusion::common::Result as DataFusionResult;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use geos::Geom;
+use geo::BooleanOps;
+use wkt::{ToWkt, TryFromWkt};
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct StUnion {
@@ -60,20 +61,28 @@ impl ScalarUDFImpl for StUnion {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
-        let args = ColumnarValue::values_to_arrays(&args.args)?;
-        let geom1 = args[0].as_any().downcast_ref::<StringArray>().unwrap();
-        let geom2 = args[1].as_any().downcast_ref::<StringArray>().unwrap();
+        let arrays = ColumnarValue::values_to_arrays(&args.args)?;
+        let g1s = arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
+        let g2s = arrays[1].as_any().downcast_ref::<StringArray>().unwrap();
 
-        let result: StringArray = geom1
+        let result: StringArray = g1s
             .iter()
-            .zip(geom2.iter())
-            .map(|(g1, g2)| {
-                let a = geos::Geometry::new_from_wkt(g1?).ok()?;
-                let b = geos::Geometry::new_from_wkt(g2?).ok()?;
-                a.union(&b).ok()?.to_wkt().ok()
+            .zip(g2s.iter())
+            .map(|(w1, w2)| {
+                let a = as_multipolygon(w1?)?;
+                let b = as_multipolygon(w2?)?;
+                Some(a.union(&b).wkt_string())
             })
             .collect();
 
         Ok(ColumnarValue::Array(Arc::new(result) as ArrayRef))
+    }
+}
+
+fn as_multipolygon(wkt: &str) -> Option<geo::MultiPolygon<f64>> {
+    match geo::Geometry::<f64>::try_from_wkt_str(wkt).ok()? {
+        geo::Geometry::Polygon(p) => Some(geo::MultiPolygon(vec![p])),
+        geo::Geometry::MultiPolygon(mp) => Some(mp),
+        _ => None,
     }
 }
