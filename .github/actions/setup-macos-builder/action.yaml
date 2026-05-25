@@ -49,8 +49,8 @@ runs:
         unzip $PROTO_ZIP
         echo "$HOME/d/protoc/bin" >> $GITHUB_PATH
         export PATH=$PATH:$HOME/d/protoc/bin
-        # install openssl and setup DYLD_LIBRARY_PATH
-        brew install openssl
+        # install openssl and geos; geos needed by the geos Rust crate (geo functions)
+        brew install openssl geos
         OPENSSL_LIB_PATH=`brew --prefix openssl`/lib
         echo "openssl lib path is: ${OPENSSL_LIB_PATH}"
         echo "DYLD_LIBRARY_PATH=$OPENSSL_LIB_PATH:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV

@@ -33,8 +33,7 @@ runs:
       shell: bash
       run: |
         apt-get update
-        apt-get install -y protobuf-compiler
-        apt-get install -y clang
+        apt-get install -y protobuf-compiler clang cmake libgeos-dev
 
     - name: Install JDK ${{inputs.jdk-version}}
       uses: actions/setup-java@v4
