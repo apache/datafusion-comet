@@ -25,7 +25,7 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::scalar::ScalarValue;
-use geos::Geom;
+use geos::{Geom, WKTWriter};
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct StBuffer {
@@ -81,7 +81,9 @@ impl ScalarUDFImpl for StBuffer {
                 let wkt = g?;
                 let geom = geos::Geometry::new_from_wkt(wkt).ok()?;
                 let buffered = geom.buffer(distance, 16).ok()?;
-                buffered.to_wkt().ok()
+                let mut writer = WKTWriter::new().ok()?;
+                writer.set_rounding_precision(15);
+                writer.write(&buffered).ok()
             })
             .collect();
 
