@@ -72,7 +72,22 @@ impl ScalarUDFImpl for StSimplify {
                 let wkt = g?;
                 let tolerance = t?;
                 let geom = geo::Geometry::<f64>::try_from_wkt_str(wkt).ok()?;
-                Some(geom.simplify(&tolerance).wkt_string())
+                let simplified = match geom {
+                    geo::Geometry::LineString(ls) => {
+                        geo::Geometry::LineString(ls.simplify(&tolerance))
+                    }
+                    geo::Geometry::MultiLineString(ml) => {
+                        geo::Geometry::MultiLineString(ml.simplify(&tolerance))
+                    }
+                    geo::Geometry::Polygon(p) => {
+                        geo::Geometry::Polygon(p.simplify(&tolerance))
+                    }
+                    geo::Geometry::MultiPolygon(mp) => {
+                        geo::Geometry::MultiPolygon(mp.simplify(&tolerance))
+                    }
+                    other => other,
+                };
+                Some(simplified.wkt_string())
             })
             .collect();
 

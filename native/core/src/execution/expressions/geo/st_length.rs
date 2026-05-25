@@ -66,7 +66,17 @@ impl ScalarUDFImpl for StLength {
             .map(|g| {
                 let wkt = g?;
                 let geom = geo::Geometry::<f64>::try_from_wkt_str(wkt).ok()?;
-                Some(geom.euclidean_length())
+                let len = match geom {
+                    geo::Geometry::LineString(ls) => ls.euclidean_length(),
+                    geo::Geometry::MultiLineString(ml) => ml.euclidean_length(),
+                    geo::Geometry::Polygon(p) => p.exterior().euclidean_length(),
+                    geo::Geometry::MultiPolygon(mp) => mp
+                        .iter()
+                        .map(|p| p.exterior().euclidean_length())
+                        .sum(),
+                    _ => 0.0,
+                };
+                Some(len)
             })
             .collect();
 

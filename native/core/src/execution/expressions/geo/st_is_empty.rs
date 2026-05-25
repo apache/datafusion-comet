@@ -24,6 +24,7 @@ use datafusion::common::Result as DataFusionResult;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
+use geo::{CoordsIter, HasDimensions};
 use wkt::TryFromWkt;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
