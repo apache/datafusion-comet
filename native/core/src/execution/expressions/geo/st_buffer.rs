@@ -64,16 +64,19 @@ impl ScalarUDFImpl for StBuffer {
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
         // Extract distance — may be a scalar literal or a column.
+        eprintln!("DEBUG st_buffer arg[1] = {:?}", &args.args[1]);
         let distance = match &args.args[1] {
             ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => *v,
             ColumnarValue::Scalar(ScalarValue::Float32(Some(v))) => *v as f64,
             _ => {
                 let arr = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[1]))?;
+                eprintln!("DEBUG st_buffer arr[0] type = {:?}", arr[0].data_type());
                 arr[0].as_any().downcast_ref::<arrow::array::Float64Array>()
                     .and_then(|a| a.iter().next().flatten())
                     .unwrap_or(0.0)
             }
         };
+        eprintln!("DEBUG st_buffer distance = {}", distance);
         let geom_arrays = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[0]))?;
         let geom_col = geom_arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
 
