@@ -64,19 +64,7 @@ impl ScalarUDFImpl for StBuffer {
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
         // Extract distance — may be a scalar literal or a column.
-        eprintln!("DEBUG st_buffer arg[1] = {:?}", &args.args[1]);
-        let distance = match &args.args[1] {
-            ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => *v,
-            ColumnarValue::Scalar(ScalarValue::Float32(Some(v))) => *v as f64,
-            _ => {
-                let arr = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[1]))?;
-                eprintln!("DEBUG st_buffer arr[0] type = {:?}", arr[0].data_type());
-                arr[0].as_any().downcast_ref::<arrow::array::Float64Array>()
-                    .and_then(|a| a.iter().next().flatten())
-                    .unwrap_or(0.0)
-            }
-        };
-        eprintln!("DEBUG st_buffer distance = {}", distance);
+        let distance = scalar_to_f64(&args.args[1]);
         let geom_arrays = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[0]))?;
         let geom_col = geom_arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
 
@@ -93,6 +81,19 @@ impl ScalarUDFImpl for StBuffer {
     }
 }
 
+fn scalar_to_f64(val: &ColumnarValue) -> f64 {
+    match val {
+        ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => *v,
+        ColumnarValue::Scalar(ScalarValue::Float32(Some(v))) => *v as f64,
+        ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) => *v as f64,
+        ColumnarValue::Scalar(ScalarValue::Int32(Some(v))) => *v as f64,
+        ColumnarValue::Scalar(ScalarValue::Decimal128(Some(v), _p, s)) => {
+            (*v as f64) / 10f64.powi(*s as i32)
+        }
+        _ => 0.0,
+    }
+}
+
 fn point_circle(cx: f64, cy: f64, radius: f64, segments: usize) -> Polygon<f64> {
     let coords: Vec<Coord<f64>> = (0..=segments)
         .map(|i| {
@@ -103,8 +104,6 @@ fn point_circle(cx: f64, cy: f64, radius: f64, segments: usize) -> Polygon<f64> 
             }
         })
         .collect();
-    eprintln!("DEBUG point_circle: first coord = {:?}", coords.first());
-    eprintln!("DEBUG point_circle: coords len = {}", coords.len());
     Polygon::new(LineString::from(coords), vec![])
 }
 
@@ -119,10 +118,7 @@ fn coords_to_wkt(coords: &[Coord<f64>]) -> String {
 fn geom_to_wkt(geom: &geo::Geometry<f64>) -> String {
     match geom {
         geo::Geometry::Polygon(p) => {
-            let ext = p.exterior();
-            eprintln!("DEBUG geom_to_wkt: exterior coords len = {}", ext.0.len());
-            eprintln!("DEBUG geom_to_wkt: first coord = {:?}", ext.0.first());
-            format!("POLYGON({})", coords_to_wkt(ext.0.as_slice()))
+            format!("POLYGON({})", coords_to_wkt(p.exterior().0.as_slice()))
         }
         geo::Geometry::MultiPolygon(mp) => {
             let parts: Vec<String> = mp

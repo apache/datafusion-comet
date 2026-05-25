@@ -28,6 +28,19 @@ use datafusion::scalar::ScalarValue;
 use geo::Simplify;
 use wkt::{ToWkt, TryFromWkt};
 
+fn scalar_to_f64(val: &ColumnarValue) -> f64 {
+    match val {
+        ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => *v,
+        ColumnarValue::Scalar(ScalarValue::Float32(Some(v))) => *v as f64,
+        ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) => *v as f64,
+        ColumnarValue::Scalar(ScalarValue::Int32(Some(v))) => *v as f64,
+        ColumnarValue::Scalar(ScalarValue::Decimal128(Some(v), _p, s)) => {
+            (*v as f64) / 10f64.powi(*s as i32)
+        }
+        _ => 0.0,
+    }
+}
+
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct StSimplify {
     signature: Signature,
@@ -62,17 +75,7 @@ impl ScalarUDFImpl for StSimplify {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
-        // Extract tolerance — may be a scalar literal or a column.
-        let tolerance = match &args.args[1] {
-            ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => *v,
-            ColumnarValue::Scalar(ScalarValue::Float32(Some(v))) => *v as f64,
-            _ => {
-                let arr = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[1]))?;
-                arr[0].as_any().downcast_ref::<arrow::array::Float64Array>()
-                    .and_then(|a| a.iter().next().flatten())
-                    .unwrap_or(0.0)
-            }
-        };
+        let tolerance = scalar_to_f64(&args.args[1]);
         let geom_arrays = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[0]))?;
         let geom_col = geom_arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
 
