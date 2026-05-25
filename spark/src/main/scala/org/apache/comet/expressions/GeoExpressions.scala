@@ -385,6 +385,9 @@ case class StMakeEnvelope(
     else UTF8String.fromString(CometGeoFallback.makeEnvelope(
       xv.toString.toDouble, yv.toString.toDouble, xv2.toString.toDouble, yv2.toString.toDouble))
   }
+  override protected def doGenCode(
+      ctx: CodegenContext,
+      ev: ExprCode): ExprCode = ev
   override protected def withNewChildrenInternal(
       newChildren: IndexedSeq[Expression]): Expression =
     copy(
