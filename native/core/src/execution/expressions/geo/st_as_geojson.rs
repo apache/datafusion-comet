@@ -66,7 +66,7 @@ impl ScalarUDFImpl for StAsGeoJson {
             .map(|v| {
                 let wkt_str = v?;
                 let geom = geo::Geometry::<f64>::try_from_wkt_str(wkt_str).ok()?;
-                let gj: GeoJsonGeometry = GeoJsonGeometry::try_from(&geom).ok()?;
+                let gj: GeoJsonGeometry = GeoJsonGeometry::from(&geom);
                 Some(gj.to_string())
             })
             .collect();
