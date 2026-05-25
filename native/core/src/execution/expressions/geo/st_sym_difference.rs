@@ -24,7 +24,8 @@ use datafusion::common::Result as DataFusionResult;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use geos::Geom;
+use geo::BooleanOps;
+use wkt::{ToWkt, TryFromWkt};
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct StSymDifference {
@@ -68,12 +69,20 @@ impl ScalarUDFImpl for StSymDifference {
             .iter()
             .zip(g2s.iter())
             .map(|(w1, w2)| {
-                let a = geos::Geometry::new_from_wkt(w1?).ok()?;
-                let b = geos::Geometry::new_from_wkt(w2?).ok()?;
-                a.sym_difference(&b).ok()?.to_wkt().ok()
+                let a = as_multipolygon(w1?)?;
+                let b = as_multipolygon(w2?)?;
+                Some(a.xor(&b).wkt_string())
             })
             .collect();
 
         Ok(ColumnarValue::Array(Arc::new(result) as ArrayRef))
+    }
+}
+
+fn as_multipolygon(wkt: &str) -> Option<geo::MultiPolygon<f64>> {
+    match geo::Geometry::<f64>::try_from_wkt_str(wkt).ok()? {
+        geo::Geometry::Polygon(p) => Some(geo::MultiPolygon(vec![p])),
+        geo::Geometry::MultiPolygon(mp) => Some(mp),
+        _ => None,
     }
 }
