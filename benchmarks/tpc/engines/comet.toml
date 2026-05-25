@@ -30,5 +30,4 @@ driver_class_path = ["$COMET_JAR"]
 "spark.executor.extraClassPath" = "$COMET_JAR"
 "spark.plugins" = "org.apache.spark.CometPlugin"
 "spark.shuffle.manager" = "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
-"spark.comet.scan.impl" = "native_datafusion"
 "spark.comet.expression.Cast.allowIncompatible" = "true"

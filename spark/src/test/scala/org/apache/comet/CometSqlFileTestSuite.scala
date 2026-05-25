@@ -21,22 +21,11 @@ package org.apache.comet
 
 import java.io.File
 
-import org.scalactic.source.Position
-import org.scalatest.Tag
-
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 
 class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-
-  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
-    super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
-        testFun
-      }
-    }
-  }
 
   /** Check if the current Spark version meets a minimum version requirement. */
   private def meetsMinSparkVersion(minVersion: String): Boolean = {
@@ -77,8 +66,13 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "spark.sql.optimizer.excludedRules" ->
       "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
 
+  // Most SQL fixtures here predate Spark 4 ANSI default and expect non-ANSI semantics
+  // (silent overflow/null on bad input). Individual files can opt in via their own
+  // --CONFIG line, which appears later in the pair list and wins.
+  private val ansiDisabled = Seq(SQLConf.ANSI_ENABLED.key -> "false")
+
   private def runTestFile(relativePath: String, file: SqlTestFile): Unit = {
-    val allConfigs = file.configs ++ constantFoldingExcluded
+    val allConfigs = ansiDisabled ++ file.configs ++ constantFoldingExcluded
     withSQLConf(allConfigs: _*) {
       withTable(file.tables: _*) {
         file.records.foreach {
