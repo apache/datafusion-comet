@@ -26,7 +26,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{JsonToStructs, StructsToJson}
+import org.apache.spark.sql.catalyst.expressions.{JsonToStructs, LengthOfJsonArray, StructsToJson}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 
@@ -40,7 +40,8 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true",
-        CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
+        CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true",
+        CometConf.getExprAllowIncompatConfigKey(classOf[LengthOfJsonArray]) -> "false") {
         testFun
       }
     }
@@ -192,6 +193,12 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         checkSparkAnswerAndOperator(s"SELECT _1, from_json(_2, '$schema').a FROM tbl ORDER BY _1")
         checkSparkAnswerAndOperator(s"SELECT _1, from_json(_2, '$schema').b FROM tbl ORDER BY _1")
       }
+    }
+  }
+
+  test("test") {
+    withParquetTable(Seq((1, """"[{'key':'value'}]"""")), "t1", withDictionary = false) {
+      checkSparkAnswerAndFallbackReason(sql("SELECT json_array_length(_2) from t1"), "error")
     }
   }
 }

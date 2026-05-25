@@ -21,7 +21,7 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
-import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
+import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
@@ -184,6 +184,18 @@ trait CometExprShim extends CommonStringExprs {
               false,
               childExprs: _*)
             optExprWithInfo(optExpr, expr, args: _*)
+          case _ => None
+        }
+
+      case s: StaticInvoke =>
+        (s.staticObject, s.functionName, s.arguments) match {
+          case (cls, "lengthOfJsonArray", Seq(child)) if cls == classOf[JsonExpressionUtils] =>
+            val lengthOfJsonArray = LengthOfJsonArray(child)
+            val exprProto = exprToProtoInternal(lengthOfJsonArray, inputs, binding)
+            lengthOfJsonArray
+              .getTagValue(CometExplainInfo.EXTENSION_INFO)
+              .foreach(reasons => s.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+            exprProto
           case _ => None
         }
 

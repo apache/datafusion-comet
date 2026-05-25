@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.expression.LengthOfJsonArray.allowIncompatible=true
+
 statement
 CREATE TABLE test_json_array_length(j string) USING parquet
 
@@ -59,3 +61,6 @@ SELECT json_array_length(NULL)
 
 query
 SELECT json_array_length('[]')
+
+query expect_fallback(Using BinaryType as Map values is not allowed in map_from_entries)
+SELECT json_array_length("[{'key':'value'}]")
