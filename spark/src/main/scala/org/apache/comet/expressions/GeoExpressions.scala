@@ -20,7 +20,6 @@
 package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{BinaryExpression, Expression, ExpressionInfo, NullIntolerant, UnaryExpression}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
 import org.apache.spark.sql.types.{BooleanType, DataType, DoubleType, IntegerType, LongType, StringType}
@@ -357,34 +356,6 @@ case class StPoint(left: Expression, right: Expression)
     copy(left = newLeft, right = newRight)
 }
 
-case class StMakeEnvelope(
-    xmin: Expression,
-    ymin: Expression,
-    xmax: Expression,
-    ymax: Expression)
-    extends Expression
-    with NullIntolerant {
-  override def dataType: DataType = StringType
-  override def nullable: Boolean = true
-  override def children: Seq[Expression] = Seq(xmin, ymin, xmax, ymax)
-  override def eval(input: InternalRow): Any = {
-    val xv = xmin.eval(input)
-    val yv = ymin.eval(input)
-    val xv2 = xmax.eval(input)
-    val yv2 = ymax.eval(input)
-    if (xv == null || yv == null || xv2 == null || yv2 == null) null
-    else UTF8String.fromString(CometGeoFallback.makeEnvelope(
-      xv.toString.toDouble, yv.toString.toDouble, xv2.toString.toDouble, yv2.toString.toDouble))
-  }
-  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = ev
-  override protected def withNewChildrenInternal(
-      newChildren: IndexedSeq[Expression]): Expression =
-    copy(
-      xmin = newChildren(0),
-      ymin = newChildren(1),
-      xmax = newChildren(2),
-      ymax = newChildren(3))
-}
 
 case class StMakeLine(left: Expression, right: Expression)
     extends BinaryExpression with NullIntolerant {
