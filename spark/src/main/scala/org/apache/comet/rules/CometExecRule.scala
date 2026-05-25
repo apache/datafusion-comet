@@ -54,7 +54,6 @@ import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
-import org.apache.comet.serde.OperatorOuterClass.BroadcastNestedLoopJoin
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
 
