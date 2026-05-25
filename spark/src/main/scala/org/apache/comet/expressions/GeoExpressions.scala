@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
@@ -634,8 +634,8 @@ case class StSimplifyPreserveTopology(left: Expression, right: Expression)
     with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g1: Any, g2: Any): Any =
-    UTF8String.fromString(CometGeoFallback.simplifyPreserveTopology(
-      g1.toString, g2.toString.toDouble))
+    UTF8String.fromString(
+      CometGeoFallback.simplifyPreserveTopology(g1.toString, g2.toString.toDouble))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     defineCodeGen(
       ctx,
@@ -731,10 +731,7 @@ object GeoExpressions {
       name: String,
       cls: Class[_],
       builder: Seq[Expression] => Expression): FunctionDescription =
-    (
-      new FunctionIdentifier(name),
-      new ExpressionInfo(cls.getName, name),
-      builder)
+    (new FunctionIdentifier(name), new ExpressionInfo(cls.getName, name), builder)
 
   val stContainsInfo: FunctionDescription =
     desc("st_contains", classOf[StContains], { args => StContains(args(0), args(1)) })
@@ -802,7 +799,8 @@ object GeoExpressions {
   val stMakeEnvelopeInfo: FunctionDescription =
     desc(
       "st_makeenvelope",
-      classOf[StMakeEnvelope], { args => StMakeEnvelope(args(0), args(1), args(2), args(3)) })
+      classOf[StMakeEnvelope],
+      { args => StMakeEnvelope(args(0), args(1), args(2), args(3)) })
 
   val stMakeLineInfo: FunctionDescription =
     desc("st_makeline", classOf[StMakeLine], { args => StMakeLine(args(0), args(1)) })
@@ -846,12 +844,14 @@ object GeoExpressions {
   val stHausdorffDistanceInfo: FunctionDescription =
     desc(
       "st_hausdorffdistance",
-      classOf[StHausdorffDistance], { args => StHausdorffDistance(args(0), args(1)) })
+      classOf[StHausdorffDistance],
+      { args => StHausdorffDistance(args(0), args(1)) })
 
   val stSimplifyPreserveTopologyInfo: FunctionDescription =
     desc(
       "st_simplifypreservetopology",
-      classOf[StSimplifyPreserveTopology], { args => StSimplifyPreserveTopology(args(0), args(1)) })
+      classOf[StSimplifyPreserveTopology],
+      { args => StSimplifyPreserveTopology(args(0), args(1)) })
 
   val stFlipCoordinatesInfo: FunctionDescription =
     desc("st_flipcoordinates", classOf[StFlipCoordinates], { args => StFlipCoordinates(args(0)) })

@@ -72,7 +72,8 @@ private[serde] object CometGeoExpr {
       classOf[StDistanceSphere] -> new CometGeoScalarFunc("st_distancesphere"),
       classOf[StPerimeter] -> new CometGeoScalarFunc("st_perimeter"),
       classOf[StHausdorffDistance] -> new CometGeoScalarFunc("st_hausdorffdistance"),
-      classOf[StSimplifyPreserveTopology] -> new CometGeoScalarFunc("st_simplifypreservetopology"),
+      classOf[StSimplifyPreserveTopology] -> new CometGeoScalarFunc(
+        "st_simplifypreservetopology"),
       classOf[StFlipCoordinates] -> new CometGeoScalarFunc("st_flipcoordinates"),
       classOf[StBoundary] -> new CometGeoScalarFunc("st_boundary"),
       classOf[StDifference] -> new CometGeoScalarFunc("st_difference"),
