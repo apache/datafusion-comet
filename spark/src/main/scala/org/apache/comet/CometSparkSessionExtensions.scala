@@ -25,12 +25,12 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BooleanType, DoubleType, StringType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
@@ -88,10 +88,11 @@ class CometSparkSessionExtensions
     with Logging
     with ShimCometSparkSessionExtensions {
   override def apply(extensions: SparkSessionExtensions): Unit = {
-    extensions.injectColumnar { session =>
+    extensions.injectOptimizerRule { session =>
       CometGeoFunctions.registerAll(session)
-      CometScanColumnar(session)
+      CometNoOpRule
     }
+    extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
     // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
     // Registered before CometScanRule/CometExecRule so tags are in place when conversion runs.
@@ -101,6 +102,12 @@ class CometSparkSessionExtensions
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
+  }
+
+  // A rule that does nothing. Used as the return value of injectOptimizerRule when we only
+  // need the session handle to register UDFs, not to transform plans.
+  object CometNoOpRule extends Rule[LogicalPlan] {
+    override def apply(plan: LogicalPlan): LogicalPlan = plan
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
