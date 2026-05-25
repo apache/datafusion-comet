@@ -17,17 +17,17 @@
  * under the License.
  */
 
-package org.apache.comet
+package org.apache.comet.expressions
 
 /**
- * JVM fallback implementations for Comet geo UDFs. These are called only when Comet's native
- * execution is disabled or falls back to Spark. When Comet is active the ScalaUDF expression is
- * intercepted by CometScalaUDF serde and executed natively via the Rust geo crate instead.
+ * JVM fallback implementations for Comet geo UDFs. Called only when Comet native execution is
+ * disabled. When Comet is active the expression is serded to ScalarFunc and executed via the Rust
+ * geo crate in DataFusion.
  *
  * Requires Apache Sedona on the classpath to function. Without Sedona and without Comet enabled
  * an UnsupportedOperationException is thrown at runtime.
  */
-private[comet] object CometGeoFallback {
+object CometGeoFallback {
 
   private def notSupported(fn: String): Nothing =
     throw new UnsupportedOperationException(

@@ -23,23 +23,30 @@ import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 
+import org.apache.comet.expressions.{StArea, StCentroid, StContains, StDistance, StIntersects, StWithin}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 /**
- * Serde for Sedona ST_ expressions that maps them to native Comet geo UDFs.
+ * Serde for native Comet geo expressions and optional Sedona ST_ expressions. Maps each to the
+ * corresponding named ScalarFunc so the DataFusion planner resolves it to the Rust geo UDF.
  *
- * Sedona is an optional dependency - this file compiles without it on the classpath. Entries are
- * only added to exprSerdeMap when the Sedona classes are present at runtime.
+ * Sedona entries are added only when Sedona is present on the classpath at runtime.
  */
 private[serde] object CometGeoExpr {
 
-  /**
-   * Build the map of Sedona expression class to serde. Returns an empty map when Sedona is not on
-   * the classpath.
-   */
   def buildSerdeMap(): Map[Class[_ <: Expression], CometExpressionSerde[_]] = {
-    Seq(
+    // Native Comet geo expression classes - always present.
+    val nativeEntries: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+      classOf[StContains] -> new CometGeoScalarFunc("st_contains"),
+      classOf[StIntersects] -> new CometGeoScalarFunc("st_intersects"),
+      classOf[StWithin] -> new CometGeoScalarFunc("st_within"),
+      classOf[StDistance] -> new CometGeoScalarFunc("st_distance"),
+      classOf[StArea] -> new CometGeoScalarFunc("st_area"),
+      classOf[StCentroid] -> new CometGeoScalarFunc("st_centroid"))
+
+    // Optional Sedona ST_ expression classes - present only when Sedona is on the classpath.
+    val sedonaEntries: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Seq(
       "org.apache.sedona.sql.utils.expressions.ST_Contains" -> "st_contains",
       "org.apache.sedona.sql.utils.expressions.ST_Intersects" -> "st_intersects",
       "org.apache.sedona.sql.utils.expressions.ST_Distance" -> "st_distance",
@@ -53,12 +60,14 @@ private[serde] object CometGeoExpr {
           .toOption
           .map(cls => cls -> new CometGeoScalarFunc(funcName))
     }.toMap
+
+    nativeEntries ++ sedonaEntries
   }
 }
 
 /**
- * Generic serde for a Sedona ST_ function that passes all children through to a named native
- * ScalarUDF registered in the DataFusion SessionContext.
+ * Generic serde for a geo expression: emits ScalarFunc { func = funcName } so the DataFusion
+ * planner resolves it to the named Rust UDF registered in the SessionContext.
  */
 private[serde] class CometGeoScalarFunc(funcName: String)
     extends CometExpressionSerde[Expression] {

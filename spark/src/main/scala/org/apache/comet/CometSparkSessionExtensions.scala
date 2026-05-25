@@ -25,12 +25,13 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
+
+import org.apache.comet.expressions.GeoExpressions
 
 import org.apache.comet.CometConf._
 import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
@@ -88,10 +89,12 @@ class CometSparkSessionExtensions
     with Logging
     with ShimCometSparkSessionExtensions {
   override def apply(extensions: SparkSessionExtensions): Unit = {
-    extensions.injectOptimizerRule { session =>
-      CometGeoFunctions.registerAll(session)
-      CometNoOpRule
-    }
+    extensions.injectFunction(GeoExpressions.stContainsInfo)
+    extensions.injectFunction(GeoExpressions.stIntersectsInfo)
+    extensions.injectFunction(GeoExpressions.stWithinInfo)
+    extensions.injectFunction(GeoExpressions.stDistanceInfo)
+    extensions.injectFunction(GeoExpressions.stAreaInfo)
+    extensions.injectFunction(GeoExpressions.stCentroidInfo)
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
     // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
@@ -102,12 +105,6 @@ class CometSparkSessionExtensions
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
-  }
-
-  // A rule that does nothing. Used as the return value of injectOptimizerRule when we only
-  // need the session handle to register UDFs, not to transform plans.
-  object CometNoOpRule extends Rule[LogicalPlan] {
-    override def apply(plan: LogicalPlan): LogicalPlan = plan
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
@@ -121,51 +118,6 @@ class CometSparkSessionExtensions
       EliminateRedundantTransitions(session)
   }
 
-}
-
-// Eagerly registers geo UDFs on the SparkSession so Spark's analyzer can resolve them.
-// Called from injectColumnar which fires at session-build time, before any query runs.
-// When Comet is active the ScalaUDF is intercepted by CometScalaUDF serde and routed
-// to the native Rust path. The lambda bodies only run as JVM fallback.
-private[comet] object CometGeoFunctions {
-  def registerAll(session: SparkSession): Unit = {
-    // scalastyle:off null
-    session.udf.register(
-      "st_contains",
-      (g1: String, g2: String) => {
-        if (g1 == null || g2 == null) null.asInstanceOf[Boolean]
-        else CometGeoFallback.contains(g1, g2)
-      })
-    session.udf.register(
-      "st_intersects",
-      (g1: String, g2: String) => {
-        if (g1 == null || g2 == null) null.asInstanceOf[Boolean]
-        else CometGeoFallback.intersects(g1, g2)
-      })
-    session.udf.register(
-      "st_within",
-      (g1: String, g2: String) => {
-        if (g1 == null || g2 == null) null.asInstanceOf[Boolean]
-        else CometGeoFallback.within(g1, g2)
-      })
-    session.udf.register(
-      "st_distance",
-      (g1: String, g2: String) => {
-        if (g1 == null || g2 == null) null.asInstanceOf[Double]
-        else CometGeoFallback.distance(g1, g2)
-      })
-    session.udf.register(
-      "st_area",
-      (g: String) => {
-        if (g == null) null.asInstanceOf[Double] else CometGeoFallback.area(g)
-      })
-    session.udf.register(
-      "st_centroid",
-      (g: String) => {
-        if (g == null) null else CometGeoFallback.centroid(g)
-      })
-    // scalastyle:on null
-  }
 }
 
 object CometSparkSessionExtensions extends Logging {
