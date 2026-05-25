@@ -21,14 +21,12 @@ package org.apache.comet.exec
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
-
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
 import org.apache.spark.sql.internal.SQLConf
-
 import org.apache.comet.CometConf
 
 class CometJoinSuite extends CometTestBase {
@@ -698,6 +696,22 @@ class CometJoinSuite extends CometTestBase {
               s"Expected AQE to coalesce shuffle partitions below $numPartitions, " +
                 s"got $coalesced")
           }
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin with unequal filter") {
+    withSQLConf(
+      CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED.key -> "true",
+      CometConf.getOperatorAllowIncompatConfigKey("BroadcastNestedLoopJoinExec") -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
+          val df = sql("SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a JOIN tbl_b ON tbl_a._1 > tbl_b._1")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
         }
       }
     }
