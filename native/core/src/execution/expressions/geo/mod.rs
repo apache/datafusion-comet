@@ -15,22 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native DataFusion expressions
+mod st_area;
+mod st_centroid;
+mod st_contains;
+mod st_distance;
+mod st_intersects;
+mod st_within;
 
-pub mod arithmetic;
-pub mod bitwise;
-pub mod comparison;
-pub mod geo;
-pub mod list_positions;
-pub mod logical;
-pub mod nullcheck;
-pub mod partition;
-pub mod random;
-pub mod strings;
-pub mod subquery;
-pub mod temporal;
+use datafusion::execution::context::SessionContext;
+use datafusion::logical_expr::ScalarUDF;
 
-pub use datafusion_comet_spark_expr::EvalMode;
-
-// Re-export the extract_expr macro for convenience in expression builders
-pub use crate::extract_expr;
+pub fn register_geo_functions(ctx: &SessionContext) {
+    ctx.register_udf(ScalarUDF::new_from_impl(
+        st_contains::StContains::default(),
+    ));
+    ctx.register_udf(ScalarUDF::new_from_impl(
+        st_intersects::StIntersects::default(),
+    ));
+    ctx.register_udf(ScalarUDF::new_from_impl(
+        st_distance::StDistance::default(),
+    ));
+    ctx.register_udf(ScalarUDF::new_from_impl(st_within::StWithin::default()));
+    ctx.register_udf(ScalarUDF::new_from_impl(st_area::StArea::default()));
+    ctx.register_udf(ScalarUDF::new_from_impl(
+        st_centroid::StCentroid::default(),
+    ));
+}

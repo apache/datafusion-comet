@@ -562,6 +562,7 @@ fn prepare_datafusion_session_context(
 
     datafusion::functions_nested::register_all(&mut session_ctx)?;
     register_datafusion_spark_function(&session_ctx);
+    crate::execution::expressions::geo::register_geo_functions(&session_ctx);
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
 

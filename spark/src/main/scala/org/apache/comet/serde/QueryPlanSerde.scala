@@ -274,6 +274,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[StaticInvoke] -> CometStaticInvoke,
     classOf[UnscaledValue] -> CometUnscaledValue)
 
+  // Sedona ST_ expressions — populated only when Sedona is on the classpath.
+  private[comet] val geoExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    CometGeoExpr.buildSerdeMap()
+
   /**
    * Mapping of Spark expression class to Comet expression handler.
    */
@@ -281,7 +285,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     mathExpressions ++ hashExpressions ++ stringExpressions ++
       conditionalExpressions ++ mapExpressions ++ predicateExpressions ++
       structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++
-      temporalExpressions ++ conversionExpressions ++ urlExpressions
+      temporalExpressions ++ conversionExpressions ++ urlExpressions ++ geoExpressions
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
