@@ -214,7 +214,7 @@
 
 ### datetime_funcs
 
-- [ ] add_months
+- [x] add_months
 - [x] convert_timezone
 - [ ] curdate
 - [ ] current_date
