@@ -143,14 +143,15 @@ case class StPoint(left: Expression, right: Expression)
     with NullIntolerant {
   override def dataType: DataType = StringType
   override def nullSafeEval(g1: Any, g2: Any): Any =
-    UTF8String.fromString("POINT(" + g1.toString + " " + g2.toString + ")")
+    UTF8String.fromString(CometGeoFallback.makePoint(g1.toString, g2.toString))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     defineCodeGen(
       ctx,
       ev,
       (g1, g2) =>
         s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
-          s"\"POINT(\" + $g1.toString() + \" \" + $g2.toString() + \")\")")
+          s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
+          s".makePoint($g1.toString(), $g2.toString()))")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)

@@ -39,6 +39,7 @@ object CometGeoFallback {
   def geomFromGeoJson(g: String): String = notSupported("st_geomfromgeojson")
   def makeEnvelope(xmin: Double, ymin: Double, xmax: Double, ymax: Double): String =
     notSupported("st_makeenvelope")
+  def makePoint(x: String, y: String): String = "POINT(" + x + " " + y + ")"
   def makeLine(g1: String, g2: String): String = notSupported("st_makeline")
   // Serializers
   def asText(g: String): String = notSupported("st_astext")
