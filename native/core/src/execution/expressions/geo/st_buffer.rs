@@ -16,6 +16,7 @@
 // under the License.
 
 use std::any::Any;
+use std::f64::consts::PI;
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, StringArray};
@@ -25,7 +26,8 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::scalar::ScalarValue;
-use geos::{Geom, WKTWriter};
+use geo::{Coord, LineString, Point, Polygon};
+use wkt::{ToWkt, TryFromWkt};
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct StBuffer {
@@ -79,14 +81,40 @@ impl ScalarUDFImpl for StBuffer {
             .iter()
             .map(|g| {
                 let wkt = g?;
-                let geom = geos::Geometry::new_from_wkt(wkt).ok()?;
-                let buffered = geom.buffer(distance, 16).ok()?;
-                let mut writer = WKTWriter::new().ok()?;
-                writer.set_rounding_precision(15);
-                writer.write(&buffered).ok()
+                let geom = geo::Geometry::<f64>::try_from_wkt_str(wkt).ok()?;
+                Some(buffer_geometry(&geom, distance, 32).wkt_string())
             })
             .collect();
 
         Ok(ColumnarValue::Array(Arc::new(result) as ArrayRef))
+    }
+}
+
+fn point_circle(cx: f64, cy: f64, radius: f64, segments: usize) -> Polygon<f64> {
+    let coords: Vec<Coord<f64>> = (0..=segments)
+        .map(|i| {
+            let angle = 2.0 * PI * (i as f64) / (segments as f64);
+            Coord {
+                x: cx + radius * angle.cos(),
+                y: cy + radius * angle.sin(),
+            }
+        })
+        .collect();
+    Polygon::new(LineString::from(coords), vec![])
+}
+
+fn buffer_geometry(geom: &geo::Geometry<f64>, distance: f64, segments: usize) -> geo::Geometry<f64> {
+    match geom {
+        geo::Geometry::Point(Point(c)) => {
+            geo::Geometry::Polygon(point_circle(c.x, c.y, distance, segments))
+        }
+        geo::Geometry::MultiPoint(mp) => {
+            let polys: Vec<Polygon<f64>> = mp
+                .iter()
+                .map(|Point(c)| point_circle(c.x, c.y, distance, segments))
+                .collect();
+            geo::Geometry::MultiPolygon(geo::MultiPolygon(polys))
+        }
+        other => other.clone(),
     }
 }
