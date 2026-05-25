@@ -139,10 +139,7 @@ object GeoExpressions {
       name: String,
       cls: Class[_],
       builder: Seq[Expression] => Expression): FunctionDescription =
-    (
-      new FunctionIdentifier(name),
-      new ExpressionInfo(cls.getName, name),
-      builder)
+    (new FunctionIdentifier(name), new ExpressionInfo(cls.getName, name), builder)
 
   val stContainsInfo: FunctionDescription =
     desc("st_contains", classOf[StContains], args => StContains(args(0), args(1)))
