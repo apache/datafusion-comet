@@ -279,16 +279,16 @@ case class StSimplify(left: Expression, right: Expression)
     extends BinaryExpression
     with NullIntolerant {
   override def dataType: DataType = StringType
-  override def nullSafeEval(g: Any, t: Any): Any =
-    UTF8String.fromString(CometGeoFallback.simplify(g.toString, t.toString.toDouble))
+  override def nullSafeEval(g1: Any, g2: Any): Any =
+    UTF8String.fromString(CometGeoFallback.simplify(g1.toString, g2.toString.toDouble))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     defineCodeGen(
       ctx,
       ev,
-      (g, t) =>
+      (g1, g2) =>
         s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".simplify($g.toString(), Double.parseDouble($t.toString())))")
+          s".simplify($g1.toString(), Double.parseDouble($g2.toString())))")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
@@ -298,16 +298,16 @@ case class StBuffer(left: Expression, right: Expression)
     extends BinaryExpression
     with NullIntolerant {
   override def dataType: DataType = StringType
-  override def nullSafeEval(g: Any, d: Any): Any =
-    UTF8String.fromString(CometGeoFallback.buffer(g.toString, d.toString.toDouble))
+  override def nullSafeEval(g1: Any, g2: Any): Any =
+    UTF8String.fromString(CometGeoFallback.buffer(g1.toString, g2.toString.toDouble))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     defineCodeGen(
       ctx,
       ev,
-      (g, d) =>
+      (g1, g2) =>
         s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".buffer($g.toString(), Double.parseDouble($d.toString())))")
+          s".buffer($g1.toString(), Double.parseDouble($g2.toString())))")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
@@ -600,17 +600,17 @@ case class StSimplifyPreserveTopology(left: Expression, right: Expression)
     extends BinaryExpression
     with NullIntolerant {
   override def dataType: DataType = StringType
-  override def nullSafeEval(g: Any, t: Any): Any =
+  override def nullSafeEval(g1: Any, g2: Any): Any =
     UTF8String.fromString(CometGeoFallback.simplifyPreserveTopology(
-      g.toString, t.toString.toDouble))
+      g1.toString, g2.toString.toDouble))
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     defineCodeGen(
       ctx,
       ev,
-      (g, t) =>
+      (g1, g2) =>
         s"org.apache.spark.unsafe.types.UTF8String.fromString(" +
           s"org.apache.comet.expressions.CometGeoFallback$$.MODULE$$" +
-          s".simplifyPreserveTopology($g.toString(), Double.parseDouble($t.toString())))")
+          s".simplifyPreserveTopology($g1.toString(), Double.parseDouble($g2.toString())))")
   override protected def withNewChildrenInternal(
       newLeft: Expression,
       newRight: Expression): Expression = copy(left = newLeft, right = newRight)
