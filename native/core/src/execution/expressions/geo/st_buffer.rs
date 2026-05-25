@@ -18,12 +18,13 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Float64Array, StringArray};
+use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
+use datafusion::scalar::ScalarValue;
 use geos::Geom;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -60,16 +61,24 @@ impl ScalarUDFImpl for StBuffer {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
-        let args = ColumnarValue::values_to_arrays(&args.args)?;
-        let geom_col = args[0].as_any().downcast_ref::<StringArray>().unwrap();
-        let dist_col = args[1].as_any().downcast_ref::<Float64Array>().unwrap();
+        // Extract distance — may be a scalar literal or a column.
+        let distance = match &args.args[1] {
+            ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => *v,
+            ColumnarValue::Scalar(ScalarValue::Float32(Some(v))) => *v as f64,
+            _ => {
+                let arr = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[1]))?;
+                arr[0].as_any().downcast_ref::<arrow::array::Float64Array>()
+                    .and_then(|a| a.iter().next().flatten())
+                    .unwrap_or(0.0)
+            }
+        };
+        let geom_arrays = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[0]))?;
+        let geom_col = geom_arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
 
         let result: StringArray = geom_col
             .iter()
-            .zip(dist_col.iter())
-            .map(|(g, d)| {
+            .map(|g| {
                 let wkt = g?;
-                let distance = d?;
                 let geom = geos::Geometry::new_from_wkt(wkt).ok()?;
                 let buffered = geom.buffer(distance, 16).ok()?;
                 buffered.to_wkt().ok()

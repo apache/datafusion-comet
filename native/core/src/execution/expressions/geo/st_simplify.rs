@@ -18,12 +18,13 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Float64Array, StringArray};
+use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::DataType;
 use datafusion::common::Result as DataFusionResult;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
+use datafusion::scalar::ScalarValue;
 use geo::Simplify;
 use wkt::{ToWkt, TryFromWkt};
 
@@ -61,16 +62,24 @@ impl ScalarUDFImpl for StSimplify {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
-        let args = ColumnarValue::values_to_arrays(&args.args)?;
-        let geom_col = args[0].as_any().downcast_ref::<StringArray>().unwrap();
-        let tol_col = args[1].as_any().downcast_ref::<Float64Array>().unwrap();
+        // Extract tolerance — may be a scalar literal or a column.
+        let tolerance = match &args.args[1] {
+            ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => *v,
+            ColumnarValue::Scalar(ScalarValue::Float32(Some(v))) => *v as f64,
+            _ => {
+                let arr = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[1]))?;
+                arr[0].as_any().downcast_ref::<arrow::array::Float64Array>()
+                    .and_then(|a| a.iter().next().flatten())
+                    .unwrap_or(0.0)
+            }
+        };
+        let geom_arrays = ColumnarValue::values_to_arrays(std::slice::from_ref(&args.args[0]))?;
+        let geom_col = geom_arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
 
         let result: StringArray = geom_col
             .iter()
-            .zip(tol_col.iter())
-            .map(|(g, t)| {
+            .map(|g| {
                 let wkt = g?;
-                let tolerance = t?;
                 let geom = geo::Geometry::<f64>::try_from_wkt_str(wkt).ok()?;
                 let simplified = match geom {
                     geo::Geometry::LineString(ls) => {
