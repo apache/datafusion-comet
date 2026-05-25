@@ -64,7 +64,7 @@ impl ScalarUDFImpl for StCoveredBy {
                 (Some(w1), Some(w2)) => {
                     let a = geo::Geometry::<f64>::try_from_wkt_str(w1).ok()?;
                     let b = geo::Geometry::<f64>::try_from_wkt_str(w2).ok()?;
-                    Some(a.relate(&b).is_covered_by())
+                    Some(a.relate(&b).is_coveredby())
                 }
                 _ => None,
             })
