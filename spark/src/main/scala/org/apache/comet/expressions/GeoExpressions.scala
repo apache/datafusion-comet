@@ -19,8 +19,7 @@
 
 package org.apache.comet.expressions
 
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.analysis.TypeCheckResult
+import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{BinaryExpression, Expression, ExpressionInfo, NullIntolerant, UnaryExpression}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
 import org.apache.spark.sql.types.{BooleanType, DataType, DoubleType, StringType}
@@ -129,47 +128,33 @@ case class StCentroid(child: Expression) extends UnaryExpression with NullIntole
 
 object GeoExpressions {
 
-  type FunctionDescription = (ExpressionInfo, Seq[Expression] => Expression)
+  type FunctionDescription =
+    (FunctionIdentifier, ExpressionInfo, Seq[Expression] => Expression)
 
-  private def info(name: String, cls: Class[_], usage: String): ExpressionInfo =
-    new ExpressionInfo(cls.getName, null, name, usage, "", "", "", "", "geo", "1.0")
+  private def desc(
+      name: String,
+      cls: Class[_],
+      builder: Seq[Expression] => Expression): FunctionDescription =
+    (
+      new FunctionIdentifier(name),
+      new ExpressionInfo(cls.getName, name),
+      builder)
 
-  val stContainsInfo: FunctionDescription = (
-    info(
-      "st_contains",
-      classOf[StContains],
-      "_FUNC_(geom1, geom2) - Returns true if geom1 spatially contains geom2."),
-    (args: Seq[Expression]) => StContains(args(0), args(1)))
+  val stContainsInfo: FunctionDescription =
+    desc("st_contains", classOf[StContains], args => StContains(args(0), args(1)))
 
-  val stIntersectsInfo: FunctionDescription = (
-    info(
-      "st_intersects",
-      classOf[StIntersects],
-      "_FUNC_(geom1, geom2) - Returns true if geom1 and geom2 spatially intersect."),
-    (args: Seq[Expression]) => StIntersects(args(0), args(1)))
+  val stIntersectsInfo: FunctionDescription =
+    desc("st_intersects", classOf[StIntersects], args => StIntersects(args(0), args(1)))
 
-  val stWithinInfo: FunctionDescription = (
-    info(
-      "st_within",
-      classOf[StWithin],
-      "_FUNC_(geom1, geom2) - Returns true if geom1 is spatially within geom2."),
-    (args: Seq[Expression]) => StWithin(args(0), args(1)))
+  val stWithinInfo: FunctionDescription =
+    desc("st_within", classOf[StWithin], args => StWithin(args(0), args(1)))
 
-  val stDistanceInfo: FunctionDescription = (
-    info(
-      "st_distance",
-      classOf[StDistance],
-      "_FUNC_(geom1, geom2) - Returns the Euclidean distance between geom1 and geom2."),
-    (args: Seq[Expression]) => StDistance(args(0), args(1)))
+  val stDistanceInfo: FunctionDescription =
+    desc("st_distance", classOf[StDistance], args => StDistance(args(0), args(1)))
 
-  val stAreaInfo: FunctionDescription = (
-    info("st_area", classOf[StArea], "_FUNC_(geom) - Returns the area of geom."),
-    (args: Seq[Expression]) => StArea(args(0)))
+  val stAreaInfo: FunctionDescription =
+    desc("st_area", classOf[StArea], args => StArea(args(0)))
 
-  val stCentroidInfo: FunctionDescription = (
-    info(
-      "st_centroid",
-      classOf[StCentroid],
-      "_FUNC_(geom) - Returns the centroid of geom as a WKT string."),
-    (args: Seq[Expression]) => StCentroid(args(0)))
+  val stCentroidInfo: FunctionDescription =
+    desc("st_centroid", classOf[StCentroid], args => StCentroid(args(0)))
 }
