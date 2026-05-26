@@ -41,6 +41,9 @@
 - [ ] array_agg
 - [x] avg
 - [x] bit_and
+  - Spark 3.4.3 (2026-05-26)
+  - Spark 3.5.8 (2026-05-26)
+  - Spark 4.0.1 (2026-05-26)
 - [x] bit_or
 - [x] bit_xor
 - [x] bool_and
