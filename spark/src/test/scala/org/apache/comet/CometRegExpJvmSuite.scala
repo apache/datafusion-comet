@@ -28,7 +28,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def sparkConf: SparkConf =
     super.sparkConf
-      .set(CometConf.COMET_JVM_UDF_ENABLED.key, "true")
+      .set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
       .set(CometConf.COMET_REGEXP_ENGINE.key, CometConf.REGEXP_ENGINE_JAVA)
 
   // Patterns that the Rust regex crate cannot handle. Using one of these proves

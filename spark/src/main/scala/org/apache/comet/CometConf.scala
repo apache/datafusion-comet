@@ -362,15 +362,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_JVM_UDF_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.jvmUdf.enabled")
+  val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Master switch for the JVM UDF framework, which lets native execution call back into " +
-          "the JVM to evaluate selected expressions for full Spark compatibility (at the cost " +
-          "of a JNI round-trip per batch). The framework is experimental and may change in " +
-          "future releases. Disabled by default; expressions that would otherwise route " +
-          "through the JVM UDF bridge fall back to native or to Spark while this is false.")
+      .doc("Experimental. Whether to route Spark `ScalaUDF` expressions through Comet's " +
+        "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
+        "a per-batch kernel that reads and writes Arrow vectors directly from native " +
+        "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
+        "enclosing operator. The same dispatcher backs `spark.comet.exec.regexp.engine=java` " +
+        "so the regex family routes through it as well.")
       .booleanConf
       .createWithDefault(false)
 
@@ -382,9 +382,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Selects the engine used to evaluate Spark regular-expression expressions. " +
-          s"`$REGEXP_ENGINE_JAVA` (default) routes through a JVM-side UDF " +
-          "(java.util.regex.Pattern) for Spark-compatible semantics, at the cost of JNI " +
-          s"roundtrips per batch; this requires ${COMET_JVM_UDF_ENABLED.key}=true and " +
+          s"`$REGEXP_ENGINE_JAVA` (default) routes through the Arrow-direct codegen dispatcher " +
+          "so Spark's own `doGenCode` (backed by `java.util.regex.Pattern`) runs inside the " +
+          s"Comet pipeline; this requires ${COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true and " +
           s"falls back to Spark otherwise. `$REGEXP_ENGINE_RUST` runs the native DataFusion " +
           "regexp engine when an implementation exists; setting this is itself the opt-in " +
           "for the semantic differences between Java and Rust regex. Affected expressions: " +
@@ -395,18 +395,6 @@ object CometConf extends ShimCometConf {
       .transform(_.toLowerCase(Locale.ROOT))
       .checkValues(Set(REGEXP_ENGINE_RUST, REGEXP_ENGINE_JAVA))
       .createWithDefault(REGEXP_ENGINE_JAVA)
-
-  val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.exec.scalaUDF.codegen.enabled")
-      .category(CATEGORY_EXEC)
-      .doc("Experimental. Whether to route Spark `ScalaUDF` expressions through Comet's " +
-        "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
-        "a per-batch kernel that reads and writes Arrow vectors directly from native " +
-        "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
-        "enclosing operator.")
-      .booleanConf
-      .createWithDefault(false)
-
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")

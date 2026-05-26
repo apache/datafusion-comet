@@ -231,8 +231,7 @@ pub struct JVMClasses<'a> {
     /// acquire & release native memory.
     pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
     /// The CometUdfBridge class used to dispatch JVM scalar UDFs.
-    /// `None` if the class is not on the classpath; the JVM-UDF dispatch path
-    /// reports a clear error rather than crashing executor init.
+    /// `None` if the class is not on the classpath.
     pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
 }
 
@@ -305,9 +304,6 @@ impl JVMClasses<'_> {
                 comet_shuffle_block_iterator: CometShuffleBlockIterator::new(env).unwrap(),
                 comet_task_memory_manager: CometTaskMemoryManager::new(env).unwrap(),
                 comet_udf_bridge: {
-                    // Optional: if the bridge class is absent (e.g. comet shading
-                    // dropped org.apache.comet.udf.*), record None and clear the
-                    // pending JVM exception so other JNI calls keep working.
                     let bridge = CometUdfBridge::new(env).ok();
                     if env.exception_check() {
                         env.exception_clear();
