@@ -42,10 +42,10 @@ query
 SELECT parse_url(NULL, 'HOST')
 
 -- invalid URL throws in ANSI mode
-query expect_error(INVALID_URL)
+query expect_error(not a url at all)
 SELECT parse_url('not a url at all', 'HOST')
 
-query expect_error(INVALID_URL)
+query expect_error(://missing-scheme)
 SELECT parse_url('://missing-scheme', 'HOST')
 
 -- empty string is a valid URI (no throw), just returns NULL for HOST
