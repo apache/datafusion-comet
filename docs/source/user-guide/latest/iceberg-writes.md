@@ -21,15 +21,22 @@
 
 ## Overview
 
-Comet's first layer for accelerating Iceberg V2 writes is a **split-operator plan**: Comet
-rewrites Iceberg's single `V2ExistingTableWriteExec` command into a pair of operators — a
-**committer** and a **writer** — so that AQE and Comet's columnar rules can see
-and re-optimise the data sub-query. The actual file-writing work still runs through Iceberg's
-stock JVM writer; nothing in this layer changes Iceberg's commit semantics. A further toggle for
-delegating the per-task parquet write to iceberg-rust is planned but not part of this layer.
+Comet accelerates Iceberg V2 copy-on-write table writes in two complementary layers:
 
-The split-operator plan is off by default; turn it on per session. Iceberg-Java writes the data
-unchanged when it's off.
+1. **Split-operator plan** (on by toggle). Comet rewrites Iceberg's single
+   `V2ExistingTableWriteExec` command into a pair of operators — a **committer** and a
+   **writer** — so that AQE (and Comet's columnar rules) can see and re-optimise the
+   data sub-query. The actual file-writing work still runs through Iceberg's stock JVM writer.
+2. **Native parquet write — detection only at this stage** (further toggle). Once the
+   split-operator plan is in place, a serde inspects each `IcebergWriteExec` to decide
+   whether the table's properties and write shape would allow delegating the per-task parquet
+   write to [iceberg-rust](https://github.com/apache/iceberg-rust). The detection / fall-back
+   table is wired up and tested; the actual native exec lands in a follow-up commit. With the
+   gate on today, writes still go through the JVM two-op path — only the diagnostic surface is
+   live.
+
+Both layers fall back to plain Iceberg-Java when they can't safely apply, and both layers are
+configured per-session.
 
 ## What changes about the Iceberg plan
 
@@ -69,7 +76,8 @@ would have made internally.
 
 ## Configuration
 
-Standard Comet + Iceberg setup ([`iceberg.md`](iceberg.md)) plus the split-operator toggle:
+Standard Comet + Iceberg setup ([`iceberg.md`](iceberg.md)) plus two toggles for the write-side
+behaviour:
 
 ```
 # Standard Comet / Iceberg wiring
@@ -79,16 +87,17 @@ spark.sql.catalog.<name>=org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.<name>.type=hadoop                              # or hive / glue / rest / ...
 spark.sql.catalog.<name>.warehouse=...
 
-# Comet write toggle (off by default)
-spark.comet.write.iceberg.splitOperator.enabled=true
+# Comet write toggles (both off by default; can be turned on independently)
+spark.comet.write.iceberg.splitOperator.enabled=true              # layer 1: split-operator plan
+spark.comet.write.iceberg.nativeAcceleration=true                 # layer 2: native parquet write (detection only at this stage)
 ```
 
-`IcebergSparkSessionExtensions` is **mandatory on Spark 3.4** for `UPDATE` / `MERGE` on V2
-tables — Spark 3.4's stock planner rejects `UPDATE TABLE` on V2 sources, and Iceberg's analyzer
-extension (`RewriteUpdateTable` / `RewriteMergeIntoTable`) is what provides the rewrite. On
-Spark 3.5+ the extension is optional but recommended (Spark added native row-level operation
-support in 3.5). `INSERT INTO` / `INSERT OVERWRITE` / `DELETE FROM` work without the extension
-on every Spark version.
+`IcebergSparkSessionExtensions` is **mandatory on Spark 3.4** for `UPDATE` / `MERGE` on V2 tables —
+Spark 3.4's stock planner rejects `UPDATE TABLE` on V2 sources, and Iceberg's analyzer extension
+(`RewriteUpdateTable` / `RewriteMergeIntoTable`) is what provides the rewrite. On Spark 3.5+ the
+extension is optional but recommended (Spark added native row-level operation support in 3.5).
+`INSERT INTO` / `INSERT OVERWRITE` / `DELETE FROM` work without the extension on every Spark
+version.
 
 If `splitOperator.enabled=false`, Comet leaves Iceberg's stock plan alone — every write goes
 straight through Iceberg-Java.
@@ -110,18 +119,55 @@ realisable benefit.
 
 - [¹] Requires `IcebergSparkSessionExtensions` (see Configuration above).
 
+## Fallback triggers
+
+Before accepting a write into the native path, the serde checks for things iceberg-rust either
+doesn't support or implements differently from iceberg-java. The first matching trigger short-
+circuits the conversion and the plan stays on the JVM two-op path.
+
+Each row attributes the gap to the layer that's the actual root cause: **iceberg-rust** (the
+high-level Iceberg writer / commit / metadata logic) or **parquet-rs** (the underlying Apache
+Parquet Rust encoder that iceberg-rust drives).
+
+| Property / state | Falls back when … | Why |
+|---|---|---|
+| resolved write format | `SparkWrite.format` (i.e. effective `write-format` option overlaid on `write.format.default`) is not `parquet` | **iceberg-rust**: writer stack is parquet-only today. The check reads the resolved format, so per-write `option("write-format", "orc")` is honoured even when the table default is parquet. |
+| `write.object-storage.enabled` | `true` | **iceberg-rust**: no hashed-prefix object-storage location generator |
+| `write.location-provider.impl` | set | **iceberg-rust**: can't load a Java `LocationProvider` class |
+| `format-version` | `>= 3` | **iceberg-rust**: V3 row lineage / DVs / variant types not implemented |
+| `encryption.*` (any key) | set | **iceberg-rust + parquet-rs**: no Parquet modular encryption support in either layer |
+| `write.metadata.metrics.default` | mentions `counts` | **iceberg-rust**: doesn't implement Iceberg's `counts`-without-bounds metrics mode. parquet-rs supports stats on or off but has no "value counts only" knob, so iceberg-rust would need to track and emit those counts itself; it doesn't. |
+| `write.metadata.metrics.default` | `none` | **iceberg-rust**: always populates `column_sizes` / `value_counts` / `null_value_counts` / bounds from the parquet footer regardless of the requested mode; iceberg-java's `none` emits an empty `DataFile.metrics`, so a native write would produce strictly richer manifests. |
+| `write.metadata.metrics.column.<col>` | any column set to `counts` | **iceberg-rust**: same as default `counts`, per-column |
+| `write.metadata.metrics.column.<col>` | any column set to `none` | **iceberg-rust**: same as default `none`, per-column |
+| `write.parquet.bloom-filter-max-bytes` | explicitly set | **iceberg-rust**: doesn't enforce iceberg-java's bloom-filter byte cap. parquet-rs has no global cap parameter on `WriterProperties`, so iceberg-rust would need to clamp NDV / FPP itself before passing them through. |
+| `write.parquet.bloom-filter-enabled.column.<col>` | any column set to `true` | **iceberg-rust**: bloom-filter sizing diverges from iceberg-java (same root cause as above — no cap clamping) |
+| `write.parquet.row-group-check-min-record-count` | set to a non-default value (default `100`) | **parquet-rs**: row-group close cadence is byte-driven and doesn't expose parquet-mr's per-row-count knobs, so iceberg-rust can't honour this property |
+| `write.parquet.row-group-check-max-record-count` | set to a non-default value (default `10000`) | **parquet-rs**: same as above |
+| `write.parquet.page-version` | set to a non-default value (default `v1`) | **parquet-rs**: the default writer does not implement DataPageV2 encoding; iceberg-java with `v2` produces a different on-disk format. |
+| `write.parquet.stats-enabled.column.<col>` | any column override set | **parquet-rs**: no per-column statistics-enabled override on `WriterProperties` matching parquet-mr's; iceberg-rust would silently ignore the request. |
+| `parquet.enable.dictionary` | set | **parquet-rs**: explicit dictionary override is not translated to the native writer settings; parquet-rs would fall back to its own default and diverge from parquet-mr. |
+| `write.metadata.metrics.max-inferred-column-defaults` | set to less than the number of fields in the schema (default `100`) | **iceberg-rust**: doesn't apply `MetricsModes.None` to columns past this limit; iceberg-java does, so the produced column statistics would diverge |
+| `io-impl` (catalog property) | set | **iceberg-rust**: native FileIO is selected by URI scheme (`OpenDalStorageFactory`), so an explicit Java `FileIO` class can't be honoured. |
+| Resolved data-location URI scheme | not in `{file, memory, s3, s3a, gs, oss}` | **iceberg-rust**: `iceberg_common::storage_factory_for` resolves only the listed schemes; `hdfs`, `abfs`/`abfss`, `wasb`/`wasbs`, and similar would crash at write time. |
+
+Every trigger has a pinning test in `CometIcebergWriteDetectionSuite`.
+
 ## Tests
 
 - **`CometIcebergWriteActionSuite`** — end-to-end scenarios against a temporary Hadoop catalog
   covering the copy-on-write V2 logical-write variants on the split-operator path, plus parity
   vs Iceberg-Java's writer, the disabled-config fallback, and the commit-once invariant. Passes
   on Spark 3.4 / 3.5 / 4.0 with `IcebergSparkSessionExtensions` loaded.
+- **`CometIcebergWriteDetectionSuite`** — tests that build a planned-but-not-executed
+  `IcebergWriteExec` per fall-back trigger and assert
+  `CometIcebergNativeWrite.getSupportLevel` returns `Unsupported` with the expected reason
+  fragment, plus a positive baseline (clean parquet V2 table → `Compatible`).
 
 ## Abort behaviour
 
-The writer calls `writer.abort()` per task on failure to release task-level resources.
-The committer (`IcebergCommitExec.run()`) calls `BatchWrite.abort(messages)` if `commit()`
-raises.
+The writer calls `writer.abort()` per task on failure to release task-level resources. The
+committer (`IcebergCommitExec.run()`) calls `BatchWrite.abort(messages)` if `commit()` raises.
 
 If task writers stage files locally but their commit messages never reach the driver (e.g.
 driver crash mid-collect), the staged Parquet files become **unreferenced orphans**. Iceberg's

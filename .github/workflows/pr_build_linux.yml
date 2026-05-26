@@ -288,6 +288,7 @@ jobs:
               org.apache.comet.CometIcebergNativeSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.CometIcebergWriteActionSuite
+              org.apache.comet.CometIcebergWriteDetectionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
               org.apache.comet.CometFuzzTestSuite

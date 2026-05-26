@@ -52,6 +52,8 @@ object IcebergReflection extends Logging {
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
+    val TABLE_PROPERTIES = "org.apache.iceberg.TableProperties"
+    val TYPE_UTIL = "org.apache.iceberg.types.TypeUtil"
 
     // Iceberg 1.5.2 (Spark 3.4 profile) ships its own `ReplaceIcebergData` logical write node via
     // the iceberg-spark-extensions module instead of using Spark's stock `ReplaceData`. Iceberg
@@ -118,6 +120,41 @@ object IcebergReflection extends Logging {
    */
   def isIcebergSparkWrite(write: Any): Boolean =
     sparkWriteClassOpt.exists(_.isInstance(write))
+
+  /**
+   * Whether `batchWrite` is one of Iceberg's `SparkWrite` inner `BatchWrite` impls
+   * (`BatchAppend`, `OverwriteByFilter`, `DynamicOverwrite`, `CopyOnWriteOperation`,
+   * `RewriteFiles`). These are private inner classes of `SparkWrite`; we detect them by name
+   * prefix because they are not exposed as a public superclass.
+   */
+  def isIcebergBatchWrite(batchWrite: Any): Boolean = {
+    if (batchWrite == null) return false
+    batchWrite.getClass.getName.startsWith(ClassNames.SPARK_WRITE + "$")
+  }
+
+  /**
+   * Extract the outer `SparkWrite` instance from an Iceberg `BatchWrite` inner class via the
+   * synthetic `this$0` reference Java compilers emit for non-static inner classes. The `Table`
+   * and table-property accessors live on the outer class.
+   */
+  def getOuterSparkWrite(batchWrite: Any): Option[Any] = {
+    if (batchWrite == null) None
+    else {
+      try {
+        val field = batchWrite.getClass.getDeclaredField("this$0")
+        field.setAccessible(true)
+        Option(field.get(batchWrite))
+      } catch {
+        case _: NoSuchFieldException =>
+          // batchWrite may already be the outer class (static inner) -- fall back to itself.
+          Some(batchWrite)
+        case e: Exception =>
+          logError(
+            s"Iceberg reflection failure: outer SparkWrite from BatchWrite: ${e.getMessage}")
+          None
+      }
+    }
+  }
 
   /**
    * Whether `plan` is Iceberg's `ReplaceIcebergData` logical node (Iceberg 1.5.2's UPDATE / MERGE
@@ -706,6 +743,86 @@ object IcebergReflection extends Logging {
     }
 
     unsupportedTypes.toList
+  }
+
+  private def getSparkWriteField(sparkWrite: Any, fieldName: String): Option[Any] =
+    sparkWriteClassOpt.flatMap { cls =>
+      try {
+        val field = cls.getDeclaredField(fieldName)
+        field.setAccessible(true)
+        Option(field.get(sparkWrite))
+      } catch {
+        case _: NoSuchFieldException => None
+        case e: Exception =>
+          logError(
+            s"Iceberg reflection failure: Failed to read SparkWrite.$fieldName: ${e.getMessage}")
+          None
+      }
+    }
+
+  /**
+   * Effective output file format resolved by Iceberg via `SparkWriteConf.dataFileFormat()`. Java
+   * consults the `write-format` write option BEFORE the `write.format.default` table property, so
+   * a per-write option override must win - gating only on table properties produces false-pass
+   * and false-fall-back outcomes when the two disagree.
+   *
+   * `SparkWrite.format` is a `FileFormat` enum (`PARQUET`/`ORC`/`AVRO`); returned lower-cased.
+   */
+  def getFormatFromSparkWrite(sparkWrite: Any): Option[String] =
+    getSparkWriteField(sparkWrite, "format")
+      .map(_.toString.toLowerCase(java.util.Locale.ROOT))
+
+  /**
+   * Reads the `private final` `table` field from a `SparkWrite`. Same setAccessible-required
+   * pattern as the other private-final accessors.
+   */
+  def getTableFromSparkWrite(sparkWrite: Any): Option[Any] =
+    getSparkWriteField(sparkWrite, "table")
+
+  private lazy val tablePropertiesClassOpt: Option[Class[_]] =
+    tryLoadClass(ClassNames.TABLE_PROPERTIES)
+
+  /**
+   * Reads a static `String` constant from Iceberg's `org.apache.iceberg.TableProperties` by field
+   * name (e.g. `"DEFAULT_FILE_FORMAT"` -> `"write.format.default"`). Throws when Iceberg is
+   * absent or the constant has been renamed/removed; both indicate a version we have not vetted.
+   */
+  def tablePropertyConstant(fieldName: String): String =
+    readTablePropertiesField(fieldName).asInstanceOf[String]
+
+  /**
+   * Reads a static `int` constant from `TableProperties` (e.g. one of the `*_DEFAULT` numerics).
+   */
+  def tablePropertyIntConstant(fieldName: String): Int =
+    readTablePropertiesField(fieldName).asInstanceOf[Integer].intValue()
+
+  private def readTablePropertiesField(fieldName: String): Any = {
+    val cls = tablePropertiesClassOpt.getOrElse(
+      throw new IllegalStateException(s"${ClassNames.TABLE_PROPERTIES} is not on the classpath"))
+    try cls.getField(fieldName).get(null)
+    catch {
+      case e: NoSuchFieldException =>
+        throw new IllegalStateException(
+          s"${ClassNames.TABLE_PROPERTIES}.$fieldName not found " +
+            "(unsupported Iceberg version?)",
+          e)
+    }
+  }
+
+  /**
+   * Returns the count of projected field IDs in `schema` -- mirrors Iceberg-Java's
+   * `TypeUtil.getProjectedIds(Schema).size()` used to gate
+   * `write.metadata.metrics.max-inferred-column-defaults`.
+   */
+  def getProjectedFieldIdCount(schema: Any): Option[Int] = {
+    for {
+      typeUtilClass <- tryLoadClass(ClassNames.TYPE_UTIL)
+      schemaClass <- tryLoadClass(ClassNames.SCHEMA)
+    } yield {
+      val method = typeUtilClass.getMethod("getProjectedIds", schemaClass)
+      val ids = method.invoke(null, schema.asInstanceOf[AnyRef]).asInstanceOf[java.util.Set[_]]
+      ids.size()
+    }
   }
 
 }

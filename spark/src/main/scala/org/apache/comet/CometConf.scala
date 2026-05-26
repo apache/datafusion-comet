@@ -133,6 +133,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.write.iceberg.nativeAcceleration")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
+          "writer when the table's properties allow it. Requires " +
+          "`spark.comet.write.iceberg.splitOperator.enabled = true`. Off by default. " +
+          "Falls back to the JVM two-op path automatically for unsupported scenarios " +
+          "(MoR DML, encrypted / object-storage / custom-location-provider tables, " +
+          "non-parquet format, format-version >= 3, counts-only metrics, bloom filters, " +
+          "non-default parquet row-group cadence, schemas wider than " +
+          "`write.metadata.metrics.max-inferred-column-defaults`). See " +
+          "`docs/source/user-guide/latest/iceberg-writes.md` for the full trigger table.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)
