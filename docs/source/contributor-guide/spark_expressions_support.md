@@ -33,6 +33,9 @@
 
 - [x] any
 - [x] any_value
+  - Spark 3.4.3 (2026-05-26)
+  - Spark 3.5.8 (2026-05-26)
+  - Spark 4.0.1 (2026-05-26)
 - [ ] approx_count_distinct
 - [ ] approx_percentile
 - [ ] approx_top_k
