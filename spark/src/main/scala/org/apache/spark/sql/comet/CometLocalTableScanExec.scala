@@ -25,7 +25,6 @@ import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, UnsafeProjection}
-import org.apache.spark.sql.comet.CometLocalTableScanExec.createMetricsIterator
 import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -68,19 +67,24 @@ case class CometLocalTableScanExec(
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    val numInputRows = longMetric("numOutputRows")
+    val numOutputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    // Use UTC to match native side expectations. See CometSparkToColumnarExec.
-    val timeZoneId = "UTC"
-    rdd.mapPartitionsInternal { sparkBatches =>
+    val schema = originalPlan.schema
+    // Native side asserts Timestamp(Microsecond, Some("UTC")). See COMET-2720.
+    rdd.mapPartitionsInternal { rowIter =>
       val context = TaskContext.get()
-      val batches = CometArrowConverters.rowToArrowBatchIter(
-        sparkBatches,
-        originalPlan.schema,
+      // Non-Comet JVM consumers (e.g. Iceberg writers) may retain batches across next()
+      // calls, so each batch must own independent Arrow buffers.
+      val batches = CometArrowConverters.rowToArrowBatchIterNoReuse(
+        rowIter,
+        schema,
         maxRecordsPerBatch,
-        timeZoneId,
+        "UTC",
         context)
-      createMetricsIterator(batches, numInputRows)
+      batches.map { batch =>
+        numOutputRows.add(batch.numRows())
+        batch
+      }
     }
   }
 
@@ -109,9 +113,6 @@ case class CometLocalTableScanExec(
 }
 
 object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTypeSupport {
-
-  // uses CometArrowConverters, which re-uses arrays
-  override def isFfiSafe: Boolean = false
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
@@ -142,19 +143,5 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
 
   override def createExec(nativeOp: Operator, op: LocalTableScanExec): CometNativeExec = {
     CometScanWrapper(nativeOp, CometLocalTableScanExec(op, op.rows, op.output))
-  }
-
-  private def createMetricsIterator(
-      it: Iterator[ColumnarBatch],
-      numInputRows: SQLMetric): Iterator[ColumnarBatch] = {
-    new Iterator[ColumnarBatch] {
-      override def hasNext: Boolean = it.hasNext
-
-      override def next(): ColumnarBatch = {
-        val batch = it.next()
-        numInputRows.add(batch.numRows())
-        batch
-      }
-    }
   }
 }

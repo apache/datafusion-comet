@@ -140,6 +140,39 @@ object CometArrowConverters extends Logging {
     new RowToArrowBatchIter(rowIter, schema, maxRecordsPerBatch, timeZoneId, context)
   }
 
+  /**
+   * Use when the downstream consumer may retain batches across `next()` calls (e.g. non-Comet JVM
+   * columnar sinks like Iceberg writers). Each batch owns independent Arrow buffers.
+   */
+  def rowToArrowBatchIterNoReuse(
+      rowIter: Iterator[InternalRow],
+      schema: StructType,
+      maxRecordsPerBatch: Long,
+      timeZoneId: String,
+      context: TaskContext): Iterator[ColumnarBatch] = {
+    val arrowSchema = Utils.toArrowSchema(schema, timeZoneId)
+    val allocator =
+      CometArrowAllocator.newChildAllocator("rowToArrowBatchIterNoReuse", 0, Long.MaxValue)
+    Option(context).foreach(_.addTaskCompletionListener[Unit](_ => allocator.close()))
+
+    new Iterator[ColumnarBatch] {
+      override def hasNext: Boolean = rowIter.hasNext
+
+      override def next(): ColumnarBatch = {
+        val root = VectorSchemaRoot.create(arrowSchema, allocator)
+        val writer = ArrowWriter.create(root)
+        var rowCount = 0L
+        while (rowIter.hasNext &&
+          (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
+          writer.write(rowIter.next())
+          rowCount += 1
+        }
+        writer.finish()
+        NativeUtil.rootAsBatch(root)
+      }
+    }
+  }
+
   private[sql] class ColumnBatchToArrowBatchIter(
       colBatch: ColumnarBatch,
       schema: StructType,
