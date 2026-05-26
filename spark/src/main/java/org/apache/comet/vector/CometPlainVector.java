@@ -39,6 +39,7 @@ import org.apache.spark.unsafe.types.UTF8String;
  */
 public class CometPlainVector extends CometDecodedVector {
   private final long valueBufferAddress;
+  private final long offsetBufferAddress;
   private final boolean isBaseFixedWidthVector;
 
   private byte booleanByteCache;
@@ -56,7 +57,6 @@ public class CometPlainVector extends CometDecodedVector {
     } else {
       this.valueBufferAddress = vector.getDataBuffer().memoryAddress();
     }
-
     isBaseFixedWidthVector = valueVector instanceof BaseFixedWidthVector;
   }
 
@@ -108,13 +108,11 @@ public class CometPlainVector extends CometDecodedVector {
   @Override
   public UTF8String getUTF8String(int rowId) {
     if (isNullAt(rowId)) return null;
-    if (!isBaseFixedWidthVector) {
-      BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
-      long offsetBufferAddress = varWidthVector.getOffsetBuffer().memoryAddress();
+    if (offsetBufferAddress != -1) {
       int offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
       int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
       return UTF8String.fromAddress(null, valueBufferAddress + offset, length);
-    } else {
+    } else if (isBaseFixedWidthVector) {
       BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
       int length = fixedWidthVector.getTypeWidth();
       int offset = rowId * length;
@@ -127,6 +125,8 @@ public class CometPlainVector extends CometDecodedVector {
       } else {
         return UTF8String.fromString(convertToUuid(result).toString());
       }
+    } else {
+      throw new IllegalStateException("Unsupported UTF8 vector type: " + valueVector.getName());
     }
   }
 
@@ -135,9 +135,7 @@ public class CometPlainVector extends CometDecodedVector {
     if (isNullAt(rowId)) return null;
     int offset;
     int length;
-    if (valueVector instanceof BaseVariableWidthVector) {
-      BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
-      long offsetBufferAddress = varWidthVector.getOffsetBuffer().memoryAddress();
+    if (offsetBufferAddress != -1) {
       offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
       length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
     } else if (valueVector instanceof BaseFixedWidthVector) {
@@ -145,7 +143,7 @@ public class CometPlainVector extends CometDecodedVector {
       length = fixedWidthVector.getTypeWidth();
       offset = rowId * length;
     } else {
-      throw new RuntimeException("Unsupported binary vector type: " + valueVector.getName());
+      throw new IllegalStateException("Unsupported binary vector type: " + valueVector.getName());
     }
     byte[] result = new byte[length];
     Platform.copyMemory(
