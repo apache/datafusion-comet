@@ -58,6 +58,12 @@ public class CometPlainVector extends CometDecodedVector {
       this.valueBufferAddress = vector.getDataBuffer().memoryAddress();
     }
     isBaseFixedWidthVector = valueVector instanceof BaseFixedWidthVector;
+    if (vector instanceof BaseVariableWidthVector) {
+      this.offsetBufferAddress =
+          ((BaseVariableWidthVector) vector).getOffsetBuffer().memoryAddress();
+    } else {
+      this.offsetBufferAddress = -1;
+    }
   }
 
   @Override
