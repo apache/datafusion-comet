@@ -66,6 +66,17 @@ spark-submit --jars vendor-comet-bridge.jar ...
 
 OSS Comet ships no vendor-specific bridges. Get one from the same vendor that supplies your Hadoop S3A signer or Iceberg client factory. If they do not yet provide one, send them to the "Writing a bridge" section below.
 
+## Wire encryption
+
+Catalog configuration you set under `spark.sql.catalog.<catalog>.*` (which may include endpoint URLs, OAuth tokens, and other vendor keys your provider reads) is sent from the driver to executors over Spark's Netty RPC channel so the provider can run there. Live AWS credentials fetched by the provider stay on the executor that fetched them.
+
+Spark's RPC channel is plaintext by default and offers two opt-in encryption mechanisms, both off by default:
+
+- [`spark.network.crypto.enabled`](https://spark.apache.org/docs/latest/security.html#authentication-and-encryption) for AES-based RPC encryption keyed off the auth shared secret.
+- [`spark.ssl.rpc.enabled`](https://spark.apache.org/docs/latest/security.html#ssl-configuration) for TLS on the same channel (Spark 3.4+).
+
+The same defaults apply to Hadoop delegation tokens, `CloudCredentialsProvider` JWTs, and any other secrets Spark already ships driver-to-executor, so this is a deployment-wide call rather than something specific to this SPI. See Spark's [security guide](https://spark.apache.org/docs/latest/security.html) for the full set of knobs.
+
 ## Verification
 
 With the config set and the JAR on the classpath, executor logs show on first S3 access:
