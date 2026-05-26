@@ -708,9 +708,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             }
             handler.convert(expr, inputs, binding)
           } else {
-            // scalastyle:off println
-            println("BOOOOOOOOOOOM_1: " + expr)
-            // scalastyle:on println line=586 column=14
             val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
             withInfo(
               expr,
