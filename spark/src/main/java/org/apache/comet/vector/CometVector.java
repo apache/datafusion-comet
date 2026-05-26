@@ -38,7 +38,24 @@ import org.apache.spark.sql.vectorized.ColumnarMap;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.UTF8String;
 
-/** Base class for all Comet column vector implementations. */
+/**
+ * Base class for all Comet column vector implementations.
+ *
+ * <p>Comet wraps Arrow vectors imported from native execution (via the Arrow C Data Interface) in
+ * this hierarchy so they satisfy Spark's {@link ColumnVector} contract. A custom hierarchy is
+ * required because:
+ *
+ * <ul>
+ *   <li>{@code comet-common} shades Arrow into {@code org.apache.comet.shaded.arrow.*} to avoid a
+ *       classpath collision with Spark's bundled Arrow. Spark's own {@code ArrowColumnVector}
+ *       expects unshaded Arrow and cannot be reused here.
+ *   <li>{@link #getDecimal(int, int, int)} bypasses {@code Decimal.createUnsafe}'s negative-scale
+ *       check to match Spark's expected semantics for native decimal output.
+ *   <li>The {@link #getVector(ValueVector, DictionaryProvider)} factory chooses the right wrapper
+ *       based on the Arrow type, including a separate {@link CometDictionaryVector} for
+ *       dictionary-encoded columns.
+ * </ul>
+ */
 public abstract class CometVector extends ColumnVector {
   private static final int DECIMAL_BYTE_WIDTH = 16;
   private final byte[] DECIMAL_BYTES = new byte[DECIMAL_BYTE_WIDTH];

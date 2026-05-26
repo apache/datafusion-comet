@@ -24,7 +24,14 @@ import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.spark.sql.comet.util.Utils;
 import org.apache.spark.unsafe.Platform;
 
-/** A Comet vector whose elements are already decoded (i.e., materialized). */
+/**
+ * A Comet vector backed by a single Arrow {@link ValueVector} whose values are already decoded (vs.
+ * {@link CometDictionaryVector}, which keeps indices and dictionary values in separate vectors and
+ * decodes on access).
+ *
+ * <p>Caches the most recently read validity byte to amortize null checks during the common
+ * sequential row-access pattern.
+ */
 public abstract class CometDecodedVector extends CometVector {
   /**
    * The vector that stores all the values. For dictionary-backed vector, this is the vector of
