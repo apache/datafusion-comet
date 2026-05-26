@@ -389,7 +389,8 @@ under the License.
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
 <ul class="current">
 <li class="toctree-l1 current"><a class="reference internal" href="../../../index.html">User Guide</a><ul class="current">
-<li class="toctree-l2 current"><a class="reference internal" href="../../index.html">0.17.0-SNAPSHOT</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../../../0.16/index.html">0.16.x (current)</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../../index.html">Development Snapshot</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="../../installation.html">Installing Comet</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../source.html">Building From Source</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../datasources.html">Supported Data Sources</a></li>
@@ -414,10 +415,7 @@ under the License.
 <li class="toctree-l3"><a class="reference internal" href="../../kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../../../0.16/index.html">0.16.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../../../0.15/index.html">0.15.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../../../0.14/index.html">0.14.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../../../0.13/index.html">0.13.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../../older-versions.html">Older Versions</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../contributor-guide/index.html">Contributor Guide</a></li>
@@ -537,13 +535,6 @@ under the License.
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p>Complex types (arrays, maps, structs) in the schema are not supported</p></li>
-</ul>
-</section>
-<section id="structstojson">
-<h2>StructsToJson<a class="headerlink" href="#structstojson" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StructsToJson</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToJson.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Does not support <code class="docutils literal notranslate"><span class="pre">+Infinity</span></code> and <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> for numeric types (float, double). (https://github.com/apache/datafusion-comet/issues/3016)</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
 </section>
