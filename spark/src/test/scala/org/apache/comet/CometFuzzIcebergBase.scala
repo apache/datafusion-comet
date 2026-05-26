@@ -42,13 +42,20 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
   var warehouseDir: File = null
   val icebergTableName: String = "hadoop_catalog.db.fuzz_test"
 
-  // Skip these tests if Iceberg is not available in classpath
+  // Skip when Iceberg is unavailable OR unusable on this Spark version. There is no published
+  // Iceberg Spark 4.1+ runtime yet (apache/iceberg#15238); the spark-4.1 / spark-4.2 profiles pin
+  // the binary-incompatible 4.0 runtime as a build-only stopgap, so gate on Spark version to skip
+  // rather than abort. Remove once the pom adopts iceberg-spark-runtime-4.1 (Iceberg 1.11.0+).
   private def icebergAvailable: Boolean = {
-    try {
-      Class.forName("org.apache.iceberg.catalog.Catalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
+    if (CometSparkSessionExtensions.isSpark41Plus) {
+      false
+    } else {
+      try {
+        Class.forName("org.apache.iceberg.catalog.Catalog")
+        true
+      } catch {
+        case _: ClassNotFoundException => false
+      }
     }
   }
 
@@ -88,7 +95,10 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Skip setup when Iceberg is unavailable/unusable on this Spark version. `assume` here would
+    // abort the whole suite (it runs outside any test); each test instead cancels via `assume` in
+    // the `test(...)` override below, so the suite reports cleanly skipped tests on Spark 4.1+.
+    if (!icebergAvailable) return
     warehouseDir = Files.createTempDirectory("comet-iceberg-fuzz-test").toFile
     val random = new Random(42)
     withSQLConf(
@@ -146,6 +156,9 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
+      // Cancel (not abort) when Iceberg is unavailable -- must precede any `warehouseDir` access,
+      // since `beforeAll` skips initialising it on Spark 4.1+.
+      assume(icebergAvailable, "Iceberg not available in classpath")
       withSQLConf(
         "spark.sql.catalog.hadoop_catalog" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.hadoop_catalog.type" -> "hadoop",

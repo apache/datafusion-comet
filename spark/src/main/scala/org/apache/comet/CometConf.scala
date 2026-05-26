@@ -126,10 +126,11 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TESTING)
       .doc(
         "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
-          "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
-          "(outside AQE). This lets AQE and Comet's columnar rules see and re-optimise the " +
-          "data sub-query without affecting Iceberg's commit semantics. Off by default; " +
-          "Iceberg-Java writes the data unchanged when the gate is off. Highly experimental.")
+          "into Comet's two-operator shape: a separate inner write exec (inside AQE) and outer " +
+          "commit exec (outside AQE). This lets Comet convert the data sub-query natively " +
+          "without affecting Iceberg's commit semantics. Required gate for native parquet " +
+          "writes (`spark.comet.write.iceberg.nativeAcceleration`). Off by default; Iceberg-Java " +
+          "writes the data unchanged when the gate is off. Highly experimental.")
       .booleanConf
       .createWithDefault(false)
 
@@ -140,10 +141,11 @@ object CometConf extends ShimCometConf {
         "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
           "writer when the table's properties allow it. Requires " +
           "`spark.comet.write.iceberg.splitOperator.enabled = true`. Off by default. " +
+          "Supported on Spark 3.4 (with Iceberg 1.5.2) and Spark 3.5 / 4.0 (with Iceberg 1.8+). " +
           "Falls back to the JVM two-op path automatically for unsupported scenarios " +
-          "(MoR DML, encrypted / object-storage / custom-location-provider tables, " +
-          "non-parquet format, format-version >= 3, counts-only metrics, bloom filters, " +
-          "non-default parquet row-group cadence, schemas wider than " +
+          "(MERGE, encrypted / custom-location-provider tables, non-parquet format, " +
+          "format-version >= 3, counts-only metrics, bloom filters, non-default parquet " +
+          "row-group cadence, schemas wider than " +
           "`write.metadata.metrics.max-inferred-column-defaults`). See " +
           "`docs/source/user-guide/latest/iceberg-writes.md` for the full trigger table.")
       .booleanConf

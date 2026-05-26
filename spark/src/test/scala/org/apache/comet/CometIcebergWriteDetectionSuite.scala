@@ -26,6 +26,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.IcebergWriteExec
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
 
@@ -56,6 +57,51 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  // --- SparkWrite reflection coverage ----------------------------------------------------------
+
+  // Pins that every private-field / private-method accessor the native-write gate and proto
+  // builder depend on still resolves against a real `SparkWrite` from the Iceberg runtime on the
+  // build's classpath. These accessors fail closed (Option -> JVM fall-back) by design, so a field
+  // rename (e.g. `useFanoutWriter` <-> `partitionedFanoutEnabled` between Iceberg 1.5.2 and 1.8.1)
+  // would silently lose native acceleration with no other test failing. This is the explicit
+  // compatibility matrix the comments in IcebergReflection only describe.
+  test("SparkWrite reflection helpers all resolve on the current Iceberg runtime") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withDetectionCatalog { dir =>
+      createTable(dir, "refl_probe", partitionSpec = "")
+      val sparkWrite = IcebergReflection
+        .getOuterSparkWrite(insertWriteExec("refl_probe").batchWrite)
+        .getOrElse(fail("could not unwrap outer SparkWrite from BatchWrite"))
+      val table = IcebergReflection
+        .getTableFromSparkWrite(sparkWrite)
+        .getOrElse(fail("SparkWrite.table reflection returned None"))
+
+      assert(IcebergReflection.getOperationIdFromSparkWrite(sparkWrite).isDefined, "queryId")
+      assert(
+        IcebergReflection.getTargetFileSizeFromSparkWrite(sparkWrite).isDefined,
+        "targetFileSize")
+      assert(
+        IcebergReflection.getUseFanoutWriterFromSparkWrite(sparkWrite).isDefined,
+        "useFanoutWriter")
+      assert(
+        IcebergReflection.getOutputSpecIdFromSparkWrite(sparkWrite).isDefined,
+        "outputSpecId")
+      assert(IcebergReflection.getWriteSchemaFromSparkWrite(sparkWrite).isDefined, "writeSchema")
+      assert(IcebergReflection.getFormatFromSparkWrite(sparkWrite).isDefined, "format")
+      assert(
+        IcebergReflection.getWritePropertiesFromSparkWrite(sparkWrite).isDefined,
+        "writeProperties")
+      // `SparkWrite.writeConf.outputSortOrderId(...)` is intentionally NOT pinned here: it does not
+      // exist on any Iceberg version Comet targets (1.5.2 / 1.8.1 / 1.10.0), and the proto builder
+      // deliberately defaults `sort_order_id` to 0 to match Iceberg-Java (whose Spark WriterFactory
+      // never stamps the table sort order on appended files). Sort-order parity is covered by the
+      // action suite, not by reflection resolvability.
+
+      assert(IcebergReflection.getMetadataLocation(table).isDefined, "metadataLocation")
+      assert(IcebergReflection.getDataLocation(table).isDefined, "dataLocation")
+    }
+  }
+
   // --- write.format.default --------------------------------------------------------------------
 
   test("fall-back: write.format.default=orc") {
@@ -67,6 +113,25 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         partitionSpec = "",
         properties = Some("'write.format.default'='orc'"))
       assertUnsupportedContains("fmt_orc", "format=orc", "only parquet")
+    }
+  }
+
+  // Mirrors the table-property gate above but exercises the option-override branch of
+  // `SparkWriteConf.dataFileFormat()`: a per-write `write-format` option must win over a
+  // parquet-default table. The DataFrame-writer driver routes the option into `SparkWriteConf`
+  // the same way Iceberg-Java does at runtime, so the gate reads it from `SparkWrite.format`.
+  test("fall-back: per-write write-format option overrides parquet default") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withDetectionCatalog { dir =>
+      createTable(dir, "fmt_orc_opt", partitionSpec = "")
+      val writeExec = dfWriteExec("fmt_orc_opt", "write-format" -> "orc")
+      val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+      support match {
+        case Unsupported(Some(reason)) =>
+          assert(reason.contains("format=orc"), s"reason '$reason' missing 'format=orc'")
+          assert(reason.contains("only parquet"), s"reason '$reason' missing 'only parquet'")
+        case other => fail(s"expected Unsupported, got $other")
+      }
     }
   }
 
@@ -196,7 +261,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("fall-back: schema exceeds write.metadata.metrics.max-inferred-column-defaults") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       // Lower the cap to 2 so our 3-column fixture table trips it without making the schema huge.
       val sql = s"""
         CREATE TABLE $catalog.$ns.too_many_cols (
@@ -211,6 +276,28 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         "too_many_cols",
         "projected field IDs which exceeds",
         "write.metadata.metrics.max-inferred-column-defaults=2")
+    }
+  }
+
+  // Iceberg only applies the inferred-column none-truncation when NO explicit
+  // `write.metadata.metrics.default` is set; with a default present every column uses that mode
+  // regardless of count, so the gate must not fire even when the schema exceeds the cap.
+  test("Compatible when over max-inferred cap but an explicit metrics.default is set") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withDetectionCatalog { _ =>
+      val sql = s"""
+        CREATE TABLE $catalog.$ns.cap_with_default (
+          id INT,
+          region STRING,
+          amount DOUBLE
+        ) USING iceberg
+        TBLPROPERTIES (
+          'write.metadata.metrics.max-inferred-column-defaults'='2',
+          'write.metadata.metrics.default'='full'
+        )
+      """
+      spark.sql(sql)
+      assertSupportLevelIs[Compatible]("cap_with_default")
     }
   }
 
@@ -287,19 +374,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  // --- write.parquet.page-version=v2 -----------------------------------------------------------
-
-  test("fall-back: write.parquet.page-version=v2") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "page_v2",
-        partitionSpec = "",
-        properties = Some("'write.parquet.page-version'='v2'"))
-      assertUnsupportedContains("page_v2", "write.parquet.page-version", "v2")
-    }
-  }
+  // (No `write.parquet.page-version` gate: that property does not exist in any Iceberg version
+  // Comet targets -- the parquet writer is hardwired to PARQUET_1_0 -- so setting it is a no-op in
+  // Iceberg-Java just as in the native path. Nothing to gate.)
 
   // --- parquet.enable.dictionary set -----------------------------------------------------------
 
@@ -317,7 +394,11 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   // --- per-column write.parquet.stats-enabled.column.<c> ---------------------------------------
 
-  test("fall-back: per-column write.parquet.stats-enabled.<col> set") {
+  // `write.parquet.stats-enabled.column.*` only exists (and is honoured) on Iceberg 1.10.0+
+  // (`TableProperties.PARQUET_COLUMN_STATS_ENABLED_PREFIX`). On 1.5.2 / 1.8.1 Iceberg-Java ignores
+  // it, so the native write matches Java and must NOT fall back. Branch the expectation on whether
+  // the constant exists, so the test asserts the right thing on every profile.
+  test("per-column write.parquet.stats-enabled.<col>: gated only where Iceberg honours it") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withDetectionCatalog { dir =>
       createTable(
@@ -325,7 +406,15 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         "col_stats",
         partitionSpec = "",
         properties = Some("'write.parquet.stats-enabled.column.region'='false'"))
-      assertUnsupportedContains("col_stats", "write.parquet.stats-enabled.column.region")
+      val honoured =
+        IcebergReflection
+          .tablePropertyConstantOpt("PARQUET_COLUMN_STATS_ENABLED_PREFIX")
+          .isDefined
+      if (honoured) {
+        assertUnsupportedContains("col_stats", "write.parquet.stats-enabled.column.region")
+      } else {
+        assertSupportLevelIs[Compatible]("col_stats")
+      }
     }
   }
 
@@ -397,14 +486,37 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   /**
    * Trigger an `INSERT INTO` and pluck the `IcebergWriteExec` out of the captured `executedPlan`.
-   *
+   */
+  private def insertWriteExec(tableName: String): IcebergWriteExec =
+    captureWriteExec(tableName) {
+      spark.sql(s"INSERT INTO $catalog.$ns.$tableName VALUES (1, 'us', 1.0)")
+    }
+
+  /**
+   * Sibling of [[insertWriteExec]] that uses the DataFrameWriterV2 API so per-write `option(...)`
+   * pairs flow into `SparkWriteConf`. Pins gates whose effective value resolves through a
+   * `SparkWrite` field (e.g. the resolved `format` overlaying `write.format.default` with the
+   * per-write `write-format` option).
+   */
+  private def dfWriteExec(tableName: String, options: (String, String)*): IcebergWriteExec =
+    captureWriteExec(tableName) {
+      val df = spark
+        .createDataFrame(Seq((1, "us", 1.0)))
+        .toDF("id", "region", "amount")
+      val writer = options.foldLeft(df.writeTo(s"$catalog.$ns.$tableName")) { case (w, (k, v)) =>
+        w.option(k, v)
+      }
+      writer.append()
+    }
+
+  /**
    * Spark 3.5+ `QueryExecution.sparkPlan` accesses `commandExecuted`, which eagerly executes V2
    * commands. So we can't inspect a planned-but-unexecuted tree -- the write fires whether we
    * want it to or not. A `QueryExecutionListener` lets us capture the executedPlan whether the
    * write succeeds or throws (some negative fixtures, e.g. encryption, deliberately set values
    * that crash the JVM writer at task time).
    */
-  private def insertWriteExec(tableName: String): IcebergWriteExec = {
+  private def captureWriteExec(tableName: String)(trigger: => Unit): IcebergWriteExec = {
     val captured =
       new java.util.concurrent.atomic.AtomicReference[org.apache.spark.sql.execution.SparkPlan]()
     val listener = new org.apache.spark.sql.util.QueryExecutionListener {
@@ -427,7 +539,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     catch { case _: java.util.concurrent.TimeoutException => () }
     spark.listenerManager.register(listener)
     try {
-      try spark.sql(s"INSERT INTO $catalog.$ns.$tableName VALUES (1, 'us', 1.0)")
+      try trigger
       catch { case _: Throwable => () }
       try org.apache.spark.CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
       catch { case _: java.util.concurrent.TimeoutException => () }

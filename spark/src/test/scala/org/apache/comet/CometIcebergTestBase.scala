@@ -22,6 +22,7 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.Files
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.iceberg.IcebergReflection
 
 /**
@@ -29,13 +30,23 @@ import org.apache.comet.iceberg.IcebergReflection
  */
 trait CometIcebergTestBase {
 
+  /**
+   * True only when Iceberg is on the classpath AND usable on the running Spark version. Apache
+   * Iceberg does not yet publish a Spark 4.1+ runtime (tracked in apache/iceberg#15238); Comet's
+   * spark-4.1 / spark-4.2 profiles pin `iceberg-spark-runtime-4.0` as a build-only stopgap, which
+   * is binary-incompatible with Spark 4.1's Catalyst (e.g. `trees.Origin`) and aborts the moment
+   * an Iceberg SQL-extensions statement is parsed. Gate on Spark version so these suites skip
+   * cleanly instead of aborting. Remove the version check once the pom adopts a real
+   * `iceberg-spark-runtime-4.1` (Iceberg 1.11.0+).
+   */
   protected def icebergAvailable: Boolean =
-    try {
-      IcebergReflection.loadClass("org.apache.iceberg.catalog.Catalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
-    }
+    !isSpark41Plus &&
+      (try {
+        IcebergReflection.loadClass("org.apache.iceberg.catalog.Catalog")
+        true
+      } catch {
+        case _: ClassNotFoundException => false
+      })
 
   protected def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile

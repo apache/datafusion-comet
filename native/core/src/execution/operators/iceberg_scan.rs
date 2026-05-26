@@ -39,21 +39,15 @@ use datafusion::physical_plan::{
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
-use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
-use iceberg_storage_opendal::CustomAwsCredentialLoader;
-use iceberg_storage_opendal::OpenDalStorageFactory;
 
-use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
+use crate::cloud::s3::credential_bridge::AccessMode;
+use crate::execution::operators::iceberg_common::load_file_io;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::FileScanTask;
-
-/// Activation key for the `CometS3CredentialProvider` SPI on the Iceberg path, read from a Spark
-/// catalog's `s3.*` property bag.
-const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.class";
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -166,10 +160,11 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
-        let file_io = Self::load_file_io(
+        let file_io = load_file_io(
             &self.catalog_properties,
             &self.metadata_location,
             &self.catalog_name,
+            AccessMode::Read,
         )?;
         let batch_size = context.session_config().batch_size();
 
@@ -213,96 +208,6 @@ impl IcebergScanExec {
         };
 
         Ok(Box::pin(wrapped_stream))
-    }
-
-    fn storage_factory_for(
-        path: &str,
-        catalog_properties: &HashMap<String, String>,
-        catalog_name: &str,
-    ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
-        let scheme = if path.contains("://") {
-            path.split("://").next().unwrap_or("file")
-        } else {
-            "file"
-        };
-        match scheme {
-            "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
-            "s3" | "s3a" => {
-                let customized_credential_load =
-                    build_s3_credential_loader(path, catalog_properties, catalog_name);
-                Ok(Arc::new(OpenDalStorageFactory::S3 {
-                    customized_credential_load,
-                }))
-            }
-            "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
-            "oss" => Ok(Arc::new(OpenDalStorageFactory::Oss)),
-            _ => Err(DataFusionError::Execution(format!(
-                "Unsupported storage scheme: {scheme}"
-            ))),
-        }
-    }
-
-    fn load_file_io(
-        catalog_properties: &HashMap<String, String>,
-        metadata_location: &str,
-        catalog_name: &str,
-    ) -> Result<FileIO, DataFusionError> {
-        let factory =
-            Self::storage_factory_for(metadata_location, catalog_properties, catalog_name)?;
-        let mut file_io_builder = FileIOBuilder::new(factory);
-
-        // Narrow to storage-prefix keys before forwarding to iceberg-rust's FileIO. The full
-        // unfiltered bag (catalog URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept
-        // upstream so CometS3CredentialBridge can read whatever the vendor needs.
-        for (key, value) in catalog_properties {
-            if STORAGE_PROPERTY_PREFIXES.iter().any(|p| key.starts_with(p)) {
-                file_io_builder = file_io_builder.with_prop(key, value);
-            }
-        }
-
-        Ok(file_io_builder.build())
-    }
-}
-
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
-
-/// Wires the configured Comet credential provider into opendal's S3 service, or returns `None`
-/// so opendal falls back to its default credential chain.
-fn build_s3_credential_loader(
-    metadata_location: &str,
-    catalog_properties: &HashMap<String, String>,
-    catalog_name: &str,
-) -> Option<CustomAwsCredentialLoader> {
-    let url = url::Url::parse(metadata_location).ok()?;
-    let bucket = url.host_str()?;
-    let provider_class = catalog_properties
-        .get(ICEBERG_PROVIDER_CLASS_PROPERTY)
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())?;
-    // Fall back to the bucket when the table has no catalog identity (e.g. HadoopTables loaded by
-    // raw path).
-    let dispatch_key: &str = if catalog_name.is_empty() {
-        bucket
-    } else {
-        catalog_name
-    };
-    let bridge = CometS3CredentialBridge::new(
-        provider_class,
-        dispatch_key,
-        bucket,
-        url.path(),
-        AccessMode::Read,
-        catalog_properties,
-    );
-    match bridge {
-        Ok(b) => Some(CustomAwsCredentialLoader::new(b)),
-        Err(e) => {
-            log::warn!(
-                "Failed to initialize CometS3CredentialBridge for {provider_class}: {e}; \
-                 falling back to default opendal credential chain"
-            );
-            None
-        }
     }
 }
 

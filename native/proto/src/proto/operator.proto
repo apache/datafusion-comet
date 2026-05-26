@@ -53,6 +53,7 @@ message Operator {
     Explode explode = 114;
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
+    IcebergWrite iceberg_write = 117;
   }
 }
 
@@ -277,6 +278,146 @@ message IcebergDeleteFile {
   uint64 file_size_in_bytes = 5;
 }
 
+// === Iceberg writes =========================================================
+//
+// Mirrors the read-side split: `IcebergWriteCommon` is the per-write payload broadcast once to
+// every task; `IcebergWrite` wraps the common payload and adds per-task fields filled in at
+// execution time (partitionId/taskAttemptId). The rust side translates `IcebergWriteCommon` and
+// `IcebergParquetWriteSettings` into the iceberg-rust writer stack
+// (`ParquetWriterBuilder` -> `RollingFileWriterBuilder` -> `DataFileWriterBuilder` -> partitioner)
+// and returns one `IcebergFileWriteResult` per file the rolling writer closes.
+
+// Picks which iceberg-rust writer the rust side instantiates. Resolved once on the JVM driver
+// (via `spec.isUnpartitioned()` and `SparkWriteConf.useFanoutWriter`) so the rust side never
+// re-derives the choice.
+enum IcebergWriterMode {
+  ICEBERG_WRITER_UNPARTITIONED = 0;
+  ICEBERG_WRITER_FANOUT = 1;
+  ICEBERG_WRITER_CLUSTERED = 2;
+}
+
+// Per-column statistics override. Resolved from `write.metadata.metrics.column.<col>` and
+// emitted only when the value differs from the table-level default.
+//
+// - `enabled = false`  => column's stats are turned off entirely (Iceberg `none` mode).
+// - `truncate_length`  => Iceberg `truncate(N)` mode for this column; absent means `full`.
+message IcebergParquetColumnStatistics {
+  string column = 1;
+  bool enabled = 2;
+  optional uint32 truncate_length = 3;
+}
+
+// Parquet-rs `WriterProperties` knobs derived from Iceberg table properties on the JVM driver.
+// All fields use Iceberg defaults when absent in the table properties; the rust side does not
+// re-apply defaults.
+message IcebergParquetWriteSettings {
+  CompressionCodec compression = 1;
+  // Codec-dependent: zstd 1-22, gzip 0-9, brotli 0-11. JVM side substitutes parquet-mr's
+  // per-codec default when the property is unset and parquet-rs's default would diverge
+  // (zstd: 3 instead of parquet-rs's 1). Absent => use parquet-rs's natural default.
+  optional int32 compression_level = 2;
+  // Iceberg `write.parquet.row-group-size-bytes` (default 128 MiB).
+  uint64 row_group_size_bytes = 3;
+  // Iceberg `write.parquet.page-size-bytes` (default 1 MiB).
+  uint64 page_size_bytes = 4;
+  // Iceberg `write.parquet.dict-size-bytes` (default 2 MiB).
+  uint64 dict_size_bytes = 5;
+  // Iceberg `write.parquet.page-row-limit` (default 20_000).
+  uint32 page_row_limit = 6;
+  // Table-level statistics on/off. Driven by `write.metadata.metrics.default = none`, which
+  // disables all stats; any other value leaves it true. `counts` is filtered out by the
+  // detection rule earlier in the pipeline.
+  bool default_statistics_enabled = 7;
+  // Resolved from `write.metadata.metrics.default = truncate(N)`. Absent means "full" (no
+  // truncation).
+  optional uint32 statistics_truncate_length = 8;
+  repeated IcebergParquetColumnStatistics column_statistics = 9;
+  // String written into parquet file metadata. JVM-side default is
+  // `"Apache Iceberg <ver> (Comet <ver>)"`.
+  string created_by = 10;
+}
+
+// Broadcast payload -- one of these per write, identical for every task.
+message IcebergWriteCommon {
+  // Catalog properties for FileIO (same shape as `IcebergScanCommon.catalog_properties`).
+  map<string, string> catalog_properties = 1;
+
+  // Iceberg table metadata file path. Kept on the wire for plan-debug visibility (shows up in
+  // `IcebergWriteExec`'s `DisplayAs`); `FileIO` itself is initialised from `data_location`
+  // since both paths resolve to the same storage scheme.
+  string metadata_location = 2;
+
+  // Iceberg `SchemaParser.toJson(table.schema())`. Carries the schema id inside the JSON; the
+  // rust side parses it via `serde_json::from_str::<Schema>`.
+  string iceberg_schema_json = 3;
+
+  // Iceberg `PartitionSpecParser.toJson(table.spec())`. Same wire format as one entry in
+  // `IcebergScanCommon.partition_spec_pool`. Carries the spec id inside the JSON.
+  string partition_spec_json = 4;
+
+  // Iceberg `SparkWriteConf.outputSortOrderId(...)`. Not embedded in any of the JSON payloads
+  // and stamped onto each output `DataFile`, so it ships as its own field.
+  int32 sort_order_id = 5;
+
+  // Directory under which data files are written; resolved on the JVM via the table's
+  // `LocationProvider` plus any `write.data.path` override.
+  string data_location = 6;
+
+  // Iceberg `OutputFileFactory` operation UUID -- embedded in filenames so files from the same
+  // logical write are correlated across tasks.
+  string operation_id = 7;
+
+  // Target file size in bytes; the rust rolling writer rolls files at this threshold.
+  uint64 target_file_size_bytes = 8;
+
+  IcebergWriterMode writer_mode = 9;
+
+  IcebergParquetWriteSettings parquet_settings = 10;
+
+  // Spark V2 catalog name that loaded this table. Forwarded as the dispatchKey to
+  // CometS3CredentialDispatcher.ensureInitialized (and the access intent to the credential
+  // provider) so two catalogs sharing one provider class get isolated provider instances. Empty
+  // string when the table has no catalog identity (e.g. HadoopTables loaded by raw path). Mirrors
+  // `IcebergScanCommon.catalog_name`.
+  string catalog_name = 11;
+}
+
+// Single Iceberg write operator. Per-task fields are populated by the JVM exec wrapper at task
+// launch (matching how `ParquetWriter.task_attempt_id` is filled in `CometNativeWriteExec`).
+message IcebergWrite {
+  IcebergWriteCommon common = 1;
+
+  // Spark `TaskContext.get().partitionId()` -- 0-padded into the filename prefix
+  // `{partition_id:05d}-{task_attempt_id}-{operation_id}`.
+  optional int32 partition_id = 2;
+
+  // Spark `TaskContext.get().taskAttemptId()`.
+  optional int64 task_attempt_id = 3;
+}
+
+// One row in the JVM-side commit-message aggregation: returned by the rust writer for each file
+// the rolling writer closes. The JVM passes `parquet_footer_thrift` to
+// `ParquetUtil.footerMetrics(...)` (which honours `MetricsConfig` truncation automatically),
+// then assembles `DataFile`s from these plus `partition_data` and commits via Iceberg's
+// `Transaction`.
+message IcebergFileWriteResult {
+  // Path relative to `IcebergWriteCommon.data_location` so the catalog stores stable paths even
+  // if the data directory is later remapped.
+  string relative_path = 1;
+
+  uint64 record_count = 2;
+  uint64 file_size_in_bytes = 3;
+
+  // Raw thrift bytes of the parquet `FileMetaData`. Iceberg-java's
+  // `ParquetUtil.footerMetrics(metadata, fieldMetrics, metricsConfig, nameMapping)` consumes
+  // this and produces an Iceberg `Metrics` (bounds, null counts, value counts, column sizes,
+  // split offsets).
+  bytes parquet_footer_thrift = 4;
+
+  // Same `PartitionData` wire format used by the read-side scan pool entries.
+  PartitionData partition_data = 5;
+}
+
 message Projection {
   repeated spark.spark_expression.Expr project_list = 1;
 }
@@ -315,6 +456,10 @@ enum CompressionCodec {
   Zstd = 1;
   Lz4 = 2;
   Snappy = 3;
+  // Gzip and Brotli are added for Iceberg writes which inherit Parquet's full codec set.
+  // The pre-existing ShuffleWriter and ParquetWriter paths do not exercise these values.
+  Gzip = 4;
+  Brotli = 5;
 }
 
 message ShuffleWriter {

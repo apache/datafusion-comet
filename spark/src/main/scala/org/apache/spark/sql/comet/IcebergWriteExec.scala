@@ -137,8 +137,18 @@ object IcebergWriteExec {
     Iterator.single(projection(InternalRow(serializeMessage(message))).copy())
   }
 
-  // Mirrors org.apache.spark.sql.catalyst.util.RowDeltaUtils. Inlined to avoid taking a transitive
-  // dependency on a private Spark utility object whose location changes across versions.
+  // Mirrors org.apache.spark.sql.catalyst.util.RowDeltaUtils. Inlined because that object is
+  // `private[spark]` -- we can't import it. The values 5 / 6 are verified against the shipped
+  // spark-catalyst 4.0.0, 4.1.1, and 4.2.0-preview4 jars (`RowDeltaUtils$` static initializer:
+  // WRITE_OPERATION=5, WRITE_WITH_METADATA_OPERATION=6), and the shipped `ReplaceData` writing
+  // tasks dispatch on exactly these codes.
+  //
+  // TODO(spark-trunk-rename): Spark `main` (post-4.2.0-preview4) renames these to
+  // COPY_OPERATION(5)/UPDATE_OPERATION(2)/INSERT_OPERATION(3) and re-dispatches the writing tasks,
+  // dropping WRITE_WITH_METADATA. When Comet starts targeting a Spark release carrying that rename,
+  // these constants and `runReplaceDataWriter`'s dispatch must be revisited. The CoW UPDATE / MERGE
+  // cases in `CometIcebergWriteActionSuite` are the regression that will fail first -- start there.
+  //
   // WRITE_OPERATION (5) and WRITE_WITH_METADATA_OPERATION (6) are Spark 4.x-only -- emitted by
   // `ReplaceData`'s rewritten row stream alongside `ReplaceDataProjections`.
   private val WRITE_OPERATION = 5

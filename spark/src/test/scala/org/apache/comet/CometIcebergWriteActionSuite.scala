@@ -26,7 +26,7 @@ import scala.collection.mutable
 import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.Row
-import org.apache.spark.sql.comet.{IcebergCommitExec, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.util.QueryExecutionListener
@@ -304,6 +304,227 @@ class CometIcebergWriteActionSuite
 
   // --- Round-trip parity vs Spark default path ---------------------------------------------------
 
+  // --- Native acceleration --------------------------------------------------------------------
+
+  test("native acceleration: AppendData INSERT FROM SELECT") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "native_source", partitionSpec = "")
+      createTable(warehouseDir, "native_target", partitionSpec = "")
+      spark.sql(
+        "INSERT INTO cat.db.native_source VALUES " +
+          "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
+      assertNativeWriteEngages("native_target", Seq(1, 2, 3)) {
+        spark.sql(
+          "INSERT INTO cat.db.native_target SELECT id, region, amount FROM cat.db.native_source")
+      }
+    }
+  }
+
+  test("native acceleration: AppendData unpartitioned VALUES") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "native_append_values", partitionSpec = "")
+      assertNativeWriteEngages("native_append_values", Seq(1, 2, 3)) {
+        spark.sql(
+          "INSERT INTO cat.db.native_append_values VALUES " +
+            "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
+      }
+    }
+  }
+
+  // Iceberg's Spark `SparkWrite$WriterFactory` never stamps the table sort order onto appended
+  // data files in any version Comet targets (1.5.2 / 1.8.1 / 1.10.0): committed files are
+  // `sort_order_id = 0` even when the table defines a sort order. The native path must match --
+  // it defaults `sort_order_id` to 0 rather than propagating `table.sortOrder().orderId()`. Pin
+  // that against the `data_files` metadata table; before the fix the native path stamped the
+  // table's (non-zero) order id here.
+  test("native acceleration: appended files are sort_order_id=0 even for a sorted table") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "native_sorted", partitionSpec = "")
+      // WRITE ORDERED BY (provided by IcebergSparkSessionExtensions, enabled in this suite)
+      // bumps the table's sort order id to a non-default value (1).
+      spark.sql("ALTER TABLE cat.db.native_sorted WRITE ORDERED BY id")
+      assertNativeWriteEngages("native_sorted", Seq(1, 2, 3)) {
+        spark.sql(
+          "INSERT INTO cat.db.native_sorted VALUES " +
+            "(3, 'eu', 30.7), (1, 'us-east', 10.5), (2, 'us-west', 20.3)")
+      }
+      val sortOrderIds = spark
+        .sql("SELECT DISTINCT sort_order_id FROM cat.db.native_sorted.data_files")
+        .collect()
+        .map(_.getInt(0))
+        .toSet
+      assert(
+        sortOrderIds == Set(0),
+        "expected every committed data file to have sort_order_id=0 (matching Iceberg-Java), " +
+          s"got $sortOrderIds")
+    }
+  }
+
+  test("native acceleration: AppendData partitioned by identity") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "native_append_part", partitionSpec = "PARTITIONED BY (region)")
+      assertNativeWriteEngages("native_append_part", Seq(1, 2, 3)) {
+        spark.sql(
+          "INSERT INTO cat.db.native_append_part VALUES " +
+            "(1, 'us-east', 10.5), (2, 'us-east', 20.3), (3, 'eu', 30.7)")
+      }
+    }
+  }
+
+  test("native acceleration: OverwriteByExpression (INSERT OVERWRITE STATIC)") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "native_overwrite_static", partitionSpec = "")
+      spark.sql(
+        "INSERT INTO cat.db.native_overwrite_static VALUES " +
+          "(1, 'old', 1.0), (2, 'old', 2.0), (3, 'old', 3.0)")
+      assertNativeWriteEngages("native_overwrite_static", Seq(10, 11)) {
+        withSQLConf("spark.sql.sources.partitionOverwriteMode" -> "STATIC") {
+          spark.sql(
+            "INSERT OVERWRITE cat.db.native_overwrite_static VALUES " +
+              "(10, 'new', 100.0), (11, 'new', 110.0)")
+        }
+      }
+    }
+  }
+
+  test("native acceleration: OverwritePartitionsDynamic") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "native_overwrite_dyn", partitionSpec = "PARTITIONED BY (region)")
+      spark.sql(
+        "INSERT INTO cat.db.native_overwrite_dyn VALUES " +
+          "(1, 'us-east', 1.0), (2, 'us-west', 2.0), (3, 'eu', 3.0)")
+      assertNativeWriteEngages("native_overwrite_dyn", Seq(2, 3, 10)) {
+        withSQLConf("spark.sql.sources.partitionOverwriteMode" -> "DYNAMIC") {
+          spark.sql("INSERT OVERWRITE cat.db.native_overwrite_dyn VALUES (10, 'us-east', 100.0)")
+        }
+      }
+    }
+  }
+
+  test("native acceleration: ReplaceData (CoW DELETE)") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "native_cow_delete",
+        partitionSpec = "",
+        properties = Some("'write.delete.mode'='copy-on-write'"))
+      // Seed via the JVM path so the assertion isolates native engagement to the DELETE.
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert(
+          "native_cow_delete",
+          Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0), (4, "us-east", 40.0)))
+      }
+      assertNativeWriteEngages("native_cow_delete", Seq(1, 3, 4)) {
+        spark.sql("DELETE FROM cat.db.native_cow_delete WHERE id = 2")
+      }
+    }
+  }
+
+  test("native acceleration: ReplaceData (CoW UPDATE)") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "native_cow_update",
+        partitionSpec = "",
+        properties = Some("'write.update.mode'='copy-on-write'"))
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert(
+          "native_cow_update",
+          Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0)))
+      }
+      // Engage natively; expected rows are the ids 1..3 (UPDATE keeps cardinality).
+      assertNativeWriteEngages("native_cow_update", Seq(1, 2, 3)) {
+        spark.sql("UPDATE cat.db.native_cow_update SET amount = amount * 2 WHERE id = 2")
+      }
+      // Spot-check the UPDATE actually rewrote row 2 (cardinality unchanged + value flipped).
+      val r =
+        spark.sql("SELECT id, amount FROM cat.db.native_cow_update WHERE id = 2").collect()
+      assert(r.length == 1 && r(0).getDouble(1) == 40.0, s"got ${r.toSeq}")
+    }
+  }
+
+  test("native acceleration: ReplaceData (CoW MERGE) falls back (MergeRowsExec not Comet)") {
+    // TODO(comet-merge-rows): native MERGE engagement requires a Comet equivalent of Iceberg's
+    // `MergeRowsExec` (the per-row dispatch operator that assigns __row_operation codes from
+    // MATCHED/NOT MATCHED clauses). Without it, `MergeRowsExec` stays JVM, the upstream chain
+    // breaks Comet-native partway, and `requiresNativeChildren=true` declines the
+    // `IcebergWriteExec -> CometIcebergWriteExec` conversion. Until that lands, MERGE
+    // falls back to the JVM two-op path -- this test pins that contract so a future MERGE-row-exec
+    // addition surfaces clearly (the test will start failing and need to flip back to
+    // `assertNativeWriteEngages`).
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "native_cow_merge",
+        partitionSpec = "",
+        properties = Some("'write.merge.mode'='copy-on-write'"))
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert("native_cow_merge", Seq((1, "us-east", 10.0), (2, "us-west", 20.0)))
+      }
+      assertNativeWriteDoesNotEngage("native_cow_merge", Seq(1, 2, 3)) {
+        spark.sql("""
+          |MERGE INTO cat.db.native_cow_merge t
+          |USING (SELECT 2 AS id, 'us-west' AS region, 200.0 AS amount UNION ALL
+          |       SELECT 3 AS id, 'eu' AS region, 30.0 AS amount) s
+          |ON t.id = s.id
+          |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
+          |WHEN NOT MATCHED THEN INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
+          |""".stripMargin)
+      }
+    }
+  }
+
+  test("native acceleration: complex types (struct, array, map) round-trip with field IDs") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      // Three nested kinds in one schema so the recursive PARQUET_FIELD_ID_META_KEY decoration
+      // is exercised end-to-end. Reading back via Iceberg's reader is the proof point: Iceberg
+      // matches columns by field id, not by name, so a row that round-trips means every nested
+      // field id made it into the Parquet metadata.
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.native_complex (
+          id INT,
+          addr STRUCT<city: STRING, zip: INT>,
+          tags ARRAY<STRING>,
+          attrs MAP<STRING, INT>
+        ) USING iceberg
+      """)
+      val snapshot = withNativeEnabled {
+        captureWrite("native_complex") {
+          spark.sql("""
+            INSERT INTO cat.db.native_complex VALUES
+              (1, named_struct('city', 'NYC', 'zip', 10001), array('a', 'b'), map('k1', 1, 'k2', 2)),
+              (2, named_struct('city', 'SF',  'zip', 94016), array('c'),      map('k3', 3))
+          """)
+        }
+      }
+      assert(snapshot.snapshotDelta == 1L)
+      val nativeExecs = snapshot.plans.flatMap { p =>
+        collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }
+      }
+      assert(nativeExecs.nonEmpty, "expected native write exec in captured plans")
+      val rows = spark
+        .sql(s"SELECT id, addr.city, addr.zip, tags, attrs FROM $catalog.$ns.native_complex" +
+          " ORDER BY id")
+        .collect()
+      assert(rows.length == 2)
+      assert(rows(0).getInt(0) == 1)
+      assert(rows(0).getString(1) == "NYC")
+      assert(rows(0).getInt(2) == 10001)
+      assert(rows(1).getString(1) == "SF")
+      assert(rows(1).getInt(2) == 94016)
+    }
+  }
+
   test("Comet-written rows round-trip through Spark's reader unchanged") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { warehouseDir =>
@@ -493,4 +714,74 @@ class CometIcebergWriteActionSuite
     assert(ids == expectedIds, s"expected $expectedIds, got $ids")
   }
 
+  /** Native acceleration shared assumption -- currently just the Iceberg-on-classpath check. */
+  private def assumeNativeAcceleration(): Unit = {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+  }
+
+  /**
+   * Flip [[CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED]] for the duration of `action`.
+   *
+   * We also enable [[CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED]] (default off) so VALUES-
+   * driven INSERTs have a Comet-native upstream -- `requiresNativeChildren = true` would
+   * otherwise short-circuit the conversion to `CometIcebergWriteExec` because Spark emits a bare
+   * `LocalTableScanExec` for inline `VALUES`. Using `sessionState.conf.setConfString` directly
+   * (rather than `withSQLConf`) keeps the override visible to the columnar rule across some Spark
+   * version / session-state combinations where `withSQLConf` loses the override before the rule
+   * fires.
+   */
+  private def withNativeEnabled[T](action: => T): T = {
+    val session = spark
+    session.sessionState.conf
+      .setConfString(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "true")
+    session.sessionState.conf
+      .setConfString(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key, "true")
+    try action
+    finally {
+      session.sessionState.conf.unsetConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key)
+      session.sessionState.conf.unsetConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key)
+    }
+  }
+
+  /**
+   * Strongest invariant we can pin on a single native write: commit-count advanced by exactly one
+   * (same as the JVM-path assertion -- AQE re-planning never duplicates commits) AND at least one
+   * [[CometIcebergWriteExec]] appears in some captured plan AND the resulting row set matches.
+   */
+  private def assertNativeWriteEngages(tableName: String, expectedIds: Seq[Int])(
+      action: => Unit): Unit = {
+    val snapshot = withNativeEnabled { captureWrite(tableName)(action) }
+    assert(
+      snapshot.snapshotDelta == 1L,
+      s"expected 1 commit via native path, got ${snapshot.snapshotDelta}. Plans:\n" +
+        snapshot.plans.mkString("\n--\n"))
+    val nativeExecs = snapshot.plans.flatMap { p =>
+      collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }
+    }
+    assert(
+      nativeExecs.nonEmpty,
+      "expected >= 1 CometIcebergWriteExec in captured plans, got 0. Plans:\n" +
+        snapshot.plans.mkString("\n--\n"))
+    assertRows(tableName, expectedIds)
+  }
+
+  /**
+   * For writes that *should* fall back even when the native conf is on (e.g. CoW MERGE): exactly
+   * one commit, no `CometIcebergWriteExec`, but the JVM two-op pair still present and rows
+   * correct. Catches regressions where a trigger silently stops firing and we accidentally run
+   * native for an unsupported case.
+   */
+  private def assertNativeWriteDoesNotEngage(tableName: String, expectedIds: Seq[Int])(
+      action: => Unit): Unit = {
+    val snapshot = withNativeEnabled { captureWrite(tableName)(action) }
+    assertExactlyOneCommit(snapshot)
+    val nativeExecs = snapshot.plans.flatMap { p =>
+      collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }
+    }
+    assert(
+      nativeExecs.isEmpty,
+      s"expected NO CometIcebergWriteExec, got ${nativeExecs.size}. Plans:\n" +
+        snapshot.plans.mkString("\n--\n"))
+    assertRows(tableName, expectedIds)
+  }
 }

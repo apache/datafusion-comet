@@ -23,6 +23,9 @@ import java.io.File
 
 import scala.collection.mutable
 
+import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent}
 import org.apache.spark.sql.{CometTestBase, SparkSession}
@@ -47,7 +50,10 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
       RewriteCase(
         table = s"$catalog.db.binpack_test",
         configureMode = invoke(_, "binPack"),
-        verifyPlans = rewritePlans => assertReadsAreComet(rewritePlans)))
+        verifyPlans = { rewritePlans =>
+          assertReadsAreComet(rewritePlans)
+          assertWritesAreComet(rewritePlans)
+        }))
   }
 
   test("sort rewrite runs scan, exchange, and sort natively in Comet") {
@@ -59,6 +65,7 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
         verifyDataAfter = assertSortedById,
         verifyPlans = { rewritePlans =>
           assertReadsAreComet(rewritePlans)
+          assertWritesAreComet(rewritePlans)
           assertOperator(rewritePlans, "CometExchange")
           assertOperator(rewritePlans, "CometSort")
         }))
@@ -77,6 +84,7 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
         verifyDataAfter = assertSortedById,
         verifyPlans = { rewritePlans =>
           assertReadsAreComet(rewritePlans)
+          assertWritesAreComet(rewritePlans)
           assertOperator(rewritePlans, "CometExchange")
           assertOperator(rewritePlans, "CometSort")
         }))
@@ -204,9 +212,11 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
               s"Expected >= 1 input file rewritten, got $rewrittenCount")
           }
 
-          val rewritePlans = plans.filter(_.hasNode("AppendData"))
+          val rewritePlans = plans.filter(_.isRewriteWrite)
           assert(rewritePlans.nonEmpty, "Expected at least one rewrite plan")
           assertReadsAreComet(rewritePlans)
+          assertWritesAreComet(rewritePlans)
+          assertCurrentDataFilesWrittenByCometNative(table)
 
           val rowsAfter = spark.sql(s"SELECT * FROM $table ORDER BY id").collect().toSeq
           assert(
@@ -266,12 +276,13 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
           assertDataPreserved(rowsBefore, rowsAfterById, filesBefore, filesAfter)
           rc.verifyDataAfter(rowsAfterFileOrder)
 
-          val rewritePlans = plans.filter(_.hasNode("AppendData"))
+          val rewritePlans = plans.filter(_.isRewriteWrite)
           assert(
             rewritePlans.nonEmpty,
-            "Expected at least one captured plan with AppendData but got none.\n" +
-              dumpPlans(plans))
+            "Expected at least one captured rewrite plan (AppendData or IcebergCommit) but got " +
+              "none.\n" + dumpPlans(plans))
           rc.verifyPlans(rewritePlans)
+          assertCurrentDataFilesWrittenByCometNative(rc.table)
         } catch {
           case _: ClassNotFoundException =>
             cancel("Iceberg Actions API not available - requires iceberg-spark-runtime")
@@ -294,6 +305,12 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
   private case class CapturedPlan(physicalDescription: String, nodeNames: Set[String]) {
     def hasNode(name: String): Boolean = nodeNames.contains(name)
     def containsCometOperator: Boolean = nodeNames.exists(_.startsWith("Comet"))
+
+    /**
+     * A rewrite write-side plan, on either the stock (`AppendData`) or split-op (`IcebergCommit`)
+     * shape.
+     */
+    def isRewriteWrite: Boolean = hasNode("AppendData") || hasNode("IcebergCommit")
   }
 
   private def captureSqlPlans(body: => Unit): Seq[CapturedPlan] = {
@@ -337,6 +354,42 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
       withFallback == 0,
       s"$withFallback of ${plans.size} plans fell back to a non-Comet BatchScan.\n" +
         dumpPlans(plans))
+  }
+
+  /**
+   * The rewrite action writes via `df.writeTo(...).append()`, which `IcebergWriteStrategy` routes
+   * through the two-op plan; `CometIcebergNativeWrite`'s serde then upgrades the inner writer to
+   * `CometIcebergWrite` when the upstream plan is fully Comet-native.
+   */
+  private def assertWritesAreComet(plans: Seq[CapturedPlan]): Unit = {
+    assertOperator(plans, "CometIcebergWrite")
+  }
+
+  /**
+   * Runtime check that the iceberg-rust writer actually produced the current snapshot's data
+   * files (not just that `CometIcebergWriteExec` was planned). `CometIcebergNativeWrite` stamps
+   * `Apache Iceberg <ver> (Comet)` into the parquet footer's `created_by` field; the JVM path
+   * omits the `(Comet)` suffix. We read each file's footer and pin that signature.
+   */
+  private def assertCurrentDataFilesWrittenByCometNative(table: String): Unit = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $table.data_files")
+      .collect()
+      .map(_.getString(0))
+      .toSeq
+    assert(paths.nonEmpty, s"Expected $table to have >= 1 data file in the current snapshot")
+    val conf = spark.sparkContext.hadoopConfiguration
+    paths.foreach { path =>
+      val hadoopPath = new Path(path.stripPrefix("file:"))
+      val reader = ParquetFileReader.open(HadoopInputFile.fromPath(hadoopPath, conf))
+      val createdBy =
+        try reader.getFooter.getFileMetaData.getCreatedBy
+        finally reader.close()
+      assert(
+        createdBy != null && createdBy.contains("(Comet)"),
+        s"Expected $path to be written by Comet's native iceberg-rust writer " +
+          s"(`(Comet)` in parquet `created_by`); got '$createdBy'")
+    }
   }
 
   private def assertOperator(plans: Seq[CapturedPlan], operator: String): Unit = {
@@ -417,6 +470,8 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+      CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "true",
+      CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "true",
       CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true")(body)
 
   /** Creates an Iceberg table with `numFiles` separate appends, each producing one data file. */

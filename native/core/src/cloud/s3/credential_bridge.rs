@@ -53,7 +53,6 @@ static WARNED_MISSING_EXPIRY: OnceCell<()> = OnceCell::new();
 #[derive(Debug, Clone, Copy)]
 pub enum AccessMode {
     Read = 0,
-    #[allow(dead_code)]
     Write = 1,
 }
 
