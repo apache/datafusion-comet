@@ -21,6 +21,8 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.SparkConf
+import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
@@ -1140,6 +1142,93 @@ class CometCodegenSourceSuite extends AnyFunSuite {
         src.contains("public java.lang.Object generate(Object[] references)"),
         s"$name: generated source missing kernel class entry point")
     }
+  }
+
+  test("closure-serialized bytes diverge for failOnError / roundOff / timeZoneId variants") {
+    // The dispatcher caches kernels by the closure-serialized bytes of the bound expression
+    // (`CacheKey.bytesKey`). For expression classes that carry a runtime-dependent boolean
+    // (failOnError, roundOff) or string (timeZoneId), two plan instances differing only in that
+    // field must serialize to distinct byte sequences so they receive distinct cache entries.
+    // A collision would let a kernel compiled for one variant (e.g. ANSI throw site) silently
+    // service a request from the other (non-ANSI null-on-overflow).
+    //
+    // This test serializes through `JavaSerializer` directly, which is what
+    // `SparkEnv.get.closureSerializer` returns at runtime. We don't need a live SparkEnv here;
+    // `JavaSerializer` only reads `spark.serializer.objectStreamReset` / `spark.serializer.
+    // extraDebugInfo` from the conf and otherwise uses plain `ObjectOutputStream`.
+    val serializer = new JavaSerializer(new SparkConf()).newInstance()
+    def bytesOf(e: Expression): Array[Byte] = {
+      val buffer = serializer.serialize(e)
+      val out = new Array[Byte](buffer.remaining())
+      buffer.get(out)
+      out
+    }
+
+    def assertDiverge(label: String, a: Expression, b: Expression): Unit = {
+      val ab = bytesOf(a)
+      val bb = bytesOf(b)
+      assert(
+        !java.util.Arrays.equals(ab, bb),
+        s"$label: expected serialized bytes to differ for variants that the dispatcher must " +
+          s"cache separately, but both produced ${ab.length} identical bytes")
+    }
+
+    // failOnError on MakeTimestamp (set by the constructor from SQLConf.ansiEnabled at bind time)
+    def makeTs(failOnError: Boolean): Expression =
+      MakeTimestamp(
+        BoundReference(0, IntegerType, nullable = true),
+        BoundReference(1, IntegerType, nullable = true),
+        BoundReference(2, IntegerType, nullable = true),
+        BoundReference(3, IntegerType, nullable = true),
+        BoundReference(4, IntegerType, nullable = true),
+        BoundReference(5, DecimalType(8, 6), nullable = true),
+        timezone = None,
+        timeZoneId = Some("UTC"),
+        failOnError = failOnError)
+    assertDiverge(
+      "MakeTimestamp.failOnError",
+      makeTs(failOnError = true),
+      makeTs(failOnError = false))
+
+    // failOnError on ToUnixTimestamp
+    def toUnix(failOnError: Boolean): Expression =
+      ToUnixTimestamp(
+        BoundReference(0, StringType, nullable = true),
+        Literal(UTF8String.fromString("yyyy-MM-dd HH:mm:ss"), StringType),
+        timeZoneId = Some("UTC"),
+        failOnError = failOnError)
+    assertDiverge(
+      "ToUnixTimestamp.failOnError",
+      toUnix(failOnError = true),
+      toUnix(failOnError = false))
+
+    // roundOff on MonthsBetween (carried as a child Literal node)
+    def monthsBetween(roundOff: Boolean): Expression =
+      MonthsBetween(
+        BoundReference(0, TimestampType, nullable = true),
+        BoundReference(1, TimestampType, nullable = true),
+        Literal(roundOff),
+        Some("UTC"))
+    assertDiverge(
+      "MonthsBetween.roundOff",
+      monthsBetween(roundOff = true),
+      monthsBetween(roundOff = false))
+
+    // Session timezone propagates onto TimeZoneAwareExpression via timeZoneId; the dispatcher
+    // must not share a kernel across timezones because Spark's doGenCode embeds the resolved
+    // ZoneId reference into the generated source.
+    def makeTsTz(tz: String): Expression =
+      MakeTimestamp(
+        BoundReference(0, IntegerType, nullable = true),
+        BoundReference(1, IntegerType, nullable = true),
+        BoundReference(2, IntegerType, nullable = true),
+        BoundReference(3, IntegerType, nullable = true),
+        BoundReference(4, IntegerType, nullable = true),
+        BoundReference(5, DecimalType(8, 6), nullable = true),
+        timezone = None,
+        timeZoneId = Some(tz),
+        failOnError = false)
+    assertDiverge("MakeTimestamp.timeZoneId", makeTsTz("UTC"), makeTsTz("America/New_York"))
   }
 
   test("CacheKey discriminates on ArrowColumnSpec.nullable") {

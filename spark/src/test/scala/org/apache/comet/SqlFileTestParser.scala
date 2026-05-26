@@ -55,6 +55,18 @@ case object SparkAnswerOnly extends QueryAssertionMode
 case class WithTolerance(tol: Double) extends QueryAssertionMode
 case class ExpectFallback(reason: String) extends QueryAssertionMode
 case class Ignore(reason: String) extends QueryAssertionMode
+
+/**
+ * Asserts that both Spark and Comet raise an error whose message contains `pattern`.
+ *
+ * Fixtures that combine `ExpectError` with `spark.comet.exec.scalaUDF.codegen.enabled=true` must
+ * also include at least one [[CheckCoverageAndAnswer]] sentinel query over valid input. If the
+ * dispatcher silently rejects the expression at plan time, the operator falls back to Spark and
+ * Spark itself raises the same error, so the `ExpectError` queries would pass vacuously. The
+ * sentinel query uses `checkSparkAnswerAndOperator`, which fails when the expression does not run
+ * inside Comet. `CometSqlFileTestSuite.requireSentinelForCodegenExpectError` enforces this shape
+ * at test-run time.
+ */
 case class ExpectError(pattern: String) extends QueryAssertionMode
 
 /**

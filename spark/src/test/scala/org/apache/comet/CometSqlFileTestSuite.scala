@@ -96,7 +96,38 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // --CONFIG line, which appears later in the pair list and wins.
   private val ansiDisabled = Seq(SQLConf.ANSI_ENABLED.key -> "false")
 
+  /**
+   * Pin the sentinel-query convention for fixtures that route an `expect_error` through the
+   * codegen dispatcher. See [[ExpectError]] for the failure mode this guards against.
+   */
+  private def requireSentinelForCodegenExpectError(
+      relativePath: String,
+      file: SqlTestFile): Unit = {
+    val codegenFlagOn = file.configs.exists { case (k, v) =>
+      k == CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key && v.equalsIgnoreCase("true")
+    }
+    if (!codegenFlagOn) return
+    val hasExpectError = file.records.exists {
+      case SqlQuery(_, _: ExpectError, _) => true
+      case _ => false
+    }
+    if (!hasExpectError) return
+    val hasSentinel = file.records.exists {
+      case SqlQuery(_, CheckCoverageAndAnswer, _) => true
+      case _ => false
+    }
+    assert(
+      hasSentinel,
+      s"SQL fixture $relativePath combines `expect_error` with " +
+        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true but is missing a non-error " +
+        "sentinel query. Without one, a silent dispatcher fallback to Spark would let the " +
+        "`expect_error` queries pass vacuously (Spark raises the same error on the fallback " +
+        "path). Add at least one `query` over valid input so `checkSparkAnswerAndOperator` " +
+        "fails if the expression did not execute natively.")
+  }
+
   private def runTestFile(relativePath: String, file: SqlTestFile): Unit = {
+    requireSentinelForCodegenExpectError(relativePath, file)
     val allConfigs = ansiDisabled ++ file.configs ++ constantFoldingExcluded
     withSQLConf(allConfigs: _*) {
       withTable(file.tables: _*) {
