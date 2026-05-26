@@ -60,18 +60,6 @@ public abstract class CometVector extends ColumnVector {
     super(type);
   }
 
-  /**
-   * Sets the number of nulls in this vector to be 'numNulls'. This is used when the vector is
-   * reused across batches.
-   */
-  public abstract void setNumNulls(int numNulls);
-
-  /**
-   * Sets the number of values (including both nulls and non-nulls) in this vector to be
-   * 'numValues'. This is used when the vector is reused across batches.
-   */
-  public abstract void setNumValues(int numValues);
-
   /** Returns the number of values in this vector. */
   public abstract int numValues();
 

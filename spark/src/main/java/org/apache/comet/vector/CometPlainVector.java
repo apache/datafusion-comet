@@ -77,12 +77,6 @@ public class CometPlainVector extends CometDecodedVector {
   }
 
   @Override
-  public void setNumNulls(int numNulls) {
-    super.setNumNulls(numNulls);
-    this.booleanByteCacheIndex = -1;
-  }
-
-  @Override
   public boolean getBoolean(int rowId) {
     int byteIndex = rowId >> 3;
     if (byteIndex != booleanByteCacheIndex) {

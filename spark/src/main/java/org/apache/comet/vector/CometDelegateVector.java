@@ -49,16 +49,6 @@ public class CometDelegateVector extends CometVector {
   }
 
   @Override
-  public void setNumNulls(int numNulls) {
-    delegate.setNumNulls(numNulls);
-  }
-
-  @Override
-  public void setNumValues(int numValues) {
-    delegate.setNumValues(numValues);
-  }
-
-  @Override
   public int numValues() {
     return delegate.numValues();
   }

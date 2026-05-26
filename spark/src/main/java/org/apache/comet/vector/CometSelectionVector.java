@@ -149,20 +149,6 @@ public class CometSelectionVector extends CometVector {
   }
 
   @Override
-  public void setNumValues(int numValues) {
-    // For selection vectors, we don't allow changing the number of values
-    // as it would break the mapping between selection indices and values
-    throw new UnsupportedOperationException("CometSelectionVector doesn't support setNumValues");
-  }
-
-  @Override
-  public void setNumNulls(int numNulls) {
-    // For selection vectors, null count should be delegated to the underlying values vector
-    // The selection doesn't change the null semantics
-    values.setNumNulls(numNulls);
-  }
-
-  @Override
   public boolean hasNull() {
     return values.hasNull();
   }
