@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import scala.reflect.ClassTag
-
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
@@ -39,7 +37,7 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetUtils}
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
@@ -355,17 +353,6 @@ object CometNativeScanExec {
       scanExec: FileSourceScanExec,
       session: SparkSession,
       scan: CometScanExec): CometNativeScanExec = {
-    // TreeNode.mapProductIterator is protected method.
-    def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
-      val arr = Array.ofDim[B](product.productArity)
-      var i = 0
-      while (i < arr.length) {
-        arr(i) = f(product.productElement(i))
-        i += 1
-      }
-      arr
-    }
-
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
     // Multiple scans of same table with different projections/filters get different keys.
     val common = nativeOp.getNativeScan.getCommon
@@ -378,31 +365,18 @@ object CometNativeScanExec {
     val hashCode = keyComponents.mkString("|").hashCode
     val sourceKey = s"${source}_${hashCode}"
 
-    // Replacing the relation in FileSourceScanExec by `copy` seems causing some issues
-    // on other Spark distributions if FileSourceScanExec constructor is changed.
-    // Using `makeCopy` to avoid the issue.
-    // https://github.com/apache/arrow-datafusion-comet/issues/190
-    def transform(arg: Any): AnyRef = arg match {
-      case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session))(session)
-      case other: AnyRef => other
-      case null => null
-    }
-
-    val newArgs = mapProductIterator(scanExec, transform)
-    val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
     val batchScanExec = CometNativeScanExec(
       nativeOp,
-      wrapped.relation,
-      wrapped.output,
-      wrapped.requiredSchema,
-      wrapped.partitionFilters,
-      wrapped.optionalBucketSet,
-      wrapped.optionalNumCoalescedBuckets,
-      wrapped.dataFilters,
-      wrapped.tableIdentifier,
-      wrapped.disableBucketedScan,
-      wrapped,
+      scanExec.relation,
+      scanExec.output,
+      scanExec.requiredSchema,
+      scanExec.partitionFilters,
+      scanExec.optionalBucketSet,
+      scanExec.optionalNumCoalescedBuckets,
+      scanExec.dataFilters,
+      scanExec.tableIdentifier,
+      scanExec.disableBucketedScan,
+      scanExec,
       SerializedPlan(None),
       scan,
       sourceKey)

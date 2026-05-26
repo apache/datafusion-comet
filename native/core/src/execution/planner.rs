@@ -211,9 +211,9 @@ impl PhysicalPlanner {
         self
     }
 
-    /// Attach the Spark `TaskContext` global reference captured at `createPlan` time. Cloned
-    /// into every `JvmScalarUdfExpr` the planner builds so the JNI bridge can install it as
-    /// the thread-local on the Tokio worker driving the UDF.
+    /// Attach a propagated Spark `TaskContext` global reference. Called by the JNI `executePlan`
+    /// entry with whatever was captured at `createPlan` time. The planner clones this `Option`
+    /// into every `JvmScalarUdfExpr` it builds.
     pub fn with_task_context(
         mut self,
         task_context: Option<Arc<Global<JObject<'static>>>>,
@@ -356,6 +356,9 @@ impl PhysicalPlanner {
                         DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
                         DataType::List(f) => DataType::List(f).try_into()?,
                         DataType::Null => ScalarValue::Null,
+                        DataType::Time64(TimeUnit::Nanosecond) => {
+                            ScalarValue::Time64Nanosecond(None)
+                        }
                         dt => {
                             return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
@@ -625,7 +628,11 @@ impl PhysicalPlanner {
             }
             ExprStruct::ToJson(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(ToJson::new(child, &expr.timezone)))
+                Ok(Arc::new(ToJson::new(
+                    child,
+                    &expr.timezone,
+                    expr.ignore_null_fields,
+                )))
             }
             ExprStruct::ToPrettyString(expr) => {
                 let mut spark_cast_options =
@@ -742,6 +749,13 @@ impl PhysicalPlanner {
                     to_arrow_datatype(udf.return_type.as_ref().ok_or_else(|| {
                         GeneralError("JvmScalarUdf missing return_type".to_string())
                     })?);
+                // Invariant: task_context is propagated for every JvmScalarUdfExpr built during
+                // normal execution. The TEST_EXEC_CONTEXT_ID path is the only context in which
+                // task_context may legitimately be None (unit tests, direct native driver runs).
+                debug_assert!(
+                    self.task_context.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
+                    "task_context must be set for non-test execution"
+                );
                 Ok(Arc::new(JvmScalarUdfExpr::new(
                     udf.class_name.clone(),
                     args,

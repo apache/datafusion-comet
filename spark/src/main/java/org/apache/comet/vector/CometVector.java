@@ -32,21 +32,33 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.Decimal;
-import org.apache.spark.sql.types.IntegerType;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarArray;
 import org.apache.spark.sql.vectorized.ColumnarMap;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.UTF8String;
 
-import org.apache.comet.IcebergApi;
-
-/** Base class for all Comet column vector implementations. */
-@IcebergApi
+/**
+ * Base class for all Comet column vector implementations.
+ *
+ * <p>Comet wraps Arrow vectors imported from native execution (via the Arrow C Data Interface) in
+ * this hierarchy so they satisfy Spark's {@link ColumnVector} contract. A custom hierarchy is
+ * required because:
+ *
+ * <ul>
+ *   <li>{@code comet-common} shades Arrow into {@code org.apache.comet.shaded.arrow.*} to avoid a
+ *       classpath collision with Spark's bundled Arrow. Spark's own {@code ArrowColumnVector}
+ *       expects unshaded Arrow and cannot be reused here.
+ *   <li>{@link #getDecimal(int, int, int)} bypasses {@code Decimal.createUnsafe}'s negative-scale
+ *       check to match Spark's expected semantics for native decimal output.
+ *   <li>The {@link #getVector(ValueVector, DictionaryProvider)} factory chooses the right wrapper
+ *       based on the Arrow type, including a separate {@link CometDictionaryVector} for
+ *       dictionary-encoded columns.
+ * </ul>
+ */
 public abstract class CometVector extends ColumnVector {
   private static final int DECIMAL_BYTE_WIDTH = 16;
   private final byte[] DECIMAL_BYTES = new byte[DECIMAL_BYTE_WIDTH];
-  protected final boolean useDecimal128;
 
   private static final long decimalValOffset;
 
@@ -61,28 +73,11 @@ public abstract class CometVector extends ColumnVector {
     }
   }
 
-  @IcebergApi
-  public CometVector(DataType type, boolean useDecimal128) {
+  public CometVector(DataType type) {
     super(type);
-    this.useDecimal128 = useDecimal128;
   }
 
-  /**
-   * Sets the number of nulls in this vector to be 'numNulls'. This is used when the vector is
-   * reused across batches.
-   */
-  @IcebergApi
-  public abstract void setNumNulls(int numNulls);
-
-  /**
-   * Sets the number of values (including both nulls and non-nulls) in this vector to be
-   * 'numValues'. This is used when the vector is reused across batches.
-   */
-  @IcebergApi
-  public abstract void setNumValues(int numValues);
-
   /** Returns the number of values in this vector. */
-  @IcebergApi
   public abstract int numValues();
 
   /** Whether the elements of this vector are of fixed length. */
@@ -93,10 +88,8 @@ public abstract class CometVector extends ColumnVector {
   @Override
   public Decimal getDecimal(int i, int precision, int scale) {
     if (isNullAt(i)) return null;
-    if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
-      return createDecimal(getInt(i), precision, scale);
-    } else if (precision <= Decimal.MAX_LONG_DIGITS()) {
-      return createDecimal(useDecimal128 ? getLongDecimal(i) : getLong(i), precision, scale);
+    if (precision <= Decimal.MAX_LONG_DIGITS()) {
+      return createDecimal(getLongDecimal(i), precision, scale);
     } else {
       byte[] bytes = getBinaryDecimal(i);
       BigInteger bigInteger = new BigInteger(bytes);
@@ -222,7 +215,6 @@ public abstract class CometVector extends ColumnVector {
     throw new UnsupportedOperationException("Not implemented");
   }
 
-  @IcebergApi
   public abstract ValueVector getValueVector();
 
   /**
@@ -232,44 +224,39 @@ public abstract class CometVector extends ColumnVector {
    * @param length the length of the new vector
    * @return the new vector
    */
-  @IcebergApi
   public abstract CometVector slice(int offset, int length);
 
   /**
    * Returns a corresponding `CometVector` implementation based on the given Arrow `ValueVector`.
    *
    * @param vector Arrow `ValueVector`
-   * @param useDecimal128 Whether to use Decimal128 for decimal column
    * @return `CometVector` implementation
    */
-  public static CometVector getVector(
-      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
+  public static CometVector getVector(ValueVector vector, DictionaryProvider dictionaryProvider) {
     if (vector instanceof StructVector) {
-      return new CometStructVector(vector, useDecimal128, dictionaryProvider);
+      return new CometStructVector(vector, dictionaryProvider);
     } else if (vector instanceof MapVector) {
-      return new CometMapVector(vector, useDecimal128, dictionaryProvider);
+      return new CometMapVector(vector, dictionaryProvider);
     } else if (vector instanceof ListVector) {
-      return new CometListVector(vector, useDecimal128, dictionaryProvider);
+      return new CometListVector(vector, dictionaryProvider);
     } else {
       DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
-      CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
+      CometPlainVector cometVector = new CometPlainVector(vector);
 
       if (dictionaryEncoding == null) {
         return cometVector;
       } else {
         Dictionary dictionary = dictionaryProvider.lookup(dictionaryEncoding.getId());
-        CometPlainVector dictionaryVector =
-            new CometPlainVector(dictionary.getVector(), useDecimal128);
+        CometPlainVector dictionaryVector = new CometPlainVector(dictionary.getVector());
         CometDictionary cometDictionary = new CometDictionary(dictionaryVector);
 
-        return new CometDictionaryVector(
-            cometVector, cometDictionary, dictionaryProvider, useDecimal128);
+        return new CometDictionaryVector(cometVector, cometDictionary, dictionaryProvider);
       }
     }
   }
 
-  protected static CometVector getVector(ValueVector vector, boolean useDecimal128) {
-    return getVector(vector, useDecimal128, null);
+  protected static CometVector getVector(ValueVector vector) {
+    return getVector(vector, null);
   }
 
   private UnsupportedOperationException notImplementedException() {

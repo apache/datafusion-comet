@@ -99,38 +99,51 @@ of expressions that be disabled.
 
 ## Date/Time Functions
 
-| Expression       | SQL                          |
-| ---------------- | ---------------------------- |
-| CurrentTimeZone  | `current_timezone`           |
-| DateAdd          | `date_add`                   |
-| DateDiff         | `datediff`                   |
-| DateFormat       | `date_format`                |
-| DateFromUnixDate | `date_from_unix_date`        |
-| DateSub          | `date_sub`                   |
-| DatePart         | `date_part(field, source)`   |
-| Days             | `days`                       |
-| Extract          | `extract(field FROM source)` |
-| FromUnixTime     | `from_unixtime`              |
-| Hour             | `hour`                       |
-| LastDay          | `last_day`                   |
-| LocalTimestamp   | `localtimestamp`             |
-| MakeDate         | `make_date`                  |
-| Minute           | `minute`                     |
-| NextDay          | `next_day`                   |
-| Second           | `second`                     |
-| TimestampSeconds | `timestamp_seconds`          |
-| TruncDate        | `trunc`                      |
-| TruncTimestamp   | `date_trunc`                 |
-| UnixDate         | `unix_date`                  |
-| UnixTimestamp    | `unix_timestamp`             |
-| Year             | `year`                       |
-| Month            | `month`                      |
-| DayOfMonth       | `day`/`dayofmonth`           |
-| DayOfWeek        | `dayofweek`                  |
-| WeekDay          | `weekday`                    |
-| DayOfYear        | `dayofyear`                  |
-| WeekOfYear       | `weekofyear`                 |
-| Quarter          | `quarter`                    |
+| Expression        | SQL                          |
+| ----------------- | ---------------------------- |
+| AddMonths         | `add_months`                 |
+| ConvertTimezone   | `convert_timezone`           |
+| CurrentTimeZone   | `current_timezone`           |
+| DateAdd           | `date_add`                   |
+| DateDiff          | `datediff`                   |
+| DateFormat        | `date_format`                |
+| DateFromUnixDate  | `date_from_unix_date`        |
+| DateSub           | `date_sub`                   |
+| DatePart          | `date_part(field, source)`   |
+| Days              | `days`                       |
+| Extract           | `extract(field FROM source)` |
+| FromUnixTime      | `from_unixtime`              |
+| Hour              | `hour`                       |
+| LastDay           | `last_day`                   |
+| LocalTimestamp    | `localtimestamp`             |
+| MakeDate          | `make_date`                  |
+| MakeTime          | `make_time`                  |
+| MakeTimestamp     | `make_timestamp`             |
+| MicrosToTimestamp | `timestamp_micros`           |
+| MillisToTimestamp | `timestamp_millis`           |
+| Minute            | `minute`                     |
+| MonthsBetween     | `months_between`             |
+| NextDay           | `next_day`                   |
+| Second            | `second`                     |
+| TimestampSeconds  | `timestamp_seconds`          |
+| ToUnixTimestamp   | `to_unix_timestamp`          |
+| TruncDate         | `trunc`                      |
+| TruncTimestamp    | `date_trunc`                 |
+| UnixDate          | `unix_date`                  |
+| UnixMicros        | `unix_micros`                |
+| UnixMillis        | `unix_millis`                |
+| UnixSeconds       | `unix_seconds`               |
+| UnixTimestamp     | `unix_timestamp`             |
+| Year              | `year`                       |
+| Month             | `month`                      |
+| DayOfMonth        | `day`/`dayofmonth`           |
+| DayOfWeek         | `dayofweek`                  |
+| WeekDay           | `weekday`                    |
+| DayOfYear         | `dayofyear`                  |
+| WeekOfYear        | `weekofyear`                 |
+| Quarter           | `quarter`                    |
+| ToTime            | `to_time`                    |
+| TryToTime         | `try_to_time`                |
 
 ## Math Expressions
 
@@ -156,6 +169,7 @@ of expressions that be disabled.
 | Divide         | `/`            |
 | Exp            | `exp`          |
 | Expm1          | `expm1`        |
+| Factorial      | `factorial`    |
 | Floor          | `floor`        |
 | Hex            | `hex`          |
 | IntegralDivide | `div`          |
@@ -169,7 +183,9 @@ of expressions that be disabled.
 | Rand           | `rand`         |
 | Randn          | `randn`        |
 | Remainder      | `%`            |
+| Rint           | `rint`         |
 | Round          | `round`        |
+| Sec            | `sec`          |
 | Signum         | `signum`       |
 | Sin            | `sin`          |
 | Sinh           | `sinh`         |

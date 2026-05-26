@@ -1,0 +1,202 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Reusable Spark SQL test workflow. Invoked once per Spark version by the
+# spark_sql_test_<version>.yml caller workflows. Keep all job logic here so
+# the per-version callers stay thin.
+
+name: Spark SQL Tests (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      spark-short:
+        description: 'Spark minor version, e.g. 3.5'
+        required: true
+        type: string
+      spark-full:
+        description: 'Spark full version, e.g. 3.5.8'
+        required: true
+        type: string
+      java:
+        description: 'JDK major version, e.g. 17'
+        required: true
+        type: number
+      collect-fallback-logs:
+        description: 'Whether to collect Comet fallback reasons from spark sql unit test logs'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
+
+jobs:
+
+  # Build native library once and share with all test jobs
+  build-native:
+    name: Build Native Library
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-lib-linux
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+
+  spark-sql-test:
+    needs: build-native
+    strategy:
+      matrix:
+        module:
+          - {name: "catalyst", args1: "catalyst/test", args2: ""}
+          - {name: "sql_core-1", args1: "", args2: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"}
+          - {name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
+          - {name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"}
+          - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
+          - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
+          - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
+      fail-fast: false
+    name: spark-sql-${{ matrix.module.name }}/spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ inputs.java }}
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-linux
+          path: native/target/release/
+      - name: Setup Spark
+        uses: ./.github/actions/setup-spark-builder
+        with:
+          spark-version: ${{ inputs.spark-full }}
+          spark-short-version: ${{ inputs.spark-short }}
+          skip-native-build: true
+      - name: Run Spark tests
+        run: |
+          cd apache-spark
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          # SERIAL_SBT_TESTS gates SparkParallelTestGrouping in
+          # project/SparkBuild.scala. For Spark 4.0.2 on JDK 21 we
+          # leave it unset so the grouping is installed and
+          # DEDICATED_JVM_SBT_TESTS below actually forks a dedicated
+          # JVM per listed suite, working around the V1/V2 Parquet and
+          # Orc source-suite cross-suite file-stream leak under JDK 21
+          # (issue #4327). For other rows we keep it set to reduce
+          # peak memory on standard 7 GB runners.
+          if [ "${{ inputs.spark-short }}" != "4.0" ] || [ "${{ inputs.java }}" != "21" ]; then
+            export SERIAL_SBT_TESTS=1
+          fi
+          # Cap parallel forked test JVMs at 1 so that even when
+          # SparkParallelTestGrouping is enabled we don't blow the
+          # 7 GB runner budget (each forked test JVM has -Xmx2g).
+          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ inputs.collect-fallback-logs }} \
+            build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
+              'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
+              ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+          if [ "${{ inputs.collect-fallback-logs }}" = "true" ]; then
+            find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
+          fi
+        env:
+          LC_ALL: "C.UTF-8"
+          # Standard GitHub runners have 7 GB RAM; cap SBT heap so forked test
+          # JVMs fit alongside it.
+          SBT_MEM: "3072"
+          # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
+          # build_java21.yml and build_java25.yml set this same env var to
+          # process-isolate the V1/V2 Parquet and Orc source suites because
+          # they exhibit cross-suite resource interactions (file-stream and
+          # thread leaks) under the newer JDKs. project/SparkBuild.scala
+          # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
+          # listed suite. Empty value is a safe no-op.
+          DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
+      - name: Upload fallback log
+        if: ${{ inputs.collect-fallback-logs }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: fallback-log-spark-sql-${{ matrix.module.name }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
+          path: "**/fallback.log"
+
+  merge-fallback-logs:
+    if: ${{ inputs.collect-fallback-logs }}
+    name: merge-fallback-logs
+    needs: [spark-sql-test]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download fallback log artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: fallback-logs/
+      - name: Merge fallback logs
+        run: |
+          find ./fallback-logs/ -type f -name "fallback.log" -print0 | xargs -0 cat | sort -u > all_fallback.log
+      - name: Upload merged fallback log
+        uses: actions/upload-artifact@v7
+        with:
+          name: all-fallback-log-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
+          path: all_fallback.log

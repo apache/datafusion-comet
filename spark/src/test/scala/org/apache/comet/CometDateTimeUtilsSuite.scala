@@ -178,7 +178,7 @@ class CometDateTimeUtilsSuite extends CometTestBase {
   test("string to timestamp - invalid formats return null") {
     // All of these should produce null (not throw) in non-ANSI mode.
     for (tz <- Seq("UTC", "America/Los_Angeles")) {
-      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz, SQLConf.ANSI_ENABLED.key -> "false") {
         checkCastToTimestamp(
           Seq(
             "238",
@@ -210,7 +210,9 @@ class CometDateTimeUtilsSuite extends CometTestBase {
 
   // "SPARK-35780: support full range of timestamp string"
   test("SPARK-35780: full range of timestamp string") {
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+      SQLConf.ANSI_ENABLED.key -> "false") {
       // Normal-range cases: collect() as TimestampType directly.
       checkCastToTimestamp(
         Seq(
@@ -262,16 +264,21 @@ class CometDateTimeUtilsSuite extends CometTestBase {
   }
 
   test("SPARK-15379: invalid calendar dates in string to date cast") {
-    // Feb 29 on a non-leap year and Apr 31 must produce null for both DATE and TIMESTAMP.
-    checkCastToDate(Seq("2015-02-29 00:00:00", "2015-04-31 00:00:00", "2015-02-29", "2015-04-31"))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      // Feb 29 on a non-leap year and Apr 31 must produce null for both DATE and TIMESTAMP.
+      checkCastToDate(
+        Seq("2015-02-29 00:00:00", "2015-04-31 00:00:00", "2015-02-29", "2015-04-31"))
 
-    checkCastToTimestamp(
-      Seq("2015-02-29 00:00:00", "2015-04-31 00:00:00", "2015-02-29", "2015-04-31"))
+      checkCastToTimestamp(
+        Seq("2015-02-29 00:00:00", "2015-04-31 00:00:00", "2015-02-29", "2015-04-31"))
+    }
   }
 
   test("trailing characters while converting string to timestamp") {
     // Garbage after a valid ISO timestamp must make the whole value null.
-    checkCastToTimestamp(Seq("2019-10-31T10:59:23Z:::"))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      checkCastToTimestamp(Seq("2019-10-31T10:59:23Z:::"))
+    }
   }
 
   test("DST spring-forward gap and fall-back overlap") {

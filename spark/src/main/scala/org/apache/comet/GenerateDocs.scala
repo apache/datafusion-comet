@@ -129,6 +129,16 @@ object GenerateDocs {
             serde.getCompatibleNotes(),
             serde.getIncompatibleReasons(),
             serde.getUnsupportedReasons())
+        })),
+    "url" -> ((
+      "compatibility/expressions/url.md",
+      () =>
+        QueryPlanSerde.urlExpressions.toSeq.map { case (cls, serde) =>
+          (
+            cls.getSimpleName,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons())
         })))
 
   def main(args: Array[String]): Unit = {
