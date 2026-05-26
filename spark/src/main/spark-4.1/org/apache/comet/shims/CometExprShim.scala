@@ -150,10 +150,14 @@ trait CometExprShim extends CommonStringExprs {
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
-            exprToProtoInternal(
-              StructsToJson(evaluator.options, child, evaluator.timeZoneId),
-              inputs,
-              binding)
+            val toJson = StructsToJson(evaluator.options, child, evaluator.timeZoneId)
+            val exprProto = exprToProtoInternal(toJson, inputs, binding)
+            if (exprProto.isEmpty) {
+              toJson
+                .getTagValue(CometExplainInfo.EXTENSION_INFO)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+            }
+            exprProto
           case (Literal(evaluator: ParseUrlEvaluator, _), "evaluate", args) =>
             val parseUrl = ParseUrl(args, evaluator.failOnError)
             val result = exprToProtoInternal(parseUrl, inputs, binding)
