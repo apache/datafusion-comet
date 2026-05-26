@@ -32,10 +32,6 @@ pub struct CometBatchIterator<'a> {
     pub method_has_next_ret: ReturnType,
     pub method_next: JMethodID,
     pub method_next_ret: ReturnType,
-    pub method_has_selection_vectors: JMethodID,
-    pub method_has_selection_vectors_ret: ReturnType,
-    pub method_export_selection_indices: JMethodID,
-    pub method_export_selection_indices_ret: ReturnType,
 }
 
 impl<'a> CometBatchIterator<'a> {
@@ -58,18 +54,6 @@ impl<'a> CometBatchIterator<'a> {
                 jni::jni_sig!("([J[J)I"),
             )?,
             method_next_ret: ReturnType::Primitive(Primitive::Int),
-            method_has_selection_vectors: env.get_method_id(
-                JNIString::new(Self::JVM_CLASS),
-                jni::jni_str!("hasSelectionVectors"),
-                jni::jni_sig!("()Z"),
-            )?,
-            method_has_selection_vectors_ret: ReturnType::Primitive(Primitive::Boolean),
-            method_export_selection_indices: env.get_method_id(
-                JNIString::new(Self::JVM_CLASS),
-                jni::jni_str!("exportSelectionIndices"),
-                jni::jni_sig!("([J[J)I"),
-            )?,
-            method_export_selection_indices_ret: ReturnType::Primitive(Primitive::Int),
         })
     }
 }

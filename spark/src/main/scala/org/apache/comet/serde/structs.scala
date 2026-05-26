@@ -23,6 +23,7 @@ import scala.jdk.CollectionConverters._
 import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, Literal, StructsToCsv, StructsToJson}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -108,10 +109,6 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
 
 object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Does not support `+Infinity` and `-Infinity` for numeric types (float, double)." +
-      " (https://github.com/apache/datafusion-comet/issues/3016)")
-
   override def getSupportLevel(expr: StructsToJson): SupportLevel = {
     if (CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_JAVA) {
       expr.child.dataType match {
@@ -121,10 +118,14 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
           Unsupported(Some("to_json: only StructType with supported fields is supported"))
       }
     } else {
-      Incompatible(
-        Some(
-          "Does not support Infinity/-Infinity for numeric types" +
-            " (https://github.com/apache/datafusion-comet/issues/3016)"))
+      if (expr.options.nonEmpty) {
+        return Unsupported(Some("StructsToJson with options is not supported"))
+      }
+      val dataType = expr.child.dataType
+      if (!isSupportedType(dataType)) {
+        return Unsupported(Some(s"Struct type: $dataType contains unsupported types"))
+      }
+      Compatible()
     }
   }
 
@@ -132,45 +133,30 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
       expr: StructsToJson,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_JAVA) {
+      return convertViaJvmUdf(expr, inputs, binding)
+    }
     if (expr.options.nonEmpty) {
       withInfo(expr, "StructsToJson with options is not supported")
       return None
     }
-    if (CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_JAVA) {
-      return convertViaJvmUdf(expr, inputs, binding)
-    }
-    val isSupported = expr.child.dataType match {
-      case s: StructType =>
-        s.fields.forall(f => isSupportedType(f.dataType))
-      case _: MapType | _: ArrayType =>
-        // Spark supports map and array in StructsToJson but this is not yet
-        // implemented in Comet
-        false
-      case _ =>
-        false
-    }
-
-    if (isSupported) {
-      exprToProtoInternal(expr.child, inputs, binding) match {
-        case Some(p) =>
-          val toJson = ExprOuterClass.ToJson
+    val ignoreNullFields = SQLConf.get.jsonGeneratorIgnoreNullFields
+    exprToProtoInternal(expr.child, inputs, binding) match {
+      case Some(p) =>
+        val toJson = ExprOuterClass.ToJson
+          .newBuilder()
+          .setChild(p)
+          .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+          .setIgnoreNullFields(ignoreNullFields)
+          .build()
+        Some(
+          ExprOuterClass.Expr
             .newBuilder()
-            .setChild(p)
-            .setTimezone(expr.timeZoneId.getOrElse("UTC"))
-            .setIgnoreNullFields(true)
-            .build()
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setToJson(toJson)
-              .build())
-        case _ =>
-          withInfo(expr, expr.child)
-          None
-      }
-    } else {
-      withInfo(expr, "Unsupported data type", expr.child)
-      None
+            .setToJson(toJson)
+            .build())
+      case _ =>
+        withInfo(expr, expr.child)
+        None
     }
   }
 

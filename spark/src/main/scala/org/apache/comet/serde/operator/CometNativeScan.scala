@@ -41,7 +41,7 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 /**
- * Validation and serde logic for `native_datafusion` scans.
+ * Validation and serde logic for Comet's native Parquet scan.
  */
 object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
@@ -210,6 +210,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.setUseFieldId(useFieldId)
       commonBuilder.setIgnoreMissingFieldId(
         scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
+
+      commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
 
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState

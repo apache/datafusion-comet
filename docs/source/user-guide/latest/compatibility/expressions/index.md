@@ -26,8 +26,7 @@ the [Comet Supported Expressions Guide](../../expressions.md) for more informati
 Compatibility notes are grouped by expression category:
 
 ```{toctree}
-:maxdepth: 1
-:hidden:
+:maxdepth: 2
 
 aggregate
 array
@@ -37,5 +36,6 @@ math
 misc
 string
 struct
+url
 cast
 ```

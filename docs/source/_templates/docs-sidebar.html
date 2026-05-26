@@ -17,9 +17,20 @@ specific language governing permissions and limitations
 under the License.
 -->
 
+{# Start the sidebar from the deepest captioned section the page lives under:
+   - user-guide/latest/* lives under user-guide/index.md → user-guide/latest/index.rst, so start at depth 2
+   - contributor-guide/* lives under contributor-guide/index.md, so start at depth 1
+   - root and orphan pages (search, genindex) fall back to the global toctree (depth 0). #}
+{% if pagename.startswith("user-guide/latest/") and not suppress_sidebar_toctree(startdepth=2, includehidden=True) %}
+  {% set sidebar_startdepth = 2 %}
+{% elif not suppress_sidebar_toctree(startdepth=1, includehidden=True) %}
+  {% set sidebar_startdepth = 1 %}
+{% else %}
+  {% set sidebar_startdepth = 0 %}
+{% endif %}
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
-    {{ toctree(maxdepth=4, collapse=True, includehidden=True, titles_only=True) }}
+    {{ generate_toctree_html("sidebar", startdepth=sidebar_startdepth, maxdepth=4, collapse=False, includehidden=True, titles_only=True) }}
   </div>
 </nav>
 

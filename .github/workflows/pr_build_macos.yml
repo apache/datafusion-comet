@@ -22,30 +22,53 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  # Allow-list of paths that affect this workflow. A change must match a positive
+  # pattern (and not a trailing "!" exclusion) for the build to run. Editing
+  # pr_build_linux.yml does not trigger this workflow, and vice versa.
   push:
     branches:
       - main
-    paths-ignore:
-      - "benchmarks/**"
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+    paths:
+      - "native/**"
+      - "common/**"
+      - "spark/**"
+      - "spark-integration/**"
+      - "pom.xml"
+      - "**/pom.xml"
+      - ".mvn/**"
+      - "mvnw"
+      - "Makefile"
+      - "rust-toolchain.toml"
+      - "dev/ci/**"
+      - ".github/workflows/pr_build_macos.yml"
+      - ".github/actions/setup-macos-builder/**"
+      - ".github/actions/java-test/**"
+      - "!**.md"
+      - "!native/core/benches/**"
+      - "!native/spark-expr/benches/**"
+      - "!spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
   pull_request:
-    paths-ignore:
-      - "benchmarks/**"
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+    paths:
+      - "native/**"
+      - "common/**"
+      - "spark/**"
+      - "spark-integration/**"
+      - "pom.xml"
+      - "**/pom.xml"
+      - ".mvn/**"
+      - "mvnw"
+      - "Makefile"
+      - "rust-toolchain.toml"
+      - "dev/ci/**"
+      - ".github/workflows/pr_build_macos.yml"
+      - ".github/actions/setup-macos-builder/**"
+      - ".github/actions/java-test/**"
+      - "!**.md"
+      - "!native/core/benches/**"
+      - "!native/spark-expr/benches/**"
+      - "!spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -138,25 +161,29 @@ jobs:
             java_version: "17"
             maven_opts: "-Pspark-4.0 -Pscala-2.13"
 
-          - name: "Spark 4.1, JDK 17, Scala 2.13"
-            java_version: "17"
-            # The spark-4.1 profile already pins Scala to 2.13.17 to match Spark 4.1.1's
-            # runtime; the scala-2.13 profile would override it back to 2.13.16 and break.
-            maven_opts: "-Pspark-4.1"
-
-          - name: "Spark 4.2, JDK 17, Scala 2.13"
-            java_version: "17"
-            # The spark-4.2 profile pins Scala to 2.13.18 to match Spark 4.2.0-preview4's
-            # runtime; the scala-2.13 profile would override it back to 2.13.16 and break.
-            maven_opts: "-Pspark-4.2"
-
+        # Suites are grouped by functional area into balanced buckets so that no test
+        # job runs much longer than ~23 min. See
+        # docs/superpowers/specs/2026-05-22-pr-build-consolidation-design.md for the
+        # per-suite timing analysis behind this grouping. Keep this list in sync with
+        # pr_build_linux.yml; dev/ci/check-suites.py requires every suite in both files.
         suite:
-          - name: "fuzz"
+          - name: "scans"
             value: |
+              org.apache.comet.parquet.CometParquetWriterSuite
+              org.apache.comet.parquet.ParquetReadV1Suite
+              org.apache.comet.parquet.ParquetReadV2Suite
+              org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
+              org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
+              org.apache.spark.sql.comet.ParquetEncryptionITCase
+              org.apache.comet.exec.CometNativeReaderSuite
+              org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergRewriteActionSuite
+              org.apache.comet.iceberg.IcebergReflectionSuite
+              org.apache.comet.csv.CometCsvNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
-              org.apache.comet.CometFuzzAggregateSuite
               org.apache.comet.CometFuzzIcebergSuite
-              org.apache.comet.CometFuzzMathSuite
               org.apache.comet.DataGeneratorSuite
           - name: "shuffle"
             value: |
@@ -170,22 +197,6 @@ jobs:
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
               org.apache.spark.shuffle.sort.SpillSorterSuite
-          - name: "parquet"
-            value: |
-              org.apache.comet.parquet.CometParquetWriterSuite
-              org.apache.comet.parquet.ParquetReadV1Suite
-              org.apache.comet.parquet.ParquetReadV2Suite
-              org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
-              org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
-              org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
-              org.apache.spark.sql.comet.ParquetEncryptionITCase
-              org.apache.comet.exec.CometNativeReaderSuite
-              org.apache.comet.CometIcebergNativeSuite
-              org.apache.comet.CometIcebergRewriteActionSuite
-              org.apache.comet.iceberg.IcebergReflectionSuite
-          - name: "csv"
-            value: |
-              org.apache.comet.csv.CometCsvNativeReadSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
@@ -213,6 +224,9 @@ jobs:
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.comet.objectstore.NativeConfigSuite
+              org.apache.spark.sql.CometToPrettyStringSuite
+              org.apache.spark.sql.CometCollationSuite
+              org.apache.comet.CometFuzzAggregateSuite
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
@@ -222,21 +236,22 @@ jobs:
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometCastSuite
+              org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
-              org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.CometCsvExpressionSuite
-              org.apache.comet.CometDateTimeUtilsSuite
+              org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.SparkErrorConverterSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
-          - name: "sql"
-            value: |
-              org.apache.spark.sql.CometToPrettyStringSuite
-              org.apache.spark.sql.CometCollationSuite
+              org.apache.comet.CometCodegenSuite
+              org.apache.comet.CometCodegenSourceSuite
+              org.apache.comet.CometCodegenHOFSuite
+              org.apache.comet.CometFuzzMathSuite
+              org.apache.comet.CometCodegenFuzzSuite
 
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
