@@ -24,9 +24,11 @@ Comet supports two engines for evaluating JSON expressions, selected by the
 
 - `rust` (default): native DataFusion implementation. Fast, but has known
   compatibility gaps with Spark on certain inputs.
-- `java` (experimental): routes evaluation through a JVM UDF that delegates to
-  Spark's own expression classes for byte-exact compatibility, at the cost of a
-  JNI roundtrip per batch.
+- `java` (experimental): routes evaluation through Comet's Arrow-direct codegen
+  dispatcher so Spark's own `doGenCode` for the expression runs inside the Comet
+  pipeline. Byte-exact compatibility, at the cost of a JNI roundtrip per batch.
+  Requires `spark.comet.exec.scalaUDF.codegen.enabled=true`; otherwise the
+  operator falls back to Spark.
 
 ## Expression coverage
 

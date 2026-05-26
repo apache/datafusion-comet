@@ -26,7 +26,9 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 class CometJsonJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def sparkConf: SparkConf =
-    super.sparkConf.set(CometConf.COMET_JSON_ENGINE.key, CometConf.JSON_ENGINE_JAVA)
+    super.sparkConf
+      .set(CometConf.COMET_JSON_ENGINE.key, CometConf.JSON_ENGINE_JAVA)
+      .set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
 
   private val rows = Seq(
     """{"a":1,"b":"x","arr":[1,2,3]}""",

@@ -166,13 +166,16 @@ class CometCodegenSourceSuite extends AnyFunSuite {
         s"got:\n$src")
   }
 
-  test("canHandle rejects CodegenFallback expressions") {
+  test("canHandle accepts CodegenFallback expressions (delegates to eval(row))") {
+    // CodegenFallback.doGenCode emits ((Expression) references[N]).eval(row) which is the same
+    // mechanism that backs HigherOrderFunction support: the eval reads through the kernel's typed
+    // Arrow getters via the row alias. Other CodegenFallback expressions (JsonToStructs,
+    // StructsToJson, ...) ride the same path.
     val expr = FakeCodegenFallback(BoundReference(0, StringType, nullable = true))
     val reason = CometBatchKernelCodegen.canHandle(expr)
-    assert(reason.isDefined, "expected canHandle to reject CodegenFallback")
     assert(
-      reason.get.contains("FakeCodegenFallback"),
-      s"expected reason to name the rejected expression class; got: ${reason.get}")
+      reason.isEmpty,
+      s"expected canHandle to accept CodegenFallback; got rejection: ${reason.getOrElse("")}")
   }
 
   test("canHandle accepts Nondeterministic expressions (per-partition kernel handles state)") {
