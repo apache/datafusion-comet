@@ -21,10 +21,13 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.SparkConf
+import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateArray, CreateMap, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, Size, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
@@ -60,6 +63,26 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       expr: org.apache.spark.sql.catalyst.expressions.Expression,
       specs: ArrowColumnSpec*): String =
     CometBatchKernelCodegen.generateSource(expr, specs.toIndexedSeq).body
+
+  test("NullIntolerant short-circuit uses isNullAt for CometPlainVector-wrapped columns") {
+    // Primitive Arrow vectors (timestamp / int / float / ...) are wrapped in `CometPlainVector`
+    // at input-cast time. The short-circuit must call `isNullAt(i)`, not `isNull(i)`, otherwise
+    // Janino fails to compile the kernel with "method isNull not declared". Verified end-to-end
+    // by `CometTemporalExpressionSuite` date_format tests over `TimeStampMicroTZVector` inputs.
+    val tsVec = CometBatchKernelCodegen.vectorClassBySimpleName("TimeStampMicroTZVector")
+    val spec = ArrowColumnSpec(tsVec, nullable = true)
+    val expr = DateFormatClass(
+      BoundReference(0, TimestampType, nullable = true),
+      Literal(UTF8String.fromString("yyyy-MM-dd EEEE"), StringType),
+      Some("UTC"))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(spec)).body
+    assert(
+      src.contains("if (this.col0.isNullAt(i))"),
+      s"expected short-circuit to use isNullAt for CometPlainVector-wrapped col0; got:\n$src")
+    assert(
+      !src.contains("if (this.col0.isNull(i))"),
+      s"expected no raw Arrow isNull on the CometPlainVector-wrapped col0; got:\n$src")
+  }
 
   test("non-nullable column emits literal-false isNullAt case") {
     val expr = Length(BoundReference(0, StringType, nullable = false))
@@ -1031,6 +1054,181 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       !src.contains("if (isNullAt(0)) return null;"),
       s"expected no null guard on non-nullable map field; got:\n$src")
+  }
+
+  // Bucket 4 datetime expressions routed through CometCodegenDispatch. Each entry pairs a
+  // bound Catalyst expression with the Arrow column specs the kernel would see at runtime.
+  // The test asserts `generateSource` returns a non-empty body, which means Spark's own
+  // `doGenCode` succeeded under the codegen context (no NotImplementedError, no rewrite to
+  // a CodegenFallback path).
+  test("Bucket 4 datetime expressions produce non-empty generated kernel source") {
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val longCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("BigIntVector"),
+      nullable = true)
+    val decCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector"),
+      nullable = true)
+    val dateCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DateDayVector"),
+      nullable = true)
+    val tsCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("TimeStampMicroTZVector"),
+      nullable = true)
+    val strCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("VarCharVector"),
+      nullable = true)
+
+    val cases: Seq[(String, Expression, IndexedSeq[ArrowColumnSpec])] = Seq(
+      (
+        "AddMonths",
+        AddMonths(
+          BoundReference(0, DateType, nullable = true),
+          BoundReference(1, IntegerType, nullable = true)),
+        IndexedSeq(dateCol, intCol)),
+      (
+        "MonthsBetween",
+        MonthsBetween(
+          BoundReference(0, TimestampType, nullable = true),
+          BoundReference(1, TimestampType, nullable = true),
+          Literal(true),
+          Some("UTC")),
+        IndexedSeq(tsCol, tsCol)),
+      (
+        "MakeTimestamp",
+        MakeTimestamp(
+          BoundReference(0, IntegerType, nullable = true),
+          BoundReference(1, IntegerType, nullable = true),
+          BoundReference(2, IntegerType, nullable = true),
+          BoundReference(3, IntegerType, nullable = true),
+          BoundReference(4, IntegerType, nullable = true),
+          BoundReference(5, DecimalType(8, 6), nullable = true),
+          timezone = None,
+          timeZoneId = Some("UTC")),
+        IndexedSeq(intCol, intCol, intCol, intCol, intCol, decCol)),
+      (
+        "MillisToTimestamp",
+        MillisToTimestamp(BoundReference(0, LongType, nullable = true)),
+        IndexedSeq(longCol)),
+      (
+        "MicrosToTimestamp",
+        MicrosToTimestamp(BoundReference(0, LongType, nullable = true)),
+        IndexedSeq(longCol)),
+      (
+        "UnixSeconds",
+        UnixSeconds(BoundReference(0, TimestampType, nullable = true)),
+        IndexedSeq(tsCol)),
+      (
+        "UnixMillis",
+        UnixMillis(BoundReference(0, TimestampType, nullable = true)),
+        IndexedSeq(tsCol)),
+      (
+        "UnixMicros",
+        UnixMicros(BoundReference(0, TimestampType, nullable = true)),
+        IndexedSeq(tsCol)),
+      (
+        "ToUnixTimestamp",
+        ToUnixTimestamp(
+          BoundReference(0, StringType, nullable = true),
+          Literal(UTF8String.fromString("yyyy-MM-dd HH:mm:ss"), StringType),
+          Some("UTC")),
+        IndexedSeq(strCol)))
+    cases.foreach { case (name, expr, specs) =>
+      val src = CometBatchKernelCodegen.generateSource(expr, specs).body
+      assert(src.nonEmpty, s"$name: expected non-empty generated source")
+      assert(
+        src.contains("public java.lang.Object generate(Object[] references)"),
+        s"$name: generated source missing kernel class entry point")
+    }
+  }
+
+  test("closure-serialized bytes diverge for failOnError / roundOff / timeZoneId variants") {
+    // The dispatcher caches kernels by the closure-serialized bytes of the bound expression
+    // (`CacheKey.bytesKey`). For expression classes that carry a runtime-dependent boolean
+    // (failOnError, roundOff) or string (timeZoneId), two plan instances differing only in that
+    // field must serialize to distinct byte sequences so they receive distinct cache entries.
+    // A collision would let a kernel compiled for one variant (e.g. ANSI throw site) silently
+    // service a request from the other (non-ANSI null-on-overflow).
+    //
+    // This test serializes through `JavaSerializer` directly, which is what
+    // `SparkEnv.get.closureSerializer` returns at runtime. We don't need a live SparkEnv here;
+    // `JavaSerializer` only reads `spark.serializer.objectStreamReset` / `spark.serializer.
+    // extraDebugInfo` from the conf and otherwise uses plain `ObjectOutputStream`.
+    val serializer = new JavaSerializer(new SparkConf()).newInstance()
+    def bytesOf(e: Expression): Array[Byte] = {
+      val buffer = serializer.serialize(e)
+      val out = new Array[Byte](buffer.remaining())
+      buffer.get(out)
+      out
+    }
+
+    def assertDiverge(label: String, a: Expression, b: Expression): Unit = {
+      val ab = bytesOf(a)
+      val bb = bytesOf(b)
+      assert(
+        !java.util.Arrays.equals(ab, bb),
+        s"$label: expected serialized bytes to differ for variants that the dispatcher must " +
+          s"cache separately, but both produced ${ab.length} identical bytes")
+    }
+
+    // failOnError on MakeTimestamp (set by the constructor from SQLConf.ansiEnabled at bind time)
+    def makeTs(failOnError: Boolean): Expression =
+      MakeTimestamp(
+        BoundReference(0, IntegerType, nullable = true),
+        BoundReference(1, IntegerType, nullable = true),
+        BoundReference(2, IntegerType, nullable = true),
+        BoundReference(3, IntegerType, nullable = true),
+        BoundReference(4, IntegerType, nullable = true),
+        BoundReference(5, DecimalType(8, 6), nullable = true),
+        timezone = None,
+        timeZoneId = Some("UTC"),
+        failOnError = failOnError)
+    assertDiverge(
+      "MakeTimestamp.failOnError",
+      makeTs(failOnError = true),
+      makeTs(failOnError = false))
+
+    // failOnError on ToUnixTimestamp
+    def toUnix(failOnError: Boolean): Expression =
+      ToUnixTimestamp(
+        BoundReference(0, StringType, nullable = true),
+        Literal(UTF8String.fromString("yyyy-MM-dd HH:mm:ss"), StringType),
+        timeZoneId = Some("UTC"),
+        failOnError = failOnError)
+    assertDiverge(
+      "ToUnixTimestamp.failOnError",
+      toUnix(failOnError = true),
+      toUnix(failOnError = false))
+
+    // roundOff on MonthsBetween (carried as a child Literal node)
+    def monthsBetween(roundOff: Boolean): Expression =
+      MonthsBetween(
+        BoundReference(0, TimestampType, nullable = true),
+        BoundReference(1, TimestampType, nullable = true),
+        Literal(roundOff),
+        Some("UTC"))
+    assertDiverge(
+      "MonthsBetween.roundOff",
+      monthsBetween(roundOff = true),
+      monthsBetween(roundOff = false))
+
+    // Session timezone propagates onto TimeZoneAwareExpression via timeZoneId; the dispatcher
+    // must not share a kernel across timezones because Spark's doGenCode embeds the resolved
+    // ZoneId reference into the generated source.
+    def makeTsTz(tz: String): Expression =
+      MakeTimestamp(
+        BoundReference(0, IntegerType, nullable = true),
+        BoundReference(1, IntegerType, nullable = true),
+        BoundReference(2, IntegerType, nullable = true),
+        BoundReference(3, IntegerType, nullable = true),
+        BoundReference(4, IntegerType, nullable = true),
+        BoundReference(5, DecimalType(8, 6), nullable = true),
+        timezone = None,
+        timeZoneId = Some(tz),
+        failOnError = false)
+    assertDiverge("MakeTimestamp.timeZoneId", makeTsTz("UTC"), makeTsTz("America/New_York"))
   }
 
   test("CacheKey discriminates on ArrowColumnSpec.nullable") {

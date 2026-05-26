@@ -15,27 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Pin the session timezone so the test exercises the non-UTC path regardless of the JVM
--- default. Enable the codegen dispatcher so non-UTC and non-whitelisted formats stay inside
--- Comet via Spark's own DateFormatClass.doGenCode instead of falling back to Spark.
+-- Routes timestamp_millis through the codegen dispatcher.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_date_format(ts timestamp) USING parquet
+CREATE TABLE test_timestamp_millis(v long) USING parquet
 
 statement
-INSERT INTO test_date_format VALUES (timestamp('2024-06-15 10:30:45')), (timestamp('1970-01-01 00:00:00')), (NULL)
+INSERT INTO test_timestamp_millis VALUES (0), (1718451045000), (-1), (NULL), (86400000)
 
 query
-SELECT date_format(ts, 'yyyy-MM-dd') FROM test_date_format
-
-query
-SELECT date_format(ts, 'HH:mm:ss') FROM test_date_format
-
-query
-SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format
+SELECT timestamp_millis(v) FROM test_timestamp_millis
 
 -- literal arguments
 query
-SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')
+SELECT timestamp_millis(1718451045000)

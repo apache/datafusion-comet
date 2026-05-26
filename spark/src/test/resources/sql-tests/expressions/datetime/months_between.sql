@@ -15,27 +15,27 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Pin the session timezone so the test exercises the non-UTC path regardless of the JVM
--- default. Enable the codegen dispatcher so non-UTC and non-whitelisted formats stay inside
--- Comet via Spark's own DateFormatClass.doGenCode instead of falling back to Spark.
+-- Routes months_between through the codegen dispatcher.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_date_format(ts timestamp) USING parquet
+CREATE TABLE test_months_between(t1 timestamp, t2 timestamp) USING parquet
 
 statement
-INSERT INTO test_date_format VALUES (timestamp('2024-06-15 10:30:45')), (timestamp('1970-01-01 00:00:00')), (NULL)
+INSERT INTO test_months_between VALUES
+  (timestamp('2024-06-15 10:30:00'), timestamp('2024-01-15 10:30:00')),
+  (timestamp('2024-01-31 00:00:00'), timestamp('2024-02-29 00:00:00')),
+  (timestamp('1970-01-01 00:00:00'), timestamp('1970-01-01 00:00:00')),
+  (NULL, timestamp('2024-01-01 00:00:00')),
+  (timestamp('2024-01-01 00:00:00'), NULL)
 
 query
-SELECT date_format(ts, 'yyyy-MM-dd') FROM test_date_format
+SELECT months_between(t1, t2) FROM test_months_between
 
 query
-SELECT date_format(ts, 'HH:mm:ss') FROM test_date_format
-
-query
-SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format
+SELECT months_between(t1, t2, false) FROM test_months_between
 
 -- literal arguments
 query
-SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')
+SELECT months_between(timestamp('1997-02-28 10:30:00'), timestamp('1996-10-30 00:00:00'))
