@@ -384,45 +384,61 @@ specific language governing permissions and limitations
 under the License.
 -->
 
+
+
+  
+
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
-    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
-<ul class="current">
-<li class="toctree-l1 current"><a class="reference internal" href="../../../index.html">User Guide</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="../../../0.16/index.html">0.16.x (current)</a></li>
-<li class="toctree-l2 current"><a class="reference internal" href="../../index.html">Development Snapshot</a><ul class="current">
-<li class="toctree-l3"><a class="reference internal" href="../../installation.html">Installing Comet</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../source.html">Building From Source</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../operators.html">Supported Operators</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../expressions.html">Supported Expressions</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../configs.html">Configuration Settings</a></li>
-<li class="toctree-l3 current"><a class="reference internal" href="../index.html">Compatibility Guide</a><ul class="current">
-<li class="toctree-l4"><a class="reference internal" href="../scans.html">Parquet Compatibility</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../floating-point.html">Floating-point Number Comparison</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../regex.html">Regular Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../operators.html">Operator Compatibility</a></li>
-<li class="toctree-l4 current"><a class="reference internal" href="index.html">Expression Compatibility</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../spark-versions.html">Spark Version Compatibility</a></li>
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../installation.html">Installing Comet</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../configs.html">Configuration Settings</a></li>
 </ul>
-</li>
-<li class="toctree-l3"><a class="reference internal" href="../../understanding-comet-plans.html">Understanding Comet Plans</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../tuning.html">Tuning Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../metrics.html">Metrics Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../kubernetes.html">Kubernetes Guide</a></li>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">What Comet Supports</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../operators.html">Supported Operators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../expressions.html">Supported Expressions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
 </ul>
-</li>
-<li class="toctree-l2"><a class="reference internal" href="../../../older-versions.html">Older Versions</a></li>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Compatibility</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../regex.html">Regular Expressions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../operators.html">Operator Compatibility</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">Expression Compatibility</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">Array Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="map.html">Map Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="math.html">Math Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="string.html">String Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="struct.html">Struct Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="url.html">URL Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cast.html">Cast</a></li>
 </ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="../../../../contributor-guide/index.html">Contributor Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../../../changelog/index.html">Changelog</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../../../about/gluten_comparison.html">Comparison with Gluten</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../../../about/versioning_policy.html">Versioning Policy</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../../../asf/index.html">ASF Links</a></li>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../spark-versions.html">Spark Version Compatibility</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../tuning.html">Tuning Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../metrics.html">Metrics Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Advanced</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../source.html">Building From Source</a></li>
 </ul>
 
   </div>
@@ -470,9 +486,6 @@ under the License.
     
     
     <li class="breadcrumb-item"><a href="../../index.html" class="nav-link">Comet 0.17.0-SNAPSHOT User Guide</a></li>
-    
-    
-    <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Compatibility Guide</a></li>
     
     
     <li class="breadcrumb-item"><a href="index.html" class="nav-link">Expression Compatibility</a></li>

@@ -383,16 +383,190 @@ specific language governing permissions and limitations
 under the License.
 -->
 
+
+
+  
+
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="user-guide/index.html">User Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="contributor-guide/index.html">Contributor Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="changelog/index.html">Changelog</a></li>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="user-guide/index.html">User Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="user-guide/0.16/index.html">0.16.x (current)</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/source.html">Building From Source</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="user-guide/0.16/compatibility/index.html">Compatibility Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.16/compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.16/compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.16/compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.16/compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.16/compatibility/expressions/index.html">Expression Compatibility</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.16/compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/0.16/kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="user-guide/latest/index.html">Development Snapshot</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/compatibility/index.html">Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="user-guide/latest/compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/latest/compatibility/expressions/cast.html">Cast</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/kubernetes.html">Kubernetes Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide/latest/source.html">Building From Source</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="user-guide/older-versions.html">Older Versions</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="user-guide/0.15/index.html">0.15.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/installation.html">Installing Comet</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/source.html">Building From Source</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/operators.html">Supported Operators</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/configs.html">Configuration Settings</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.15/kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="user-guide/0.14/index.html">0.14.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/installation.html">Installing Comet</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/source.html">Building From Source</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/operators.html">Supported Operators</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/configs.html">Configuration Settings</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.14/kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</details></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="user-guide/0.13/index.html">0.13.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/installation.html">Installing Comet</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/source.html">Building From Source</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/operators.html">Supported Operators</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/configs.html">Configuration Settings</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l4"><a class="reference internal" href="user-guide/0.13/kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="contributor-guide/index.html">Contributor Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/contributing.html">Getting Started</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/development.html">Development Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/plugin_overview.html">Comet Plugin Architecture</a></li>
+
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/ffi.html">Arrow FFI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/sql_error_propagation.html">ANSI Error Propagation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/adding_a_new_spark_version.html">Adding a New Spark Version</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/sql-file-tests.html">Comet SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/debugging.html">Debugging Guide</a></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="contributor-guide/benchmarking.html">Benchmarking Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="contributor-guide/benchmark-results/tpc-h.html">Apache DataFusion Comet: Benchmarks Derived From TPC-H</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contributor-guide/benchmark-results/tpc-ds.html">Apache DataFusion Comet: Benchmarks Derived From TPC-DS</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contributor-guide/benchmarking_macos.html">Comet Benchmarking on macOS</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contributor-guide/benchmarking_aws_ec2.html">Comet Benchmarking in EC2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contributor-guide/benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/profiling.html">Profiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/tracing.html">Tracing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/spark_expressions_support.html">Supported Spark Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/spark_configs_support.html">Supported Spark Configurations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/release_process.html">Release Process</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributor-guide/roadmap.html">Roadmap</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="changelog/index.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.16.0.html">DataFusion Comet 0.16.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.15.0.html">DataFusion Comet 0.15.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.14.1.html">DataFusion Comet 0.14.1 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.14.0.html">DataFusion Comet 0.14.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.13.0.html">DataFusion Comet 0.13.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.12.0.html">DataFusion Comet 0.12.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.11.0.html">DataFusion Comet 0.11.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.10.0.html">DataFusion Comet 0.10.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.9.1.html">DataFusion Comet 0.9.1 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.9.0.html">DataFusion Comet 0.9.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.8.0.html">DataFusion Comet 0.8.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.7.0.html">DataFusion Comet 0.7.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.6.0.html">DataFusion Comet 0.6.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.5.0.html">DataFusion Comet 0.5.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.4.0.html">DataFusion Comet 0.4.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.3.0.html">DataFusion Comet 0.3.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.2.0.html">DataFusion Comet 0.2.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="changelog/0.1.0.html">DataFusion Comet 0.1.0 Changelog</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="about/gluten_comparison.html">Comparison with Gluten</a></li>
 <li class="toctree-l1"><a class="reference internal" href="about/versioning_policy.html">Versioning Policy</a></li>
-<li class="toctree-l1"><a class="reference internal" href="asf/index.html">ASF Links</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="asf/index.html">ASF Links</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference external" href="https://apache.org">Apache Software Foundation</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://www.apache.org/licenses/">License</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">Donate</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://www.apache.org/foundation/thanks.html">Thanks</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://www.apache.org/security/">Security</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">Code of conduct</a></li>
+</ul>
+</details></li>
 </ul>
 
   </div>
