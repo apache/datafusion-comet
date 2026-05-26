@@ -2029,9 +2029,6 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
 
 object CometBroadcastHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin {
 
-  override def getSupportLevel(operator: HashJoin): SupportLevel = {
-    Incompatible(Some("Broadcast nested loop join is experimental"))
-  }
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED)
 
