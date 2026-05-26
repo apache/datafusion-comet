@@ -2030,7 +2030,7 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
 object CometBroadcastHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED)
+    Some(CometConf.COMET_EXEC_HASH_JOIN_ENABLED)
 
   override def convert(
       join: HashJoin,
