@@ -15,15 +15,23 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_to_json(a int, b string) USING parquet
+-- ConfigMatrix: spark.sql.jsonGenerator.ignoreNullFields=false,true
 
 statement
-INSERT INTO test_to_json VALUES (1, 'hello'), (NULL, NULL), (0, '')
+CREATE TABLE test_to_json(a int, b string, f float, d double) USING parquet
 
-query spark_answer_only
-SELECT to_json(named_struct('a', a, 'b', b)) FROM test_to_json
+statement
+INSERT INTO test_to_json VALUES (1, 'hello', cast('NaN' as float), cast('Infinity' as double)), (NULL, NULL, cast('NaN' as float), cast('Infinity' as double)), (NULL, NULL, NULL, NULL), (0, '', 0.0, 0.0), (2, 'hello', cast('NaN' as float), cast('-Infinity' as double))
+
+query
+SELECT to_json(named_struct('a', a, 'b', b, 'f', f, 'd', d)) FROM test_to_json
 
 -- literal arguments
-query spark_answer_only
+query
 SELECT to_json(named_struct('a', 1, 'b', 'hello'))
+
+query expect_fallback(StructsToJson with options is not supported)
+SELECT to_json(named_struct('a', a, 'b', b), map('timestampFormat', 'dd/MM/yyyy')) FROM test_to_json
+
+query expect_fallback(Struct type: StructType(StructField(a,IntegerType,true),StructField(b,ArrayType(StringType,true),false)) contains unsupported types)
+SELECT to_json(named_struct('a', a, 'b', array(b))) FROM test_to_json
