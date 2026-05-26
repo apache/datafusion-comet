@@ -28,7 +28,11 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 
-/** A Comet column vector for struct type. */
+/**
+ * A {@link CometDecodedVector} for Spark struct columns, wrapping an Arrow {@link StructVector} and
+ * recursively wrapping each child as a {@link CometVector} so {@link #getChild(int)} returns the
+ * right concrete subtype.
+ */
 public class CometStructVector extends CometDecodedVector {
   final List<ColumnVector> children;
   final DictionaryProvider dictionaryProvider;
