@@ -560,39 +560,9 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 </section>
 <section id="dateformatclass">
 <h2>DateFormatClass<a class="headerlink" href="#dateformatclass" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">DateFormatClass</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateFormatClass.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
 <ul class="simple">
-<li><p>Non-UTC timezones may produce different results than Spark</p></li>
-</ul>
-<p>The following cases are not supported by Comet:</p>
-<ul class="simple">
-<li><p>Only the following formats are supported:</p>
-<ul>
-<li><p><code class="docutils literal notranslate"><span class="pre">EEE</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">EEEE</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">HH</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">HH:mm</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">HH:mm:ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">MM</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">MMM</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">MMMM</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">dd</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">h:mm</span> <span class="pre">a</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">hh:mm</span> <span class="pre">a</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">hh:mm:ss</span> <span class="pre">a</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">mm</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yy</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd'T'HH:mm:ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy/MM/dd</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy/MM/dd</span> <span class="pre">HH:mm:ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyyMM</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyyMMdd</span></code></p></li>
-</ul>
-</li>
+<li><p>Format strings in a curated allow-list run natively via DataFusion’s <code class="docutils literal notranslate"><span class="pre">to_char</span></code> for UTC sessions. Other format strings (including non-literal formats), as well as non-UTC sessions, route through Spark’s own <code class="docutils literal notranslate"><span class="pre">DateFormatClass.doGenCode</span></code> via the Arrow-direct codegen dispatcher when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=true</span></code>. When the codegen dispatcher is disabled (default) the operator falls back to Spark in those cases.</p></li>
 </ul>
 </section>
 <section id="fromutctimestamp">

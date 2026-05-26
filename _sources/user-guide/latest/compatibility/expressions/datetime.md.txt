@@ -52,36 +52,9 @@ The following incompatibilities cause `ConvertTimezone` to fall back to Spark by
 
 ## DateFormatClass
 
-The following incompatibilities cause `DateFormatClass` to fall back to Spark by default. Set `spark.comet.expression.DateFormatClass.allowIncompatible=true` to enable Comet acceleration despite these differences.
+The following differences from Spark are always present and do not require any additional configuration:
 
-- Non-UTC timezones may produce different results than Spark
-
-The following cases are not supported by Comet:
-
-- Only the following formats are supported:
-  - `EEE`
-  - `EEEE`
-  - `HH`
-  - `HH:mm`
-  - `HH:mm:ss`
-  - `MM`
-  - `MMM`
-  - `MMMM`
-  - `dd`
-  - `h:mm a`
-  - `hh:mm a`
-  - `hh:mm:ss a`
-  - `mm`
-  - `ss`
-  - `yy`
-  - `yyyy`
-  - `yyyy-MM-dd`
-  - `yyyy-MM-dd HH:mm:ss`
-  - `yyyy-MM-dd'T'HH:mm:ss`
-  - `yyyy/MM/dd`
-  - `yyyy/MM/dd HH:mm:ss`
-  - `yyyyMM`
-  - `yyyyMMdd`
+- Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC sessions. Other format strings (including non-literal formats), as well as non-UTC sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true`. When the codegen dispatcher is disabled (default) the operator falls back to Spark in those cases.
 
 ## FromUTCTimestamp
 

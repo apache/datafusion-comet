@@ -190,6 +190,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Acos.enabled` | Enable Comet acceleration for `Acos` | true |
 | `spark.comet.expression.Acosh.enabled` | Enable Comet acceleration for `Acosh` | true |
 | `spark.comet.expression.Add.enabled` | Enable Comet acceleration for `Add` | true |
+| `spark.comet.expression.AddMonths.enabled` | Enable Comet acceleration for `AddMonths` | true |
 | `spark.comet.expression.Alias.enabled` | Enable Comet acceleration for `Alias` | true |
 | `spark.comet.expression.And.enabled` | Enable Comet acceleration for `And` | true |
 | `spark.comet.expression.ArrayAppend.enabled` | Enable Comet acceleration for `ArrayAppend` | true |
@@ -300,6 +301,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Lower.enabled` | Enable Comet acceleration for `Lower` | true |
 | `spark.comet.expression.MakeDate.enabled` | Enable Comet acceleration for `MakeDate` | true |
 | `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
+| `spark.comet.expression.MakeTimestamp.enabled` | Enable Comet acceleration for `MakeTimestamp` | true |
 | `spark.comet.expression.MapContainsKey.enabled` | Enable Comet acceleration for `MapContainsKey` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
 | `spark.comet.expression.MapFromArrays.enabled` | Enable Comet acceleration for `MapFromArrays` | true |
@@ -307,9 +309,12 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.MapKeys.enabled` | Enable Comet acceleration for `MapKeys` | true |
 | `spark.comet.expression.MapValues.enabled` | Enable Comet acceleration for `MapValues` | true |
 | `spark.comet.expression.Md5.enabled` | Enable Comet acceleration for `Md5` | true |
+| `spark.comet.expression.MicrosToTimestamp.enabled` | Enable Comet acceleration for `MicrosToTimestamp` | true |
+| `spark.comet.expression.MillisToTimestamp.enabled` | Enable Comet acceleration for `MillisToTimestamp` | true |
 | `spark.comet.expression.Minute.enabled` | Enable Comet acceleration for `Minute` | true |
 | `spark.comet.expression.MonotonicallyIncreasingID.enabled` | Enable Comet acceleration for `MonotonicallyIncreasingID` | true |
 | `spark.comet.expression.Month.enabled` | Enable Comet acceleration for `Month` | true |
+| `spark.comet.expression.MonthsBetween.enabled` | Enable Comet acceleration for `MonthsBetween` | true |
 | `spark.comet.expression.Multiply.enabled` | Enable Comet acceleration for `Multiply` | true |
 | `spark.comet.expression.Murmur3Hash.enabled` | Enable Comet acceleration for `Murmur3Hash` | true |
 | `spark.comet.expression.NextDay.enabled` | Enable Comet acceleration for `NextDay` | true |
@@ -371,11 +376,15 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ToDegrees.enabled` | Enable Comet acceleration for `ToDegrees` | true |
 | `spark.comet.expression.ToRadians.enabled` | Enable Comet acceleration for `ToRadians` | true |
 | `spark.comet.expression.ToUTCTimestamp.enabled` | Enable Comet acceleration for `ToUTCTimestamp` | true |
+| `spark.comet.expression.ToUnixTimestamp.enabled` | Enable Comet acceleration for `ToUnixTimestamp` | true |
 | `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
 | `spark.comet.expression.Unhex.enabled` | Enable Comet acceleration for `Unhex` | true |
 | `spark.comet.expression.UnixDate.enabled` | Enable Comet acceleration for `UnixDate` | true |
+| `spark.comet.expression.UnixMicros.enabled` | Enable Comet acceleration for `UnixMicros` | true |
+| `spark.comet.expression.UnixMillis.enabled` | Enable Comet acceleration for `UnixMillis` | true |
+| `spark.comet.expression.UnixSeconds.enabled` | Enable Comet acceleration for `UnixSeconds` | true |
 | `spark.comet.expression.UnixTimestamp.enabled` | Enable Comet acceleration for `UnixTimestamp` | true |
 | `spark.comet.expression.UnscaledValue.enabled` | Enable Comet acceleration for `UnscaledValue` | true |
 | `spark.comet.expression.Upper.enabled` | Enable Comet acceleration for `Upper` | true |
