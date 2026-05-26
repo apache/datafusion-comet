@@ -257,7 +257,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Cast] -> CometCast)
 
   private val jsonExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[LengthOfJsonArray] -> CometScalarFunction("json_array_length"))
+    classOf[LengthOfJsonArray] -> CometLengthOfJsonArray)
 
   private[comet] val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
@@ -708,6 +708,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             }
             handler.convert(expr, inputs, binding)
           } else {
+            // scalastyle:off println
+            println("BOOOOOOOOOOOM_1: " + expr)
+            // scalastyle:on println line=586 column=14
             val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
             withInfo(
               expr,

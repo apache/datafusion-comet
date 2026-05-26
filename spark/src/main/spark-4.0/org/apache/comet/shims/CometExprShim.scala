@@ -161,12 +161,11 @@ trait CometExprShim extends CommonStringExprs {
           case (cls, "lengthOfJsonArray", Seq(child)) if cls == classOf[JsonExpressionUtils] =>
             val lengthOfJsonArray = LengthOfJsonArray(child)
             val exprProto = exprToProtoInternal(lengthOfJsonArray, inputs, binding)
-            lengthOfJsonArray
-              .getTagValue(CometExplainInfo.EXTENSION_INFO)
-              .foreach { reasons =>
-                println(s"Reasons: $reasons")
-                s.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons)
-              }
+            if (exprProto.isEmpty) {
+              lengthOfJsonArray
+                .getTagValue(CometExplainInfo.EXTENSION_INFO)
+                .foreach(reasons => s.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+            }
             exprProto
           case _ => None
         }

@@ -321,7 +321,6 @@ abstract class CometTestBase
     val (sparkPlan, cometPlan) = internalCheckSparkAnswer(df, assertCometNative = false)
     val explainInfo = new ExtendedExplainInfo()
     val actualFallbacks = explainInfo.getFallbackReasons(cometPlan)
-    println(s"BOOOOOOOM: $actualFallbacks")
     for (reason <- fallbackReasons) {
       if (!actualFallbacks.exists(_.contains(reason))) {
         if (actualFallbacks.isEmpty) {
