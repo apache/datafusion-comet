@@ -25,16 +25,16 @@ import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.spark.internal.Logging
-import org.apache.spark.sql.comet.{CometNativeExec, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, IcebergWriteExec}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
-object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] with Logging {
+object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED)
@@ -46,10 +46,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] with
       IcebergReflection.tablePropertyConstant("OBJECT_STORE_ENABLED")
     lazy val WriteLocationProviderImpl: String =
       IcebergReflection.tablePropertyConstant("WRITE_LOCATION_PROVIDER_IMPL")
-    lazy val DefaultWriteMetricsMode: String =
-      IcebergReflection.tablePropertyConstant("DEFAULT_WRITE_METRICS_MODE")
-    lazy val MetricsModeColumnPrefix: String =
-      IcebergReflection.tablePropertyConstant("METRICS_MODE_COLUMN_CONF_PREFIX")
     lazy val BloomFilterColumnEnabledPrefix: String =
       IcebergReflection.tablePropertyConstant("PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX")
     lazy val ParquetRowGroupCheckMinRecordCount: String =
@@ -83,6 +79,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] with
   }
 
   private val EncryptionPropertyPrefix = "encryption."
+  private val UnsupportedWriteTypeIds: Set[String] = Set("UUID")
   private val SupportedStorageSchemes: Set[String] =
     Set("file", "memory", "s3", "s3a", "gs", "oss")
   private val MinUnsupportedFormatVersion = 3
@@ -162,13 +159,14 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] with
       PropertyKeys.WriteLocationProviderImpl,
       "custom location provider unsupported"),
     requireFormatVersionAtMostTwo,
+    requireNoUuidColumns,
     requireNoEncryptionPrefix,
-    requireSupportedMetricsModes,
     requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
     requireRowGroupCheckMaxRecordCountAtDefault,
     requireParquetPageVersionDefault,
     requireShredVariantsDisabled,
+    requireParseableCompressionLevel,
     requireOnlyVettedParquetWriteProperties,
     requirePropertyAbsent(
       PropertyKeys.ParquetEnableDictionary,
@@ -206,29 +204,35 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] with
       case None => Some("could not determine the table format-version")
     }
 
+  // Iceberg maps `uuid` to Spark's StringType, so the native writer would receive a Utf8 column
+  // while iceberg-rust's target Arrow schema demands FixedSizeBinary(16) -- no Arrow cast bridges
+  // the two, so the write would pass detection and then fail the task. Decline it up front. This
+  // is the only Spark-writable Iceberg type with such a mismatch: `fixed(N)` arrives as Binary
+  // and casts to FixedSizeBinary(N), and the V3-only types are excluded by the format-version
+  // gate.
+  private val requireNoUuidColumns: TriggerRule = ctx =>
+    IcebergReflection
+      .getWriteSchemaFromSparkWrite(ctx.sparkWrite)
+      .orElse(IcebergReflection.getSchema(ctx.table)) match {
+      case None => Some("could not resolve the write schema for column type checking")
+      case Some(schema) =>
+        IcebergReflection
+          .findFieldWithTypeIds(schema, UnsupportedWriteTypeIds)
+          .map { case (name, typeId) =>
+            s"column $name has Iceberg type ${typeId.toLowerCase(Locale.ROOT)}, " +
+              "which the native writer cannot reproduce"
+          }
+    }
+
   private val requireNoEncryptionPrefix: TriggerRule = ctx =>
     ctx.properties.keys
       .find(_.startsWith(EncryptionPropertyPrefix))
       .map(k => s"$k set: encryption unsupported")
 
-  private val TruncateModePattern = """truncate\((\d+)\)""".r
-
-  private def isSupportedMetricsMode(value: String): Boolean =
-    value.trim.toLowerCase(Locale.ROOT) match {
-      case "full" => true
-      case TruncateModePattern(n) => n.toInt > 0
-      case _ => false
-    }
-
-  private val requireSupportedMetricsModes: TriggerRule = ctx => {
-    val defaultKey = PropertyKeys.DefaultWriteMetricsMode
-    val prefix = PropertyKeys.MetricsModeColumnPrefix
-    ctx.properties
-      .find { case (k, v) =>
-        (k == defaultKey || k.startsWith(prefix)) && !isSupportedMetricsMode(v)
-      }
-      .map { case (k, v) => s"$k=$v (supported metrics modes: full, truncate(N))" }
-  }
+  // No metrics-mode gate: manifest `DataFile` metrics are re-derived on the JVM from the
+  // written parquet footers with Iceberg's own `MetricsConfig` logic before commit (see
+  // `CometIcebergWriteExec`), so every `write.metadata.metrics.*` value behaves exactly as it
+  // does on the iceberg-java path.
 
   private val requireNoBloomFilterColumnsEnabled: TriggerRule = ctx => {
     val prefix = PropertyKeys.BloomFilterColumnEnabledPrefix
@@ -252,6 +256,15 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] with
       .filter(_.equalsIgnoreCase("true"))
       .map(_ => s"$key=true (variant shredding changes the parquet schema)")
   }
+
+  // iceberg-java throws NumberFormatException at write time for a non-integer level, while the
+  // native translation would silently substitute the codec default. Fall back so the failure
+  // behaviour matches the stock path.
+  private val requireParseableCompressionLevel: TriggerRule = ctx =>
+    ctx.properties
+      .get(PropertyKeys.ParquetCompressionLevel)
+      .filter(v => scala.util.Try(v.trim.toInt).isFailure)
+      .map(v => s"${PropertyKeys.ParquetCompressionLevel}=$v is not an integer")
 
   private val requireOnlyVettedParquetWriteProperties: TriggerRule = ctx =>
     ctx.properties
@@ -315,11 +328,253 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] with
       op: IcebergWriteExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val _ = (builder, childOp)
-    withFallbackReason(op, "native Iceberg write is not yet implemented")
-    None
+    val _ = (builder, childOp) // unused: we synthesise our own FFI scan child below
+    try {
+      for {
+        icebergWrite <- buildIcebergWriteProto(op)
+        ffiScan <- buildFfiScan(op)
+        writeChild <- dropNonDataColumns(op, ffiScan)
+      } yield OperatorOuterClass.Operator
+        .newBuilder()
+        .setPlanId(op.id)
+        .addChildren(writeChild)
+        .setIcebergWrite(icebergWrite)
+        .build()
+    } catch {
+      case e: Exception =>
+        withFallbackReason(op, s"Failed to convert Iceberg native write: ${e.getMessage}")
+        None
+    }
   }
 
-  override def createExec(nativeOp: Operator, op: IcebergWriteExec): CometNativeExec =
-    throw new UnsupportedOperationException("native Iceberg write not yet implemented")
+  /**
+   * Spark 4.x rewrites CoW DML (`ReplaceData`) into a row stream with extra columns -- column 0
+   * carries the per-row operation code (`__row_operation`: 5=WRITE, 6=WRITE_WITH_METADATA) and
+   * the tail of the row carries file/partition metadata (`_file`, `_spec_id`, `_partition`). The
+   * JVM-side `IcebergWriteExec.runReplaceDataWriter` handles this row-by-row by applying
+   * `dispatch.rowProjection` before invoking the writer.
+   *
+   * The native path forwards Arrow batches as-is to the iceberg-rust writer, which expects
+   * exactly the Iceberg table's data columns. Without an explicit projection step we end up
+   * giving it the wider row (e.g. 6 columns when the schema has 3) and
+   * `decorate_batch_with_field_ids` rejects the batch.
+   *
+   * For Spark 3.4 / 3.5 the strategy shim returns `None` for `replaceDataDispatch` and the
+   * upstream plan already projects to the data columns -- no extra projection needed. For 4.x we
+   * splice a `Projection` proto between our `IcebergWrite` op and the FFI `Scan`, selecting the
+   * upstream attributes whose names match the Iceberg schema's columns. The JVM-side child stays
+   * at the original wide output, so its `executeColumnar()` still emits the wide batches the FFI
+   * scan declares; the projection then strips them inside the native runtime before the writer
+   * sees the data.
+   */
+  private def dropNonDataColumns(
+      op: IcebergWriteExec,
+      scan: OperatorOuterClass.Operator): Option[OperatorOuterClass.Operator] = {
+    // Dropping the metadata columns is behaviour-identical to the JVM writer only while V3
+    // tables are gated out: on format-version >= 3 Iceberg's writer reads row-lineage fields
+    // from the metadata columns (`ExtractRowLineage`), which this projection discards. Revisit
+    // together with `requireFormatVersionAtMostTwo`.
+    if (op.replaceDataDispatch.isEmpty) return Some(scan)
+
+    val sparkWrite = IcebergReflection.getOuterSparkWrite(op.batchWrite).getOrElse {
+      withFallbackReason(op, "Could not unwrap outer SparkWrite for ReplaceData projection")
+      return None
+    }
+    val writeSchema = IcebergReflection.getWriteSchemaFromSparkWrite(sparkWrite).getOrElse {
+      withFallbackReason(
+        op,
+        "SparkWrite.writeSchema reflection failed for ReplaceData projection")
+      return None
+    }
+    val dataFieldNames = IcebergReflection.getSchemaFieldNames(writeSchema).getOrElse {
+      withFallbackReason(
+        op,
+        "Could not extract Iceberg schema column names for ReplaceData projection")
+      return None
+    }
+    val upstreamOutput = op.child.output
+    val missing = dataFieldNames.filterNot(name => upstreamOutput.exists(_.name == name))
+    if (missing.nonEmpty) {
+      withFallbackReason(
+        op,
+        s"ReplaceData projection: columns ${missing.mkString("[", ", ", "]")} not in upstream " +
+          s"output ${upstreamOutput.map(_.name).mkString("[", ", ", "]")}")
+      return None
+    }
+    val projectList = dataFieldNames.map(name => upstreamOutput.find(_.name == name).get)
+    val protoExprs = projectList.map(attr => exprToProto(attr, upstreamOutput))
+    if (!protoExprs.forall(_.isDefined)) {
+      withFallbackReason(op, "Could not serialise ReplaceData projection attributes to proto")
+      return None
+    }
+    val projection = OperatorOuterClass.Projection
+      .newBuilder()
+      .addAllProjectList(protoExprs.map(_.get).asJava)
+      .build()
+    Some(
+      OperatorOuterClass.Operator
+        .newBuilder()
+        .setPlanId(op.id)
+        .addChildren(scan)
+        .setProjection(projection)
+        .build())
+  }
+
+  private def buildFfiScan(op: IcebergWriteExec): Option[OperatorOuterClass.Operator] = {
+    val scan = NativeWriteUtils.buildFfiScan(op.child, op.id)
+    if (scan.isEmpty) {
+      withFallbackReason(
+        op,
+        "Cannot serialize upstream data types for Iceberg native write FFI scan")
+    }
+    scan
+  }
+
+  override def createExec(nativeOp: Operator, op: IcebergWriteExec): CometNativeExec = {
+    val sparkWrite = IcebergReflection
+      .getOuterSparkWrite(op.batchWrite)
+      .getOrElse(
+        throw new IllegalStateException(
+          "Native Iceberg write conversion: could not unwrap outer SparkWrite from BatchWrite"))
+    val table = IcebergReflection
+      .getTableFromSparkWrite(sparkWrite)
+      .getOrElse(
+        throw new IllegalStateException(
+          "Native Iceberg write conversion: SparkWrite.table reflection failed"))
+    val outputSpecId = IcebergReflection
+      .getOutputSpecIdFromSparkWrite(sparkWrite)
+      .getOrElse(
+        throw new IllegalStateException(
+          "Native Iceberg write conversion: SparkWrite.outputSpecId reflection failed"))
+    CometIcebergWriteExec(
+      nativeOp,
+      op.child,
+      op.batchWrite,
+      table.asInstanceOf[AnyRef],
+      outputSpecId)
+  }
+
+  /**
+   * Assemble the per-write `IcebergWrite` protobuf. All reflection calls are localised here so a
+   * missing accessor surfaces as a `withFallbackReason` fall-back rather than a planning-time
+   * crash.
+   */
+  private def buildIcebergWriteProto(
+      op: IcebergWriteExec): Option[OperatorOuterClass.IcebergWrite] = {
+    val sparkWrite = IcebergReflection.getOuterSparkWrite(op.batchWrite).getOrElse {
+      withFallbackReason(op, "Could not unwrap outer SparkWrite from BatchWrite")
+      return None
+    }
+    val table = IcebergReflection.getTableFromSparkWrite(sparkWrite).getOrElse {
+      withFallbackReason(op, "Could not extract Iceberg Table from SparkWrite")
+      return None
+    }
+
+    val properties = IcebergReflection
+      .getTableProperties(table)
+      .map(_.asScala.toMap)
+      .getOrElse(Map.empty[String, String])
+    val catalogProperties =
+      IcebergReflection.getFileIOProperties(table).getOrElse(Map.empty[String, String])
+
+    // A brand-new table (CTAS/RTAS before its first commit) has no metadata file yet. The
+    // native side only surfaces metadata_location in plan-debug output, so an empty string is
+    // fine -- FileIO is initialised from data_location.
+    val metadataLocation = IcebergReflection.getMetadataLocation(table).getOrElse("")
+    val outputSpecId = IcebergReflection.getOutputSpecIdFromSparkWrite(sparkWrite).getOrElse {
+      withFallbackReason(op, "SparkWrite.outputSpecId reflection failed")
+      return None
+    }
+    val partitionSpec = IcebergReflection.getPartitionSpecById(table, outputSpecId).getOrElse {
+      withFallbackReason(op, s"No partition spec found for id=$outputSpecId")
+      return None
+    }
+    val partitionSpecJson = IcebergReflection.partitionSpecToJson(partitionSpec).getOrElse {
+      withFallbackReason(op, "PartitionSpecParser.toJson failed")
+      return None
+    }
+    val writeSchema = IcebergReflection.getWriteSchemaFromSparkWrite(sparkWrite).getOrElse {
+      withFallbackReason(op, "SparkWrite.writeSchema reflection failed")
+      return None
+    }
+    val icebergSchemaJson = IcebergReflection.schemaToJson(writeSchema).getOrElse {
+      withFallbackReason(op, "SchemaParser.toJson failed")
+      return None
+    }
+    // Iceberg's Spark `SparkWrite$WriterFactory` does NOT wire the table sort order into the
+    // per-file writer factory for batch appends in any Iceberg version Comet targets (1.5.2 /
+    // 1.8.1 / 1.10.0): it builds `SparkFileWriterFactory` without `.dataSortOrder(...)`, so every
+    // committed data file is stamped `sort_order_id = 0` (unsorted) even when the table itself has
+    // a non-default sort order. We match that exactly. The
+    // `SparkWriteConf.outputSortOrderId(writeRequirements)` resolver (explicit option / table order
+    // when an ordering is required / unsorted) and the matching `.dataSortOrder(...)` wiring only
+    // exist in Iceberg 1.11+; reflect the resolver when it is present so this stays correct if the
+    // pinned runtime is bumped, otherwise default to 0.
+    val sortOrderId =
+      IcebergReflection.getOutputSortOrderIdFromSparkWrite(sparkWrite).getOrElse(0)
+    val dataLocation = IcebergReflection.getDataLocation(table).getOrElse {
+      withFallbackReason(op, "Table.locationProvider().newDataLocation reflection failed")
+      return None
+    }
+    val operationId = IcebergReflection.getOperationIdFromSparkWrite(sparkWrite).getOrElse {
+      withFallbackReason(op, "SparkWrite.queryId reflection failed")
+      return None
+    }
+    val targetFileSize =
+      IcebergReflection.getTargetFileSizeFromSparkWrite(sparkWrite).getOrElse {
+        withFallbackReason(op, "SparkWrite.targetFileSize reflection failed")
+        return None
+      }
+    val useFanoutWriter =
+      IcebergReflection.getUseFanoutWriterFromSparkWrite(sparkWrite).getOrElse {
+        withFallbackReason(op, "SparkWrite.useFanoutWriter reflection failed")
+        return None
+      }
+    val specIsUnpartitioned = isUnpartitionedSpec(partitionSpec)
+    val writerMode = IcebergWriteProtoTranslation.resolveWriterMode(
+      specIsUnpartitioned = specIsUnpartitioned,
+      useFanoutWriter = useFanoutWriter)
+
+    val createdBy = s"Apache Iceberg ${IcebergReflection.icebergVersion()} (Comet)"
+    // Iceberg's `RegistryBasedFileWriterFactory` merges resolved write properties (codec, level,
+    // and other effective settings carried on `SparkWrite`) over the table's properties when
+    // building the per-file writer. Mirror that merge here so per-write options (e.g.
+    // `option("write-parquet-compression-codec", "gzip")`) survive into the native writer.
+    val resolvedWriteProperties =
+      IcebergReflection.getWritePropertiesFromSparkWrite(sparkWrite).getOrElse(Map.empty)
+    val effectiveProperties = properties ++ resolvedWriteProperties
+    val parquetSettings =
+      IcebergWriteProtoTranslation.buildParquetSettings(effectiveProperties, createdBy)
+
+    val common = IcebergWriteProtoTranslation.buildCommon(
+      catalogProperties = catalogProperties,
+      metadataLocation = metadataLocation,
+      icebergSchemaJson = icebergSchemaJson,
+      partitionSpecJson = partitionSpecJson,
+      sortOrderId = sortOrderId,
+      dataLocation = dataLocation,
+      operationId = operationId,
+      targetFileSizeBytes = targetFileSize,
+      writerMode = writerMode,
+      parquetSettings = parquetSettings,
+      catalogName = IcebergReflection.deriveCatalogName(table))
+
+    Some(OperatorOuterClass.IcebergWrite.newBuilder().setCommon(common).build())
+  }
+
+  /**
+   * `PartitionSpec.isUnpartitioned()` -- accessed reflectively because Iceberg is `test`-scoped
+   * on the main source classpath.
+   */
+  private def isUnpartitionedSpec(spec: Any): Boolean =
+    try {
+      spec.getClass.getMethod("isUnpartitioned").invoke(spec).asInstanceOf[Boolean]
+    } catch {
+      case _: Exception =>
+        val fields = spec.getClass
+          .getMethod("fields")
+          .invoke(spec)
+          .asInstanceOf[java.util.List[_]]
+        fields.isEmpty
+    }
 }

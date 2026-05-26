@@ -298,6 +298,12 @@ case class CometExecRule(session: SparkSession)
       case op: DataWritingCommandExec =>
         convertToComet(op, CometDataWritingCommand).getOrElse(op)
 
+      // AQE re-fires the Iceberg write planning on every stage materialisation, so a
+      // partitioned write's physical sub-tree may already contain a `CometIcebergWriteExec`.
+      // Unwrap to avoid a double conversion.
+      case op: IcebergWriteExec if op.child.isInstanceOf[CometIcebergWriteExec] =>
+        op.child
+
       case op: IcebergWriteExec if CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(op.conf) =>
         convertToComet(op, CometIcebergNativeWrite).getOrElse(op)
 
@@ -684,14 +690,16 @@ case class CometExecRule(session: SparkSession)
             firstNativeOp = true
           }
 
-          // CometNativeWriteExec is special: it has two separate plans:
+          // CometNativeWriteExec / CometIcebergWriteExec are special: they have two separate
+          // plans:
           // 1. A protobuf plan (nativeOp) describing the write operation
           // 2. A Spark plan (child) that produces the data to write
           // The serializedPlanOpt is a def that always returns Some(...) by serializing
-          // nativeOp on-demand, so it doesn't need convertBlock(). However, its child
-          // (e.g., CometNativeScanExec) may need its own serialization. Reset the flag
-          // so children can start their own native execution blocks.
-          if (op.isInstanceOf[CometNativeWriteExec]) {
+          // nativeOp on-demand, so the write exec itself doesn't need convertBlock(). However,
+          // its child (e.g., CometNativeScanExec, or a CometProject over an AQEShuffleRead)
+          // needs its own serialization. Reset the flag so children can start their own native
+          // execution blocks.
+          if (op.isInstanceOf[CometNativeWriteExec] || op.isInstanceOf[CometIcebergWriteExec]) {
             firstNativeOp = true
           }
 
@@ -728,7 +736,7 @@ case class CometExecRule(session: SparkSession)
       // children are CometNativeExec. This prevents runtime failures when the native operator
       // expects Arrow arrays but receives non-Arrow data (e.g., OnHeapColumnVector).
       if (serde.requiresNativeChildren && op.children.nonEmpty) {
-        // Get the actual data-producing children (unwrap WriteFilesExec if present)
+        // Get the actual data-producing children (unwrap WriteFilesExec).
         val dataProducingChildren = op.children.flatMap {
           case writeFiles: WriteFilesExec => Seq(writeFiles.child)
           case other => Seq(other)
