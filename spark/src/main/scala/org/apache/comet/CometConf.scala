@@ -121,6 +121,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.write.iceberg.splitOperator.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
+          "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
+          "(outside AQE). This lets AQE and Comet's columnar rules see and re-optimise the " +
+          "data sub-query without affecting Iceberg's commit semantics. Off by default; " +
+          "Iceberg-Java writes the data unchanged when the gate is off. Highly experimental.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)

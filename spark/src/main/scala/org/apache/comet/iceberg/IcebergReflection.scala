@@ -51,6 +51,14 @@ object IcebergReflection extends Logging {
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
+    val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
+
+    // Iceberg 1.5.2 (Spark 3.4 profile) ships its own `ReplaceIcebergData` logical write node via
+    // the iceberg-spark-extensions module instead of using Spark's stock `ReplaceData`. Iceberg
+    // 1.8+ dropped it in favour of Spark 3.5's native row-level operation support, so this class
+    // name will only resolve on the 3.4 + Iceberg 1.5.2 combo (where SQL UPDATE / MERGE on V2
+    // tables require the Iceberg extension).
+    val REPLACE_ICEBERG_DATA = "org.apache.spark.sql.catalyst.plans.logical.ReplaceIcebergData"
   }
 
   /**
@@ -92,6 +100,66 @@ object IcebergReflection extends Logging {
    */
   object TypeNames {
     val UNKNOWN = "unknown"
+  }
+
+  /**
+   * Probes a class via reflection once, caches the outcome. Returns `None` when Iceberg is not on
+   * the classpath so Comet stays buildable in non-Iceberg deployments.
+   */
+  private def tryLoadClass(name: String): Option[Class[_]] =
+    try Some(loadClass(name))
+    catch { case _: ClassNotFoundException => None }
+
+  private lazy val sparkWriteClassOpt: Option[Class[_]] = tryLoadClass(ClassNames.SPARK_WRITE)
+
+  /**
+   * Whether `write` is an Iceberg `SparkWrite` (or subclass). Returns false if Iceberg is not on
+   * the classpath. Used by the write strategy to decide whether to intercept a V2 logical write.
+   */
+  def isIcebergSparkWrite(write: Any): Boolean =
+    sparkWriteClassOpt.exists(_.isInstance(write))
+
+  /**
+   * Whether `plan` is Iceberg's `ReplaceIcebergData` logical node (Iceberg 1.5.2's UPDATE / MERGE
+   * rewrite target on Spark 3.4). Matched by FQCN so the main module doesn't compile-depend on
+   * iceberg-spark-extensions.
+   */
+  def isReplaceIcebergData(plan: Any): Boolean =
+    plan != null && plan.getClass.getName == ClassNames.REPLACE_ICEBERG_DATA
+
+  /**
+   * Read a declared (or inherited) field on `plan` reflectively. Used for extracting fields off
+   * Iceberg 1.5.2's `ReplaceIcebergData` logical node when iceberg-spark-extensions isn't on the
+   * main classpath.
+   */
+  private def reflectField(plan: Any, fieldName: String): Option[AnyRef] =
+    try {
+      val field = plan.getClass.getDeclaredField(fieldName)
+      field.setAccessible(true)
+      Option(field.get(plan))
+    } catch {
+      case e: Exception =>
+        logError(
+          s"Iceberg reflection failure: $fieldName on ${plan.getClass.getName}: ${e.getMessage}")
+        None
+    }
+
+  /**
+   * Pull `(table, query, originalTable, write)` out of a `ReplaceIcebergData` instance. Iceberg's
+   * 1.5.2 case class shape matches Spark 3.5+'s stock `ReplaceData` exactly, so the extracted
+   * tuple can feed our `matchedSparkWrite` dispatcher unchanged.
+   */
+  def extractReplaceIcebergDataFields(plan: Any): Option[(AnyRef, AnyRef, AnyRef, AnyRef)] = {
+    if (!isReplaceIcebergData(plan)) return None
+    for {
+      table <- reflectField(plan, "table")
+      query <- reflectField(plan, "query")
+      originalTable <- reflectField(plan, "originalTable")
+      write <- reflectField(
+        plan,
+        "write"
+      ) // Option[Write]; field can be Some(null) so kept AnyRef
+    } yield (table, query, originalTable, write)
   }
 
   /**
@@ -639,6 +707,7 @@ object IcebergReflection extends Logging {
 
     unsupportedTypes.toList
   }
+
 }
 
 /**
