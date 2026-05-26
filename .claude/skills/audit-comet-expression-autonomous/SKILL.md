@@ -48,7 +48,7 @@ Keep this output in memory. You will reference it when categorising findings and
 
 From the audit output, sort every finding into exactly one of:
 
-- **DOC**: audit sub-bullets to add under the expression's entry in `docs/source/contributor-guide/spark_expressions_support.md`. Always at least one per Spark version checked (3.4.3, 3.5.8, 4.0.1).
+- **DOC**: audit sub-bullets to add under the expression's entry in `docs/source/contributor-guide/spark_expressions_support.md`. One sub-bullet per Spark version checked (3.4.3, 3.5.8, 4.0.1).
 - **MECHANICAL**: code changes that are mechanical, such as missing `getIncompatibleReasons()` or `getUnsupportedReasons()` overrides when `getSupportLevel()` returns `Incompatible(Some(...))` or `Unsupported(Some(...))`, or reason text that exists in `getSupportLevel` but is not exposed through the get*Reasons methods.
 - **TEST-GAP**: missing test cases in the Comet SQL Tests or Comet Scala Tests.
 - **BUG**: behavioural divergence between Comet and Spark that goes beyond a missing test, such as wrong result, wrong type dispatch, missing ANSI branch, missing shim, or panic on a supported input.
@@ -86,7 +86,7 @@ For each TEST-GAP finding, prefer a Comet SQL test over a Comet Scala test (per 
 
 For each test:
 
-1. Write the test in `spark/src/test/resources/sql-tests/expressions/<category>/$ARGUMENTS.sql` (or extend an existing file for that expression).
+1. Write the test in `spark/src/test/resources/sql-tests/expressions/<category>/$ARGUMENTS.sql` (or extend an existing file for that expression). `<category>` must be one of the existing subdirectories under `spark/src/test/resources/sql-tests/expressions/`. Do NOT create new category directories.
 2. Run JUST that test:
 
    ```bash
@@ -97,23 +97,26 @@ For each test:
 
 3. If the test passes: keep the test as-written and move on.
 4. If the test fails (Comet result differs from Spark): this is a real divergence.
-   - File a GitHub issue (see Step 6 below) describing the divergence. Capture the new issue number.
+   - File a GitHub issue using the template in Step 6 below. Capture the new issue number.
    - Re-add the test in SQL `ignore` mode (or wrap a Scala test in `IgnoreComet`) with the issue URL as the reason. Per `feedback_ignorecomet_link_issue`, the reason MUST be a tracking-issue URL.
 
 Run the full set of added tests once more at the end of this step to confirm everything still passes (or is correctly marked `ignore`).
 
-## Step 6: Apply BUG findings (issue filing)
+## Step 6: File issues (test failures and BUG findings)
 
-For each BUG finding that is NOT already covered by a test-failure-derived issue from Step 5:
+This step applies to every issue you need to file, regardless of source:
 
-File a GitHub issue:
+- Test failures from Step 5.4 (Comet result diverged from Spark on a newly written test)
+- BUG findings from Step 3 that go beyond what a test gap explains
+
+File one GitHub issue per finding:
 
 ```bash
 gh issue create \
   --repo apache/datafusion-comet \
   --title "$ARGUMENTS: <one-line divergence summary>" \
   --label "requires-triage,area:expressions" \
-  --body-file /tmp/issue-body-$$.md
+  --body-file /tmp/issue-body.md
 ```
 
 The issue body must include:
@@ -121,17 +124,19 @@ The issue body must include:
 - Expression name and the affected Spark version(s)
 - Minimal SQL repro (or Scala if SQL is impractical)
 - Observed Comet result vs expected Spark result
-- A back-reference to the autonomous-audit PR (added in Step 8) using a placeholder you fix up after the PR is open
+- The literal placeholder string `<PR_URL_PLACEHOLDER>` where the audit-PR URL will go. Step 8 does a find-and-replace on this placeholder once the PR is open.
 
 Capture every new issue URL for the PR body.
 
 ## Step 7: Commit
 
-One commit per audit. Use conventional-commit format and pick the title based on what was changed:
+One commit per audit. Use conventional-commit format and pick the title based on what was changed, in this priority order (use the first rule that matches):
 
-- Tests added: `chore(audit): audit <Expression> and expand tests`
-- Mechanical fixes only, no tests: `chore(audit): audit <Expression>`
-- Doc sub-bullets only: `chore(audit): record audit of <Expression>`
+1. Any tests added (with or without other changes): `chore(audit): audit <Expression> and expand tests`
+2. Mechanical fixes only, no tests: `chore(audit): audit <Expression>`
+3. Doc sub-bullets only: `chore(audit): record audit of <Expression>`
+
+Use the same title for the PR in Step 8.
 
 ```bash
 git add docs/source/contributor-guide/spark_expressions_support.md \
@@ -149,8 +154,8 @@ git commit -m "chore(audit): audit <Expression> and expand tests"
 git push -u origin HEAD
 gh pr create --draft \
   --base main \
-  --title "chore(audit): audit <Expression> and expand tests" \
-  --body-file /tmp/pr-body-$$.md
+  --title "<same title as the commit in Step 7>" \
+  --body-file /tmp/pr-body.md
 ```
 
 PR body template (substitute `<...>` placeholders):
@@ -177,12 +182,12 @@ Scaffolded by the `audit-comet-expression-autonomous` skill.
 
 After the PR is open:
 
-- Edit each filed issue from Step 5/6 to replace the PR placeholder with the real PR URL using `gh issue edit <N> --body-file ...`.
+- For each filed issue from Step 5/6: fetch its body with `gh issue view <N> --json body -q .body`, replace the literal string `<PR_URL_PLACEHOLDER>` with the new PR URL, and write it back with `gh issue edit <N> --body-file ...`.
 - Capture the PR URL.
 
 ## Step 9: Exit worktree
 
-The `superpowers:using-git-worktrees` skill handles cleanup. If the worktree has uncommitted changes (it should not at this point), do not let it auto-delete. Surface the state to the user.
+The `superpowers:using-git-worktrees` skill handles cleanup. If the worktree has uncommitted changes (it should not at this point), do not let it auto-delete. Abort with a clear error and leave the worktree in place for inspection.
 
 ## Output to the user
 
