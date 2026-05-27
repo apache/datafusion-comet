@@ -32,6 +32,9 @@
 ### agg_funcs
 
 - [x] any
+  - Spark 3.4.3 (audited 2026-05-26): registered as a SQL alias of `BoolOr`, which extends `RuntimeReplaceableAggregate` with `replacement = Max(child)`. Catalyst rewrites `any(x)` to `max(x)` before Comet sees the plan, so `any` is served by `CometMax` on a `BooleanType` column.
+  - Spark 3.5.8 (audited 2026-05-26): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-26): identical to 3.4.3.
 - [x] any_value
 - [ ] approx_count_distinct
 - [ ] approx_percentile
