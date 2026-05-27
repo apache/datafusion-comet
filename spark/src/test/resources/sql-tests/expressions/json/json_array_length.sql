@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.expression.LengthOfJsonArray.allowIncompatible=false
-
 statement
 CREATE TABLE test_json_array_length(j string) USING parquet
 

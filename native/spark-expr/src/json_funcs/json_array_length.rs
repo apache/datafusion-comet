@@ -15,15 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, Int32Builder};
+use arrow::array::{Array, ArrayRef, Int32Builder, OffsetSizeTrait};
 use arrow::datatypes::DataType;
-use datafusion::common::cast::as_string_array;
+use datafusion::common::cast::as_generic_string_array;
 use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 
 use std::any::Any;
+
+use serde::de::{IgnoredAny, SeqAccess, Visitor};
+use serde::Deserializer;
+use std::fmt;
 use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -40,7 +44,10 @@ impl Default for JsonArrayLength {
 impl JsonArrayLength {
     pub fn new() -> Self {
         Self {
-            signature: Signature::variadic(vec![DataType::Utf8], Volatility::Immutable),
+            signature: Signature::variadic(
+                vec![DataType::Utf8, DataType::LargeUtf8],
+                Volatility::Immutable,
+            ),
         }
     }
 }
@@ -85,24 +92,8 @@ fn spark_json_array_length(args: &[ColumnarValue]) -> Result<ColumnarValue> {
 
 fn spark_json_array_length_array(array: &ArrayRef) -> Result<ArrayRef> {
     match array.data_type() {
-        DataType::Utf8 => {
-            let array = as_string_array(array)?;
-            let mut builder = Int32Builder::with_capacity(array.len());
-
-            for row_idx in 0..array.len() {
-                if array.is_null(row_idx) {
-                    builder.append_null();
-                } else {
-                    let json_str = array.value(row_idx);
-                    if let Some(json_array_length) = get_json_array_length(json_str) {
-                        builder.append_value(json_array_length);
-                    } else {
-                        builder.append_null()
-                    }
-                }
-            }
-            Ok(Arc::new(builder.finish()))
-        }
+        DataType::Utf8 => spark_json_array_length_array_inner::<i32>(array),
+        DataType::LargeUtf8 => spark_json_array_length_array_inner::<i64>(array),
         other => {
             exec_err!("Unsupported data type {other:?} for function `json_array_length`")
         }
@@ -111,27 +102,58 @@ fn spark_json_array_length_array(array: &ArrayRef) -> Result<ArrayRef> {
 
 fn spark_json_array_length_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
     match scalar {
-        ScalarValue::Utf8(value) => {
-            let length = value
-                .clone()
-                .and_then(|json_str| get_json_array_length(&json_str));
-            Ok(ScalarValue::Int32(length))
-        }
+        ScalarValue::Utf8(value) => spark_json_array_length_scalar_inner(value),
+        ScalarValue::LargeUtf8(value) => spark_json_array_length_scalar_inner(value),
         other => {
             exec_err!("Unsupported data type {other:?} for function `json_array_length`")
         }
     }
 }
 
-fn get_json_array_length(json_str: &str) -> Option<i32> {
-    match serde_json::from_str::<serde_json::Value>(json_str) {
-        Ok(json_value) => {
-            if json_value.is_array() {
-                Some(json_value.as_array().unwrap().len() as i32)
+fn spark_json_array_length_scalar_inner(json_str: &Option<String>) -> Result<ScalarValue> {
+    let array_length = json_str
+        .clone()
+        .and_then(|json_str| get_json_array_length(&json_str));
+    Ok(ScalarValue::Int32(array_length))
+}
+
+fn spark_json_array_length_array_inner<T: OffsetSizeTrait>(array: &ArrayRef) -> Result<ArrayRef> {
+    let str_array = as_generic_string_array::<T>(array)?;
+    let mut builder = Int32Builder::with_capacity(str_array.len());
+    for row_idx in 0..str_array.len() {
+        if str_array.is_null(row_idx) {
+            builder.append_null();
+        } else {
+            let json_str = str_array.value(row_idx);
+            if let Some(json_array_length) = get_json_array_length(json_str) {
+                builder.append_value(json_array_length);
             } else {
-                None
+                builder.append_null()
             }
         }
-        Err(_) => None,
     }
+    Ok(Arc::new(builder.finish()))
+}
+
+struct ArrayItemCounter;
+
+impl<'de> Visitor<'de> for ArrayItemCounter {
+    type Value = i32;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a JSON array")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut len = 0i32;
+        while seq.next_element::<IgnoredAny>()?.is_some() {
+            len += 1;
+        }
+        Ok(len)
+    }
+}
+
+fn get_json_array_length(json: &str) -> Option<i32> {
+    let mut deserializer = serde_json::Deserializer::from_str(json);
+    deserializer.deserialize_seq(ArrayItemCounter).ok()
 }
