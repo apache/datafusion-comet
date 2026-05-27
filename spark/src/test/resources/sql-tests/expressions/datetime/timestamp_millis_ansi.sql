@@ -15,29 +15,20 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes add_months through the codegen dispatcher. Spark's own AddMonths.doGenCode
--- runs inside the Janino-compiled kernel.
--- Config: spark.sql.session.timeZone=America/Los_Angeles
+-- ANSI mode: timestamp_millis throws on overflow. The codegen dispatcher inherits the
+-- throw from Spark's own MillisToTimestamp.doGenCode.
+-- Config: spark.sql.session.timeZone=UTC
+-- Config: spark.sql.ansi.enabled=true
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
-statement
-CREATE TABLE test_add_months(d date, n int) USING parquet
+query expect_error(overflow)
+SELECT timestamp_millis(9223372036854775807L)
 
-statement
-INSERT INTO test_add_months VALUES
-  (date('2024-01-15'), 1),
-  (date('2024-01-31'), 1),
-  (date('2024-12-15'), -13),
-  (date('1970-01-01'), 0),
-  (NULL, 1),
-  (date('2024-06-15'), NULL)
+query expect_error(overflow)
+SELECT timestamp_millis(-9223372036854775808L)
 
+-- Sentinel: confirms Comet ran the expression natively. If the dispatcher silently rejects
+-- MillisToTimestamp, the error queries above pass vacuously via Spark fallback. This valid
+-- query uses `checkSparkAnswerAndOperator` and fails if Comet did not execute it natively.
 query
-SELECT add_months(d, n) FROM test_add_months
-
-query
-SELECT add_months(d, 12) FROM test_add_months
-
--- literal arguments
-query
-SELECT add_months(date('2024-02-29'), 12)
+SELECT timestamp_millis(1718451045000)

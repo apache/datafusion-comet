@@ -45,6 +45,7 @@ use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
+use datafusion_spark::function::bitwise::bit_shift::SparkBitShift;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::add_months::SparkAddMonths;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
@@ -609,6 +610,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFactorial::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSec::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkRint::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
 }
 
 /// Prepares arrow arrays for output.

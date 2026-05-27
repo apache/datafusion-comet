@@ -15,29 +15,28 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes add_months through the codegen dispatcher. Spark's own AddMonths.doGenCode
--- runs inside the Janino-compiled kernel.
+-- Routes make_timestamp through the codegen dispatcher.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_add_months(d date, n int) USING parquet
+CREATE TABLE test_make_timestamp(y int, mo int, d int, h int, mi int, s decimal(8,6)) USING parquet
 
 statement
-INSERT INTO test_add_months VALUES
-  (date('2024-01-15'), 1),
-  (date('2024-01-31'), 1),
-  (date('2024-12-15'), -13),
-  (date('1970-01-01'), 0),
-  (NULL, 1),
-  (date('2024-06-15'), NULL)
+INSERT INTO test_make_timestamp VALUES
+  (2024, 6, 15, 10, 30, 45.123456),
+  (1970, 1, 1, 0, 0, 0.0),
+  (2024, 12, 31, 23, 59, 59.999999),
+  (NULL, 6, 15, 10, 30, 45.0),
+  (2024, NULL, 15, 10, 30, 45.0)
 
 query
-SELECT add_months(d, n) FROM test_add_months
+SELECT make_timestamp(y, mo, d, h, mi, s) FROM test_make_timestamp
 
+-- Explicit timezone argument
 query
-SELECT add_months(d, 12) FROM test_add_months
+SELECT make_timestamp(y, mo, d, h, mi, s, 'UTC') FROM test_make_timestamp
 
 -- literal arguments
 query
-SELECT add_months(date('2024-02-29'), 12)
+SELECT make_timestamp(2024, 6, 15, 10, 30, 45.000)

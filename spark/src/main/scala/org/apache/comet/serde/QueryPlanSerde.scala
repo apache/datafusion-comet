@@ -215,7 +215,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[BitwiseNot] -> CometBitwiseNot,
     classOf[BitwiseXor] -> CometBitwiseXor,
     classOf[ShiftLeft] -> CometShiftLeft,
-    classOf[ShiftRight] -> CometShiftRight)
+    classOf[ShiftRight] -> CometShiftRight,
+    classOf[ShiftRightUnsigned] -> CometScalarFunction("shiftrightunsigned"))
 
   private[comet] val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(
@@ -235,12 +236,20 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[LastDay] -> CometLastDay,
       classOf[Hour] -> CometHour,
       classOf[MakeDate] -> CometMakeDate,
+      classOf[MakeTimestamp] -> CometMakeTimestamp,
+      classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
+      classOf[MillisToTimestamp] -> CometMillisToTimestamp,
+      classOf[MonthsBetween] -> CometMonthsBetween,
       classOf[Minute] -> CometMinute,
       classOf[NextDay] -> CometNextDay,
       classOf[Second] -> CometSecond,
       classOf[SecondsToTimestamp] -> CometSecondsToTimestamp,
       classOf[TruncDate] -> CometTruncDate,
       classOf[TruncTimestamp] -> CometTruncTimestamp,
+      classOf[ToUnixTimestamp] -> CometToUnixTimestamp,
+      classOf[UnixMicros] -> CometUnixMicros,
+      classOf[UnixMillis] -> CometUnixMillis,
+      classOf[UnixSeconds] -> CometUnixSeconds,
       classOf[UnixTimestamp] -> CometUnixTimestamp,
       classOf[Year] -> CometYear,
       classOf[Month] -> CometMonth,

@@ -15,29 +15,23 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes add_months through the codegen dispatcher. Spark's own AddMonths.doGenCode
--- runs inside the Janino-compiled kernel.
+-- Routes unix_millis through the codegen dispatcher.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_add_months(d date, n int) USING parquet
+CREATE TABLE test_unix_millis(ts timestamp) USING parquet
 
 statement
-INSERT INTO test_add_months VALUES
-  (date('2024-01-15'), 1),
-  (date('2024-01-31'), 1),
-  (date('2024-12-15'), -13),
-  (date('1970-01-01'), 0),
-  (NULL, 1),
-  (date('2024-06-15'), NULL)
+INSERT INTO test_unix_millis VALUES
+  (timestamp('2024-06-15 10:30:45.123')),
+  (timestamp('1970-01-01 00:00:00')),
+  (timestamp('1969-12-31 23:59:59.999')),
+  (NULL)
 
 query
-SELECT add_months(d, n) FROM test_add_months
+SELECT unix_millis(ts) FROM test_unix_millis
 
+-- literal argument
 query
-SELECT add_months(d, 12) FROM test_add_months
-
--- literal arguments
-query
-SELECT add_months(date('2024-02-29'), 12)
+SELECT unix_millis(timestamp('2024-06-15 10:30:45.123456'))

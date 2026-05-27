@@ -165,7 +165,7 @@
 - [x] bit_get
 - [x] getbit
 - [x] shiftright
-- [ ] shiftrightunsigned
+- [x] shiftrightunsigned
 - [x] `|`
 - [x] `~`
 
@@ -250,14 +250,14 @@
 - [ ] make_dt_interval
 - [ ] make_interval
 - [ ] make_time
-- [ ] make_timestamp
+- [x] make_timestamp
 - [ ] make_timestamp_ltz
 - [ ] make_timestamp_ntz
 - [ ] make_ym_interval
 - [x] minute
 - [x] month
 - [ ] monthname
-- [ ] months_between
+- [x] months_between
 - [x] next_day
 - [ ] now
 - [x] quarter
@@ -265,15 +265,15 @@
 - [ ] session_window
 - [ ] time_diff
 - [ ] time_trunc
-- [ ] timestamp_micros
-- [ ] timestamp_millis
+- [x] timestamp_micros
+- [x] timestamp_millis
 - [x] timestamp_seconds
 - [ ] to_date
 - [ ] to_time
 - [ ] to_timestamp
 - [ ] to_timestamp_ltz
 - [ ] to_timestamp_ntz
-- [ ] to_unix_timestamp
+- [x] to_unix_timestamp
 - [x] to_utc_timestamp
   - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-12): baseline.
@@ -286,9 +286,9 @@
 - [ ] try_to_time
 - [ ] try_to_timestamp
 - [x] unix_date
-- [ ] unix_micros
-- [ ] unix_millis
-- [ ] unix_seconds
+- [x] unix_micros
+- [x] unix_millis
+- [x] unix_seconds
 - [x] unix_timestamp
 - [x] weekday
 - [x] weekofyear

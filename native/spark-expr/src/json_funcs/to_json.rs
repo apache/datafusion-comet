@@ -39,32 +39,41 @@ pub struct ToJson {
     expr: Arc<dyn PhysicalExpr>,
     /// Timezone to use when converting timestamps to JSON
     timezone: String,
+    ignore_null_fields: bool,
 }
 
 impl Hash for ToJson {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.expr.hash(state);
         self.timezone.hash(state);
+        self.ignore_null_fields.hash(state);
     }
 }
 impl PartialEq for ToJson {
     fn eq(&self, other: &Self) -> bool {
-        self.expr.eq(&other.expr) && self.timezone.eq(&other.timezone)
+        self.expr.eq(&other.expr)
+            && self.timezone.eq(&other.timezone)
+            && self.ignore_null_fields.eq(&other.ignore_null_fields)
     }
 }
 
 impl ToJson {
-    pub fn new(expr: Arc<dyn PhysicalExpr>, timezone: &str) -> Self {
+    pub fn new(expr: Arc<dyn PhysicalExpr>, timezone: &str, ignore_null_fields: bool) -> Self {
         Self {
             expr,
             timezone: timezone.to_owned(),
+            ignore_null_fields,
         }
     }
 }
 
 impl Display for ToJson {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "to_json({}, timezone={})", self.expr, self.timezone)
+        write!(
+            f,
+            "to_json({}, timezone={}, ignore_null_fields={})",
+            self.expr, self.timezone, self.ignore_null_fields
+        )
     }
 }
 
@@ -100,6 +109,7 @@ impl PhysicalExpr for ToJson {
         Ok(ColumnarValue::Array(array_to_json_string(
             &input,
             &self.timezone,
+            self.ignore_null_fields,
         )?))
     }
 
@@ -115,14 +125,19 @@ impl PhysicalExpr for ToJson {
         Ok(Arc::new(Self::new(
             Arc::clone(&children[0]),
             &self.timezone,
+            self.ignore_null_fields,
         )))
     }
 }
 
 /// Convert an array into a JSON value string representation
-fn array_to_json_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef> {
+fn array_to_json_string(
+    arr: &Arc<dyn Array>,
+    timezone: &str,
+    ignore_null_fields: bool,
+) -> Result<ArrayRef> {
     if let Some(struct_array) = arr.as_any().downcast_ref::<StructArray>() {
-        struct_to_json(struct_array, timezone)
+        struct_to_json(struct_array, timezone, ignore_null_fields)
     } else {
         spark_cast(
             ColumnarValue::Array(Arc::clone(arr)),
@@ -181,7 +196,11 @@ fn escape_string(input: &str) -> String {
     escaped_string
 }
 
-fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
+fn struct_to_json(
+    array: &StructArray,
+    timezone: &str,
+    ignore_null_fields: bool,
+) -> Result<ArrayRef> {
     // get field names and escape any quotes
     let field_names: Vec<String> = array
         .fields()
@@ -204,7 +223,7 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
     let string_arrays: Vec<ArrayRef> = array
         .columns()
         .iter()
-        .map(|arr| array_to_json_string(arr, timezone))
+        .map(|arr| array_to_json_string(arr, timezone, ignore_null_fields))
         .collect::<Result<Vec<_>>>()?;
     let string_arrays: Vec<&StringArray> = string_arrays
         .iter()
@@ -225,31 +244,45 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
             let mut any_fields_written = false;
             json.push('{');
             for col_index in 0..string_arrays.len() {
-                if !string_arrays[col_index].is_null(row_index) {
-                    if any_fields_written {
-                        json.push(',');
-                    }
-                    // quoted field name
-                    json.push('"');
-                    json.push_str(&field_names[col_index]);
-                    json.push_str("\":");
+                let is_null = string_arrays[col_index].is_null(row_index);
+                if is_null && ignore_null_fields {
+                    continue;
+                }
+                if any_fields_written {
+                    json.push(',');
+                }
+                // quoted field name
+                json.push('"');
+                json.push_str(&field_names[col_index]);
+                json.push_str("\":");
+                if is_null {
+                    json.push_str("null");
+                } else {
                     // value
                     let string_value = string_arrays[col_index].value(row_index);
-                    if is_string[col_index] {
+                    if is_string[col_index] || is_infinity(string_value) || is_nan(string_value) {
                         json.push('"');
                         json.push_str(&escape_string(string_value));
                         json.push('"');
                     } else {
                         json.push_str(string_value);
                     }
-                    any_fields_written = true;
                 }
+                any_fields_written = true;
             }
             json.push('}');
             builder.append_value(&json);
         }
     }
     Ok(Arc::new(builder.finish()))
+}
+
+fn is_infinity(input: &str) -> bool {
+    input == "Infinity" || input == "-Infinity"
+}
+
+fn is_nan(input: &str) -> bool {
+    input == "NaN"
 }
 
 #[cfg(test)]
@@ -272,7 +305,7 @@ mod test {
             (Arc::new(Field::new("b", DataType::Int32, true)), ints),
             (Arc::new(Field::new("c", DataType::Utf8, true)), strings),
         ]);
-        let json = struct_to_json(&struct_array, "UTC")?;
+        let json = struct_to_json(&struct_array, "UTC", true)?;
         let json = json
             .as_any()
             .downcast_ref::<StringArray>()
@@ -318,7 +351,7 @@ mod test {
                 .collect::<Vec<_>>(),
         );
 
-        let json = struct_to_json(&struct_array2, "UTC")?;
+        let json = struct_to_json(&struct_array2, "UTC", true)?;
         let json = json
             .as_any()
             .downcast_ref::<StringArray>()

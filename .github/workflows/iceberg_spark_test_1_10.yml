@@ -15,8 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Runs on every PR and on main. Spark 3.5 is the default supported version.
-name: Spark SQL Tests (Spark 3.5)
+# Runs on every PR and on main. Latest supported Iceberg version, paired with
+# Spark 3.5.
+name: Iceberg Spark SQL Tests (Iceberg 1.10)
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -35,20 +36,15 @@ on:
       - "common/src/main/**"
       - "common/pom.xml"
       - "spark/src/main/**"
-      - "!spark/src/main/spark-3.4/**"
-      - "!spark/src/main/spark-4.0/**"
-      - "!spark/src/main/spark-4.1/**"
-      - "!spark/src/main/spark-4.2/**"
-      - "!spark/src/main/spark-4.x/**"
       - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
       - "spark/pom.xml"
-      - "dev/diffs/3.5.8.diff"
+      - "dev/diffs/iceberg/**"
       - "pom.xml"
       - "rust-toolchain.toml"
-      - ".github/workflows/spark_sql_test_3_5.yml"
-      - ".github/workflows/spark_sql_test_reusable.yml"
+      - ".github/workflows/iceberg_spark_test_1_10.yml"
+      - ".github/workflows/iceberg_spark_test_reusable.yml"
       - ".github/actions/setup-builder/**"
-      - ".github/actions/setup-spark-builder/**"
+      - ".github/actions/setup-iceberg-builder/**"
   pull_request:
     paths:
       - "native/**/src/**"
@@ -59,33 +55,23 @@ on:
       - "common/src/main/**"
       - "common/pom.xml"
       - "spark/src/main/**"
-      - "!spark/src/main/spark-3.4/**"
-      - "!spark/src/main/spark-4.0/**"
-      - "!spark/src/main/spark-4.1/**"
-      - "!spark/src/main/spark-4.2/**"
-      - "!spark/src/main/spark-4.x/**"
       - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
       - "spark/pom.xml"
-      - "dev/diffs/3.5.8.diff"
+      - "dev/diffs/iceberg/**"
       - "pom.xml"
       - "rust-toolchain.toml"
-      - ".github/workflows/spark_sql_test_3_5.yml"
-      - ".github/workflows/spark_sql_test_reusable.yml"
+      - ".github/workflows/iceberg_spark_test_1_10.yml"
+      - ".github/workflows/iceberg_spark_test_reusable.yml"
       - ".github/actions/setup-builder/**"
-      - ".github/actions/setup-spark-builder/**"
+      - ".github/actions/setup-iceberg-builder/**"
   workflow_dispatch:
-    inputs:
-      collect-fallback-logs:
-        description: 'Whether to collect Comet fallback reasons from spark sql unit test logs'
-        required: false
-        default: false
-        type: boolean
 
 jobs:
-  spark-sql:
-    uses: ./.github/workflows/spark_sql_test_reusable.yml
+  iceberg-spark:
+    uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
+      iceberg-short: '1.10'
+      iceberg-full: '1.10.0'
       spark-short: '3.5'
       spark-full: '3.5.8'
-      java: 11
-      collect-fallback-logs: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
+      java: 17
