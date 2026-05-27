@@ -23,6 +23,7 @@ pub mod operator_registry;
 
 use crate::errors::CometError;
 use crate::execution::operators::init_csv_datasource_exec;
+use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
@@ -1451,7 +1452,7 @@ impl PhysicalPlanner {
 
                 // Consumes the first input source for the scan. The Java side passes an
                 // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
-                // struct; native takes ownership via `ArrowArrayStreamReader::from_raw`.
+                // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`.
                 let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
                     && inputs.is_empty()
                 {
@@ -1466,7 +1467,7 @@ impl PhysicalPlanner {
                         Ok(addr)
                     })?;
                     let reader = unsafe {
-                        arrow::ffi_stream::ArrowArrayStreamReader::from_raw(
+                        AlignedArrowStreamReader::from_raw(
                             address as *mut arrow::ffi_stream::FFI_ArrowArrayStream,
                         )
                     }

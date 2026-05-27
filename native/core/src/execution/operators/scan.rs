@@ -15,12 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::{copy_or_unpack_array, CopyMode};
+use crate::execution::operators::{copy_or_unpack_array, AlignedArrowStreamReader, CopyMode};
 use crate::{errors::CometError, execution::planner::TEST_EXEC_CONTEXT_ID};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use arrow::ffi_stream::ArrowArrayStreamReader;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
@@ -50,7 +49,7 @@ pub struct ScanExec {
     pub exec_context_id: i64,
     /// The C Stream Interface reader. `None` only in unit tests that seed input via
     /// `set_input_batch`.
-    pub input_source: Option<Arc<Mutex<ArrowArrayStreamReader>>>,
+    pub input_source: Option<Arc<Mutex<AlignedArrowStreamReader>>>,
     pub input_source_description: String,
     pub data_types: Vec<DataType>,
     pub schema: SchemaRef,
@@ -65,7 +64,7 @@ pub struct ScanExec {
 impl ScanExec {
     pub fn new(
         exec_context_id: i64,
-        input_source: Option<Arc<Mutex<ArrowArrayStreamReader>>>,
+        input_source: Option<Arc<Mutex<AlignedArrowStreamReader>>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
@@ -136,7 +135,7 @@ impl ScanExec {
     /// columns are unpacked because Comet's downstream operators do not handle them.
     fn pull_next(
         exec_context_id: i64,
-        reader: &Arc<Mutex<ArrowArrayStreamReader>>,
+        reader: &Arc<Mutex<AlignedArrowStreamReader>>,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // Unit test path; input batches are seeded directly.
@@ -145,7 +144,7 @@ impl ScanExec {
 
         let mut reader = reader
             .try_lock()
-            .map_err(|_| CometError::Internal("ArrowArrayStreamReader contended".to_string()))?;
+            .map_err(|_| CometError::Internal("AlignedArrowStreamReader contended".to_string()))?;
 
         let next = reader.next();
         match next {
