@@ -531,14 +531,14 @@
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numBytes * 8` for strings and `.length * 8` for binary.
   - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; semantics unchanged.
-  - Known limitation: wired as a raw `CometScalarFunction("bit_length")` with no `BinaryType` guard. DataFusion's `BitLengthFunc` signature only accepts string types, so `bit_length(<binary>)` execute-fails on the native side instead of falling back cleanly.
+  - Known limitation: wired as a raw `CometScalarFunction("bit_length")` with no `BinaryType` guard. DataFusion's `BitLengthFunc` signature only accepts string types, so `bit_length(<binary>)` execute-fails on the native side instead of falling back cleanly (https://github.com/apache/datafusion-comet/issues/4464).
 - [x] btrim
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTrimBoth` is `RuntimeReplaceable` and rewritten to `StringTrim(srcStr, trimStr)` before serde runs, so the explicit `CometScalarFunction("btrim")` mapping is unreachable.
   - Spark 4.0.1 (audited 2026-05-27): `StringTrim` (the rewrite target) routes through `CollationSupport.StringTrim.exec` and uses `StringTypeNonCSAICollation(supportsTrimCollation = true)`; semantics unchanged for `UTF8_BINARY`. Non-default collations may diverge in Comet.
 - [x] char
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. `Chr(LongType) -> StringType`; `lon < 0` returns `""`, else `((lon & 0xFF) as char).toString` (so `chr(256)` and `chr(0)` both return `" "`).
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Chr(LongType) -> StringType`; `lon < 0` returns `""`, else `((lon & 0xFF) as char).toString` (so `chr(256)` and `chr(0)` both return `\u0000`).
   - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `NullIntolerant` trait replaced by `override def nullIntolerant: Boolean = true`. Resolves natively to `datafusion_spark::function::string::char::CharFunc`, which mirrors Spark's negative-input and `& 0xFF` semantics.
 - [x] char_length
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
@@ -566,7 +566,7 @@
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringDecode(bin, charset)` evaluated directly; invalid sequences silently substitute replacement characters via `new String(bytes, charset)`.
   - Spark 4.0.1 (audited 2026-05-27): refactored to `RuntimeReplaceable` whose `replacement` is a `StaticInvoke(StringDecode.decode, bin, charset, legacyCharsets, legacyErrorAction)`; the 4-arg form raises on malformed input unless legacy flags are set.
-  - Known limitations: Comet handles `decode` via `CommonStringExprs.stringDecode` from the version shims (no `CometExpressionSerde[StringDecode]` registration, so the function does not surface in the auto-generated compatibility docs). Only literal `charset = 'utf-8'` (case-insensitive) is supported; everything else falls back. The Spark 4.0 `legacyCharsets` / `legacyErrorAction` flags are ignored: Comet always lowers to `Cast(bin, StringType, TRY)`, so invalid UTF-8 yields NULL where Spark 3.x substitutes replacement characters and Spark 4.0 (non-legacy) raises.
+  - Known limitations: Comet handles `decode` via `CommonStringExprs.stringDecode` from the version shims (no `CometExpressionSerde[StringDecode]` registration, so the function does not surface in the auto-generated compatibility docs: https://github.com/apache/datafusion-comet/issues/4466). Only literal `charset = 'utf-8'` (case-insensitive) is supported; everything else falls back. The Spark 4.0 `legacyCharsets` / `legacyErrorAction` flags are ignored: Comet always lowers to `Cast(bin, StringType, TRY)`, so invalid UTF-8 yields NULL where Spark 3.x substitutes replacement characters and Spark 4.0 (non-legacy) raises (https://github.com/apache/datafusion-comet/issues/4465).
 - [ ] elt
 - [ ] encode
 - [x] endswith
@@ -607,8 +607,8 @@
 - [ ] locate
 - [x] lower
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toLowerCase` on `UTF8String`. Comet routes to DataFusion `lower` (Rust Unicode default case mapping, no locale awareness) and is gated off by default via `spark.comet.caseConversion.enabled=false`.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Lower.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`; `inputTypes` widened to `StringTypeWithCollation`. Comet ignores collation and ICU mode, so non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even when the case-conversion conf is enabled.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toLowerCase` on `UTF8String`. Comet routes to DataFusion `lower` (Rust Unicode default case mapping, no locale awareness) and is gated off by default via `spark.comet.caseConversion.enabled=false`. The gating lives in `convert(...)` rather than `getSupportLevel`, which bypasses the standard `allowIncompatible` machinery (https://github.com/apache/datafusion-comet/issues/4467).
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Lower.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`; `inputTypes` widened to `StringTypeWithCollation`. Comet ignores collation and ICU mode, so non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even when the case-conversion conf is enabled (https://github.com/apache/datafusion-comet/issues/2190).
 - [x] lpad
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringLPad(str, len, pad) -> StringType`; `len <= 0` returns the empty string, empty `pad` returns `str` unchanged, NULL inputs propagate. Comet serde requires `str` to be a column and `pad` to be a literal; otherwise falls back.
@@ -625,7 +625,7 @@
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numBytes` for strings and `.length` for binary.
   - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation`; semantics unchanged.
-  - Known limitation: wired as a raw `CometScalarFunction("octet_length")` with no `BinaryType` guard. DataFusion's `OctetLengthFunc` signature only accepts string types, so `octet_length(<binary>)` execute-fails on the native side instead of falling back cleanly.
+  - Known limitation: wired as a raw `CometScalarFunction("octet_length")` with no `BinaryType` guard. DataFusion's `OctetLengthFunc` signature only accepts string types, so `octet_length(<binary>)` execute-fails on the native side instead of falling back cleanly (https://github.com/apache/datafusion-comet/issues/4464).
 - [ ] overlay
 - [ ] position
 - [ ] printf
@@ -644,7 +644,7 @@
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringRepeat(str, times)` with `nullSafeEval(s, n) = s.repeat(n)`; `UTF8String.repeat` returns the empty string for `n <= 0`. Comet casts `times` to `LongType` and delegates to DataFusion `repeat`.
   - Spark 4.0.1 (audited 2026-05-27): adds `nullIntolerant: Boolean` field; `dataType` becomes `str.dataType` (collation-tracking). Semantics unchanged for `UTF8_BINARY`.
-  - Known divergence: DataFusion `repeat` throws on negative counts instead of returning the empty string Spark produces. Currently surfaced via `getCompatibleNotes` only.
+  - Known divergence: DataFusion `repeat` throws on negative counts instead of returning the empty string Spark produces. Currently surfaced via `getCompatibleNotes` only (https://github.com/apache/datafusion-comet/issues/4462).
 - [x] replace
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringReplace(src, search, replace)`; when `search` is empty, Spark returns `src` unchanged (short-circuit on `search.numBytes == 0`).
@@ -698,9 +698,9 @@
 - [ ] to_varchar
 - [x] translate
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTranslate(src, from, to)`; `UTF8String.translate(dict)` is code-point based, and any character mapped explicitly to ` ` in `to` is also deleted.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTranslate(src, from, to)`; `UTF8String.translate(dict)` is code-point based, and any character mapped explicitly to U+0000 in `to` is also deleted.
   - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTranslate.exec`; semantics unchanged for `UTF8_BINARY`.
-  - Known divergence: DataFusion's `translate` is grapheme-based (Spark uses code points), and does not delete characters mapped to ` ` in `to`. Currently the support level is `Compatible`.
+  - Known divergence: DataFusion's `translate` is grapheme-based (Spark uses code points), and does not delete characters mapped to U+0000 in `to`. Currently the support level is `Compatible` (https://github.com/apache/datafusion-comet/issues/4463).
 - [x] trim
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTrim` no-arg form strips ASCII space `0x20` only (matches DataFusion `btrim`'s default); two-arg form's children are `(srcStr, trimStr)` after Spark's secondary-constructor swap.
@@ -715,8 +715,8 @@
 - [ ] unbase64
 - [x] upper
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toUpperCase` on `UTF8String`. Comet routes to DataFusion `upper` (Rust Unicode default case mapping, no locale awareness) and is gated off by default via `spark.comet.caseConversion.enabled=false`.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Upper.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`. Comet does not propagate collation or ICU mode; non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even when the case-conversion conf is enabled.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toUpperCase` on `UTF8String`. Comet routes to DataFusion `upper` (Rust Unicode default case mapping, no locale awareness) and is gated off by default via `spark.comet.caseConversion.enabled=false`. The gating lives in `convert(...)` rather than `getSupportLevel`, which bypasses the standard `allowIncompatible` machinery (https://github.com/apache/datafusion-comet/issues/4467).
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Upper.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`. Comet does not propagate collation or ICU mode; non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even when the case-conversion conf is enabled (https://github.com/apache/datafusion-comet/issues/2190).
 - [ ] validate_utf8
 
 ### struct_funcs
