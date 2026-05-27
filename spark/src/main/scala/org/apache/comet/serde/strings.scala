@@ -225,15 +225,15 @@ object CometRight extends CometExpressionSerde[Right] {
 }
 
 object CometConcat extends CometScalarFunction[Concat]("concat") {
-  val unsupportedReason = "CONCAT supports only string input parameters"
+  private val unsupportedReason = "CONCAT supports only string input parameters"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(unsupportedReason)
+  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 
   override def getSupportLevel(expr: Concat): SupportLevel = {
     if (expr.children.forall(_.dataType == DataTypes.StringType)) {
       Compatible()
     } else {
-      Incompatible(Some(unsupportedReason))
+      Unsupported(Some(unsupportedReason))
     }
   }
 }
