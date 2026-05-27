@@ -69,7 +69,7 @@ Comet's bridge does not maintain a TTL cache, schedule refresh, or broadcast cat
 
 - Iceberg vendors get `software.amazon.awssdk.utils.cache.CachedSupplier` for free inside `org.apache.iceberg.aws.s3.VendedCredentialsProvider`.
 - Custom-STS vendors write whatever cache fits their refresh model.
-- Driver-only state (e.g. a JWT minted at plan time) is distributed via `initialize`'s `catalogProperties`, which Comet has already serialized through the native plan op for the Iceberg path. On the Parquet path vendors read from Hadoop conf via `SparkEnv`.
+- Driver-only state is distributed via `initialize`'s `catalogProperties` (Iceberg path) or read from Hadoop conf via `SparkEnv` (Parquet path). Both are plan-time snapshots: Comet does not re-execute the catalog or push fresh values to running scans. Vendors that need a refreshing bearer compose with Spark's `HadoopDelegationTokenProvider`, which mints and renews on the driver and propagates to executors via `UserGroupInformation`. The two SPIs are orthogonal: Spark covers bearer lifecycle, this SPI covers path-aware AWS credential minting.
 
 A Comet-side cache would have to either expose a tuning knob (TTL, max size, eviction policy) and grow over time, or be hardcoded and surprise vendors whose policies disagree. The bridge intentionally has neither and forwards every call.
 

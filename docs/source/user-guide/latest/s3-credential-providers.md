@@ -148,7 +148,21 @@ Comet does not maintain a TTL cache, broadcast catalog state, or schedule refres
 
 - Whether to cache credentials and for how long. Iceberg vendors get `software.amazon.awssdk.utils.cache.CachedSupplier` for free inside `VendedCredentialsProvider`; vendors with custom STS write whatever cache fits.
 - When to refresh: proactive timer, on-demand at expiry, on `403` retry, etc.
-- How to distribute driver-only state. Read it from `initialize`'s `catalogProperties` (which Comet has already serialized through the native plan op), call back to a vendor service from the executor, or run your own Spark broadcast inside the class.
+- How to distribute and refresh state. `catalogProperties` is a plan-time snapshot. Comet does not re-execute the catalog or push fresh values to running scans, so any state that must refresh during a scan is the vendor's responsibility. Options: call back to a vendor service from the executor on each `getCredentialsForPath`, run your own Spark broadcast inside the class, or compose with Spark's [`HadoopDelegationTokenProvider`](https://spark.apache.org/docs/latest/security.html#kerberos) when the underlying bearer needs scheduled driver-side renewal.
+
+When using `HadoopDelegationTokenProvider`, Spark mints and renews the token on the driver and propagates it to executors via `UserGroupInformation`. The provider reads the current value inside `getCredentialsForPath` and exchanges it for AWS credentials:
+
+```java
+@Override
+public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) throws Exception {
+    Token<?> token = UserGroupInformation.getCurrentUser()
+        .getCredentials()
+        .getToken(new Text("vendor-service"));
+    return vendorSts.exchangeForS3Credentials(token, ctx.getBucket(), ctx.getPath(), ctx.getMode());
+}
+```
+
+Spark delegation token propagation is supported on YARN and Kubernetes only. Standalone deployments need a different refresh path, typically a vendor-side service callback authenticated by long-lived state in `catalogProperties` or Hadoop conf.
 
 `expirationEpochMillis` only matters on the Iceberg/`opendal` path. There the bridge implements `reqsign_core::ProvideCredential`, which carries an `expires_in` field that `opendal` uses to schedule the next refresh. Publish a real expiry when you have one. `0` means "unknown"; the bridge then substitutes a 5-minute expiry to bound staleness.
 
