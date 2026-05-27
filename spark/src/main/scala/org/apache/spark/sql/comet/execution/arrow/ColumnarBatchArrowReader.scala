@@ -23,11 +23,12 @@ import java.util.{ArrayList => JArrayList}
 
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.dictionary.DictionaryEncoder
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.vector.CometVector
+import org.apache.comet.vector.{CometDictionaryVector, CometVector}
 
 /**
  * `ArrowReader` over an iterator of Arrow-backed `ColumnarBatch`es. Each `loadNextBatch` unloads
@@ -56,12 +57,29 @@ private[comet] class ColumnarBatchArrowReader(
     }
 
     val src = source.next()
+    var materialized: JArrayList[FieldVector] = null
     try {
       val sourceVectors = new JArrayList[FieldVector](src.numCols())
       var i = 0
       while (i < src.numCols()) {
-        sourceVectors.add(
-          src.column(i).asInstanceOf[CometVector].getValueVector.asInstanceOf[FieldVector])
+        val col = src.column(i).asInstanceOf[CometVector]
+        val fv = col match {
+          case d: CometDictionaryVector =>
+            // Stable VSR was built from the logical (non-dict) schema, so a dict-encoded
+            // source's indices layout would mismatch the dest buffer count on load. Native
+            // unpacks downstream anyway via copy_or_unpack_array.
+            val indices = d.getValueVector
+            val dictionary = d.provider.lookup(indices.getField.getDictionary.getId)
+            val plain = DictionaryEncoder
+              .decode(indices, dictionary, allocator)
+              .asInstanceOf[FieldVector]
+            if (materialized == null) materialized = new JArrayList[FieldVector]()
+            materialized.add(plain)
+            plain
+          case _ =>
+            col.getValueVector.asInstanceOf[FieldVector]
+        }
+        sourceVectors.add(fv)
         i += 1
       }
       val transient = new VectorSchemaRoot(sourceVectors)
@@ -74,9 +92,17 @@ private[comet] class ColumnarBatchArrowReader(
       } finally {
         rb.close()
       }
-      // Note: do not close `transient`. It shares FieldVectors with `src`; closing `src` below
+      // Do not close `transient`. It shares FieldVectors with `src`; closing `src` below
       // releases the producer-side refs. Closing `transient` would double-release.
     } finally {
+      if (materialized != null) {
+        var j = 0
+        while (j < materialized.size()) {
+          try materialized.get(j).close()
+          catch { case _: Throwable => () }
+          j += 1
+        }
+      }
       src.close()
     }
     true
