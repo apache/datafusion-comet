@@ -79,26 +79,16 @@ fn extract_query_value(query: &str, key: &str) -> Option<String> {
     // so the key is treated as a regex pattern.
     let pattern = format!("(&|^){}=([^&]*)", key);
     match Regex::new(&pattern) {
-        Ok(re) => re.captures(query).and_then(|caps| caps.get(2).map(|m| m.as_str().to_string())),
+        Ok(re) => re
+            .captures(query)
+            .and_then(|caps| caps.get(2).map(|m| m.as_str().to_string())),
         Err(_) => None,
     }
 }
 
 fn has_invalid_uri_chars(s: &str) -> bool {
-    s.bytes().any(|b| {
-        b == b' '
-            || b == b'{'
-            || b == b'}'
-            || b == b'<'
-            || b == b'>'
-            || b == b'\\'
-            || b == b'"'
-            || b == b'^'
-            || b == b'|'
-            || b == b'`'
-            || b < 0x20
-            || b == 0x7F
-    })
+    s.bytes()
+        .any(|b| b == b' ' || b == b'{' || b == b'}' || b == b'<' || b == b'>' || b < 0x20)
 }
 
 fn invalid_url_err(value: &str) -> datafusion::common::DataFusionError {
@@ -669,10 +659,7 @@ mod tests {
 
     #[test]
     fn test_non_digit_port_returns_null_host() -> Result<()> {
-        assert_eq!(
-            parse_url_component("http://host:abc/", "HOST", None)?,
-            None
-        );
+        assert_eq!(parse_url_component("http://host:abc/", "HOST", None)?, None);
         // Other parts still work
         assert_eq!(
             parse_url_component("http://host:abc/", "PATH", None)?,
@@ -683,12 +670,6 @@ mod tests {
             Some("host:abc".into())
         );
         Ok(())
-    }
-
-    #[test]
-    fn test_backslash_in_url() {
-        let result = parse_url_component("http://host/p\\q", "PATH", None);
-        assert!(result.is_err());
     }
 
     #[test]

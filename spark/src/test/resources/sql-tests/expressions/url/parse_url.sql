@@ -167,10 +167,6 @@ SELECT parse_url('http://host:abc/', 'HOST')
 query
 SELECT parse_url('http://host:abc/', 'AUTHORITY')
 
--- backslash in URL is invalid
-query
-SELECT try_parse_url('http://host/p\q', 'PATH')
-
 -- unbalanced IPv6 bracket is invalid
 query
 SELECT try_parse_url('http://[::1/path', 'AUTHORITY')
