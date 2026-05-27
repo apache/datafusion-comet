@@ -396,16 +396,27 @@ finding for Step 6.
 
 Summarize findings as a prioritized list.
 
-### High priority: correctness divergences
+### High priority: correctness divergences and high-risk coverage gaps
 
 Cases where Comet produces a different observable result from Spark
 (wrong value, missing exception, accepted-instead-of-rejected input,
-etc.). Each one becomes a captured test in Step 7.
+etc.), **and** untested cases on a known-fragile axis where a
+divergence is plausible: overflow / out-of-range inputs, NULL handling,
+timezones and DST transitions, ANSI mode, leap years, version-specific
+Spark semantics, and any edge case explicitly called out in Step 1.
+
+Treat an untested high-risk case as a likely divergence until proven
+otherwise. Each item in this bucket becomes a captured test in Step 7.
+For an untested case, run it manually first to determine the current
+behaviour, then commit either a regression test (passes) or a
+`query ignore(<issue-url>)` test (fails).
 
 ### Medium priority: missing test coverage
 
-Edge cases Spark exercises but Comet does not test, where the behaviour
-appears to match but is not verified.
+Low-risk coverage gaps: additional input permutations on already-tested
+code paths, redundant happy-path values, or cases where Comet and Spark
+share a well-exercised implementation. The behaviour appears to match
+and the axis is not on the high-risk list above.
 
 ### Low priority: cosmetic and consistency issues
 
@@ -416,17 +427,23 @@ etc. These come from the Step 5 consistency audit.
 
 ## Step 7: Apply Findings (Tests and Fixes), Then Offer the Rest
 
-Correctness divergences and consistency issues from Step 5 / Step 6 must
-not be left as prose. Apply them in the same PR as the audit. Only the
-"missing test coverage" bucket requires the user's go-ahead, because
-adding new tests for cases that already work is incremental polish.
+High-priority findings (correctness divergences and high-risk coverage
+gaps) and consistency issues from Step 5 / Step 6 must not be left as
+prose. Apply them in the same PR as the audit. Only low-risk missing
+coverage requires the user's go-ahead, because adding tests for cases
+that already work on well-exercised paths is incremental polish.
 
-### Correctness divergences: capture as tests
+### High-priority findings: capture as tests
 
-Every divergence the audit identified becomes a regression test in the
-same PR as the audit, so future readers can run it.
+Every high-priority finding becomes a regression test in the same PR as
+the audit, so future readers can run it. This covers both confirmed
+divergences and high-risk untested cases. For the latter, run the case
+manually first to determine whether it currently passes or fails, then
+follow the same workflow below: a passing case is committed as a plain
+`query` regression test; a failing case is committed as
+`query ignore(<issue-url>)` after filing the bug.
 
-For each correctness finding, do the following in this order:
+For each high-priority finding, do the following in this order:
 
 1. **Search for an existing tracking issue.**
 
@@ -492,11 +509,14 @@ After every fix, build the affected module to make sure the edit
 compiles. Do not run the full suite; targeted tests suffice if the
 fix could plausibly affect behaviour.
 
-### Missing test coverage (non-bug): ask the user
+### Low-risk missing test coverage: ask the user
 
-This is the only Step 7 category that pauses for user input. Adding
-tests for cases that already work is incremental polish, not part of
-the audit's required output.
+This is the only Step 7 category that pauses for user input. It only
+covers the Medium-priority bucket from Step 6: low-risk gaps on
+well-exercised code paths. High-risk untested cases belong above, in
+"High-priority findings: capture as tests". Adding tests for cases
+that already work on well-exercised paths is incremental polish, not
+part of the audit's required output.
 
 > Spark exercises the following cases that have no Comet test. Would
 > you like me to add them?
