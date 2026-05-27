@@ -65,7 +65,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // Comet should fall back to Spark if format is not a literal
     checkSparkAnswerAndFallbackReason(
       "SELECT c0, trunc(c0, c1) from tbl order by c0, c1",
-      "Invalid format strings will throw an exception instead of returning NULL")
+      "Non-literal format strings will throw an exception instead of returning NULL")
   }
 
   test("date_trunc (TruncTimestamp) - reading from DataFrame") {
@@ -89,7 +89,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       // Comet should fall back to Spark if format is not a literal
       checkSparkAnswerAndFallbackReason(
         "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
-        "Invalid format strings will throw an exception instead of returning NULL")
+        "Non-literal format strings will throw an exception instead of returning NULL")
     }
   }
 
@@ -117,7 +117,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         // Comet should fall back to Spark if format is not a literal
         checkSparkAnswerAndFallbackReason(
           "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
-          "Invalid format strings will throw an exception instead of returning NULL")
+          "Non-literal format strings will throw an exception instead of returning NULL")
       }
     }
   }
