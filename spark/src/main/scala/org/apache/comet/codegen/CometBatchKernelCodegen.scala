@@ -23,7 +23,7 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, HigherOrderFunction, LambdaFunction, Literal, NamedLambdaVariable, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
