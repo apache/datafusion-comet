@@ -411,6 +411,11 @@ For an untested case, run it manually first to determine the current
 behaviour, then commit either a regression test (passes) or a
 `query ignore(<issue-url>)` test (fails).
 
+Every item in this bucket either becomes an inline fix + test, or a
+filed GitHub issue + ignored regression test, in the audit PR. Step 7
+spells out the workflow: never leave a high-priority finding as PR-body
+prose only.
+
 ### Medium priority: missing test coverage
 
 Low-risk coverage gaps: additional input permutations on already-tested
@@ -429,9 +434,13 @@ etc. These come from the Step 5 consistency audit.
 
 High-priority findings (correctness divergences and high-risk coverage
 gaps) and consistency issues from Step 5 / Step 6 must not be left as
-prose. Apply them in the same PR as the audit. Only low-risk missing
-coverage requires the user's go-ahead, because adding tests for cases
-that already work on well-exercised paths is incremental polish.
+prose. Apply them in the same PR as the audit. Anything you cannot fix
+inline (because it needs a semantics decision, native code change, or
+larger design work) must still be captured as a GitHub issue per the
+"Findings that need follow-up" section below: prose recommendations in
+the PR body alone are insufficient. Only low-risk missing coverage
+requires the user's go-ahead, because adding tests for cases that
+already work on well-exercised paths is incremental polish.
 
 ### High-priority findings: capture as tests
 
@@ -502,12 +511,52 @@ need user approval. The classes of fix are:
 
 Each fix is one of these patterns. If a finding requires a semantics
 decision (e.g. is a specific branch really `Unsupported`, or is it
-`Incompatible`?), do not guess: leave it as a prose recommendation in
-the PR description and call it out for the reviewer.
+`Incompatible`?), do not guess: **file a GitHub issue per the
+"Findings that need follow-up" section below** and link it from the PR
+description. Do not leave the recommendation as prose only: prose in a
+PR description gets buried as soon as the PR merges.
 
 After every fix, build the affected module to make sure the edit
 compiles. Do not run the full suite; targeted tests suffice if the
 fix could plausibly affect behaviour.
+
+### Findings that need follow-up: always file a tracking issue
+
+Any high-priority finding (correctness divergence, robustness gap,
+behavioural difference from Spark, missing-collation guard, etc.) that
+this PR does not fix inline **must** be filed as a GitHub issue before
+the PR is opened. This includes:
+
+- Semantics decisions the audit surfaces but should not unilaterally
+  resolve (e.g. promote `Compatible` to `Incompatible`, change a
+  default).
+- Architectural concerns that span multiple expressions (e.g. Spark 4.0
+  collation propagation across an entire family).
+- Bugs that are fixable in principle but need more design or native
+  changes than fit in the audit PR.
+- Documentation gaps surfaced by the audit (e.g. an expression that
+  doesn't appear in the auto-generated compatibility doc).
+
+For each follow-up:
+
+1. Search for an existing issue first
+   (`gh issue list --search "<expression> <symptom> in:title,body" --state all --limit 5`).
+   If one exists, link it from the PR description and the support-doc
+   sub-bullet, and stop.
+2. If no issue exists, file one with `gh issue create` using the
+   `correctness` label (or `documentation` for doc-only gaps) plus any
+   relevant area labels (e.g. `spark 4.0`). Title format:
+   `[Bug] <expression> <one-line symptom>`. Body includes: Spark version
+   range affected, a minimal repro, the divergent result, the relevant
+   Comet file/line, and a one-line note that the issue was surfaced by
+   this audit PR.
+3. Reference the issue number from both the support-doc sub-bullet and
+   the PR description "What changes are included" section so reviewers
+   can see what work the audit intentionally deferred.
+
+Prose-only "future work" notes in the PR description are not enough.
+The whole point of the audit is to leave behind durable artefacts; an
+unfiled finding evaporates after the PR merges.
 
 ### Low-risk missing test coverage: ask the user
 
