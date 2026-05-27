@@ -3882,6 +3882,12 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("LocalTableScanExec with NullType aggregate falls back without crashing") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      checkAnswer(sql("SELECT max(col) FROM VALUES (NULL), (NULL) AS t(col)"), Seq(Row(null)))
+    }
+  }
+
   test("SparkToColumnar with timestamps in non-UTC timezone") {
     withTempDir { dir =>
       val path = new java.io.File(dir, "data").getAbsolutePath
