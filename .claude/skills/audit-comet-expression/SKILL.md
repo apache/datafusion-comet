@@ -396,29 +396,75 @@ finding for Step 6.
 
 Summarize findings as a prioritized list.
 
-### High priority
+### High priority: correctness divergences
 
-Issues where Comet may silently produce wrong results compared to Spark.
+Cases where Comet produces a different observable result from Spark
+(wrong value, missing exception, accepted-instead-of-rejected input,
+etc.). Each one becomes a captured test in Step 7.
 
-### Medium priority
+### Medium priority: missing test coverage
 
-Missing test coverage for edge cases that could expose bugs.
+Edge cases Spark exercises but Comet does not test, where the behaviour
+appears to match but is not verified.
 
-### Low priority
+### Low priority: cosmetic and consistency issues
 
-Minor gaps, cosmetic improvements, or nice-to-have tests.
+Reason-string drift, missing `get*Reasons()` overrides, dead branches,
+etc. These come from the Step 5 consistency audit.
 
 ---
 
-## Step 7: Offer to Implement Missing Tests and Fix Consistency Findings
+## Step 7: Capture Correctness Findings as Tests; Offer Consistency Fixes
 
-After presenting the gap analysis, ask the user separately about each
-category of finding. Keep the two asks distinct so the user can opt in to
-one without the other.
+Correctness divergences (Step 6 high-priority items) must not be left as
+prose. Every divergence the audit identified becomes a regression test
+in the same PR as the audit, so future readers can run it.
 
-**Test coverage:**
+For each correctness finding, do the following in this order:
 
-> I found the following missing test cases. Would you like me to implement them?
+1. **Search for an existing tracking issue.**
+
+   ```bash
+   gh issue list --search "<expression> <symptom> in:title,body" --state all --limit 5
+   ```
+
+   Match on both the expression name and a distinguishing keyword
+   (ANSI, timezone, NTZ, overflow, etc.).
+
+2. **If no issue exists, file one.** Use the `correctness` label plus
+   the relevant area label (e.g. `temporal expressions`). Keep the
+   title in the form "[Bug] <expression> <one-line symptom>". Include
+   the Spark version, a minimal repro, and the divergent result.
+
+3. **If the fix is trivial and you are confident, fix it inline.**
+   Then add the test in the default `query` mode so it locks in the
+   fix. "Trivial" means a few lines in one file with no native code
+   changes, no support-level reshuffling, and no semantics decisions
+   that the user should weigh in on.
+
+4. **Otherwise, add the test in `query ignore(<issue-url>)` mode** with
+   a one-line SQL comment above the query explaining the symptom. The
+   test file lives next to the existing tests for the expression. Do
+   not skip writing the test because the bug is unfixed: the captured
+   reproduction is the whole point of this step.
+
+   ```sql
+   -- Comet returns NULL where Spark throws under spark.sql.ansi.enabled=true
+   query ignore(https://github.com/apache/datafusion-comet/issues/NNNN)
+   SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')
+   ```
+
+   When the underlying bug is fixed, the `ignore(...)` is removed and
+   the test starts running. This is also the contract documented in
+   `docs/source/contributor-guide/sql-file-tests.md`.
+
+After capturing correctness findings, ask the user about the remaining
+categories. Keep these asks distinct so the user can opt in to each.
+
+**Missing test coverage (non-bug):**
+
+> Spark exercises the following cases that have no Comet test. Would
+> you like me to add them?
 >
 > - [list each missing test case]
 >
@@ -438,9 +484,10 @@ one without the other.
 > add a missing `get*Reasons()` override, or move a check from `convert`
 > into `getSupportLevel`).
 
-If the user says yes to tests, implement them following the Comet SQL Tests
-format described in `docs/source/contributor-guide/sql-file-tests.md`.
-Prefer Comet SQL Tests over Comet Scala Tests.
+If the user says yes to test coverage, implement them following the Comet
+SQL Tests format described in
+`docs/source/contributor-guide/sql-file-tests.md`. Prefer Comet SQL Tests
+over Comet Scala Tests.
 
 ### Comet SQL Tests template
 
