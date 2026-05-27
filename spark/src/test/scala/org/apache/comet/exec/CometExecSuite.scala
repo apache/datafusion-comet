@@ -3932,6 +3932,14 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("CometLocalTableScanExec handles NullType nested in struct/array/map") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      checkSparkAnswer(
+        spark.sql("SELECT named_struct('a', 1, 'b', null) AS s, array(null, null) AS a, " +
+          "map('k', null) AS m"))
+    }
+  }
+
   test("Native_datafusion reports correct files and bytes scanned") {
     val inputFiles = 2
 
