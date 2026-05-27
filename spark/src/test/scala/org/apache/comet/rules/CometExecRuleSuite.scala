@@ -22,15 +22,19 @@ package org.apache.comet.rules
 import scala.util.Random
 
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.FunctionIdentifier
+import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
+import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
-import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark42Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -131,9 +135,8 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  // TODO this test exposes the bug described in
-  // https://github.com/apache/datafusion-comet/issues/1389
-  ignore("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
+  // Regression test for https://github.com/apache/datafusion-comet/issues/1389
+  test("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -149,7 +152,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // if the final aggregate cannot be converted to Comet, then neither should be
+        // SUM has incompatible intermediate buffers, so if the final aggregate cannot
+        // be converted to Comet, neither should be
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
@@ -178,6 +182,155 @@ class CometExecRuleSuite extends CometTestBase {
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
       }
+    }
+  }
+
+  test("CometExecRule should allow safe Comet partial and Spark final hash aggregate") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      // Query uses only safe aggregates (MIN, MAX) with compatible intermediate buffers
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // Safe aggregates allow mixed execution: partial can be Comet, final stays Spark
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should allow safe Spark partial and Comet final hash aggregate") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      // Query uses only safe aggregates (MIN, MAX) with compatible intermediate buffers
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // Safe aggregates allow mixed execution: partial stays Spark, final can be Comet
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
+    }
+  }
+
+  test("CometExecRule should allow BloomFilter mixed Comet partial and Spark final") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    val funcId = new FunctionIdentifier("bloom_filter_agg")
+    spark.sessionState.functionRegistry.registerFunction(
+      funcId,
+      new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+      (children: Seq[Expression]) =>
+        children.size match {
+          case 1 => new BloomFilterAggregate(children.head)
+          case 2 => new BloomFilterAggregate(children.head, children(1))
+          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+        })
+    try {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+
+        // Cast to bigint: Spark 3.4's bloom_filter_agg only accepts a long-typed first
+        // argument; later versions widened it to any integral type.
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT bloom_filter_agg(CAST(id AS BIGINT)) FROM test_data")
+
+        val originalObjectAggCount = countOperators(sparkPlan, classOf[ObjectHashAggregateExec])
+        assert(originalObjectAggCount == 2)
+
+        withSQLConf(
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+          val transformedPlan = applyCometExecRule(sparkPlan)
+
+          // BloomFilter is mixed-safe: partial converts to Comet, final stays Spark.
+          assert(countOperators(transformedPlan, classOf[ObjectHashAggregateExec]) == 1)
+          assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1)
+        }
+      }
+    } finally {
+      spark.sessionState.functionRegistry.dropFunction(funcId)
+    }
+  }
+
+  test("CometExecRule should allow BloomFilter mixed Spark partial and Comet final") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    val funcId = new FunctionIdentifier("bloom_filter_agg")
+    spark.sessionState.functionRegistry.registerFunction(
+      funcId,
+      new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+      (children: Seq[Expression]) =>
+        children.size match {
+          case 1 => new BloomFilterAggregate(children.head)
+          case 2 => new BloomFilterAggregate(children.head, children(1))
+          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+        })
+    try {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+
+        // Cast to bigint: Spark 3.4's bloom_filter_agg only accepts a long-typed first
+        // argument; later versions widened it to any integral type.
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT bloom_filter_agg(CAST(id AS BIGINT)) FROM test_data")
+
+        val originalObjectAggCount = countOperators(sparkPlan, classOf[ObjectHashAggregateExec])
+        assert(originalObjectAggCount == 2)
+
+        withSQLConf(
+          CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+          val transformedPlan = applyCometExecRule(sparkPlan)
+
+          assert(countOperators(transformedPlan, classOf[ObjectHashAggregateExec]) == 1)
+          assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1)
+        }
+      }
+    } finally {
+      spark.sessionState.functionRegistry.dropFunction(funcId)
+    }
+  }
+
+  test("CometExecRule should not convert hash aggregate when grouping key contains map type") {
+    // Spark 3.4/3.5 reject `array<map<...>>` as a grouping key in the analyzer (not orderable),
+    // so the plan never reaches CometExecRule on those versions. The guard we're exercising
+    // (containsMapType) only matters on Spark 4.0+, which permits the GROUP BY to be analyzed.
+    assume(isSpark40Plus)
+    // Arrow's row format, used by DataFusion's grouped hash aggregate for composite keys, does
+    // not support Map at any nesting level. Grouping by a type that transitively contains a map
+    // (e.g. array<map<int,int>>) must stay on Spark to avoid a native row-encoding crash.
+    val sparkPlan = createSparkPlan(
+      spark,
+      """SELECT count(*)
+        |FROM VALUES (ARRAY(MAP(1, 2), MAP(1, 3))),
+        |            (ARRAY(MAP(2, 3), MAP(1, 3))) AS t(a)
+        |GROUP BY a""".stripMargin)
+
+    val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+    assert(originalHashAggCount == 2)
+
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val transformedPlan = applyCometExecRule(sparkPlan)
+
+      assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
+      assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
     }
   }
 

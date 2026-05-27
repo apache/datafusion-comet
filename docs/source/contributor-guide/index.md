@@ -19,28 +19,85 @@ under the License.
 
 # Comet Contributor Guide
 
+The Comet contributor guide is for developers working on Comet itself. It covers the project
+architecture, the JVM and native code layout, the Arrow FFI bridge, JVM and native shuffle, and
+how data and plans flow between Spark and the DataFusion execution engine.
+
+It also documents day-to-day workflows including building and testing locally, debugging,
+benchmarking, profiling, tracing, running the SQL test suites, adding new operators and
+expressions, triaging bugs, and the Comet release process.
+
+New contributors should start with the Getting Started page. Select a topic from the navigation
+menu to read more.
+
 ```{toctree}
 :maxdepth: 2
-:caption: Contributor Guide
+:caption: Getting Started
+:hidden:
 
 Getting Started <contributing>
+Development Guide <development>
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Project Architecture
+:hidden:
+
 Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
-Development Guide <development>
-Debugging Guide <debugging>
-Benchmarking Guide <benchmarking>
+ANSI Error Propagation <sql_error_propagation>
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Adding Functionality
+:hidden:
+
 Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
-Supported Spark Expressions <spark_expressions_support>
-Tracing <tracing>
-Profiling <profiling>
+Adding a New Spark Version <adding_a_new_spark_version>
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Testing
+:hidden:
+
 Comet SQL Tests <sql-file-tests.md>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Debugging and Performance
+:hidden:
+
+Debugging Guide <debugging>
+Benchmarking Guide <benchmarking>
+Profiling <profiling>
+Tracing <tracing>
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Reference
+:hidden:
+
+Supported Spark Expressions <spark_expressions_support>
+Supported Spark Configurations <spark_configs_support>
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Project Mechanics
+:hidden:
+
 Bug Triage <bug_triage>
-Roadmap <roadmap.md>
 Release Process <release_process>
+Roadmap <roadmap.md>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>
 ```

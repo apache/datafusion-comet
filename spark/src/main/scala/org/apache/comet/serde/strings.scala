@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpExtract, RegExpExtractAll, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpExtract, RegExpExtractAll, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -126,6 +126,22 @@ object CometSubstring extends CometExpressionSerde[Substring] {
         withInfo(expr, "Substring pos and len must be literals")
         None
     }
+  }
+}
+
+object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
+
+  override def convert(
+      expr: SubstringIndex,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val strExpr = exprToProtoInternal(expr.strExpr, inputs, binding)
+    val delimExpr = exprToProtoInternal(expr.delimExpr, inputs, binding)
+    val countCast = Cast(expr.countExpr, LongType)
+    val countExpr = exprToProtoInternal(countCast, inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProto("substring_index", strExpr, delimExpr, countExpr)
+    optExprWithInfo(optExpr, expr, expr.strExpr, expr.delimExpr, expr.countExpr)
   }
 }
 

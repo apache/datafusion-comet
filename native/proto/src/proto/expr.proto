@@ -90,6 +90,7 @@ message Expr {
     ToCsv to_csv = 67;
     HoursTransform hours_transform = 68;
     ArraysZip arrays_zip = 69;
+    JvmScalarUdf jvm_scalar_udf = 70;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -248,6 +249,17 @@ message BloomFilterAgg {
   Expr numItems = 2;
   Expr numBits = 3;
   DataType datatype = 4;
+  // Output serialization version. Spark 4.0 and earlier always wrote V1; Spark
+  // 4.1+ defaults to V2 (different bit-scattering algorithm and a `seed` field
+  // in the binary format). The JVM serde sets this to the matching version so
+  // Comet's aggregate output is byte-equivalent with Spark's.
+  BloomFilterVersion version = 5;
+}
+
+enum BloomFilterVersion {
+  BLOOM_FILTER_VERSION_UNSPECIFIED = 0;
+  BLOOM_FILTER_VERSION_V1 = 1;
+  BLOOM_FILTER_VERSION_V2 = 2;
 }
 
 message CollectSet {
@@ -502,4 +514,19 @@ message Rand {
 message ArraysZip {
   repeated Expr values = 1;
   repeated string names = 2;
+}
+
+// Scalar UDF dispatched to the JVM via JNI. Native side exports input arrays
+// through Arrow C Data Interface, calls CometUdfBridge.evaluate, and imports
+// the result.
+message JvmScalarUdf {
+  // Fully-qualified Java/Scala class name implementing
+  // org.apache.comet.udf.CometUDF (must have a public no-arg constructor).
+  string class_name = 1;
+  // Argument expressions, evaluated by the native side before invocation.
+  repeated Expr args = 2;
+  // Expected return type. Used to import the result FFI_ArrowArray.
+  DataType return_type = 3;
+  // Whether the result column may contain nulls.
+  bool return_nullable = 4;
 }

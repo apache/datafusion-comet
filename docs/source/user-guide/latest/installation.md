@@ -25,8 +25,14 @@ Make sure the following requirements are met and software installed on your mach
 
 ### Supported Operating Systems
 
-- Linux
-- Apple macOS (Intel and Apple Silicon)
+The published Comet jar files in Maven Central bundle native libraries for Linux only (amd64 and arm64). macOS
+users must [build from source](source.md).
+
+| Operating System            | Published Maven Jars | Build from Source |
+| --------------------------- | -------------------- | ----------------- |
+| Linux (amd64)               | Yes                  | Yes               |
+| Linux (arm64)               | Yes                  | Yes               |
+| Apple macOS (Apple Silicon) | No                   | Yes               |
 
 ### Supported Spark Versions
 
@@ -34,7 +40,7 @@ Comet $COMET_VERSION supports the following versions of Apache Spark. Refer to t
 in the [Compatibility Guide] for more information, such as known limitations per Spark version.
 
 [Spark Version Compatibility]: compatibility/spark-versions.md
-[Compatibility Guide]: compatibility
+[Compatibility Guide]: compatibility/index.md
 
 We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
 Other versions may work well enough for development and evaluation purposes.
@@ -43,7 +49,8 @@ Other versions may work well enough for development and evaluation purposes.
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
 | 3.4.3         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
 | 3.5.8         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
-| 4.0.2         | 17           | 2.13          | Yes               | Yes                   |
+| 4.0.2         | 17/21        | 2.13          | Yes               | Yes                   |
+| 4.1.1         | 17/21        | 2.13          | Yes               | Yes                   |
 
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
 
@@ -52,7 +59,6 @@ use only and should not be used in production yet.
 
 | Spark Version  | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | -------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 4.1.1          | 17           | 2.13          | Yes               | No                    |
 | 4.2.0-preview4 | 17           | 2.13          | No                | No                    |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
@@ -85,8 +91,7 @@ Here are the direct links for downloading the Comet $COMET_VERSION jar file.
 - [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/$COMET_VERSION/comet-spark-spark3.5_2.12-$COMET_VERSION.jar)
 - [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/$COMET_VERSION/comet-spark-spark3.5_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 4.0 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.0_2.13/$COMET_VERSION/comet-spark-spark4.0_2.13-$COMET_VERSION.jar)
-- [Comet plugin for Spark 4.1 / Scala 2.13 (Experimental)](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/comet-spark-spark4.1_2.13-$COMET_VERSION.jar)
-- [Comet plugin for Spark 4.2 / Scala 2.13 (Experimental)](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.2_2.13/$COMET_VERSION/comet-spark-spark4.2_2.13-$COMET_VERSION.jar)
+- [Comet plugin for Spark 4.1 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/comet-spark-spark4.1_2.13-$COMET_VERSION.jar)
 <!-- ENDIF -->
 
 ## Building from source
@@ -105,7 +110,7 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
 ```shell
-export COMET_JAR=spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
+export COMET_JAR=spark/target/comet-spark-spark4.1_2.13-$COMET_VERSION.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
@@ -115,7 +120,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=16g
+    --conf spark.memory.offHeap.size=4g
 ```
 
 ### Verify Comet enabled for Spark SQL query
@@ -126,6 +131,16 @@ Create a test Parquet source
 scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
 ```
 
+Comet will log output similar to:
+
+```shell
+INFO core/src/lib.rs: Comet native library version $COMET_VERSION initialized
+WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
+  Execute InsertIntoHadoopFsRelationCommand [COMET: Native support for operator DataWritingCommandExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
++- WriteFiles
+   +-  LocalTableScan [COMET: Native support for operator LocalTableScanExec is disabled. Set spark.comet.exec.localTableScan.enabled=true to enable it.]
+```
+
 Query the data from the test source and check:
 
 - INFO message shows the native Comet library has been initialized.
@@ -134,24 +149,15 @@ Query the data from the test source and check:
 ```scala
 scala> spark.read.parquet("/tmp/test").createOrReplaceTempView("t1")
 scala> spark.sql("select * from t1 where a > 5").explain
-INFO src/lib.rs: Comet native library initialized
-== Physical Plan ==
-        *(1) ColumnarToRow
-        +- CometFilter [a#14], (isnotnull(a#14) AND (a#14 > 5))
-          +- CometScan parquet [a#14] Batched: true, DataFilters: [isnotnull(a#14), (a#14 > 5)],
-             Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [],
-             PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
 ```
 
-With the configuration `spark.comet.explainFallback.enabled=true`, Comet will log any reasons that prevent a plan from
-being executed natively.
+Comet will log output similar to:
 
-```scala
-scala> Seq(1,2,3,4).toDF("a").write.parquet("/tmp/test.parquet")
-WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively because:
-  - LocalTableScan is not supported
-  - WriteFiles is not supported
-  - Execute InsertIntoHadoopFsRelationCommand is not supported
+```shell
+== Physical Plan ==
+CometNativeColumnarToRow
++- CometFilter [a#6], (isnotnull(a#6) AND (a#6 > 5))
+   +- CometNativeScan parquet [a#6] Batched: true, DataFilters: [isnotnull(a#6), (a#6 > 5)], Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
 ```
 
 ## Additional Configuration
@@ -160,8 +166,8 @@ Depending on your deployment mode you may also need to set the driver & executor
 explicitly contain Comet otherwise Spark may use a different class-loader for the Comet components than its internal
 components which will then fail at runtime. For example:
 
-```
---driver-class-path spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
+```shell
+--driver-class-path spark/target/comet-spark-spark4.1_2.13-$COMET_VERSION.jar
 ```
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>
