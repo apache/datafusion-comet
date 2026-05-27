@@ -764,6 +764,47 @@ impl PhysicalPlanner {
                     self.task_context.clone(),
                 )))
             }
+            ExprStruct::RustUdfCall(call) => {
+                let arg_exprs: Vec<Arc<dyn PhysicalExpr>> = call
+                    .args
+                    .iter()
+                    .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let lib = crate::execution::rust_udf::cache::get_or_load(&call.library_path)
+                    .map_err(|e| {
+                        GeneralError(format!(
+                            "Rust UDF load '{}': {e}",
+                            call.library_path
+                        ))
+                    })?;
+
+                let loaded = lib
+                    .udfs
+                    .iter()
+                    .find(|u| u.name == call.name)
+                    .ok_or_else(|| {
+                        GeneralError(format!(
+                            "Rust UDF '{}' not found in '{}'",
+                            call.name, call.library_path
+                        ))
+                    })?;
+
+                let udf = Arc::new(ScalarUDF::new_from_shared_impl(Arc::clone(&loaded.udf_impl)));
+
+                let return_type = to_arrow_datatype(call.return_type.as_ref().ok_or_else(
+                    || GeneralError("RustUdfCall missing return_type".into()),
+                )?);
+                let return_field = Arc::new(Field::new(&call.name, return_type, true));
+                let expr = Arc::new(ScalarFunctionExpr::new(
+                    &call.name,
+                    udf,
+                    arg_exprs,
+                    return_field,
+                    Arc::new(ConfigOptions::default()),
+                ));
+                Ok(expr)
+            }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }

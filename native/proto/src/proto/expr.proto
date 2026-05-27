@@ -91,6 +91,7 @@ message Expr {
     HoursTransform hours_transform = 68;
     ArraysZip arrays_zip = 69;
     JvmScalarUdf jvm_scalar_udf = 70;
+    RustUdfCall rust_udf_call = 71;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -529,4 +530,23 @@ message JvmScalarUdf {
   DataType return_type = 3;
   // Whether the result column may contain nulls.
   bool return_nullable = 4;
+}
+
+// Call to a user-supplied Rust UDF loaded from a cdylib.
+//
+// The native side resolves (library_path, name) against its loaded-library
+// cache, looks up the kernel by name, and invokes it through whichever ABI
+// flavor (C ABI / datafusion-ffi) the cdylib registered the kernel under.
+message RustUdfCall {
+  // Function name as registered through CometRustUDF.register on the JVM
+  // side; matched against names exposed by the cdylib.
+  string name = 1;
+  // Filesystem path of the cdylib.
+  string library_path = 2;
+  // Argument expressions, evaluated before invocation.
+  repeated Expr args = 3;
+  // Expected return type, declared at register time on the JVM side.
+  DataType return_type = 4;
+  // Whether the call is deterministic (mirrors Spark's deterministic flag).
+  bool deterministic = 5;
 }

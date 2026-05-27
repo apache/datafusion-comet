@@ -16,8 +16,8 @@
 # under the License.
 
 [workspace]
-default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs"]
+default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "comet-udf-sdk", "comet-test-udfs"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs", "comet-udf-sdk", "comet-test-udfs"]
 resolver = "2"
 
 [workspace.package]
@@ -40,6 +40,7 @@ bytes = { version = "1.11.1" }
 parquet = { version = "58.3.0", default-features = false, features = ["experimental"] }
 datafusion = { version = "53.1.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
 datafusion-datasource = { version = "53.1.0" }
+datafusion-ffi = { version = "53.1.0" }
 datafusion-physical-expr-adapter = { version = "53.1.0" }
 datafusion-spark = { version = "53.1.0", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
