@@ -396,51 +396,119 @@ finding for Step 6.
 
 Summarize findings as a prioritized list.
 
-### High priority
+### High priority: correctness divergences
 
-Issues where Comet may silently produce wrong results compared to Spark.
+Cases where Comet produces a different observable result from Spark
+(wrong value, missing exception, accepted-instead-of-rejected input,
+etc.). Each one becomes a captured test in Step 7.
 
-### Medium priority
+### Medium priority: missing test coverage
 
-Missing test coverage for edge cases that could expose bugs.
+Edge cases Spark exercises but Comet does not test, where the behaviour
+appears to match but is not verified.
 
-### Low priority
+### Low priority: cosmetic and consistency issues
 
-Minor gaps, cosmetic improvements, or nice-to-have tests.
+Reason-string drift, missing `get*Reasons()` overrides, dead branches,
+etc. These come from the Step 5 consistency audit.
 
 ---
 
-## Step 7: Offer to Implement Missing Tests and Fix Consistency Findings
+## Step 7: Apply Findings (Tests and Fixes), Then Offer the Rest
 
-After presenting the gap analysis, ask the user separately about each
-category of finding. Keep the two asks distinct so the user can opt in to
-one without the other.
+Correctness divergences and consistency issues from Step 5 / Step 6 must
+not be left as prose. Apply them in the same PR as the audit. Only the
+"missing test coverage" bucket requires the user's go-ahead, because
+adding new tests for cases that already work is incremental polish.
 
-**Test coverage:**
+### Correctness divergences: capture as tests
 
-> I found the following missing test cases. Would you like me to implement them?
+Every divergence the audit identified becomes a regression test in the
+same PR as the audit, so future readers can run it.
+
+For each correctness finding, do the following in this order:
+
+1. **Search for an existing tracking issue.**
+
+   ```bash
+   gh issue list --search "<expression> <symptom> in:title,body" --state all --limit 5
+   ```
+
+   Match on both the expression name and a distinguishing keyword
+   (ANSI, timezone, NTZ, overflow, etc.).
+
+2. **If no issue exists, file one.** Use the `correctness` label plus
+   the relevant area label (e.g. `temporal expressions`). Keep the
+   title in the form "[Bug] <expression> <one-line symptom>". Include
+   the Spark version, a minimal repro, and the divergent result.
+
+3. **If the fix is trivial and you are confident, fix it inline.**
+   Then add the test in the default `query` mode so it locks in the
+   fix. "Trivial" means a few lines in one file with no native code
+   changes, no support-level reshuffling, and no semantics decisions
+   that the user should weigh in on.
+
+4. **Otherwise, add the test in `query ignore(<issue-url>)` mode** with
+   a one-line SQL comment above the query explaining the symptom. The
+   test file lives next to the existing tests for the expression. Do
+   not skip writing the test because the bug is unfixed: the captured
+   reproduction is the whole point of this step.
+
+   ```sql
+   -- Comet returns NULL where Spark throws under spark.sql.ansi.enabled=true
+   query ignore(https://github.com/apache/datafusion-comet/issues/NNNN)
+   SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')
+   ```
+
+   When the underlying bug is fixed, the `ignore(...)` is removed and
+   the test starts running. This is also the contract documented in
+   `docs/source/contributor-guide/sql-file-tests.md`.
+
+### Support-level consistency: apply fixes automatically
+
+Apply every finding from the Step 5 consistency audit in the same PR.
+These are mechanical edits with no behavioural impact, so they do not
+need user approval. The classes of fix are:
+
+- Extract a duplicated or drifting reason string into a `private val`
+  and reference it from both `getSupportLevel` and `get*Reasons()`.
+- Switch `Incompatible(None)` to `Incompatible(Some(reason))` so the
+  reason reaches EXPLAIN output, not only the docs.
+- Add a missing `get*Reasons()` override that enumerates every
+  reason the support level can return.
+- Move a compatibility check out of `convert` and into
+  `getSupportLevel` so the dispatcher handles `allowIncompatible`
+  uniformly (the `withInfo` call in `convert` should disappear).
+- Hoist a reason shared by multiple serdes (e.g. a recurring
+  TimestampNTZ caveat) into a small `private object` companion in the
+  same file, mirroring `UTCTimestampSerde`.
+
+Each fix is one of these patterns. If a finding requires a semantics
+decision (e.g. is a specific branch really `Unsupported`, or is it
+`Incompatible`?), do not guess: leave it as a prose recommendation in
+the PR description and call it out for the reviewer.
+
+After every fix, build the affected module to make sure the edit
+compiles. Do not run the full suite; targeted tests suffice if the
+fix could plausibly affect behaviour.
+
+### Missing test coverage (non-bug): ask the user
+
+This is the only Step 7 category that pauses for user input. Adding
+tests for cases that already work is incremental polish, not part of
+the audit's required output.
+
+> Spark exercises the following cases that have no Comet test. Would
+> you like me to add them?
 >
 > - [list each missing test case]
 >
 > I can add them as Comet SQL Tests in `spark/src/test/resources/sql-tests/expressions/<category>/$ARGUMENTS.sql`
 > (or as Comet Scala Tests in `CometExpressionSuite` for cases that require programmatic setup).
 
-**Support-level consistency:**
-
-> I also found the following alignment issues between `getSupportLevel`,
-> `getIncompatibleReasons`, `getUnsupportedReasons`, and `convert`. Would
-> you like me to fix them?
->
-> - [list each finding from the Step 5 consistency audit, with the file and serde object name]
->
-> Each fix is a small, mechanical edit (extract a `private val` for the
-> reason, switch `Incompatible(None)` to `Incompatible(Some(reason))`,
-> add a missing `get*Reasons()` override, or move a check from `convert`
-> into `getSupportLevel`).
-
-If the user says yes to tests, implement them following the Comet SQL Tests
-format described in `docs/source/contributor-guide/sql-file-tests.md`.
-Prefer Comet SQL Tests over Comet Scala Tests.
+If the user says yes, implement the tests following the format described
+in `docs/source/contributor-guide/sql-file-tests.md`. Prefer Comet SQL
+Tests over Comet Scala Tests.
 
 ### Comet SQL Tests template
 
