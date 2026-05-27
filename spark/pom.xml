@@ -476,6 +476,7 @@ under the License.
                     <exclude>org/apache/arrow/c/jni/PrivateData</exclude>
                     <exclude>org/apache/arrow/c/jni/CDataJniException</exclude>
                     <!-- Also required by JNI per upstream Arrow C++ jni_wrapper.cc -->
+                    <exclude>org/apache/arrow/c/ArrayStreamExporter</exclude>
                     <exclude>org/apache/arrow/c/ArrayStreamExporter$ExportedArrayStreamPrivateData</exclude>
                   </excludes>
                 </relocation>
