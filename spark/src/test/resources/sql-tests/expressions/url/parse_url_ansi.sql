@@ -51,3 +51,11 @@ SELECT parse_url('://missing-scheme', 'HOST')
 -- empty string is a valid URI (no throw), just returns NULL for HOST
 query
 SELECT parse_url('', 'HOST')
+
+-- backslash in URL throws in ANSI mode
+query expect_error(http://host/p\q)
+SELECT parse_url('http://host/p\q', 'PATH')
+
+-- unbalanced IPv6 bracket throws in ANSI mode
+query expect_error(http://[::1/path)
+SELECT parse_url('http://[::1/path', 'AUTHORITY')

@@ -154,3 +154,23 @@ SELECT parse_url('http://host/path', 'HOST', 'key')
 -- empty port
 query
 SELECT parse_url('http://host:/path', 'HOST')
+
+-- regex metachar in query key (Spark treats key as regex pattern)
+query
+SELECT parse_url('http://h/p?abc=1', 'QUERY', '.bc')
+
+-- non-digit port returns NULL for HOST
+query
+SELECT parse_url('http://host:abc/', 'HOST')
+
+-- non-digit port: other parts still work
+query
+SELECT parse_url('http://host:abc/', 'AUTHORITY')
+
+-- backslash in URL is invalid
+query
+SELECT try_parse_url('http://host/p\q', 'PATH')
+
+-- unbalanced IPv6 bracket is invalid
+query
+SELECT try_parse_url('http://[::1/path', 'AUTHORITY')

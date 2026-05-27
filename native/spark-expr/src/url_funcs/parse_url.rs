@@ -61,7 +61,8 @@ fn extract_host(authority: &str) -> Option<String> {
                 if after_colon.is_empty() || after_colon.bytes().all(|b| b.is_ascii_digit()) {
                     Some(host_port[..colon_pos].to_string())
                 } else {
-                    Some(host_port.to_string())
+                    // java.net.URI rejects non-digit ports
+                    None
                 }
             }
             None => Some(host_port.to_string()),
@@ -74,19 +75,30 @@ fn extract_userinfo(authority: &str) -> Option<String> {
 }
 
 fn extract_query_value(query: &str, key: &str) -> Option<String> {
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            if k == key {
-                return Some(v.to_string());
-            }
-        }
+    // Spark uses Pattern.compile("(&|^)" + key + "=([^&]*)") with no escaping,
+    // so the key is treated as a regex pattern.
+    let pattern = format!("(&|^){}=([^&]*)", key);
+    match Regex::new(&pattern) {
+        Ok(re) => re.captures(query).and_then(|caps| caps.get(2).map(|m| m.as_str().to_string())),
+        Err(_) => None,
     }
-    None
 }
 
 fn has_invalid_uri_chars(s: &str) -> bool {
-    s.bytes()
-        .any(|b| b == b' ' || b == b'{' || b == b'}' || b == b'<' || b == b'>' || b < 0x20)
+    s.bytes().any(|b| {
+        b == b' '
+            || b == b'{'
+            || b == b'}'
+            || b == b'<'
+            || b == b'>'
+            || b == b'\\'
+            || b == b'"'
+            || b == b'^'
+            || b == b'|'
+            || b == b'`'
+            || b < 0x20
+            || b == 0x7F
+    })
 }
 
 fn invalid_url_err(value: &str) -> datafusion::common::DataFusionError {
@@ -129,6 +141,15 @@ fn parse_url_component(value: &str, part: &str, key: Option<&str>) -> Result<Opt
             return Err(invalid_url_err(value));
         }
         return Ok(None);
+    }
+
+    // java.net.URI rejects unbalanced brackets in authority
+    if let Some(auth) = authority {
+        let has_open = auth.contains('[');
+        let has_close = auth.contains(']');
+        if has_open != has_close {
+            return Err(invalid_url_err(value));
+        }
     }
 
     match part {
@@ -625,5 +646,58 @@ mod tests {
             None
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_regex_metachar_in_query_key() -> Result<()> {
+        // Spark treats key as regex: ".bc" matches "abc"
+        assert_eq!(
+            parse_url_component("http://h/p?abc=1", "QUERY", Some(".bc"))?,
+            Some("1".into())
+        );
+        assert_eq!(
+            parse_url_component("http://h/p?abc=1", "QUERY", Some("a.c"))?,
+            Some("1".into())
+        );
+        // Literal key that doesn't match as regex
+        assert_eq!(
+            parse_url_component("http://h/p?abc=1", "QUERY", Some("x.c"))?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_non_digit_port_returns_null_host() -> Result<()> {
+        assert_eq!(
+            parse_url_component("http://host:abc/", "HOST", None)?,
+            None
+        );
+        // Other parts still work
+        assert_eq!(
+            parse_url_component("http://host:abc/", "PATH", None)?,
+            Some("/".into())
+        );
+        assert_eq!(
+            parse_url_component("http://host:abc/", "AUTHORITY", None)?,
+            Some("host:abc".into())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_backslash_in_url() {
+        let result = parse_url_component("http://host/p\\q", "PATH", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unbalanced_ipv6_bracket() {
+        let result = parse_url_component("http://[::1/path", "AUTHORITY", None);
+        assert!(result.is_err());
+        let result = parse_url_component("http://[::1/path", "PATH", None);
+        assert!(result.is_err());
+        let result = parse_url_component("http://[::1/path", "HOST", None);
+        assert!(result.is_err());
     }
 }
