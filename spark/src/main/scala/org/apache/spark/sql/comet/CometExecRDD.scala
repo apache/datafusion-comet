@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
@@ -27,7 +28,7 @@ import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
-import org.apache.comet.CometExecIterator
+import org.apache.comet.{CometExecIterator, CometRuntimeException, CometShuffleBlockIterator}
 import org.apache.comet.serde.OperatorOuterClass
 
 /**
@@ -40,23 +41,14 @@ private[spark] class CometExecPartition(
     extends Partition
 
 /**
- * Unified RDD for Comet native execution.
- *
- * Solves the closure capture problem: instead of capturing all partitions' data in the closure
- * (which gets serialized to every task), each Partition object carries only its own data.
- *
- * Handles three cases:
- *   - With inputs + per-partition data: injects planning data into operator tree
- *   - With inputs + no per-partition data: just zips inputs (no injection overhead)
- *   - No inputs: uses numPartitions to create partitions
- *
- * NOTE: This RDD does not handle DPP (InSubqueryExec), which is resolved in
- * CometIcebergNativeScanExec.serializedPartitionData before this RDD is created. It also handles
- * ScalarSubquery expressions by registering them with CometScalarSubquery before execution.
+ * Unified RDD for Comet native execution. Non-shuffle input slots are `RDD[ArrowArrayStream]`
+ * (consumed natively via the C Stream Interface); shuffle input slots are `CometShuffledBatchRDD`
+ * (consumed via `CometShuffleBlockIterator`). Slot order matches the scan-input order in the
+ * serialized native plan.
  */
 private[spark] class CometExecRDD(
     sc: SparkContext,
-    var inputRDDs: Seq[RDD[ColumnarBatch]],
+    var inputRDDs: Seq[RDD[_]],
     commonByKey: Map[String, Array[Byte]],
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     serializedPlan: Array[Byte],
@@ -97,9 +89,31 @@ private[spark] class CometExecRDD(
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometExecPartition]
 
-    val inputs = inputRDDs.zip(partition.inputPartitions).map { case (rdd, part) =>
-      rdd.iterator(part, context)
-    }
+    val shuffleBlockIters = scala.collection.mutable.Map.empty[Int, CometShuffleBlockIterator]
+    val inputObjects: Array[Object] = inputRDDs
+      .zip(partition.inputPartitions)
+      .zipWithIndex
+      .map { case ((rdd, part), idx) =>
+        if (shuffleScanIndices.contains(idx)) {
+          rdd match {
+            case shuffleRDD: CometShuffledBatchRDD =>
+              val it = shuffleRDD.computeAsShuffleBlockIterator(part, context)
+              shuffleBlockIters(idx) = it
+              it.asInstanceOf[Object]
+            case other =>
+              throw new CometRuntimeException(
+                s"Slot $idx is marked as a shuffle scan but the input RDD is " +
+                  s"${other.getClass.getName}, expected CometShuffledBatchRDD")
+          }
+        } else {
+          val streams = rdd.iterator(part, context).asInstanceOf[Iterator[ArrowArrayStream]]
+          if (!streams.hasNext) {
+            throw new CometRuntimeException(s"Empty ArrowArrayStream RDD partition for slot $idx")
+          }
+          streams.next().asInstanceOf[Object]
+        }
+      }
+      .toArray
 
     // Only inject if we have per-partition planning data
     val actualPlan = if (commonByKey.nonEmpty) {
@@ -111,18 +125,9 @@ private[spark] class CometExecRDD(
       serializedPlan
     }
 
-    // Create shuffle block iterators for inputs that are CometShuffledBatchRDD
-    val shuffleBlockIters = shuffleScanIndices.flatMap { idx =>
-      inputRDDs(idx) match {
-        case rdd: CometShuffledBatchRDD =>
-          Some(idx -> rdd.computeAsShuffleBlockIterator(partition.inputPartitions(idx), context))
-        case _ => None
-      }
-    }.toMap
-
     val it = new CometExecIterator(
       CometExec.newIterId,
-      inputs,
+      inputObjects,
       numOutputCols,
       actualPlan,
       nativeMetrics,
@@ -130,7 +135,7 @@ private[spark] class CometExecRDD(
       partition.index,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      shuffleBlockIters)
+      shuffleBlockIters.toMap)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
@@ -169,7 +174,7 @@ object CometExecRDD {
   // scalastyle:off
   def apply(
       sc: SparkContext,
-      inputRDDs: Seq[RDD[ColumnarBatch]],
+      inputRDDs: Seq[RDD[_]],
       commonByKey: Map[String, Array[Byte]],
       perPartitionByKey: Map[String, Array[Array[Byte]]],
       serializedPlan: Array[Byte],

@@ -25,6 +25,8 @@ import scala.reflect.ClassTag
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -56,8 +58,19 @@ object CometExecUtils {
     // Serialize the plan once before mapping to avoid repeated serialization per partition
     val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit, offset).get
     val serializedPlan = CometExec.serializeNativePlan(limitOp)
+    val inputSchema = Utils.fromAttributes(outputAttribute)
     childPlan.mapPartitionsWithIndexInternal { case (idx, iter) =>
-      CometExec.getCometIterator(Seq(iter), outputAttribute.length, serializedPlan, numParts, idx)
+      val stream = CometArrowStream.fromColumnarBatchIter(
+        iter,
+        inputSchema,
+        CometArrowStream.NATIVE_TIMEZONE,
+        "CometExecUtils-getNativeLimit")
+      CometExec.getCometIterator(
+        Array(stream.asInstanceOf[Object]),
+        outputAttribute.length,
+        serializedPlan,
+        numParts,
+        idx)
     }
   }
 

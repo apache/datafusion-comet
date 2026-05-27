@@ -206,6 +206,16 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
+   * Build a `StructType` from a sequence of Spark `Attribute`s. Avoids
+   * `StructType.fromAttributes` (removed in Spark 4) and `DataTypeUtils.fromAttributes` (only on
+   * 4) so the same call works across supported Spark versions.
+   */
+  def fromAttributes(
+      attributes: Seq[org.apache.spark.sql.catalyst.expressions.Attribute]): StructType =
+    StructType(attributes.map(a =>
+      org.apache.spark.sql.types.StructField(a.name, a.dataType, a.nullable, a.metadata)))
+
+  /**
    * Serializes a list of `ColumnarBatch` into an output stream. This method must be in `spark`
    * package because `ChunkedByteBufferOutputStream` is spark private class. As it uses Arrow
    * classes, it must be in `common` module.

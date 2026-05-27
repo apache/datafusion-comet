@@ -21,6 +21,7 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+use crate::errors::CometError;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
@@ -32,6 +33,7 @@ use crate::execution::{
     serde::to_arrow_datatype,
     shuffle::ShuffleWriterExec,
 };
+use crate::jvm_bridge::{jni_call, JVMClasses};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
@@ -1447,23 +1449,36 @@ impl PhysicalPlanner {
                     return Err(GeneralError("No input for scan".to_string()));
                 }
 
-                // Consumes the first input source for the scan
-                let input_source =
-                    if self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
-                        // For unit test, we will set input batch to scan directly by `set_input_batch`.
-                        None
-                    } else {
-                        Some(inputs.remove(0))
-                    };
+                // Consumes the first input source for the scan. The Java side passes an
+                // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
+                // struct; native takes ownership via `ArrowArrayStreamReader::from_raw`.
+                let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
+                    && inputs.is_empty()
+                {
+                    // For unit test, we will set input batch to scan directly by `set_input_batch`.
+                    None
+                } else {
+                    let java_stream = inputs.remove(0);
+                    let address: i64 = JVMClasses::with_env(|env| -> Result<i64, CometError> {
+                        let addr = unsafe {
+                            jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)?
+                        };
+                        Ok(addr)
+                    })?;
+                    let reader = unsafe {
+                        arrow::ffi_stream::ArrowArrayStreamReader::from_raw(
+                            address as *mut arrow::ffi_stream::FFI_ArrowArrayStream,
+                        )
+                    }
+                    .map_err(|e| {
+                        GeneralError(format!("Failed to import ArrowArrayStream from JVM: {e}"))
+                    })?;
+                    Some(Arc::new(std::sync::Mutex::new(reader)))
+                };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(
-                    self.exec_context_id,
-                    input_source,
-                    &scan.source,
-                    data_types,
-                    scan.arrow_ffi_safe,
-                )?;
+                let scan =
+                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
 
                 Ok((
                     vec![scan.clone()],
@@ -3980,7 +3995,6 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4046,7 +4060,6 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4256,7 +4269,6 @@ mod tests {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         }
     }
@@ -4299,7 +4311,6 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4422,7 +4433,6 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4905,7 +4915,6 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 

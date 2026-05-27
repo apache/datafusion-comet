@@ -3956,6 +3956,29 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("CometLocalTableScanExec does not leak Arrow buffers (project consumer)") {
+    // Forces a CometNativeExec consumer over an ArrowArrayStream input. The producer must not
+    // leak the Arrow buffers it allocates per batch; if it does, the BaseAllocator
+    // leak detector fires inside the task completion listener.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val session = spark
+      import session.implicits._
+      val df = Seq((1, 2), (2, 2), (3, 4)).toDF("a", "b")
+      checkSparkAnswer(df.select($"a" + 1))
+    }
+  }
+
+  test("CometLocalTableScanExec does not leak Arrow buffers (collect_list)") {
+    // Mirrors DataFrameAggregateSuite "collect functions" which is the test that
+    // surfaced the leak in CI.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val session = spark
+      import session.implicits._
+      val df = Seq((1, 2), (2, 2), (3, 4)).toDF("a", "b")
+      checkSparkAnswer(df.select(collect_list($"a"), collect_list($"b")))
+    }
+  }
+
   test("Native_datafusion reports correct files and bytes scanned") {
     val inputFiles = 2
 

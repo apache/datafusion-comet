@@ -60,7 +60,7 @@ import org.apache.comet.vector.NativeUtil
  */
 class CometExecIterator(
     val id: Long,
-    inputs: Seq[Iterator[ColumnarBatch]],
+    inputObjects: Array[Object],
     numOutputCols: Int,
     protobufQueryPlan: Array[Byte],
     nativeMetrics: CometMetricNode,
@@ -79,14 +79,11 @@ class CometExecIterator(
   private val taskAttemptId = TaskContext.get().taskAttemptId
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
-  // Build a mixed array of iterators: CometShuffleBlockIterator for shuffle
-  // scan indices, CometBatchIterator for regular scan indices.
-  private val inputIterators: Array[Object] = inputs.zipWithIndex.map {
-    case (_, idx) if shuffleBlockIterators.contains(idx) =>
-      shuffleBlockIterators(idx).asInstanceOf[Object]
-    case (iterator, _) =>
-      new CometBatchIterator(iterator, nativeUtil).asInstanceOf[Object]
-  }.toArray
+  // Each input slot is either an org.apache.arrow.c.ArrowArrayStream (consumed natively via
+  // ArrowArrayStreamReader::from_raw against its memoryAddress) or a CometShuffleBlockIterator
+  // (consumed via the existing JNI block-iteration protocol). The slot index matches the scan
+  // input index in the serialized native plan.
+  private val inputIterators: Array[Object] = inputObjects
 
   private val plan = {
     val conf = SparkEnv.get.conf

@@ -21,11 +21,12 @@ package org.apache.spark.sql.comet
 
 import scala.collection.mutable.ListBuffer
 
-import org.apache.spark.TaskContext
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, UnsafeProjection}
-import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource, RowArrowReader}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{DataType, NullType}
@@ -43,7 +44,8 @@ case class CometLocalTableScanExec(
     @transient rows: Seq[InternalRow],
     override val output: Seq[Attribute])
     extends CometExec
-    with LeafExecNode {
+    with LeafExecNode
+    with CometNativeArrowSource {
 
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
@@ -66,25 +68,47 @@ case class CometLocalTableScanExec(
     }
   }
 
+  private def countingRows(
+      iter: Iterator[InternalRow],
+      numOutputRows: SQLMetric): Iterator[InternalRow] = new Iterator[InternalRow] {
+    override def hasNext: Boolean = iter.hasNext
+    override def next(): InternalRow = {
+      val row = iter.next()
+      numOutputRows.add(1)
+      row
+    }
+  }
+
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numOutputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    val schema = originalPlan.schema
-    // Native side asserts Timestamp(Microsecond, Some("UTC")). See COMET-2720.
+    val sparkSchema = originalPlan.schema
     rdd.mapPartitionsInternal { rowIter =>
-      val context = TaskContext.get()
-      // Non-Comet JVM consumers (e.g. Iceberg writers) may retain batches across next()
-      // calls, so each batch must own independent Arrow buffers.
-      val batches = CometArrowConverters.rowToArrowBatchIterNoReuse(
-        rowIter,
-        schema,
-        maxRecordsPerBatch,
-        "UTC",
-        context)
-      batches.map { batch =>
-        numOutputRows.add(batch.numRows())
-        batch
-      }
+      val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
+      CometArrowStream.readerBatchIter(
+        "CometLocalTableScan",
+        new RowArrowReader(
+          _,
+          arrowSchema,
+          countingRows(rowIter, numOutputRows),
+          maxRecordsPerBatch))
+    }
+  }
+
+  override def doExecuteAsArrowStream(): RDD[ArrowArrayStream] = {
+    val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
+    val sparkSchema = originalPlan.schema
+    val numOutputRows = longMetric("numOutputRows")
+    rdd.mapPartitionsInternal { rowIter =>
+      val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
+      CometArrowStream.stream(
+        "CometLocalTableScan",
+        allocator =>
+          new RowArrowReader(
+            allocator,
+            arrowSchema,
+            countingRows(rowIter, numOutputRows),
+            maxRecordsPerBatch))
     }
   }
 
@@ -117,9 +141,9 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
 
-  // CometArrowConverters / ArrowWriter support NullType (via Utils.toArrowType +
-  // NullWriter). Other types not on DataTypeSupport's allow list (e.g. TimeType,
-  // intervals) lack ArrowWriter coverage and must fall back to Spark.
+  // ArrowWriter (used by RowArrowReader) handles NullType via Utils.toArrowType + NullWriter;
+  // other types off DataTypeSupport's allow list (TimeType, intervals, ...) have no ArrowWriter
+  // coverage and must fall back to Spark.
   override def isTypeSupported(
       dt: DataType,
       name: String,

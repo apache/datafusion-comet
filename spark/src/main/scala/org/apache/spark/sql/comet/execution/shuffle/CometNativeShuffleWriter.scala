@@ -33,6 +33,8 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -96,8 +98,14 @@ class CometNativeShuffleWriter[K, V](
     // Getting rid of the fake partitionId
     val newInputs = inputs.asInstanceOf[Iterator[_ <: Product2[Any, Any]]].map(_._2)
 
+    val arrowStream = CometArrowStream.fromColumnarBatchIter(
+      newInputs.asInstanceOf[Iterator[ColumnarBatch]],
+      CometUtils.fromAttributes(outputAttributes),
+      CometArrowStream.NATIVE_TIMEZONE,
+      "CometNativeShuffleWriter")
+
     val cometIter = CometExec.getCometIterator(
-      Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
+      Array(arrowStream.asInstanceOf[Object]),
       outputAttributes.length,
       nativePlan,
       nativeMetrics,
