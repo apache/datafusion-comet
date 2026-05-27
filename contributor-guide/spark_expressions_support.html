@@ -538,7 +538,13 @@ per-function details are documented in the
 <section id="agg-funcs">
 <h3>agg_funcs<a class="headerlink" href="#agg-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> any</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> any</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-26): registered as a SQL alias of <code class="docutils literal notranslate"><span class="pre">BoolOr</span></code>, which extends <code class="docutils literal notranslate"><span class="pre">RuntimeReplaceableAggregate</span></code> with <code class="docutils literal notranslate"><span class="pre">replacement</span> <span class="pre">=</span> <span class="pre">Max(child)</span></code>. Catalyst rewrites <code class="docutils literal notranslate"><span class="pre">any(x)</span></code> to <code class="docutils literal notranslate"><span class="pre">max(x)</span></code> before Comet sees the plan, so <code class="docutils literal notranslate"><span class="pre">any</span></code> is served by <code class="docutils literal notranslate"><span class="pre">CometMax</span></code> on a <code class="docutils literal notranslate"><span class="pre">BooleanType</span></code> column.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-26): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-26): identical to 3.4.3.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> any_value</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> approx_count_distinct</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> approx_percentile</p></li>
