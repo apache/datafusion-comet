@@ -169,4 +169,4 @@ SELECT parse_url('http://host:abc/', 'AUTHORITY')
 
 -- unbalanced IPv6 bracket is invalid
 query
-SELECT try_parse_url('http://[::1/path', 'AUTHORITY')
+SELECT parse_url('http://[::1/path', 'AUTHORITY')
