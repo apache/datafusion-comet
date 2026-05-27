@@ -147,9 +147,9 @@ most common bugs in Comet serdes are misalignments between them.
   Note that any `Some(...)` on `Compatible` triggers a runtime
   `logWarning`, so reserve it for genuinely useful caveats.
 
-Decision rule: if the user would be surprised by a *wrong answer*, it is
-`Incompatible`. If the user would be surprised by a *runtime error or
-unsupported-type message*, it is `Unsupported`.
+Decision rule: if the user would be surprised by a _wrong answer_, it is
+`Incompatible`. If the user would be surprised by a _runtime error or
+unsupported-type message_, it is `Unsupported`.
 
 **Runtime vs docs split.**
 
@@ -211,8 +211,8 @@ and in EXPLAIN output, so they are user-facing.
 - Keep it concise. Single sentence is best.
 - Do not write "Incompatible reason: ..." or "Unsupported because ...".
   The doc generator adds the framing.
-- Phrase Incompatible reasons as *what differs from Spark*, not *what is
-  missing*. Phrase Unsupported reasons as *what does not run*. If you find
+- Phrase Incompatible reasons as _what differs from Spark_, not _what is
+  missing_. Phrase Unsupported reasons as _what does not run_. If you find
   yourself writing an "Incompatible" reason that says "Comet only supports
   X" or "Y is not supported", the support level is probably wrong: it
   should be `Unsupported`.
@@ -431,8 +431,7 @@ one without the other.
 > `getIncompatibleReasons`, `getUnsupportedReasons`, and `convert`. Would
 > you like me to fix them?
 >
-> - [list each finding from the Step 5 consistency audit, with the file
->   and serde object name]
+> - [list each finding from the Step 5 consistency audit, with the file and serde object name]
 >
 > Each fix is a small, mechanical edit (extract a `private val` for the
 > reason, switch `Incompatible(None)` to `Incompatible(Some(reason))`,
