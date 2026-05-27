@@ -99,6 +99,12 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     checkShuffleAnswer(shuffled, 1)
   }
 
+  test("columnar shuffle with Map[_, NullType] column") {
+    val df = sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
+    val shuffled = df.repartition(2, $"id")
+    checkShuffleAnswer(shuffled, 1)
+  }
+
   test("columnar shuffle on nested struct including nulls") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
