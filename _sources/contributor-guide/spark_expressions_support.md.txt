@@ -165,7 +165,7 @@
 - [x] bit_get
 - [x] getbit
 - [x] shiftright
-- [ ] shiftrightunsigned
+- [x] shiftrightunsigned
 - [x] `|`
 - [x] `~`
 

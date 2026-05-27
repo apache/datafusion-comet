@@ -343,6 +343,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Sha2.enabled` | Enable Comet acceleration for `Sha2` | true |
 | `spark.comet.expression.ShiftLeft.enabled` | Enable Comet acceleration for `ShiftLeft` | true |
 | `spark.comet.expression.ShiftRight.enabled` | Enable Comet acceleration for `ShiftRight` | true |
+| `spark.comet.expression.ShiftRightUnsigned.enabled` | Enable Comet acceleration for `ShiftRightUnsigned` | true |
 | `spark.comet.expression.Signum.enabled` | Enable Comet acceleration for `Signum` | true |
 | `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
 | `spark.comet.expression.Sinh.enabled` | Enable Comet acceleration for `Sinh` | true |
