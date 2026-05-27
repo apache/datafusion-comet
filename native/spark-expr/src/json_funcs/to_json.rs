@@ -394,11 +394,7 @@ mod test {
     }
 
     fn make_to_json(timezone: &str, ignore_null_fields: bool) -> ToJson {
-        ToJson::new(
-            Arc::new(Column::new("x", 0)),
-            timezone,
-            ignore_null_fields,
-        )
+        ToJson::new(Arc::new(Column::new("x", 0)), timezone, ignore_null_fields)
     }
 
     #[test]
