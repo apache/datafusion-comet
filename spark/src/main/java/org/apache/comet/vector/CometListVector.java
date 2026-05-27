@@ -26,7 +26,10 @@ import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarArray;
 
-/** A Comet column vector for list type. */
+/**
+ * A {@link CometDecodedVector} for Spark array columns, wrapping an Arrow {@link ListVector} and
+ * exposing each row as a Spark {@link ColumnarArray} backed by the list's data vector.
+ */
 public class CometListVector extends CometDecodedVector {
   final ListVector listVector;
   final ValueVector dataVector;

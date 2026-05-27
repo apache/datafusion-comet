@@ -24,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import org.junit.Test;
 
 import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VarBinaryVector;
 import org.apache.arrow.vector.VarCharVector;
 
@@ -73,5 +74,36 @@ public class TestCometPlainVector {
 
   private static byte[] bytes(String s) {
     return s.getBytes(StandardCharsets.UTF_8);
+  }
+
+  @Test
+  public void testIsNullAtSequentialAcrossValidityBytes() {
+    // 20 rows spans three validity bytes; mixing nulls and non-nulls across byte boundaries
+    // forces a cache miss on every 8th row.
+    try (RootAllocator allocator = new RootAllocator(Integer.MAX_VALUE)) {
+      IntVector vector = new IntVector("ints", allocator);
+      vector.allocateNew(20);
+      for (int i = 0; i < 20; i++) {
+        if (i % 3 == 0) {
+          vector.setNull(i);
+        } else {
+          vector.setSafe(i, i * 10);
+        }
+      }
+      vector.setValueCount(20);
+
+      try (CometPlainVector cv = new CometPlainVector(vector, false)) {
+        for (int i = 0; i < 20; i++) {
+          boolean expectedNull = (i % 3 == 0);
+          assertEquals("row " + i, expectedNull, cv.isNullAt(i));
+          if (!expectedNull) {
+            assertEquals("row " + i, i * 10, cv.getInt(i));
+          }
+        }
+        for (int i = 19; i >= 0; i--) {
+          assertEquals("row " + i, (i % 3 == 0), cv.isNullAt(i));
+        }
+      }
+    }
   }
 }
