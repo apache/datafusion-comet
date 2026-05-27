@@ -15,27 +15,28 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Pin the session timezone so the test exercises the non-UTC path regardless of the JVM
--- default. Enable the codegen dispatcher so non-UTC and non-whitelisted formats stay inside
--- Comet via Spark's own DateFormatClass.doGenCode instead of falling back to Spark.
+-- Routes make_timestamp through the codegen dispatcher.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_date_format(ts timestamp) USING parquet
+CREATE TABLE test_make_timestamp(y int, mo int, d int, h int, mi int, s decimal(8,6)) USING parquet
 
 statement
-INSERT INTO test_date_format VALUES (timestamp('2024-06-15 10:30:45')), (timestamp('1970-01-01 00:00:00')), (NULL)
+INSERT INTO test_make_timestamp VALUES
+  (2024, 6, 15, 10, 30, 45.123456),
+  (1970, 1, 1, 0, 0, 0.0),
+  (2024, 12, 31, 23, 59, 59.999999),
+  (NULL, 6, 15, 10, 30, 45.0),
+  (2024, NULL, 15, 10, 30, 45.0)
 
 query
-SELECT date_format(ts, 'yyyy-MM-dd') FROM test_date_format
+SELECT make_timestamp(y, mo, d, h, mi, s) FROM test_make_timestamp
 
+-- Explicit timezone argument
 query
-SELECT date_format(ts, 'HH:mm:ss') FROM test_date_format
-
-query
-SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format
+SELECT make_timestamp(y, mo, d, h, mi, s, 'UTC') FROM test_make_timestamp
 
 -- literal arguments
 query
-SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')
+SELECT make_timestamp(2024, 6, 15, 10, 30, 45.000)

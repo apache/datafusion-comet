@@ -19,6 +19,7 @@
 
 package org.apache.comet.vector;
 
+import org.apache.arrow.vector.NullVector;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.spark.sql.comet.util.Utils;
@@ -44,7 +45,8 @@ public abstract class CometDecodedVector extends CometVector {
   private final int numValues;
   private int validityByteCacheIndex = -1;
   private byte validityByteCache;
-  protected boolean isUuid;
+  private final long validityBufferAddress;
+  protected final boolean isUuid;
 
   protected CometDecodedVector(ValueVector vector, Field valueField) {
     this(vector, valueField, false);
@@ -56,6 +58,11 @@ public abstract class CometDecodedVector extends CometVector {
     this.numNulls = valueVector.getNullCount();
     this.numValues = valueVector.getValueCount();
     this.hasNull = numNulls != 0;
+    // NullVector has no validity buffer (all values are logically null), so use a sentinel.
+    // Subclasses that wrap NullVector (e.g. CometPlainVector) short-circuit isNullAt before
+    // it reaches the base implementation, so the sentinel is never dereferenced.
+    this.validityBufferAddress =
+        (vector instanceof NullVector) ? -1L : valueVector.getValidityBuffer().memoryAddress();
     this.isUuid = isUuid;
   }
 
@@ -84,7 +91,6 @@ public abstract class CometDecodedVector extends CometVector {
 
     int byteIndex = rowId >> 3;
     if (byteIndex != validityByteCacheIndex) {
-      long validityBufferAddress = valueVector.getValidityBuffer().memoryAddress();
       validityByteCache = Platform.getByte(null, validityBufferAddress + byteIndex);
       validityByteCacheIndex = byteIndex;
     }

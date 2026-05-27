@@ -15,27 +15,29 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Pin the session timezone so the test exercises the non-UTC path regardless of the JVM
--- default. Enable the codegen dispatcher so non-UTC and non-whitelisted formats stay inside
--- Comet via Spark's own DateFormatClass.doGenCode instead of falling back to Spark.
+-- Routes add_months through the codegen dispatcher. Spark's own AddMonths.doGenCode
+-- runs inside the Janino-compiled kernel.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_date_format(ts timestamp) USING parquet
+CREATE TABLE test_add_months(d date, n int) USING parquet
 
 statement
-INSERT INTO test_date_format VALUES (timestamp('2024-06-15 10:30:45')), (timestamp('1970-01-01 00:00:00')), (NULL)
+INSERT INTO test_add_months VALUES
+  (date('2024-01-15'), 1),
+  (date('2024-01-31'), 1),
+  (date('2024-12-15'), -13),
+  (date('1970-01-01'), 0),
+  (NULL, 1),
+  (date('2024-06-15'), NULL)
 
 query
-SELECT date_format(ts, 'yyyy-MM-dd') FROM test_date_format
+SELECT add_months(d, n) FROM test_add_months
 
 query
-SELECT date_format(ts, 'HH:mm:ss') FROM test_date_format
-
-query
-SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format
+SELECT add_months(d, 12) FROM test_add_months
 
 -- literal arguments
 query
-SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')
+SELECT add_months(date('2024-02-29'), 12)

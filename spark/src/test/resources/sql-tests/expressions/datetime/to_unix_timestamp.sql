@@ -15,27 +15,26 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Pin the session timezone so the test exercises the non-UTC path regardless of the JVM
--- default. Enable the codegen dispatcher so non-UTC and non-whitelisted formats stay inside
--- Comet via Spark's own DateFormatClass.doGenCode instead of falling back to Spark.
+-- Routes to_unix_timestamp through the codegen dispatcher.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_date_format(ts timestamp) USING parquet
+CREATE TABLE test_to_unix_timestamp(s string) USING parquet
 
 statement
-INSERT INTO test_date_format VALUES (timestamp('2024-06-15 10:30:45')), (timestamp('1970-01-01 00:00:00')), (NULL)
+INSERT INTO test_to_unix_timestamp VALUES
+  ('2024-06-15 10:30:45'),
+  ('1970-01-01 00:00:00'),
+  ('1969-12-31 23:59:59'),
+  (NULL)
 
 query
-SELECT date_format(ts, 'yyyy-MM-dd') FROM test_date_format
+SELECT to_unix_timestamp(s, 'yyyy-MM-dd HH:mm:ss') FROM test_to_unix_timestamp
 
 query
-SELECT date_format(ts, 'HH:mm:ss') FROM test_date_format
+SELECT to_unix_timestamp(s) FROM test_to_unix_timestamp
 
+-- literal argument
 query
-SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format
-
--- literal arguments
-query
-SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')
+SELECT to_unix_timestamp('2024-06-15 10:30:45', 'yyyy-MM-dd HH:mm:ss')
