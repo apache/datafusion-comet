@@ -361,8 +361,6 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
   }
 }
 
-object CometAddMonths extends CometScalarFunction[AddMonths]("add_months")
-
 object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 
 object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
