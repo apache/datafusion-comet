@@ -80,7 +80,7 @@ impl Display for ToJson {
 impl PartialEq<dyn Any> for ToJson {
     fn eq(&self, other: &dyn Any) -> bool {
         if let Some(other) = other.downcast_ref::<ToJson>() {
-            self.expr.eq(&other.expr) && self.timezone.eq(&other.timezone)
+            self == other
         } else {
             false
         }
@@ -287,12 +287,14 @@ fn is_nan(input: &str) -> bool {
 
 #[cfg(test)]
 mod test {
-    use crate::json_funcs::to_json::struct_to_json;
+    use crate::json_funcs::to_json::{struct_to_json, ToJson};
     use arrow::array::types::Int32Type;
     use arrow::array::{Array, PrimitiveArray, StringArray};
     use arrow::array::{ArrayRef, BooleanArray, Int32Array, StructArray};
     use arrow::datatypes::{DataType, Field};
     use datafusion::common::Result;
+    use datafusion::physical_plan::expressions::Column;
+    use std::any::Any;
     use std::sync::Arc;
 
     #[test]
@@ -389,5 +391,37 @@ mod test {
             Some("bar"),
             Some(""),
         ]))
+    }
+
+    fn make_to_json(timezone: &str, ignore_null_fields: bool) -> ToJson {
+        ToJson::new(
+            Arc::new(Column::new("x", 0)),
+            timezone,
+            ignore_null_fields,
+        )
+    }
+
+    #[test]
+    fn test_partial_eq_same() {
+        let a = make_to_json("UTC", true);
+        let b = make_to_json("UTC", true);
+        assert_eq!(a, b);
+        assert!(<ToJson as PartialEq<dyn Any>>::eq(&a, &b as &dyn Any));
+    }
+
+    #[test]
+    fn test_partial_eq_dyn_any_differs_on_timezone() {
+        let a = make_to_json("UTC", true);
+        let b = make_to_json("America/New_York", true);
+        assert_ne!(a, b);
+        assert!(!<ToJson as PartialEq<dyn Any>>::eq(&a, &b as &dyn Any));
+    }
+
+    #[test]
+    fn test_partial_eq_dyn_any_differs_on_ignore_null_fields() {
+        let a = make_to_json("UTC", true);
+        let b = make_to_json("UTC", false);
+        assert_ne!(a, b);
+        assert!(!<ToJson as PartialEq<dyn Any>>::eq(&a, &b as &dyn Any));
     }
 }
