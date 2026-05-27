@@ -155,10 +155,8 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
-  private val intervalFallbackReason: String =
-    "Falls back to Spark for YearMonthIntervalType and DayTimeIntervalType inputs."
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(intervalFallbackReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "YearMonthIntervalType and DayTimeIntervalType inputs are not supported")
 
   override def convert(
       aggExpr: AggregateExpression,
