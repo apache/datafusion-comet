@@ -967,7 +967,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
       sql(s"insert into $table values(1,'James Smith')")
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
+      withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
         val query2 = sql(s"select id from $table where name rlike name")
         val (_, cometPlan) = checkSparkAnswer(query2)
         val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
