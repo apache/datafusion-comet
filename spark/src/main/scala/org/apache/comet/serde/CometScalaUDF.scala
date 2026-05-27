@@ -28,6 +28,7 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
+import org.apache.comet.udf.CometRustUdfRegistry
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
@@ -52,8 +53,42 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  */
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
-  override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    emitJvmCodegenDispatch(expr, inputs, binding)
+  override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    // First check if this udfName is a registered Rust UDF -- those get emitted as RustUdfCall
+    // and dispatched to the loaded cdylib rather than the JVM codegen dispatcher.
+    expr.udfName.flatMap(CometRustUdfRegistry.instance.get) match {
+      case Some(meta) =>
+        emitRustUdfCall(expr, meta.libraryPath, meta.returnType, inputs, binding)
+      case None =>
+        emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+
+  private def emitRustUdfCall(
+      expr: ScalaUDF,
+      libraryPath: String,
+      returnType: org.apache.spark.sql.types.DataType,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val name = expr.udfName.get
+    val argProtos = expr.children.map(c => exprToProtoInternal(c, inputs, binding))
+    if (argProtos.exists(_.isEmpty)) {
+      withInfo(expr, "one or more Rust UDF arguments are not supported", expr.children: _*)
+      return None
+    }
+    val returnTypeProto = serializeDataType(returnType).getOrElse {
+      withInfo(expr, s"return type $returnType not serializable", expr)
+      return None
+    }
+    val callBuilder = ExprOuterClass.RustUdfCall
+      .newBuilder()
+      .setName(name)
+      .setLibraryPath(libraryPath)
+      .setReturnType(returnTypeProto)
+      .setDeterministic(expr.deterministic)
+    argProtos.foreach(a => callBuilder.addArgs(a.get))
+    Some(ExprOuterClass.Expr.newBuilder().setRustUdfCall(callBuilder.build()).build())
+  }
 
   /**
    * Bind `expr`, closure-serialize it, and emit a `JvmScalarUdf` proto routed through

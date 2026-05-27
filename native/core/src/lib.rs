@@ -67,6 +67,7 @@ use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 pub mod execution;
 pub mod parquet;
+pub mod comet_rust_udf_bridge;
 // this module is for non release only. Intended for debugging/profiling purposes
 #[cfg(debug_assertions)]
 pub mod debug;
