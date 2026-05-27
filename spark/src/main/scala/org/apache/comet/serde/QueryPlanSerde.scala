@@ -233,6 +233,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[FromUnixTime] -> CometFromUnixTime,
       classOf[FromUTCTimestamp] -> CometFromUTCTimestamp,
       classOf[ToUTCTimestamp] -> CometToUTCTimestamp,
+      classOf[GetTimestamp] -> CometGetTimestamp,
       classOf[LastDay] -> CometLastDay,
       classOf[Hour] -> CometHour,
       classOf[MakeDate] -> CometMakeDate,
