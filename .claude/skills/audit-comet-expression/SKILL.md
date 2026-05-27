@@ -119,19 +119,125 @@ grep -r "$ARGUMENTS" spark/src/main/scala/org/apache/comet/ --include="*.scala" 
 Read the serde implementation and check:
 
 - Which Spark versions the serde handles
-- Whether `getSupportLevel` is implemented and accurate
-- Whether all input types are handled
-- Whether any types are explicitly marked `Unsupported`
-- Whether `getIncompatibleReasons()` and `getUnsupportedReasons()` are overridden.
-  `getSupportLevel` controls runtime fallback, but `GenerateDocs` reads these two
-  methods to build the Compatibility Guide. If `getSupportLevel` returns
-  `Incompatible(Some(...))` or `Unsupported(Some(...))` but the corresponding
-  `get*Reasons()` method is not overridden, the reason will not appear in the
-  published docs. Expect both to return a `Seq[String]` containing the same
-  reason text used in `getSupportLevel`. Follow the pattern in
-  `spark/src/main/scala/org/apache/comet/serde/structs.scala::CometStructsToJson`
-  or `spark/src/main/scala/org/apache/comet/serde/datetime.scala::CometHour`:
-  extract the reason as a `private val` and reference it from both places.
+- Whether all input types Spark accepts are handled
+- Whether `convert` validates expression shape (e.g. literal-only arguments) before serializing
+
+Then audit the support-level and reason methods as described below.
+
+#### Audit `getSupportLevel`, `getIncompatibleReasons`, `getUnsupportedReasons`, and `convert`
+
+These four methods must stay aligned. Each has a distinct purpose, and the
+most common bugs in Comet serdes are misalignments between them.
+
+**Pick the right support level.**
+
+- `Unsupported(Some(reason))`: Comet cannot run this case at all. The
+  dispatcher in `QueryPlanSerde.exprToProtoInternal` falls back to Spark
+  unconditionally. Use this when an input type, option, or expression shape
+  is not implemented, or when running the native path would crash or error.
+- `Incompatible(Some(reason))`: Comet can run this, but results may differ
+  from Spark. The dispatcher only allows it when
+  `spark.comet.expr.allowIncompatible=true` (or the per-expression
+  equivalent). Use this for known result differences such as locale
+  sensitivity, timezone handling, ordering ambiguity, or floating-point
+  precision.
+- `Compatible(None)`: full Spark compatibility for this combination of
+  inputs and options.
+- `Compatible(Some(note))`: fully compatible but with a docs-only caveat.
+  Note that any `Some(...)` on `Compatible` triggers a runtime
+  `logWarning`, so reserve it for genuinely useful caveats.
+
+Decision rule: if the user would be surprised by a *wrong answer*, it is
+`Incompatible`. If the user would be surprised by a *runtime error or
+unsupported-type message*, it is `Unsupported`.
+
+**Runtime vs docs split.**
+
+- The `notes` field on `Incompatible(Some(...))` and `Unsupported(Some(...))`
+  flows into EXPLAIN output via the dispatcher (see
+  `QueryPlanSerde.exprToProtoInternal`, around the `case Incompatible` /
+  `case Unsupported` branches). This is what users see when they ask why
+  Comet fell back.
+- `getIncompatibleReasons()` and `getUnsupportedReasons()` are read only by
+  `GenerateDocs` when building
+  `docs/source/user-guide/compatibility.md`. They are static (no `expr`
+  argument) and should enumerate every distinct reason the expression
+  could ever return at runtime.
+- `convert` may also call `withInfo(expr, "reason")` and return `None` for
+  cases that cannot be detected from the expression alone (for example,
+  non-literal arguments, or child conversion failures). Those reasons
+  belong in `getUnsupportedReasons()` too.
+
+**Consistency rules.**
+
+1. If `getSupportLevel` can return `Incompatible(...)` for any input,
+   override `getIncompatibleReasons()` and include a reason for every
+   incompatible branch.
+2. If `getSupportLevel` can return `Unsupported(...)` for any input,
+   override `getUnsupportedReasons()` and include a reason for every
+   unsupported branch.
+3. If `convert` has its own `withInfo(...); None` fallbacks (e.g. literal
+   checks), enumerate those reasons in `getUnsupportedReasons()` too.
+4. Extract each reason into a `private val` and reference it from both
+   `getSupportLevel` and `get*Reasons()`. Do not duplicate the string
+   inline. Canonical example:
+   `spark/src/main/scala/org/apache/comet/serde/arrays.scala::CometArrayIntersect`.
+   It declares `private val incompatReason` and
+   `private val unsupportedCollationReason`, and each is referenced from
+   `getSupportLevel` and the matching reasons method.
+5. Prefer `Incompatible(Some(reason))` over `Incompatible(None)`. The
+   `None` form drops the reason from EXPLAIN output, leaving users with a
+   generic "not fully compatible" message and forcing them to read the
+   docs to find out why.
+6. Gate compatibility decisions in `getSupportLevel`, not inside `convert`.
+   Putting the check inside `convert` (e.g. reading a config flag and
+   calling `withInfo`) bypasses the dispatcher's `allowIncompatible`
+   handling and the EXPLAIN message becomes inconsistent with what the
+   doc generator produces.
+
+**Wording guidelines for reason strings.**
+
+Reasons appear verbatim in the Compatibility Guide (rendered as Markdown)
+and in EXPLAIN output, so they are user-facing.
+
+- Lead with the user-observable effect, then the cause if helpful.
+  ✅ "Result array element order may differ from Spark when the right array
+  is longer than the left."
+  ❌ "DataFusion probes the longer side."
+- Use sentence case and end with a period.
+- Use backticks around config keys, type names, and SQL identifiers.
+- Link to a tracking GitHub issue for known incompatibilities so users can
+  follow progress: `(https://github.com/apache/datafusion-comet/issues/NNNN)`.
+- Keep it concise. Single sentence is best.
+- Do not write "Incompatible reason: ..." or "Unsupported because ...".
+  The doc generator adds the framing.
+- Phrase Incompatible reasons as *what differs from Spark*, not *what is
+  missing*. Phrase Unsupported reasons as *what does not run*. If you find
+  yourself writing an "Incompatible" reason that says "Comet only supports
+  X" or "Y is not supported", the support level is probably wrong: it
+  should be `Unsupported`.
+
+**Common antipatterns to flag during the audit.**
+
+- A `private val reason` constant declared near the top of the object, but
+  `getSupportLevel` hardcodes a different string inline. The doc and the
+  EXPLAIN message will drift.
+  Real example: `CometHour` declares `incompatReason` then hardcodes a
+  near-duplicate string in `getSupportLevel`.
+- Reason text duplicated in two places without a shared constant.
+  Real examples: `CometMinute`, `CometSecond`.
+- `Incompatible(None)` paired with a populated `getIncompatibleReasons()`.
+  The reason reaches the docs but not EXPLAIN output.
+  Real example: `CometInitCap`.
+- `getIncompatibleReasons()` overridden but `getSupportLevel` never returns
+  `Incompatible(...)`. Either the reasons method is dead code, or
+  `getSupportLevel` is missing a branch.
+- A reason string phrased as "X is not supported" attached to an
+  `Incompatible` branch (or vice versa). Re-read it and decide which
+  support level it really belongs to.
+- `convert` bails out via `withInfo` for a case that is fully knowable
+  from the expression (e.g. an unsupported child data type). Move the
+  check into `getSupportLevel` so the dispatcher handles it uniformly.
 
 ### Shims
 
@@ -237,7 +343,52 @@ Also review the Comet implementation (Step 3) against the Spark behavior (Step 1
 - Are there behavioral differences that are NOT marked `Incompatible` but should be?
 - Are there behavioral differences between Spark versions that the Comet implementation does not account for (missing shim)?
 - Does the Rust implementation match the Spark behavior for all edge cases?
-- If `getSupportLevel` returns `Incompatible` or `Unsupported` with a reason, are `getIncompatibleReasons()` / `getUnsupportedReasons()` also overridden so the reason is picked up by `GenerateDocs` and appears in the Compatibility Guide?
+
+### Support-level consistency audit
+
+Walk through this checklist against the serde. Each failed item is a
+finding for Step 6.
+
+1. **Support level matches behavior.** For each branch of
+   `getSupportLevel`, decide whether the user-observable effect is a wrong
+   answer (`Incompatible`) or a fallback / error (`Unsupported`). Flag any
+   branch where the label does not match the behavior.
+2. **Reasons cover every branch.** Every distinct reason that
+   `getSupportLevel` can return as `Incompatible(Some(r))` must appear in
+   `getIncompatibleReasons()`. Same for `Unsupported(Some(r))` and
+   `getUnsupportedReasons()`. Missing reasons silently drop from the
+   Compatibility Guide.
+3. **Reasons are not dead code.** If `getIncompatibleReasons()` is
+   overridden but `getSupportLevel` never returns `Incompatible(...)`,
+   either the reason is stale or `getSupportLevel` is missing a branch.
+   Same for `getUnsupportedReasons()`.
+4. **Reason strings are shared via `private val`.** If the same reason
+   appears as a string literal in two places, flag it: changes to one
+   will not propagate to the other.
+5. **Inline reason matches the constant.** If a `private val reason` is
+   declared but `getSupportLevel` uses a different string literal, flag
+   it as a drift bug.
+6. **`Incompatible(None)` has no docs-only reason.** If
+   `getSupportLevel` returns `Incompatible(None)` but
+   `getIncompatibleReasons()` is non-empty, flag it: the EXPLAIN message
+   will be generic while the docs show a specific reason. Switch to
+   `Incompatible(Some(reason))`.
+7. **`convert` fallbacks are documented.** If `convert` calls
+   `withInfo(expr, "...")` and returns `None` for cases not covered by
+   `getSupportLevel` (e.g. non-literal arguments, unsupported expression
+   shapes), confirm the reason is also listed in
+   `getUnsupportedReasons()`.
+8. **Compatibility decisions live in `getSupportLevel`.** If `convert`
+   reads a config flag and bails out, prefer moving the check into
+   `getSupportLevel` so the dispatcher handles `allowIncompatible`
+   uniformly. `CometCaseConversionBase` is an example of the in-`convert`
+   pattern that this skill recommends against.
+9. **Reason wording.** Each reason should describe the user-observable
+   effect, use sentence case with a period, backtick config keys and
+   types, and link a tracking issue when one exists. Flag reasons that
+   read like internal implementation notes ("DataFusion probes the longer
+   side") or that mismatch their support level (an "Incompatible" reason
+   that says "X is not supported").
 
 ---
 
@@ -259,9 +410,13 @@ Minor gaps, cosmetic improvements, or nice-to-have tests.
 
 ---
 
-## Step 7: Offer to Implement Missing Tests
+## Step 7: Offer to Implement Missing Tests and Fix Consistency Findings
 
-After presenting the gap analysis, ask the user:
+After presenting the gap analysis, ask the user separately about each
+category of finding. Keep the two asks distinct so the user can opt in to
+one without the other.
+
+**Test coverage:**
 
 > I found the following missing test cases. Would you like me to implement them?
 >
@@ -270,8 +425,23 @@ After presenting the gap analysis, ask the user:
 > I can add them as Comet SQL Tests in `spark/src/test/resources/sql-tests/expressions/<category>/$ARGUMENTS.sql`
 > (or as Comet Scala Tests in `CometExpressionSuite` for cases that require programmatic setup).
 
-If the user says yes, implement the missing tests following the Comet SQL Tests format described in
-`docs/source/contributor-guide/sql-file-tests.md`. Prefer Comet SQL Tests over Comet Scala Tests.
+**Support-level consistency:**
+
+> I also found the following alignment issues between `getSupportLevel`,
+> `getIncompatibleReasons`, `getUnsupportedReasons`, and `convert`. Would
+> you like me to fix them?
+>
+> - [list each finding from the Step 5 consistency audit, with the file
+>   and serde object name]
+>
+> Each fix is a small, mechanical edit (extract a `private val` for the
+> reason, switch `Incompatible(None)` to `Incompatible(Some(reason))`,
+> add a missing `get*Reasons()` override, or move a check from `convert`
+> into `getSupportLevel`).
+
+If the user says yes to tests, implement them following the Comet SQL Tests
+format described in `docs/source/contributor-guide/sql-file-tests.md`.
+Prefer Comet SQL Tests over Comet Scala Tests.
 
 ### Comet SQL Tests template
 
