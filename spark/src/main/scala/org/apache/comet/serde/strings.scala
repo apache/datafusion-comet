@@ -76,54 +76,54 @@ object CometUpper extends CometCaseConversionBase[Upper]("upper")
 object CometLower extends CometCaseConversionBase[Lower]("lower")
 
 object CometLength extends CometScalarFunction[Length]("length") {
-  override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
+  private val binaryUnsupportedReason = "`BinaryType` input is not supported"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(binaryUnsupportedReason)
 
   override def getSupportLevel(expr: Length): SupportLevel = expr.child.dataType match {
-    case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
+    case _: BinaryType => Unsupported(Some(binaryUnsupportedReason))
     case _ => Compatible()
   }
 }
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
+  private val incompatReason =
     "Treats hyphen as a word separator (e.g. `robert rose-smith` produces `Robert Rose-Smith`" +
       " instead of Spark's `Robert Rose-smith`)" +
-      " (https://github.com/apache/datafusion-comet/issues/1052)")
+      " (https://github.com/apache/datafusion-comet/issues/1052)"
 
-  override def getSupportLevel(expr: InitCap): SupportLevel = {
-    // Behavior differs from Spark. One example is that for the input "robert rose-smith", Spark
-    // will produce "Robert Rose-smith", but Comet will produce "Robert Rose-Smith".
-    // https://github.com/apache/datafusion-comet/issues/1052
-    Incompatible(None)
-  }
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
-  override def convert(expr: InitCap, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    super.convert(expr, inputs, binding)
-  }
+  override def getSupportLevel(expr: InitCap): SupportLevel = Incompatible(Some(incompatReason))
 }
 
 object CometSubstring extends CometExpressionSerde[Substring] {
+
+  private val literalArgsReason = "`pos` and `len` arguments must be literal values"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(literalArgsReason)
+
+  override def getSupportLevel(expr: Substring): SupportLevel = (expr.pos, expr.len) match {
+    case (_: Literal, _: Literal) => Compatible()
+    case _ => Unsupported(Some(literalArgsReason))
+  }
 
   override def convert(
       expr: Substring,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    (expr.pos, expr.len) match {
-      case (Literal(pos, _), Literal(len, _)) =>
-        exprToProtoInternal(expr.str, inputs, binding) match {
-          case Some(strExpr) =>
-            val builder = ExprOuterClass.Substring.newBuilder()
-            builder.setChild(strExpr)
-            builder.setStart(pos.asInstanceOf[Int])
-            builder.setLen(len.asInstanceOf[Int])
-            Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
-          case None =>
-            withInfo(expr, expr.str)
-            None
-        }
-      case _ =>
-        withInfo(expr, "Substring pos and len must be literals")
+    val Literal(pos, _) = expr.pos
+    val Literal(len, _) = expr.len
+    exprToProtoInternal(expr.str, inputs, binding) match {
+      case Some(strExpr) =>
+        val builder = ExprOuterClass.Substring.newBuilder()
+        builder.setChild(strExpr)
+        builder.setStart(pos.asInstanceOf[Int])
+        builder.setLen(len.asInstanceOf[Int])
+        Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
+      case None =>
+        withInfo(expr, expr.str)
         None
     }
   }
@@ -147,33 +147,35 @@ object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
 
 object CometLeft extends CometExpressionSerde[Left] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `BinaryType` and `StringType` input",
-    "The length argument must be a literal value")
+  private val literalLenReason = "The `length` argument must be a literal value"
+  private val unsupportedDataTypeReason = "Only supports `BinaryType` and `StringType` input"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(unsupportedDataTypeReason, literalLenReason)
 
   override def convert(expr: Left, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    expr.len match {
-      case Literal(lenValue, _) =>
-        exprToProtoInternal(expr.str, inputs, binding) match {
-          case Some(strExpr) =>
-            val builder = ExprOuterClass.Substring.newBuilder()
-            builder.setChild(strExpr)
-            builder.setStart(1)
-            builder.setLen(lenValue.asInstanceOf[Int])
-            Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
-          case None =>
-            withInfo(expr, expr.str)
-            None
-        }
-      case _ =>
-        withInfo(expr, "LEFT len must be a literal")
+    val Literal(lenValue, _) = expr.len
+    exprToProtoInternal(expr.str, inputs, binding) match {
+      case Some(strExpr) =>
+        val builder = ExprOuterClass.Substring.newBuilder()
+        builder.setChild(strExpr)
+        builder.setStart(1)
+        builder.setLen(lenValue.asInstanceOf[Int])
+        Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
+      case None =>
+        withInfo(expr, expr.str)
         None
     }
   }
 
   override def getSupportLevel(expr: Left): SupportLevel = {
     expr.str.dataType match {
-      case _: BinaryType | _: StringType => Compatible()
+      case _: BinaryType | _: StringType =>
+        if (!expr.len.isInstanceOf[Literal]) {
+          Unsupported(Some(literalLenReason))
+        } else {
+          Compatible()
+        }
       case _ => Unsupported(Some(s"LEFT does not support ${expr.str.dataType}"))
     }
   }
@@ -181,44 +183,46 @@ object CometLeft extends CometExpressionSerde[Left] {
 
 object CometRight extends CometExpressionSerde[Right] {
 
-  override def convert(expr: Right, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    expr.len match {
-      case Literal(lenValue, _) =>
-        val lenInt = lenValue.asInstanceOf[Int]
-        if (lenInt <= 0) {
-          // Match Spark's behavior: If(IsNull(str), NULL, "")
-          // This ensures NULL propagation: RIGHT(NULL, 0) -> NULL, RIGHT("hello", 0) -> ""
-          val isNullExpr = IsNull(expr.str)
-          val nullLiteral = Literal.create(null, StringType)
-          val emptyStringLiteral = Literal(UTF8String.EMPTY_UTF8, StringType)
-          val ifExpr = If(isNullExpr, nullLiteral, emptyStringLiteral)
+  private val literalLenReason = "The `length` argument must be a literal value"
+  private val unsupportedDataTypeReason = "Only supports `StringType` input"
 
-          // Serialize the If expression using existing infrastructure
-          exprToProtoInternal(ifExpr, inputs, binding)
-        } else {
-          exprToProtoInternal(expr.str, inputs, binding) match {
-            case Some(strExpr) =>
-              val builder = ExprOuterClass.Substring.newBuilder()
-              builder.setChild(strExpr)
-              builder.setStart(-lenInt)
-              builder.setLen(lenInt)
-              Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
-            case None =>
-              withInfo(expr, expr.str)
-              None
-          }
-        }
-      case _ =>
-        withInfo(expr, "RIGHT len must be a literal")
-        None
+  override def convert(expr: Right, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val Literal(lenValue, _) = expr.len
+    val lenInt = lenValue.asInstanceOf[Int]
+    if (lenInt <= 0) {
+      // Match Spark's behavior: If(IsNull(str), NULL, "")
+      // This ensures NULL propagation: RIGHT(NULL, 0) -> NULL, RIGHT("hello", 0) -> ""
+      val isNullExpr = IsNull(expr.str)
+      val nullLiteral = Literal.create(null, StringType)
+      val emptyStringLiteral = Literal(UTF8String.EMPTY_UTF8, StringType)
+      val ifExpr = If(isNullExpr, nullLiteral, emptyStringLiteral)
+      exprToProtoInternal(ifExpr, inputs, binding)
+    } else {
+      exprToProtoInternal(expr.str, inputs, binding) match {
+        case Some(strExpr) =>
+          val builder = ExprOuterClass.Substring.newBuilder()
+          builder.setChild(strExpr)
+          builder.setStart(-lenInt)
+          builder.setLen(lenInt)
+          Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
+        case None =>
+          withInfo(expr, expr.str)
+          None
+      }
     }
   }
 
-  override def getUnsupportedReasons(): Seq[String] = Seq("Only supports `StringType` input")
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(unsupportedDataTypeReason, literalLenReason)
 
   override def getSupportLevel(expr: Right): SupportLevel = {
     expr.str.dataType match {
-      case _: StringType => Compatible()
+      case _: StringType =>
+        if (!expr.len.isInstanceOf[Literal]) {
+          Unsupported(Some(literalLenReason))
+        } else {
+          Compatible()
+        }
       case _ => Unsupported(Some(s"RIGHT does not support ${expr.str.dataType}"))
     }
   }
@@ -309,18 +313,22 @@ object CometRLike extends CometExpressionSerde[RLike] {
   }
 }
 
+private object PadReasons {
+  val literalStrReason = "Scalar values are not supported for the `str` argument."
+  val nonLiteralPadReason = "Only scalar values are supported for the `pad` argument."
+}
+
 object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Scalar values are not supported for the `str` argument." +
-      " Only scalar values are supported for the `pad` argument.")
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
 
   override def getSupportLevel(expr: StringRPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
-      return Unsupported(Some("Scalar values are not supported for the str argument"))
+      return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {
-      return Unsupported(Some("Only scalar values are supported for the pad argument"))
+      return Unsupported(Some(PadReasons.nonLiteralPadReason))
     }
     Compatible()
   }
@@ -340,16 +348,15 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
 object CometStringLPad extends CometExpressionSerde[StringLPad] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Scalar values are not supported for the `str` argument." +
-      " Only scalar values are supported for the `pad` argument.")
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
 
   override def getSupportLevel(expr: StringLPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
-      return Unsupported(Some("Scalar values are not supported for the str argument"))
+      return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {
-      return Unsupported(Some("Only scalar values are supported for the pad argument"))
+      return Unsupported(Some(PadReasons.nonLiteralPadReason))
     }
     Compatible()
   }
@@ -367,11 +374,13 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 }
 
 object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Regexp pattern may not be compatible with Spark")
+  private val incompatReason = "Regexp pattern may not be compatible with Spark"
+  private val offsetUnsupportedReason =
+    "Only supports `regexp_replace` with an offset of 1 (no offset)"
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `regexp_replace` with an offset of 1 (no offset)")
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(offsetUnsupportedReason)
 
   override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
     if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
@@ -381,12 +390,11 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
         s"Regexp pattern ${expr.regexp} is not compatible with Spark. " +
           s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
           "to allow it anyway.")
-      return Incompatible()
+      return Incompatible(Some(incompatReason))
     }
     expr.pos match {
       case Literal(value, DataTypes.IntegerType) if value == 1 => Compatible()
-      case _ =>
-        Unsupported(Some("Comet only supports regexp_replace with an offset of 1 (no offset)."))
+      case _ => Unsupported(Some(offsetUnsupportedReason))
     }
   }
 

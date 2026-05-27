@@ -89,11 +89,11 @@ class CometStringExpressionSuite extends CometTestBase {
           } else if (isLiteralStr) {
             checkSparkAnswerAndFallbackReason(
               sql,
-              "Scalar values are not supported for the str argument")
+              "Scalar values are not supported for the `str` argument")
           } else if (!isLiteralPad) {
             checkSparkAnswerAndFallbackReason(
               sql,
-              "Only scalar values are supported for the pad argument")
+              "Only scalar values are supported for the `pad` argument")
           } else {
             checkSparkAnswerAndOperator(sql)
           }
