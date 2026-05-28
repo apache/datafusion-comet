@@ -27,7 +27,11 @@ import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarMap;
 
-/** A Comet column vector for map type. */
+/**
+ * A {@link CometDecodedVector} for Spark map columns, wrapping an Arrow {@link MapVector} whose
+ * entries are a struct of {@code (key, value)} and exposing each row as a Spark {@link
+ * ColumnarMap}.
+ */
 public class CometMapVector extends CometDecodedVector {
   final MapVector mapVector;
   final ValueVector dataVector;
@@ -37,16 +41,15 @@ public class CometMapVector extends CometDecodedVector {
   final ColumnVector keys;
   final ColumnVector values;
 
-  public CometMapVector(
-      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
-    super(vector, vector.getField(), useDecimal128);
+  public CometMapVector(ValueVector vector, DictionaryProvider dictionaryProvider) {
+    super(vector, vector.getField());
 
     this.mapVector = ((MapVector) vector);
     this.dataVector = mapVector.getDataVector();
     this.dictionaryProvider = dictionaryProvider;
 
     if (dataVector instanceof StructVector) {
-      this.dataColumnVector = new CometStructVector(dataVector, useDecimal128, dictionaryProvider);
+      this.dataColumnVector = new CometStructVector(dataVector, dictionaryProvider);
 
       if (dataColumnVector.children.size() != 2) {
         throw new RuntimeException(
@@ -77,6 +80,6 @@ public class CometMapVector extends CometDecodedVector {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
 
-    return new CometMapVector(tp.getTo(), useDecimal128, dictionaryProvider);
+    return new CometMapVector(tp.getTo(), dictionaryProvider);
   }
 }

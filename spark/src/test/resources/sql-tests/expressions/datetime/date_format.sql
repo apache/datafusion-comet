@@ -15,21 +15,27 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Pin the session timezone so the test exercises the non-UTC path regardless of the JVM
+-- default. Enable the codegen dispatcher so non-UTC and non-whitelisted formats stay inside
+-- Comet via Spark's own DateFormatClass.doGenCode instead of falling back to Spark.
+-- Config: spark.sql.session.timeZone=America/Los_Angeles
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+
 statement
 CREATE TABLE test_date_format(ts timestamp) USING parquet
 
 statement
 INSERT INTO test_date_format VALUES (timestamp('2024-06-15 10:30:45')), (timestamp('1970-01-01 00:00:00')), (NULL)
 
-query expect_fallback(Non-UTC timezone)
+query
 SELECT date_format(ts, 'yyyy-MM-dd') FROM test_date_format
 
-query expect_fallback(Non-UTC timezone)
+query
 SELECT date_format(ts, 'HH:mm:ss') FROM test_date_format
 
-query expect_fallback(Non-UTC timezone)
+query
 SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format
 
 -- literal arguments
-query expect_fallback(Non-UTC timezone)
+query
 SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')

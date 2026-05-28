@@ -65,11 +65,11 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
   }
 
   // Single-column zOrder is bit-pattern-equivalent to a natural sort (no second dimension to
-  // interleave with), so we expect the same ascending output as the sort test. The shuffle here
-  // is CometColumnarExchange rather than CometExchange because the z-value column is computed
-  // by a Spark Project (Iceberg's INTERLEAVE_BYTES / INT_ORDERED_BYTES are not recognised by
-  // Comet), so the path crosses a JVM-row boundary before the shuffle.
-  test("single-column zOrder rewrite runs scan, columnar exchange, and sort natively in Comet") {
+  // interleave with), so we expect the same ascending output as the sort test. Iceberg's
+  // `INT_ORDERED_BYTES` / `INTERLEAVE_BYTES` are `ScalaUDF`s that route through Comet's codegen
+  // dispatcher, so the project stays native and the shuffle picks `CometExchange` /
+  // `CometNativeShuffle` rather than the columnar-row roundtrip path.
+  test("single-column zOrder rewrite runs scan, native exchange, and sort natively in Comet") {
     runRewriteTest(
       RewriteCase(
         table = s"$catalog.db.zorder_test",
@@ -77,7 +77,7 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
         verifyDataAfter = assertSortedById,
         verifyPlans = { rewritePlans =>
           assertReadsAreComet(rewritePlans)
-          assertOperator(rewritePlans, "CometColumnarExchange")
+          assertOperator(rewritePlans, "CometExchange")
           assertOperator(rewritePlans, "CometSort")
         }))
   }
@@ -416,7 +416,8 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
       s"spark.sql.catalog.$catalog.warehouse" -> warehouseDir.getAbsolutePath,
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true")(body)
+      CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true")(body)
 
   /** Creates an Iceberg table with `numFiles` separate appends, each producing one data file. */
   private def createMultiFileTable(table: String, numFiles: Int): Unit = {

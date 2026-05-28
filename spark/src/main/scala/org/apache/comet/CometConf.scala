@@ -362,6 +362,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.scalaUDF.codegen.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Experimental. Whether to route Spark `ScalaUDF` expressions through Comet's " +
+        "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
+        "a per-batch kernel that reads and writes Arrow vectors directly from native " +
+        "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
+        "enclosing operator.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
       .category(CATEGORY_SHUFFLE)
@@ -687,16 +698,6 @@ object CometConf extends ShimCometConf {
         "written to the Proleptic Gregorian calendar and will not be rebased.")
       .booleanConf
       .createWithDefault(false)
-
-  val COMET_USE_DECIMAL_128: ConfigEntry[Boolean] = conf("spark.comet.use.decimal128")
-    .internal()
-    .category(CATEGORY_EXEC)
-    .doc("If true, Comet will always use 128 bits to represent a decimal value, regardless of " +
-      "its precision. If false, Comet will use 32, 64 and 128 bits respectively depending on " +
-      "the precision. N.B. this is NOT a user-facing config but should be inferred and set by " +
-      "Comet itself.")
-    .booleanConf
-    .createWithDefault(false)
 
   val COMET_USE_LAZY_MATERIALIZATION: ConfigEntry[Boolean] = conf(
     "spark.comet.use.lazyMaterialization")
