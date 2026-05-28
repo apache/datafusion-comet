@@ -27,7 +27,11 @@ import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarMap;
 
-/** A Comet column vector for map type. */
+/**
+ * A {@link CometDecodedVector} for Spark map columns, wrapping an Arrow {@link MapVector} whose
+ * entries are a struct of {@code (key, value)} and exposing each row as a Spark {@link
+ * ColumnarMap}.
+ */
 public class CometMapVector extends CometDecodedVector {
   final MapVector mapVector;
   final ValueVector dataVector;

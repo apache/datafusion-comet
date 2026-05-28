@@ -19,13 +19,20 @@
 
 package org.apache.comet.vector;
 
-import org.apache.arrow.vector.BaseVariableWidthVector;
+import org.apache.arrow.vector.NullVector;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.spark.sql.comet.util.Utils;
 import org.apache.spark.unsafe.Platform;
 
-/** A Comet vector whose elements are already decoded (i.e., materialized). */
+/**
+ * A Comet vector backed by a single Arrow {@link ValueVector} whose values are already decoded (vs.
+ * {@link CometDictionaryVector}, which keeps indices and dictionary values in separate vectors and
+ * decodes on access).
+ *
+ * <p>Caches the most recently read validity byte to amortize null checks during the common
+ * sequential row-access pattern.
+ */
 public abstract class CometDecodedVector extends CometVector {
   /**
    * The vector that stores all the values. For dictionary-backed vector, this is the vector of
@@ -33,12 +40,13 @@ public abstract class CometDecodedVector extends CometVector {
    */
   protected final ValueVector valueVector;
 
-  private boolean hasNull;
-  private int numNulls;
-  private int numValues;
+  private final boolean hasNull;
+  private final int numNulls;
+  private final int numValues;
   private int validityByteCacheIndex = -1;
   private byte validityByteCache;
-  protected boolean isUuid;
+  private final long validityBufferAddress;
+  protected final boolean isUuid;
 
   protected CometDecodedVector(ValueVector vector, Field valueField) {
     this(vector, valueField, false);
@@ -50,37 +58,17 @@ public abstract class CometDecodedVector extends CometVector {
     this.numNulls = valueVector.getNullCount();
     this.numValues = valueVector.getValueCount();
     this.hasNull = numNulls != 0;
+    // NullVector has no validity buffer (all values are logically null), so use a sentinel.
+    // Subclasses that wrap NullVector (e.g. CometPlainVector) short-circuit isNullAt before
+    // it reaches the base implementation, so the sentinel is never dereferenced.
+    this.validityBufferAddress =
+        (vector instanceof NullVector) ? -1L : valueVector.getValidityBuffer().memoryAddress();
     this.isUuid = isUuid;
   }
 
   @Override
   public ValueVector getValueVector() {
     return valueVector;
-  }
-
-  @Override
-  public void setNumNulls(int numNulls) {
-    // We don't need to update null count in 'valueVector' since 'ValueVector.getNullCount' will
-    // re-compute the null count from validity buffer.
-    this.numNulls = numNulls;
-    this.hasNull = numNulls != 0;
-    this.validityByteCacheIndex = -1;
-  }
-
-  @Override
-  public void setNumValues(int numValues) {
-    this.numValues = numValues;
-    if (valueVector instanceof BaseVariableWidthVector) {
-      BaseVariableWidthVector bv = (BaseVariableWidthVector) valueVector;
-      // In case `lastSet` is smaller than `numValues`, `setValueCount` will set all the offsets
-      // within `[lastSet + 1, numValues)` to be empty, which is incorrect in our case.
-      //
-      // For instance, this can happen if one first call `setNumValues` with input 100, and then
-      // again `setNumValues` with 200. The first call will set `lastSet` to 99, while the second
-      // call will set all strings between indices `[100, 200)` to be empty.
-      bv.setLastSet(numValues);
-    }
-    valueVector.setValueCount(numValues);
   }
 
   public int numValues() {
@@ -103,7 +91,6 @@ public abstract class CometDecodedVector extends CometVector {
 
     int byteIndex = rowId >> 3;
     if (byteIndex != validityByteCacheIndex) {
-      long validityBufferAddress = valueVector.getValidityBuffer().memoryAddress();
       validityByteCache = Platform.getByte(null, validityBufferAddress + byteIndex);
       validityByteCacheIndex = byteIndex;
     }

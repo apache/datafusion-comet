@@ -66,6 +66,26 @@ trait CometS3TestBase extends CometTestBase {
     conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
   }
 
+  protected def icebergAvailable: Boolean = {
+    try {
+      Class.forName("org.apache.iceberg.catalog.Catalog")
+      true
+    } catch {
+      case _: ClassNotFoundException => false
+    }
+  }
+
+  /**
+   * Apply the S3 properties Comet's native Iceberg reader requires on the given catalog.
+   * iceberg-rust / opendal disables region auto-detection when a custom credential loader is
+   * wired in, so the region/endpoint/path-style triple has to be set explicitly.
+   */
+  protected def applyS3CatalogProps(conf: SparkConf, catalogName: String): Unit = {
+    conf.set(s"spark.sql.catalog.$catalogName.s3.endpoint", minioContainer.getS3URL)
+    conf.set(s"spark.sql.catalog.$catalogName.s3.region", "us-east-1")
+    conf.set(s"spark.sql.catalog.$catalogName.s3.path-style-access", "true")
+  }
+
   protected def createBucketIfNotExists(bucketName: String): Unit = {
     val credentials = AwsBasicCredentials.create(userName, password)
     val s3Client = S3Client
