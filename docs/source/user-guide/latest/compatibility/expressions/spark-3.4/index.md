@@ -17,23 +17,24 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Expression Compatibility
+# Expression Compatibility (Spark 3.4)
 
-Comet supports multiple Apache Spark versions, and the set of accelerated expressions and
-their compatibility notes can differ between them. Pick the page that matches the Spark
-version you are running:
+Compatibility notes for Comet running on Apache Spark 3.4. Expressions that are not 100%
+Spark-compatible fall back to Spark by default and can be enabled by setting
+`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark
+expression class name. See the [Comet Supported Expressions Guide](../../../expressions.md)
+for more information on this configuration setting.
 
 ```{toctree}
-:maxdepth: 2
+:maxdepth: 1
 
-Spark 3.4 <spark-3.4/index>
-Spark 3.5 <spark-3.5/index>
-Spark 4.0 <spark-4.0/index>
-Spark 4.1 <spark-4.1/index>
+aggregate
+array
+datetime
+map
+math
+misc
+string
+struct
+cast
 ```
-
-Expressions that are not 100% Spark-compatible fall back to Spark by default and can be
-enabled by setting `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where
-`EXPRNAME` is the Spark expression class name. See the
-[Comet Supported Expressions Guide](../../expressions.md) for more information on this
-configuration setting.

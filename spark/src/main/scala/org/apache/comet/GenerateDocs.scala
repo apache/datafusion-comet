@@ -45,12 +45,13 @@ object GenerateDocs {
   private type CategoryNotes = Seq[(String, Seq[String], Seq[String], Seq[String])]
 
   /**
-   * Mapping from expression category to the compatibility guide page where that category's
+   * Mapping from expression category to the compatibility guide filename where that category's
    * auto-generated notes should be written, along with a function that produces the notes for
-   * that category from the serde maps in `QueryPlanSerde`.
+   * that category from the serde maps in `QueryPlanSerde`. Filenames are resolved relative to the
+   * per-Spark-version compatibility/expressions directory.
    */
   private def categoryPages: Map[String, (String, () => CategoryNotes)] = Map(
-    "array" -> ("compatibility/expressions/array.md",
+    "array" -> ("array.md",
     () =>
       QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
         (
@@ -59,7 +60,7 @@ object GenerateDocs {
           serde.getIncompatibleReasons(),
           serde.getUnsupportedReasons())
       }),
-    "datetime" -> ("compatibility/expressions/datetime.md",
+    "datetime" -> ("datetime.md",
     () =>
       QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
         (
@@ -68,7 +69,7 @@ object GenerateDocs {
           serde.getIncompatibleReasons(),
           serde.getUnsupportedReasons())
       }),
-    "math" -> ("compatibility/expressions/math.md",
+    "math" -> ("math.md",
     () =>
       QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
         (
@@ -77,7 +78,7 @@ object GenerateDocs {
           serde.getIncompatibleReasons(),
           serde.getUnsupportedReasons())
       }),
-    "struct" -> ("compatibility/expressions/struct.md",
+    "struct" -> ("struct.md",
     () =>
       QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
         (
@@ -86,7 +87,7 @@ object GenerateDocs {
           serde.getIncompatibleReasons(),
           serde.getUnsupportedReasons())
       }),
-    "aggregate" -> ("compatibility/expressions/aggregate.md",
+    "aggregate" -> ("aggregate.md",
     () =>
       QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
         (
@@ -95,7 +96,7 @@ object GenerateDocs {
           serde.getIncompatibleReasons(),
           serde.getUnsupportedReasons())
       }),
-    "string" -> ("compatibility/expressions/string.md",
+    "string" -> ("string.md",
     () =>
       QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
         (
@@ -104,7 +105,7 @@ object GenerateDocs {
           serde.getIncompatibleReasons(),
           serde.getUnsupportedReasons())
       }),
-    "map" -> ("compatibility/expressions/map.md",
+    "map" -> ("map.md",
     () =>
       QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
         (
@@ -113,7 +114,7 @@ object GenerateDocs {
           serde.getIncompatibleReasons(),
           serde.getUnsupportedReasons())
       }),
-    "misc" -> ("compatibility/expressions/misc.md",
+    "misc" -> ("misc.md",
     () =>
       QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
         (
@@ -123,12 +124,24 @@ object GenerateDocs {
           serde.getUnsupportedReasons())
       }))
 
+  /**
+   * Args:
+   *   - args(0): user guide root directory (e.g. `docs/source/user-guide/latest/`).
+   *   - args(1) (optional): per-Spark-version subdirectory for compatibility pages (e.g.
+   *     `spark-3.4`). When omitted, compat pages are written to `compatibility/expressions/`
+   *     directly, preserving the legacy flat layout used by released-version doc trees.
+   */
   def main(args: Array[String]): Unit = {
     val userGuideLocation = args(0)
+    val compatPagesDir = if (args.length > 1) {
+      s"$userGuideLocation/compatibility/expressions/${args(1)}"
+    } else {
+      s"$userGuideLocation/compatibility/expressions"
+    }
     generateConfigReference(s"$userGuideLocation/configs.md")
-    generateCompatibilityGuide(s"$userGuideLocation/compatibility/expressions/cast.md")
-    for ((category, (page, notesFn)) <- categoryPages) {
-      generateExpressionCompatNotes(s"$userGuideLocation/$page", category, notesFn())
+    generateCompatibilityGuide(s"$compatPagesDir/cast.md")
+    for ((category, (filename, notesFn)) <- categoryPages) {
+      generateExpressionCompatNotes(s"$compatPagesDir/$filename", category, notesFn())
     }
   }
 
