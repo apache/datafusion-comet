@@ -253,6 +253,7 @@ jobs:
               org.apache.comet.CometCodegenHOFSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.CometCodegenFuzzSuite
+              org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
 
       fail-fast: false
