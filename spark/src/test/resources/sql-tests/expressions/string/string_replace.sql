@@ -24,7 +24,8 @@ INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', '
 query
 SELECT replace(s, search, replace) FROM test_str_replace
 
-query ignore(https://github.com/apache/datafusion-comet/issues/3344)
+-- Comet returns 'xhxexlxlxox' where Spark returns 'hello' (short-circuits on empty search).
+query expect_fallback(Empty `search`)
 SELECT replace('hello', '', 'x')
 
 -- column + literal + literal

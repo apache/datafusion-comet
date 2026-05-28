@@ -525,17 +525,17 @@
 - [x] ascii
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringType -> IntegerType`; `nullSafeEval` returns `codePointAt(0)` of the first char, or `0` for the empty string. Wired via `CometScalarFunction("ascii")` and resolved to DataFusion `ascii` (`chars().next() as i32`); first-code-point semantics match for ASCII, BMP, and supplementary code points.
-  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; behaviour unchanged for `UTF8_BINARY`. Comet does not propagate collation, so non-default collations may diverge silently.
+  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; behaviour unchanged for `UTF8_BINARY`. Comet does not propagate collation, so non-default collations may diverge silently (https://github.com/apache/datafusion-comet/issues/4496).
 - [ ] base64
 - [x] bit_length
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numBytes * 8` for strings and `.length * 8` for binary.
-  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; semantics unchanged.
+  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
   - Known limitation: wired as a raw `CometScalarFunction("bit_length")` with no `BinaryType` guard. DataFusion's `BitLengthFunc` signature only accepts string types, so `bit_length(<binary>)` execute-fails on the native side instead of falling back cleanly (https://github.com/apache/datafusion-comet/issues/4464).
 - [x] btrim
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTrimBoth` is `RuntimeReplaceable` and rewritten to `StringTrim(srcStr, trimStr)` before serde runs, so the explicit `CometScalarFunction("btrim")` mapping is unreachable.
-  - Spark 4.0.1 (audited 2026-05-27): `StringTrim` (the rewrite target) routes through `CollationSupport.StringTrim.exec` and uses `StringTypeNonCSAICollation(supportsTrimCollation = true)`; semantics unchanged for `UTF8_BINARY`. Non-default collations may diverge in Comet.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTrimBoth` is `RuntimeReplaceable` and rewritten to `StringTrim(srcStr, trimStr)` before serde runs. Support is provided by the `trim` entry; no dedicated serde registration.
+  - Spark 4.0.1 (audited 2026-05-27): `StringTrim` (the rewrite target) routes through `CollationSupport.StringTrim.exec` and uses `StringTypeNonCSAICollation(supportsTrimCollation = true)`; semantics unchanged for `UTF8_BINARY`. Non-default collations may diverge in Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] char
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `Chr(LongType) -> StringType`; `lon < 0` returns `""`, else `((lon & 0xFF) as char).toString` (so `chr(256)` and `chr(0)` both return `\u0000`).
@@ -557,11 +557,11 @@
 - [x] concat_ws
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `Seq[Expression] -> StringType`; NULL separator yields NULL, NULL element values are skipped, children can be `StringType` or `ArrayType(StringType)`. Comet serde rewrites a NULL-literal separator to a NULL of the result type and bails out on all-foldable inputs so Spark's `ConstantFolding` handles them; otherwise delegates to DataFusion `concat_ws`.
-  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation` / `AbstractArrayType`; `dataType` becomes `children.head.dataType` (collation-derived). Semantics unchanged for `UTF8_BINARY`.
+  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation` / `AbstractArrayType`; `dataType` becomes `children.head.dataType` (collation-derived). Semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] contains
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `UTF8String.contains` on `StringType`; the parser routes `(BinaryType, BinaryType)` to `BinaryPredicate`, so Comet only ever sees the String form.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Contains.exec(..., collationId)`; behaviour identical for `UTF8_BINARY`. Non-default collations not honoured by Comet.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Contains.exec(..., collationId)`; behaviour identical for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] decode
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringDecode(bin, charset)` evaluated directly; invalid sequences silently substitute replacement characters via `new String(bytes, charset)`.
@@ -572,18 +572,18 @@
 - [x] endswith
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `UTF8String.endsWith` on `StringType`; binary form routed to `BinaryPredicate` before Comet.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.EndsWith.exec`; semantics unchanged for `UTF8_BINARY`.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.EndsWith.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [ ] find_in_set
 - [ ] format_number
 - [ ] format_string
 - [x] initcap
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `string.toLowerCase.toTitleCase` on `UTF8String`; word boundary is Java `Character.isWhitespace`. Comet routes to DataFusion `initcap`, which splits on `!is_alphanumeric()` (hyphens, apostrophes, and punctuation all split words), so Comet is unconditionally `Incompatible` (https://github.com/apache/datafusion-comet/issues/1052).
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.InitCap.exec` (collation- and ICU-aware) and propagates `child.dataType`. Comet ignores collation; 3.x divergences persist plus collation/ICU mismatches.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.InitCap.exec` (collation- and ICU-aware) and propagates `child.dataType`. Comet ignores collation; 3.x divergences persist plus collation/ICU mismatches (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] instr
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringInstr(str, substr) -> IntegerType`; returns `string.indexOf(sub, 0) + 1` (1-based, 0 when not found, 1 on empty substring). Resolves to DataFusion `strpos` (alias `instr`) with matching semantics.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringInstr.exec`; semantics unchanged for `UTF8_BINARY`.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringInstr.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [ ] is_valid_utf8
 - [x] lcase
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
@@ -591,40 +591,38 @@
   - Spark 4.0.1 (audited 2026-05-27): unchanged alias of `Lower`.
 - [x] left
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = Substring(str, Literal(1), len)`; accepts `StringType` or `BinaryType` plus `IntegerType`. Comet serde rewrites to a `Substring` proto with `start=1, len=lenValue`, requires `len` to be a `Literal`, and falls back otherwise.
-  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; behaviour unchanged for `UTF8_BINARY`.
-  - Known limitation: the literal-only `len` restriction is enforced inside `convert` via `withInfo` rather than declared in `getSupportLevel`, so EXPLAIN surfaces it only at conversion time.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = Substring(str, Literal(1), len)`; accepts `StringType` or `BinaryType` plus `IntegerType`. Comet serde rewrites to a `Substring` proto with `start=1, len=lenValue`. `getSupportLevel` declares `Unsupported` for non-literal `len` so the dispatcher falls back uniformly.
+  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; behaviour unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] len
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): registry alias of `Length`. Same support as `length`.
   - Spark 4.0.1 (audited 2026-05-27): unchanged alias of `Length`.
 - [x] length
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numChars` for strings and `.length` for binary.
-  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; semantics unchanged.
-  - Known limitation: `BinaryType` input falls back to Spark via `Unsupported` (DataFusion's `character_length` accepts string types only). Non-default collations not branched.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numChars` for strings and `.length` for binary. `BinaryType` input falls back via `Unsupported` (DataFusion's `character_length` accepts string types only).
+  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; semantics unchanged. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [ ] levenshtein
 - [ ] locate
 - [x] lower
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toLowerCase` on `UTF8String`. Comet routes to DataFusion `lower` (Rust Unicode default case mapping, no locale awareness) and is gated off by default via `spark.comet.caseConversion.enabled=false`. The gating lives in `convert(...)` rather than `getSupportLevel`, which bypasses the standard `allowIncompatible` machinery (https://github.com/apache/datafusion-comet/issues/4467).
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Lower.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`; `inputTypes` widened to `StringTypeWithCollation`. Comet ignores collation and ICU mode, so non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even when the case-conversion conf is enabled (https://github.com/apache/datafusion-comet/issues/2190).
+  - Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toLowerCase` on `UTF8String`. Comet routes to DataFusion `lower` (Rust Unicode default case mapping, no locale awareness) and is unconditionally `Incompatible`; users opt in via the standard `spark.comet.expression.Lower.allowIncompatible=true`.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Lower.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`; `inputTypes` widened to `StringTypeWithCollation`. Comet ignores collation and ICU mode, so non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even after opting in (https://github.com/apache/datafusion-comet/issues/2190).
 - [x] lpad
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringLPad(str, len, pad) -> StringType`; `len <= 0` returns the empty string, empty `pad` returns `str` unchanged, NULL inputs propagate. Comet serde requires `str` to be a column and `pad` to be a literal; otherwise falls back.
-  - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `override def nullIntolerant: Boolean = true`; `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`. Semantics unchanged for `UTF8_BINARY`.
-  - Known limitation: `lpad(<binary>, ...)` is rewritten by Spark to `BinaryPad / StaticInvoke(ByteArray.lpad)` before serde runs and always falls back to Spark. Non-default collations on Spark 4.0 are not branched in Comet.
+  - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `override def nullIntolerant: Boolean = true`; `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`. Semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
+  - Known limitation: `lpad(<binary>, ...)` is rewritten by Spark to `BinaryPad / StaticInvoke(ByteArray.lpad)` before serde runs and always falls back to Spark.
 - [x] ltrim
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTrimLeft` extends `String2TrimExpression`; no-arg form strips ASCII space `0x20` only. The two-arg parser form `ltrim(trimStr, srcStr)` is swapped to `(srcStr, Option(trimStr))` by Spark's secondary constructor, so children match DataFusion `ltrim(str, chars)`.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTrimLeft.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured in Comet.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTrimLeft.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [ ] luhn_check
 - [ ] make_valid_utf8
 - [ ] mask
 - [x] octet_length
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numBytes` for strings and `.length` for binary.
-  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation`; semantics unchanged.
+  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
   - Known limitation: wired as a raw `CometScalarFunction("octet_length")` with no `BinaryType` guard. DataFusion's `OctetLengthFunc` signature only accepts string types, so `octet_length(<binary>)` execute-fails on the native side instead of falling back cleanly (https://github.com/apache/datafusion-comet/issues/4464).
 - [ ] overlay
 - [ ] position
@@ -642,28 +640,25 @@
 - [ ] regexp_substr
 - [x] repeat
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. `StringRepeat(str, times)` with `nullSafeEval(s, n) = s.repeat(n)`; `UTF8String.repeat` returns the empty string for `n <= 0`. Comet casts `times` to `LongType` and delegates to DataFusion `repeat`.
-  - Spark 4.0.1 (audited 2026-05-27): adds `nullIntolerant: Boolean` field; `dataType` becomes `str.dataType` (collation-tracking). Semantics unchanged for `UTF8_BINARY`.
-  - Known divergence: DataFusion `repeat` throws on negative counts instead of returning the empty string Spark produces. Currently surfaced via `getCompatibleNotes` only (https://github.com/apache/datafusion-comet/issues/4462).
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `StringRepeat(str, times)` with `nullSafeEval(s, n) = s.repeat(n)`; `UTF8String.repeat` returns the empty string for `n <= 0`. Comet casts `times` to `LongType` and delegates to DataFusion `repeat`, which mirrors Spark for negative counts.
+  - Spark 4.0.1 (audited 2026-05-27): adds `nullIntolerant: Boolean` field; `dataType` becomes `str.dataType` (collation-tracking). Semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] replace
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. `StringReplace(src, search, replace)`; when `search` is empty, Spark returns `src` unchanged (short-circuit on `search.numBytes == 0`).
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringReplace.exec`; semantics unchanged for `UTF8_BINARY`.
-  - Known divergence: DataFusion `replace` inserts `to` between every character (and at both ends) when `search` is empty (https://github.com/apache/datafusion-comet/issues/3344). Currently the support level is `Compatible`.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `StringReplace(src, search, replace)`; when `search` is empty, Spark returns `src` unchanged (short-circuit on `search.numBytes == 0`). DataFusion `replace` instead inserts `replace` between every character, so `CometStringReplace.getSupportLevel` marks `Incompatible(Some(reason))` when `search` is a literal empty string and falls back to Spark by default (https://github.com/apache/datafusion-comet/issues/4497).
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringReplace.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] right
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = If(IsNull(str), null, If(len <= 0, "", Substring(str, -len, len)))`; accepts `StringType` plus `IntegerType`. Comet serde rewrites positive `len` to a `Substring` proto with `start=-len, len=len`; for `len <= 0` it builds an `If(IsNull(str), null, "")` proto chain to preserve NULL propagation.
-  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with collation; uses `UnaryMinus(len, failOnError = false)` to avoid integer-overflow exceptions on `len = Int.MinValue`. Semantics unchanged for `UTF8_BINARY`.
-  - Known limitation: the literal-only `len` restriction is enforced inside `convert` via `withInfo` rather than declared in `getSupportLevel`.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = If(IsNull(str), null, If(len <= 0, "", Substring(str, -len, len)))`; accepts `StringType` plus `IntegerType`. Comet serde rewrites positive `len` to a `Substring` proto with `start=-len, len=len`; for `len <= 0` it builds an `If(IsNull(str), null, "")` proto chain to preserve NULL propagation. `getSupportLevel` declares `Unsupported` for non-literal `len` so the dispatcher falls back uniformly.
+  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with collation; uses `UnaryMinus(len, failOnError = false)` to avoid integer-overflow exceptions on `len = Int.MinValue`. Semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] rpad
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringRPad(str, len, pad) -> StringType`; same edge-case behaviour as `lpad` (negative len, empty pad, NULL propagation). Comet serde requires column `str` and literal `pad`.
-  - Spark 4.0.1 (audited 2026-05-27): same evolution as `lpad`; default-pad literal type tightened; semantics unchanged for `UTF8_BINARY`.
-  - Known limitation: same `BinaryPad / StaticInvoke` rewrite as `lpad` causes `rpad(<binary>, ...)` to fall back. Non-default collations on Spark 4.0 are not branched.
+  - Spark 4.0.1 (audited 2026-05-27): same evolution as `lpad`; default-pad literal type tightened; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
+  - Known limitation: same `BinaryPad / StaticInvoke` rewrite as `lpad` causes `rpad(<binary>, ...)` to fall back.
 - [x] rtrim
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTrimRight` extends `String2TrimExpression`; semantically symmetric to `ltrim`.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTrimRight.exec`; semantics unchanged for `UTF8_BINARY`.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTrimRight.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [ ] sentences
 - [ ] soundex
 - [x] space
@@ -673,25 +668,24 @@
 - [x] split
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringSplit(str, regex, limit)`; `limit > 0` permits at most `limit-1` splits, `limit <= 0` is unlimited. Comet registers `split` as a custom UDF (`native/spark-expr/src/string_funcs/split.rs`) using the Rust `regex` crate, and is unconditionally `Incompatible` due to regex-engine differences.
-  - Spark 4.0.1 (audited 2026-05-27): wraps the regex via `CollationSupport.collationAwareRegex` and changes `dataType` to `ArrayType(str.dataType, ...)`. Comet does not honour collation flags.
+  - Spark 4.0.1 (audited 2026-05-27): wraps the regex via `CollationSupport.collationAwareRegex` and changes `dataType` to `ArrayType(str.dataType, ...)`. Comet does not honour collation flags (https://github.com/apache/datafusion-comet/issues/4496).
 - [ ] split_part
 - [x] startswith
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `UTF8String.startsWith` on `StringType`; binary form routed to `BinaryPredicate`.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StartsWith.exec`; semantics unchanged for `UTF8_BINARY`.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StartsWith.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] substr
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): registry alias of `Substring`. Same support as `substring`.
   - Spark 4.0.1 (audited 2026-05-27): unchanged alias of `Substring`.
 - [x] substring
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. `TernaryExpression`; two-arg form defaults `len = Integer.MAX_VALUE`; supports `StringType` and `BinaryType`. Comet serializes to a dedicated `Substring` proto and requires both `pos` and `len` to be `Literal`.
-  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; semantics unchanged for `UTF8_BINARY`. Native `SubstringExpr` implements Spark's negative-start clamping and is exercised against ASCII, multibyte UTF-8, emoji, decomposed and Telugu inputs.
-  - Known limitation: the literal-only `pos`/`len` restriction is enforced inside `convert` rather than `getSupportLevel`.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `TernaryExpression`; two-arg form defaults `len = Integer.MAX_VALUE`; supports `StringType` and `BinaryType`. Comet serializes to a dedicated `Substring` proto. `getSupportLevel` declares `Unsupported` when either `pos` or `len` is not a `Literal` so the dispatcher falls back uniformly.
+  - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; semantics unchanged for `UTF8_BINARY`. Native `SubstringExpr` implements Spark's negative-start clamping and is exercised against ASCII, multibyte UTF-8, emoji, decomposed and Telugu inputs. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [x] substring_index
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `TernaryExpression(StringType, StringType, IntegerType) -> StringType`. Comet casts `count` to `LongType` and delegates to DataFusion's `substr_index` UDF (alias `substring_index`).
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.SubstringIndex.exec` and propagates `strExpr.dataType`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.SubstringIndex.exec` and propagates `strExpr.dataType`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [ ] to_binary
 - [ ] to_char
 - [ ] to_number
@@ -699,12 +693,12 @@
 - [x] translate
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTranslate(src, from, to)`; `UTF8String.translate(dict)` is code-point based, and any character mapped explicitly to U+0000 in `to` is also deleted.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTranslate.exec`; semantics unchanged for `UTF8_BINARY`.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTranslate.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
   - Known divergence: DataFusion's `translate` is grapheme-based (Spark uses code points), and does not delete characters mapped to U+0000 in `to`. Currently the support level is `Compatible` (https://github.com/apache/datafusion-comet/issues/4463).
 - [x] trim
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTrim` no-arg form strips ASCII space `0x20` only (matches DataFusion `btrim`'s default); two-arg form's children are `(srcStr, trimStr)` after Spark's secondary-constructor swap.
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTrim.exec` and uses `StringTypeNonCSAICollation`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured in Comet.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTrim.exec` and uses `StringTypeNonCSAICollation`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 - [ ] try_to_binary
 - [ ] try_to_number
 - [ ] try_validate_utf8
@@ -715,8 +709,8 @@
 - [ ] unbase64
 - [x] upper
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-  - Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toUpperCase` on `UTF8String`. Comet routes to DataFusion `upper` (Rust Unicode default case mapping, no locale awareness) and is gated off by default via `spark.comet.caseConversion.enabled=false`. The gating lives in `convert(...)` rather than `getSupportLevel`, which bypasses the standard `allowIncompatible` machinery (https://github.com/apache/datafusion-comet/issues/4467).
-  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Upper.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`. Comet does not propagate collation or ICU mode; non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even when the case-conversion conf is enabled (https://github.com/apache/datafusion-comet/issues/2190).
+  - Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toUpperCase` on `UTF8String`. Comet routes to DataFusion `upper` (Rust Unicode default case mapping, no locale awareness) and is unconditionally `Incompatible`; users opt in via the standard `spark.comet.expression.Upper.allowIncompatible=true`.
+  - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Upper.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`. Comet does not propagate collation or ICU mode; non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even after opting in (https://github.com/apache/datafusion-comet/issues/2190).
 - [ ] validate_utf8
 
 ### struct_funcs

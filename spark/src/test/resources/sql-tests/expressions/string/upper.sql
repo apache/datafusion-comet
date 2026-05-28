@@ -21,9 +21,9 @@ CREATE TABLE test_upper(s string) USING parquet
 statement
 INSERT INTO test_upper VALUES ('hello'), ('HELLO'), ('Hello World'), (''), (NULL), ('123abc')
 
-query expect_fallback(case conversion)
+query expect_fallback(locale and character set)
 SELECT upper(s) FROM test_upper
 
 -- literal arguments
-query expect_fallback(case conversion)
+query expect_fallback(locale and character set)
 SELECT upper('hello'), upper(''), upper(NULL)

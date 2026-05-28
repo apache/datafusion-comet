@@ -21,9 +21,9 @@ CREATE TABLE test_lower(s string) USING parquet
 statement
 INSERT INTO test_lower VALUES ('HELLO'), ('hello'), ('Hello World'), (''), (NULL), ('123ABC')
 
-query expect_fallback(case conversion)
+query expect_fallback(locale and character set)
 SELECT lower(s) FROM test_lower
 
 -- literal arguments
-query expect_fallback(case conversion)
+query expect_fallback(locale and character set)
 SELECT lower('HELLO'), lower(''), lower(NULL)

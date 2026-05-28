@@ -745,14 +745,6 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan,OneRowRelation"))
 
-  val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.caseConversion.enabled")
-      .category(CATEGORY_EXEC)
-      .doc("Java uses locale-specific rules when converting strings to upper or lower case and " +
-        "Rust does not, so we disable upper and lower by default.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK: ConfigEntry[Boolean] =
     conf("spark.comet.scan.unsignedSmallIntSafetyCheck")
       .category(CATEGORY_SCAN)

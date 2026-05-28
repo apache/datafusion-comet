@@ -261,7 +261,9 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("Upper and Lower") {
-    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("Upper") -> "true",
+      CometConf.getExprAllowIncompatConfigKey("Lower") -> "true") {
       val table = "names"
       withTable(table) {
         sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -339,7 +341,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("trim") {
-    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("Upper") -> "true") {
       val table = "test"
       withTable(table) {
         sql(s"create table $table(col varchar(20)) using parquet")

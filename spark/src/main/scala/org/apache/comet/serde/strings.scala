@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -32,10 +32,6 @@ import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
-
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "A negative argument for the number of times to repeat throws an exception" +
-      " instead of returning an empty string as Spark does")
 
   override def convert(
       expr: StringRepeat,
@@ -54,21 +50,13 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 class CometCaseConversionBase[T <: Expression](function: String)
     extends CometScalarFunction[T](function) {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Results can vary depending on locale and character set." +
-      s" Requires `${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true` to enable.")
+  private val incompatReason =
+    "Results can vary depending on locale and character set " +
+      "(https://github.com/apache/datafusion-comet/issues/2190)."
 
-  override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (!CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
-      withInfo(
-        expr,
-        "Comet is not compatible with Spark for case conversion in " +
-          s"locale-specific cases. Set ${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true " +
-          "to enable it anyway.")
-      return None
-    }
-    super.convert(expr, inputs, binding)
-  }
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: T): SupportLevel = Incompatible(Some(incompatReason))
 }
 
 object CometUpper extends CometCaseConversionBase[Upper]("upper")
@@ -225,6 +213,21 @@ object CometRight extends CometExpressionSerde[Right] {
         }
       case _ => Unsupported(Some(s"RIGHT does not support ${expr.str.dataType}"))
     }
+  }
+}
+
+object CometStringReplace extends CometScalarFunction[StringReplace]("replace") {
+
+  private val emptySearchReason =
+    "Empty `search` string produces different output: Spark returns `str` unchanged, " +
+      "DataFusion inserts `replace` between every character " +
+      "(https://github.com/apache/datafusion-comet/issues/4497)."
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(emptySearchReason)
+
+  override def getSupportLevel(expr: StringReplace): SupportLevel = expr.searchExpr match {
+    case Literal(s: UTF8String, _) if s.numBytes == 0 => Incompatible(Some(emptySearchReason))
+    case _ => Compatible()
   }
 }
 
