@@ -543,8 +543,8 @@ IEEE total ordering for floating-point, which differs from Spark’s <code class
 <h2>MapFromEntries<a class="headerlink" href="#mapfromentries" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">MapFromEntries</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromEntries.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
-<li><p>Using BinaryType as Map keys is not allowed in map_from_entries</p></li>
-<li><p>Using BinaryType as Map values is not allowed in map_from_entries</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> is not supported as a map key in <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> is not supported as a map value in <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
 </section>

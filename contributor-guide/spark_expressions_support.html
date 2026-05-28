@@ -1189,16 +1189,73 @@ per-function details are documented in the
 <section id="map-funcs">
 <h3>map_funcs<a class="headerlink" href="#map-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> element_at</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> element_at</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ElementAt(left,</span> <span class="pre">right,</span> <span class="pre">defaultValueOutOfBound,</span> <span class="pre">failOnError)</span> <span class="pre">extends</span> <span class="pre">GetMapValueUtil</span></code>; the parser routes <code class="docutils literal notranslate"><span class="pre">element_at(&lt;array&gt;,</span> <span class="pre">...)</span></code> to one overload and <code class="docutils literal notranslate"><span class="pre">element_at(&lt;map&gt;,</span> <span class="pre">...)</span></code> to another. Comet <code class="docutils literal notranslate"><span class="pre">CometElementAt</span></code> only supports <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> input; <code class="docutils literal notranslate"><span class="pre">MapType</span></code> input falls back.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): adds <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> field; semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> map</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> map_concat</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_contains_key</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_entries</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_from_arrays</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_from_entries</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_keys</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_values</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> str_to_map</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_contains_key</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">MapContainsKey(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">RuntimeReplaceable</span> <span class="pre">with</span> <span class="pre">InheritAnalysisRules</span></code>; the analyzer rewrites to <code class="docutils literal notranslate"><span class="pre">ArrayContains(MapKeys(left),</span> <span class="pre">right)</span></code>. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometMapContainsKey</span></code> which emits the equivalent <code class="docutils literal notranslate"><span class="pre">array_has(map_keys(map),</span> <span class="pre">key)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged; minor trait refactors.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_entries</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">MapEntries(child)</span></code> returns an array of structs <code class="docutils literal notranslate"><span class="pre">&lt;key,</span> <span class="pre">value&gt;</span></code>. Wired to native <code class="docutils literal notranslate"><span class="pre">map_entries</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_from_arrays</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">MapFromArrays(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">BinaryExpression</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span></code>; Spark uses <code class="docutils literal notranslate"><span class="pre">ArrayBasedMapBuilder</span></code> to detect duplicate keys (subject to <code class="docutils literal notranslate"><span class="pre">spark.sql.mapKeyDedupPolicy</span></code>) and rejects null keys with <code class="docutils literal notranslate"><span class="pre">RuntimeException(&quot;Cannot</span> <span class="pre">use</span> <span class="pre">null</span> <span class="pre">as</span> <span class="pre">map</span> <span class="pre">key&quot;)</span></code>. Comet <code class="docutils literal notranslate"><span class="pre">CometMapFromArrays</span></code> wraps the inputs in <code class="docutils literal notranslate"><span class="pre">CaseWhen(IsNotNull(left)</span> <span class="pre">AND</span> <span class="pre">IsNotNull(right),</span> <span class="pre">map(left,</span> <span class="pre">right),</span> <span class="pre">null)</span></code> so NULL-array inputs return NULL rather than triggering the previously reported native crash (#3327).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged; <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> trait replaced by <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_from_entries</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">MapFromEntries(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span></code>; expects an array of structs and produces a map. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;map_from_entries&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged; trait refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known limitation: input arrays where the struct’s key or value type contains <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> are marked <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> and fall back unless <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromEntries.allowIncompatible=true</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_keys</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">MapKeys(child)</span></code> returns the map’s keys as an array. Wired to native <code class="docutils literal notranslate"><span class="pre">map_keys</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> map_values</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">MapValues(child)</span></code> returns the map’s values as an array. Wired to native <code class="docutils literal notranslate"><span class="pre">map_values</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> str_to_map</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">StringToMap(text,</span> <span class="pre">pairDelim,</span> <span class="pre">keyValueDelim)</span> <span class="pre">extends</span> <span class="pre">TernaryExpression</span></code>; splits <code class="docutils literal notranslate"><span class="pre">text</span></code> on <code class="docutils literal notranslate"><span class="pre">pairDelim</span></code>, then each pair on <code class="docutils literal notranslate"><span class="pre">keyValueDelim</span></code> (default <code class="docutils literal notranslate"><span class="pre">&quot;,&quot;</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;:&quot;</span></code>). Uses <code class="docutils literal notranslate"><span class="pre">ArrayBasedMapBuilder</span></code> for duplicate-key handling. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;str_to_map&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">StringTypeNonCSAICollation</span></code>; uses <code class="docutils literal notranslate"><span class="pre">CollationAwareUTF8String.splitSQL</span></code> with a <code class="docutils literal notranslate"><span class="pre">collationId</span></code>. Runtime unchanged for <code class="docutils literal notranslate"><span class="pre">UTF8_BINARY</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): adds the <code class="docutils literal notranslate"><span class="pre">legacySplitTruncate</span></code> flag (driven by <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.truncateForEmptyRegexSplit</span></code>) to both <code class="docutils literal notranslate"><span class="pre">splitSQL</span></code> calls (https://github.com/apache/datafusion-comet/issues/4477). The Comet native impl does not honour this flag; behaviour matches the non-legacy default.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_element_at</p></li>
 </ul>
 </section>
