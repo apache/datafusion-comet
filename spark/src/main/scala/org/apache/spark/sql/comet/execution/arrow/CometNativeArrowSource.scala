@@ -19,10 +19,14 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.arrow.c.{ArrowArrayStream, Data}
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
+import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.spark.TaskContext
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.SparkPlan
@@ -30,7 +34,7 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.vector.NativeUtil
+import org.apache.comet.vector.{CometDictionaryVector, CometVector, NativeUtil}
 
 /**
  * Marker for Comet operators that can produce Arrow data destined for a Comet native executor
@@ -40,7 +44,7 @@ trait CometNativeArrowSource extends SparkPlan {
   def doExecuteAsArrowStream(): RDD[ArrowArrayStream]
 }
 
-object CometArrowStream {
+object CometArrowStream extends Logging {
 
   /**
    * Native side asserts `Timestamp(Microsecond, Some("UTC"))` regardless of session timezone;
@@ -61,8 +65,9 @@ object CometArrowStream {
     // Arrow `Schema` is not Serializable; only Spark's `StructType` is. Build the Arrow schema
     // inside the per-task body so the closure cleaner doesn't try to ship a Schema across.
     rdd.mapPartitionsInternal { batchIter =>
-      val arrowSchema = Utils.toArrowSchema(sparkSchema, timeZoneId)
-      stream(name, allocator => new ColumnarBatchArrowReader(allocator, arrowSchema, batchIter))
+      val expected = Utils.toArrowSchema(sparkSchema, timeZoneId)
+      val (arrowSchema, iter) = reconcileStreamSchema(name, expected, batchIter)
+      stream(name, allocator => new ColumnarBatchArrowReader(allocator, arrowSchema, iter))
     }
   }
 
@@ -76,8 +81,69 @@ object CometArrowStream {
       sparkSchema: StructType,
       timeZoneId: String,
       name: String): ArrowArrayStream = {
-    val arrowSchema = Utils.toArrowSchema(sparkSchema, timeZoneId)
-    stream(name, allocator => new ColumnarBatchArrowReader(allocator, arrowSchema, iter)).next()
+    val expected = Utils.toArrowSchema(sparkSchema, timeZoneId)
+    val (arrowSchema, reconciled) = reconcileStreamSchema(name, expected, iter)
+    stream(name, allocator => new ColumnarBatchArrowReader(allocator, arrowSchema, reconciled))
+      .next()
+  }
+
+  /**
+   * Build the stream's advertised Arrow schema from the actual `CometVector` types in the first
+   * batch, not from `expected` (which derives from the consumer's Spark-declared types). Native
+   * operators like `ScanExec` already cast their input to the declared scan-input schema in
+   * `build_record_batch`, so the truthful schema lets that cast actually fire. Advertising
+   * `expected` instead silently mislabels Int32 buffers as Int64 (and similar) and corrupts on
+   * import. See PR #4393 width_bucket investigation.
+   *
+   * If the first batch's column types differ from `expected` in their `DataType` (timezone-only
+   * differences on `Timestamp` are ignored), log one warning naming the operator, column, and
+   * type drift; the cast happens transparently downstream in native.
+   */
+  private[arrow] def reconcileStreamSchema(
+      name: String,
+      expected: Schema,
+      iter: Iterator[ColumnarBatch]): (Schema, Iterator[ColumnarBatch]) = {
+    val buffered = iter.buffered
+    if (!buffered.hasNext) {
+      // Empty partition: keep the consumer-declared schema; consumer can still build its plan.
+      return (expected, buffered)
+    }
+    val first = buffered.head
+    val expectedFields = expected.getFields
+    val actualFields = (0 until first.numCols()).map { i =>
+      val col = first.column(i).asInstanceOf[CometVector]
+      actualFieldOf(col, expectedFields.get(i))
+    }
+    val mismatches = actualFields.zip(expectedFields.asScala).zipWithIndex.collect {
+      case ((actual, exp), idx) if actual.getType != exp.getType =>
+        s"col[$idx] '${exp.getName}': expected ${exp.getType}, child produced ${actual.getType}"
+    }
+    if (mismatches.nonEmpty) {
+      logWarning(
+        s"CometArrowStream '$name' input schema mismatch: ${mismatches.mkString("; ")}. " +
+          "Native ScanExec will cast at the boundary. This usually means a DataFusion-Spark " +
+          "function declares a different return type than Spark catalyst.")
+    }
+    (new Schema(actualFields.asJava), buffered)
+  }
+
+  /**
+   * The Arrow field that this column's buffers will look like once unloaded. For a
+   * `CometDictionaryVector`, [[ColumnarBatchArrowReader]] decodes it via
+   * `DictionaryEncoder.decode` before unloading, so the wire-level field is the dictionary's
+   * *value* type, not `Dictionary<index, value>`. For everything else, use the underlying value
+   * vector's field. Field name / nullability / metadata come from `expected` so that consumers
+   * indexing by name keep working.
+   */
+  private def actualFieldOf(col: CometVector, expected: Field): Field = {
+    val raw = col match {
+      case d: CometDictionaryVector =>
+        val indices = d.getValueVector
+        val dict = d.provider.lookup(indices.getField.getDictionary.getId)
+        dict.getVector.getField
+      case _ => col.getValueVector.getField
+    }
+    new Field(expected.getName, raw.getFieldType, raw.getChildren)
   }
 
   /**
