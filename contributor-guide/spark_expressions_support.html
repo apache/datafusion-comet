@@ -929,9 +929,33 @@ per-function details are documented in the
 <ul class="contains-task-list simple">
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> array_size</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> cardinality</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> concat</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> reverse</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> size</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> concat</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Concat(children)</span> <span class="pre">extends</span> <span class="pre">ComplexTypeMergingExpression</span> <span class="pre">with</span> <span class="pre">QueryErrorsBase</span></code>; <code class="docutils literal notranslate"><span class="pre">allowedTypes</span> <span class="pre">=</span> <span class="pre">Seq(StringType,</span> <span class="pre">BinaryType,</span> <span class="pre">ArrayType)</span></code>; result type is the merged child type. Empty children is allowed and returns the empty string of the result type.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">allowedTypes</span></code> widens <code class="docutils literal notranslate"><span class="pre">StringType</span></code> to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation(supportsTrimCollation</span> <span class="pre">=</span> <span class="pre">true)</span></code>. Error-formatting helper changes from <code class="docutils literal notranslate"><span class="pre">paramIndex</span></code> to <code class="docutils literal notranslate"><span class="pre">ordinalNumber</span></code>. Runtime semantics unchanged for <code class="docutils literal notranslate"><span class="pre">UTF8_BINARY</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known limitation: Comet only supports <code class="docutils literal notranslate"><span class="pre">StringType</span></code> children natively; <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> and <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> inputs fall back to Spark (https://github.com/apache/datafusion-comet/issues/4471). Non-default Spark 4.0 string collations are not propagated (https://github.com/apache/datafusion-comet/issues/2190).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> reverse</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Reverse(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ImplicitCastInputTypes</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(TypeCollection(StringType,</span> <span class="pre">ArrayType))</span></code>; <code class="docutils literal notranslate"><span class="pre">dataType</span> <span class="pre">=</span> <span class="pre">child.dataType</span></code>. For string, calls <code class="docutils literal notranslate"><span class="pre">UTF8String.reverse()</span></code>; for array, reverses element order in-place via <code class="docutils literal notranslate"><span class="pre">GenericArrayData</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> trait replaced by <code class="docutils literal notranslate"><span class="pre">override</span> <span class="pre">def</span> <span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span> <span class="pre">=</span> <span class="pre">true</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">Seq(TypeCollection(StringTypeWithCollation(supportsTrimCollation</span> <span class="pre">=</span> <span class="pre">true),</span> <span class="pre">ArrayType))</span></code>. Semantics unchanged for <code class="docutils literal notranslate"><span class="pre">UTF8_BINARY</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known limitation: <code class="docutils literal notranslate"><span class="pre">Reverse</span></code> on an array containing <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> elements is reported as <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> and falls back unless explicitly enabled (https://github.com/apache/datafusion-comet/issues/2763).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> size</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Size(child,</span> <span class="pre">legacySizeOfNull)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ExpectsInputTypes</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(TypeCollection(ArrayType,</span> <span class="pre">MapType))</span> <span class="pre">-&gt;</span> <span class="pre">IntegerType</span></code>. <code class="docutils literal notranslate"><span class="pre">legacySizeOfNull=true</span></code> returns <code class="docutils literal notranslate"><span class="pre">-1</span></code> for NULL input; <code class="docutils literal notranslate"><span class="pre">false</span></code> returns NULL. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometSize</span></code>, which emits a <code class="docutils literal notranslate"><span class="pre">CaseWhen(isNotNull(child),</span> <span class="pre">size_scalar(child),</span> <span class="pre">Literal(legacySizeOfNull))</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.</p></li>
+<li><p>Known limitation: <code class="docutils literal notranslate"><span class="pre">Size</span></code> over <code class="docutils literal notranslate"><span class="pre">MapType</span></code> falls back to Spark (https://github.com/apache/datafusion-comet/issues/4472).</p></li>
+</ul>
+</li>
 </ul>
 </section>
 <section id="conditional-funcs">
@@ -1161,7 +1185,15 @@ per-function details are documented in the
 <h3>json_funcs<a class="headerlink" href="#json-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> from_json</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> get_json_object</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> get_json_object</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">BinaryExpression</span> <span class="pre">with</span> <span class="pre">ExpectsInputTypes</span> <span class="pre">with</span> <span class="pre">CodegenFallback</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(StringType,</span> <span class="pre">StringType)</span> <span class="pre">-&gt;</span> <span class="pre">StringType</span></code>. Eval is inline and uses Jackson with <code class="docutils literal notranslate"><span class="pre">RawStyle</span></code> output. Foldable paths are parsed once. Returns NULL for invalid JSON, missing paths, or <code class="docutils literal notranslate"><span class="pre">JsonProcessingException</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): the eval is extracted into a <code class="docutils literal notranslate"><span class="pre">GetJsonObjectEvaluator</span></code> helper (no behaviour change). The trait set now mixes in <code class="docutils literal notranslate"><span class="pre">DefaultStringProducingExpression</span></code>, and <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> is widened to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation(supportsTrimCollation</span> <span class="pre">=</span> <span class="pre">true)</span></code> for both arguments.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known incompatibility: Spark accepts single-quoted JSON and unescaped control characters; Comet’s native parser (built on <code class="docutils literal notranslate"><span class="pre">serde_json</span></code>) rejects both, so those inputs require <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GetJsonObject.allowIncompatible=true</span></code> and may still produce different results. Non-default Spark 4.0 string collations are not propagated (https://github.com/apache/datafusion-comet/issues/2190).</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> json_array_length</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> json_object_keys</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> json_tuple</p></li>
@@ -1607,17 +1639,47 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> input_file_name</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> is_variant_null</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> java_method</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> monotonically_increasing_id</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> monotonically_increasing_id</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): byte-for-byte identical to 4.1.1. <code class="docutils literal notranslate"><span class="pre">MonotonicallyIncreasingID()</span> <span class="pre">extends</span> <span class="pre">LeafExpression</span> <span class="pre">with</span> <span class="pre">Stateful</span></code>; produces a Long that encodes the partition id in the upper 31 bits and a per-partition row counter in the lower 33 bits. Comet emits an empty <code class="docutils literal notranslate"><span class="pre">MonotonicallyIncreasingId</span></code> proto and the native side produces the same encoding.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> parse_json</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> raise_error</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> rand</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> randn</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> rand</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Rand(child,</span> <span class="pre">hideSeed)</span> <span class="pre">extends</span> <span class="pre">RDG</span></code> (an <code class="docutils literal notranslate"><span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ExpectsInputTypes</span> <span class="pre">with</span> <span class="pre">Nondeterministic</span> <span class="pre">with</span> <span class="pre">ExpressionWithRandomSeed</span></code>); <code class="docutils literal notranslate"><span class="pre">child</span></code> is the seed expression, coerced to <code class="docutils literal notranslate"><span class="pre">IntegerType</span></code> or <code class="docutils literal notranslate"><span class="pre">LongType</span></code> via <code class="docutils literal notranslate"><span class="pre">ImplicitCastInputTypes</span></code>. Uses <code class="docutils literal notranslate"><span class="pre">XORShiftRandom(seed</span> <span class="pre">+</span> <span class="pre">partitionIndex)</span></code> per partition and returns <code class="docutils literal notranslate"><span class="pre">nextDouble()</span></code> in <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">1)</span></code>. NULL seed evaluates to <code class="docutils literal notranslate"><span class="pre">0L</span></code> (via <code class="docutils literal notranslate"><span class="pre">null.asInstanceOf[Long]</span></code>).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">RDG</span></code> is refactored from an <code class="docutils literal notranslate"><span class="pre">abstract</span> <span class="pre">class</span></code> into a trait, and <code class="docutils literal notranslate"><span class="pre">Rand</span></code> now extends a new <code class="docutils literal notranslate"><span class="pre">NondeterministicUnaryRDG</span></code> base. <code class="docutils literal notranslate"><span class="pre">ExpressionWithRandomSeed.expressionToSeed</span></code> is hoisted as a shared helper and throws <code class="docutils literal notranslate"><span class="pre">QueryCompilationErrors.invalidRandomSeedParameter</span></code> for non-literal seeds at analysis time. Runtime semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Comet limitation: the seed argument must be a literal (column-reference seeds are rejected via <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code>). Pre-4.0 Spark would otherwise silently fail at runtime; 4.0+ rejects at analysis time before the expression reaches Comet.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> randn</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): same base as <code class="docutils literal notranslate"><span class="pre">Rand</span></code>; differs only in the eval body (<code class="docutils literal notranslate"><span class="pre">nextGaussian()</span></code> instead of <code class="docutils literal notranslate"><span class="pre">nextDouble()</span></code>), producing values from the standard normal distribution.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): same refactor as <code class="docutils literal notranslate"><span class="pre">Rand</span></code>; runtime unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Comet limitation: same as <code class="docutils literal notranslate"><span class="pre">rand</span></code> — the seed argument must be a literal.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> reflect</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> schema_of_avro</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> schema_of_variant</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> schema_of_variant_agg</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> session_user</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> spark_partition_id</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> spark_partition_id</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): byte-for-byte identical to 4.1.1. <code class="docutils literal notranslate"><span class="pre">SparkPartitionID()</span> <span class="pre">extends</span> <span class="pre">LeafExpression</span> <span class="pre">with</span> <span class="pre">Nondeterministic</span></code>; returns the integer index of the partition being processed. Comet emits an empty <code class="docutils literal notranslate"><span class="pre">SparkPartitionId</span></code> proto.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> st_asbinary</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> st_geogfromwkb</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> st_geomfromwkb</p></li>
@@ -1635,7 +1697,14 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_reflect</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_variant_get</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> typeof</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> user</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> user</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">CurrentUser()</span> <span class="pre">extends</span> <span class="pre">LeafExpression</span> <span class="pre">with</span> <span class="pre">Unevaluable</span></code>; the analyzer’s <code class="docutils literal notranslate"><span class="pre">ResolveCurrentLike</span></code> rule replaces it with a <code class="docutils literal notranslate"><span class="pre">StringType</span></code> literal of the current user name before Comet sees the plan. No Comet serde needed; the literal flows through <code class="docutils literal notranslate"><span class="pre">CometLiteral</span></code>.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3 except the resulting literal carries the default string collation.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> uuid</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> variant_get</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> version</p></li>
