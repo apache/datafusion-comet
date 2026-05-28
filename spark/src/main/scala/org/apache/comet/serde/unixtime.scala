@@ -45,7 +45,7 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
         val formatStr = fmt.toString
         val defaultPattern = TimestampFormatter.defaultPattern
         if (formatStr == defaultPattern) {
-          Incompatible(None)
+          Incompatible(Some("DataFusion's valid timestamp range differs from Spark"))
         } else {
           Unsupported(Some(s"Datetime pattern format: $formatStr is unsupported"))
         }
