@@ -121,6 +121,12 @@ message NativeScanCommon {
   bool use_field_id = 15;
   // True when spark.sql.parquet.fieldId.read.ignoreMissing is set.
   bool ignore_missing_field_id = 16;
+  // Whether widening type promotion is allowed (e.g. INT32 -> INT64,
+  // FLOAT -> DOUBLE). Set from Comet's per-Spark-version constant in
+  // ShimCometConf (false on 3.x, true on 4.x). When false, reading a column
+  // with a disallowed promoted type throws an error matching Spark's
+  // SchemaColumnConvertNotSupportedException behavior.
+  bool allow_type_promotion = 17;
 }
 
 message NativeScan {
@@ -199,6 +205,12 @@ message IcebergScanCommon {
 
   // Number of data files to read concurrently within a single task
   uint32 data_file_concurrency_limit = 12;
+
+  // Spark V2 catalog name that loaded this table. Forwarded as the dispatchKey to
+  // CometS3CredentialDispatcher.ensureInitialized so two catalogs sharing one provider class get
+  // isolated provider instances. Empty string when the table has no catalog identity (e.g.
+  // HadoopTables loaded by raw path).
+  string catalog_name = 13;
 }
 
 message IcebergScan {
@@ -355,6 +367,8 @@ message Explode {
   bool outer = 2;
   // Expressions for other columns to project alongside the exploded values
   repeated spark.spark_expression.Expr project_list = 3;
+  // Whether to emit a position column alongside the exploded values (posexplode)
+  bool position = 4;
 }
 
 message HashJoin {

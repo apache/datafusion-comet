@@ -104,9 +104,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Ceil] -> CometCeil,
     classOf[Cos] -> CometScalarFunction("cos"),
     classOf[Cosh] -> CometScalarFunction("cosh"),
+    classOf[Csc] -> CometScalarFunction("csc"),
     classOf[Divide] -> CometDivide,
     classOf[Exp] -> CometScalarFunction("exp"),
     classOf[Expm1] -> CometScalarFunction("expm1"),
+    classOf[Factorial] -> CometScalarFunction("factorial"),
     classOf[Floor] -> CometFloor,
     classOf[Greatest] -> CometScalarFunction("greatest"),
     classOf[Hex] -> CometHex,
@@ -123,7 +125,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
     classOf[Remainder] -> CometRemainder,
+    classOf[Rint] -> CometScalarFunction("rint"),
     classOf[Round] -> CometRound,
+    classOf[Sec] -> CometScalarFunction("sec"),
     classOf[Signum] -> CometScalarFunction("signum"),
     classOf[Sin] -> CometScalarFunction("sin"),
     classOf[Sinh] -> CometScalarFunction("sinh"),
@@ -211,10 +215,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[BitwiseNot] -> CometBitwiseNot,
     classOf[BitwiseXor] -> CometBitwiseXor,
     classOf[ShiftLeft] -> CometShiftLeft,
-    classOf[ShiftRight] -> CometShiftRight)
+    classOf[ShiftRight] -> CometShiftRight,
+    classOf[ShiftRightUnsigned] -> CometScalarFunction("shiftrightunsigned"))
 
   private[comet] val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(
+      classOf[AddMonths] -> CometAddMonths,
+      classOf[ConvertTimezone] -> CometConvertTimezone,
       classOf[DateAdd] -> CometDateAdd,
       classOf[DateDiff] -> CometDateDiff,
       classOf[DateFormatClass] -> CometDateFormat,
@@ -224,15 +231,25 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[DateSub] -> CometDateSub,
       classOf[UnixDate] -> CometUnixDate,
       classOf[FromUnixTime] -> CometFromUnixTime,
+      classOf[FromUTCTimestamp] -> CometFromUTCTimestamp,
+      classOf[ToUTCTimestamp] -> CometToUTCTimestamp,
       classOf[LastDay] -> CometLastDay,
       classOf[Hour] -> CometHour,
       classOf[MakeDate] -> CometMakeDate,
+      classOf[MakeTimestamp] -> CometMakeTimestamp,
+      classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
+      classOf[MillisToTimestamp] -> CometMillisToTimestamp,
+      classOf[MonthsBetween] -> CometMonthsBetween,
       classOf[Minute] -> CometMinute,
       classOf[NextDay] -> CometNextDay,
       classOf[Second] -> CometSecond,
       classOf[SecondsToTimestamp] -> CometSecondsToTimestamp,
       classOf[TruncDate] -> CometTruncDate,
       classOf[TruncTimestamp] -> CometTruncTimestamp,
+      classOf[ToUnixTimestamp] -> CometToUnixTimestamp,
+      classOf[UnixMicros] -> CometUnixMicros,
+      classOf[UnixMillis] -> CometUnixMillis,
+      classOf[UnixSeconds] -> CometUnixSeconds,
       classOf[UnixTimestamp] -> CometUnixTimestamp,
       classOf[Year] -> CometYear,
       classOf[Month] -> CometMonth,
@@ -242,6 +259,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[DayOfYear] -> CometDayOfYear,
       classOf[WeekOfYear] -> CometWeekOfYear,
       classOf[Quarter] -> CometQuarter)
+
+  private[comet] val urlExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[ParseUrl] -> CometParseUrl)
 
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)
@@ -258,6 +278,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[MakeDecimal] -> CometMakeDecimal,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
     classOf[ScalarSubquery] -> CometScalarSubquery,
+    classOf[ScalaUDF] -> CometScalaUDF,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[SortOrder] -> CometSortOrder,
     classOf[StaticInvoke] -> CometStaticInvoke,
@@ -270,7 +291,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     mathExpressions ++ hashExpressions ++ stringExpressions ++
       conditionalExpressions ++ mapExpressions ++ predicateExpressions ++
       structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++
-      temporalExpressions ++ conversionExpressions
+      temporalExpressions ++ conversionExpressions ++ urlExpressions
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -295,6 +316,24 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Sum] -> CometSum,
     classOf[VariancePop] -> CometVariancePop,
     classOf[VarianceSamp] -> CometVarianceSamp)
+
+  /**
+   * Returns true if all aggregate expressions in the list have intermediate buffer formats that
+   * are compatible between Spark and Comet, making it safe to run Partial in one engine and Final
+   * in the other.
+   */
+  def allAggsSupportMixedExecution(aggExprs: Seq[AggregateExpression]): Boolean = {
+    aggExprs.forall { aggExpr =>
+      val fn = aggExpr.aggregateFunction
+      aggrSerdeMap.get(fn.getClass) match {
+        case Some(handler) =>
+          handler
+            .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+            .supportsMixedPartialFinal
+        case None => false
+      }
+    }
+  }
 
   //  A unique id for each expression. ~used to look up QueryContext during error creation.
   private val exprIdCounter = new AtomicLong(0)
@@ -363,6 +402,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
         _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
       true
+    case dt if isTimeType(dt) =>
+      true
     case s: StructType if allowComplex =>
       s.fields.nonEmpty && s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
@@ -371,6 +412,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
     case _ =>
       false
+  }
+
+  /**
+   * Returns true if the given data type is or contains a `MapType` at any nesting level. Arrow's
+   * row format (used by DataFusion's grouped hash aggregate for composite group keys) does not
+   * support `Map`, so grouping on any type that transitively contains a map would crash in native
+   * execution.
+   */
+  def containsMapType(dt: DataType): Boolean = dt match {
+    case _: MapType => true
+    case a: ArrayType => containsMapType(a.elementType)
+    case s: StructType => s.fields.exists(f => containsMapType(f.dataType))
+    case _ => false
   }
 
   /**
@@ -397,6 +451,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: ArrayType => 14
       case _: MapType => 15
       case _: StructType => 16
+      case dt if isTimeType(dt) => 17
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None

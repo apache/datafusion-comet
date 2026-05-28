@@ -34,19 +34,57 @@ to read more.
 .. _toc.user-guide-links-$COMET_VERSION:
 .. toctree::
    :maxdepth: 1
-   :caption: Comet $COMET_VERSION User Guide
+   :caption: Getting Started
    :hidden:
 
    Installing Comet <installation>
-   Building From Source <source>
+   Configuration Settings <configs>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: What Comet Supports
+   :hidden:
+
    Supported Data Sources <datasources>
    Supported Data Types <datatypes>
    Supported Operators <operators>
    Supported Expressions <expressions>
-   Configuration Settings <configs>
-   Compatibility Guide <compatibility/index>
+   ScalaUDF and Java UDF Support <scala_java_udfs>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Compatibility
+   :hidden:
+
+   Overview <compatibility/index>
+   compatibility/scans
+   compatibility/floating-point
+   compatibility/regex
+   compatibility/operators
+   compatibility/expressions/index
+   compatibility/spark-versions
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Operating Comet
+   :hidden:
+
    Understanding Comet Plans <understanding-comet-plans>
    Tuning Guide <tuning>
    Metrics Guide <metrics>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Integrations
+   :hidden:
+
    Iceberg Guide <iceberg>
+   S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Advanced
+   :hidden:
+
+   Building From Source <source>

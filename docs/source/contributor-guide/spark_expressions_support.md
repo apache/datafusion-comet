@@ -32,6 +32,9 @@
 ### agg_funcs
 
 - [x] any
+  - Spark 3.4.3 (audited 2026-05-26): registered as a SQL alias of `BoolOr`, which extends `RuntimeReplaceableAggregate` with `replacement = Max(child)`. Catalyst rewrites `any(x)` to `max(x)` before Comet sees the plan, so `any` is served by `CometMax` on a `BooleanType` column.
+  - Spark 3.5.8 (audited 2026-05-26): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-26): identical to 3.4.3.
 - [x] any_value
 - [ ] approx_count_distinct
 - [ ] approx_percentile
@@ -41,6 +44,9 @@
 - [ ] array_agg
 - [x] avg
 - [x] bit_and
+  - Spark 3.4.3 (2026-05-26)
+  - Spark 3.5.8 (2026-05-26)
+  - Spark 4.0.1 (2026-05-26)
 - [x] bit_or
 - [x] bit_xor
 - [x] bool_and
@@ -165,7 +171,7 @@
 - [x] bit_get
 - [x] getbit
 - [x] shiftright
-- [ ] shiftrightunsigned
+- [x] shiftrightunsigned
 - [x] `|`
 - [x] `~`
 
@@ -214,13 +220,13 @@
 
 ### datetime_funcs
 
-- [ ] add_months
-- [ ] convert_timezone
+- [x] add_months
+- [x] convert_timezone
 - [ ] curdate
 - [ ] current_date
 - [ ] current_time
 - [ ] current_timestamp
-- [ ] current_timezone
+- [x] current_timezone
 - [x] date_add
 - [x] date_diff
 - [x] date_format
@@ -238,22 +244,26 @@
 - [x] dayofyear
 - [x] extract
 - [x] from_unixtime
-- [ ] from_utc_timestamp
+- [x] from_utc_timestamp
+  - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-12): baseline.
+  - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
+  - Known divergence: Comet's native timezone parser does not accept Spark's legacy zone forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). Such timezones throw a native parse error at execution.
 - [x] hour
 - [x] last_day
-- [ ] localtimestamp
+- [x] localtimestamp
 - [x] make_date
 - [ ] make_dt_interval
 - [ ] make_interval
 - [ ] make_time
-- [ ] make_timestamp
+- [x] make_timestamp
 - [ ] make_timestamp_ltz
 - [ ] make_timestamp_ntz
 - [ ] make_ym_interval
 - [x] minute
 - [x] month
 - [ ] monthname
-- [ ] months_between
+- [x] months_between
 - [x] next_day
 - [ ] now
 - [x] quarter
@@ -261,16 +271,20 @@
 - [ ] session_window
 - [ ] time_diff
 - [ ] time_trunc
-- [ ] timestamp_micros
-- [ ] timestamp_millis
+- [x] timestamp_micros
+- [x] timestamp_millis
 - [x] timestamp_seconds
 - [ ] to_date
 - [ ] to_time
 - [ ] to_timestamp
 - [ ] to_timestamp_ltz
 - [ ] to_timestamp_ntz
-- [ ] to_unix_timestamp
-- [ ] to_utc_timestamp
+- [x] to_unix_timestamp
+- [x] to_utc_timestamp
+  - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-12): baseline.
+  - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
+  - Known divergence: Comet's native timezone parser does not accept Spark's legacy zone forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). Such timezones throw a native parse error at execution.
 - [x] trunc
 - [ ] try_make_interval
 - [ ] try_make_timestamp
@@ -278,9 +292,9 @@
 - [ ] try_to_time
 - [ ] try_to_timestamp
 - [x] unix_date
-- [ ] unix_micros
-- [ ] unix_millis
-- [ ] unix_seconds
+- [x] unix_micros
+- [x] unix_millis
+- [x] unix_seconds
 - [x] unix_timestamp
 - [x] weekday
 - [x] weekofyear
@@ -371,13 +385,16 @@
 - [x] cos
 - [x] cosh
 - [x] cot
-- [ ] csc
+- [x] csc
 - [x] degrees
 - [x] div
 - [ ] e
 - [x] exp
 - [x] expm1
-- [ ] factorial
+- [x] factorial
+  - 3.4.3 (audited 2026-05-15): identical to v3.5.8.
+  - 3.5.8 (audited 2026-05-15): canonical reference; `extends UnaryExpression with ImplicitCastInputTypes with NullIntolerant`. Returns NULL for NULL input or values outside `[0, 20]`.
+  - 4.0.1 (audited 2026-05-15): `NullIntolerant` trait replaced by `nullIntolerant: Boolean` method override; behavior unchanged.
 - [x] floor
 - [x] greatest
 - [x] hex
@@ -400,9 +417,9 @@
 - [x] randn
 - [ ] random
 - [ ] randstr
-- [ ] rint
+- [x] rint
 - [x] round
-- [ ] sec
+- [x] sec
 - [x] shiftleft
 - [x] sign
 - [x] signum
@@ -517,7 +534,7 @@
 - [ ] collation
 - [x] concat_ws
 - [x] contains
-- [ ] decode
+- [x] decode
 - [ ] elt
 - [ ] encode
 - [x] endswith
@@ -585,7 +602,7 @@
 
 ### url_funcs
 
-- [ ] parse_url
+- [x] parse_url (Incompatible: native diverges from Spark on edge cases)
 - [x] try_url_decode
   - 4.0.1, 2026-05-05
 - [x] url_decode

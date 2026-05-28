@@ -75,6 +75,7 @@ hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { version = "0.56.0", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
+reqsign-core = { workspace = true }
 serde_json = "1.0"
 uuid = "1.23.0"
 
@@ -91,7 +92,7 @@ jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "9"
 hex = "0.4.3"
-datafusion-functions-nested = { git = "https://github.com/apache/datafusion.git", branch = "branch-54" }
+datafusion-functions-nested = { git = "https://github.com/apache/datafusion.git", rev = "50aa138" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
@@ -108,18 +109,6 @@ ignored = ["hdfs-sys", "paste"]
 name = "comet"
 # "rlib" is for benchmarking with criterion.
 crate-type = ["cdylib", "rlib"]
-
-[[bench]]
-name = "parquet_read"
-harness = false
-
-[[bench]]
-name = "bit_util"
-harness = false
-
-[[bench]]
-name = "parquet_decode"
-harness = false
 
 [[bench]]
 name = "array_element_append"

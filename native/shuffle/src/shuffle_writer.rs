@@ -25,8 +25,7 @@ use crate::partitioners::{
 use crate::{CometPartitioning, CompressionCodec};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
-use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
@@ -121,13 +120,6 @@ impl DisplayAs for ShuffleWriterExec {
 impl ExecutionPlan for ShuffleWriterExec {
     fn name(&self) -> &str {
         "ShuffleWriterExec"
-    }
-
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
-    ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

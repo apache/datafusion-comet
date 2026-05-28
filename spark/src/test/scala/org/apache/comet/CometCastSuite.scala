@@ -25,6 +25,7 @@ import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.parser.ParseException
@@ -40,6 +41,11 @@ import org.apache.comet.serde.{Compatible, Incompatible}
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
+
+  // Casts in this suite predominantly test non-ANSI semantics (silent overflow/null on
+  // invalid input); tests that target ANSI behavior opt in explicitly via withSQLConf.
+  override protected def sparkConf: SparkConf =
+    super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
   /** Create a data generator using a fixed seed so that tests are reproducible */
   private val gen = DataGenerator.DEFAULT
@@ -1540,13 +1546,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType") {
-    val hasIncompatibleType = (dt: DataType) =>
-      if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == "auto") {
-        true
-      } else {
-        !CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-          .isTypeSupported(dt, "a", ListBuffer.empty)
-      }
+    val hasIncompatibleType =
+      (dt: DataType) => !CometScanTypeChecker().isTypeSupported(dt, "a", ListBuffer.empty)
     Seq(
       BooleanType,
       StringType,
@@ -1589,7 +1590,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   // https://github.com/apache/datafusion-comet/issues/3906
-  ignore("cast nested ArrayType to nested ArrayType") {
+  test("cast nested ArrayType to nested ArrayType") {
     val types = Seq(
       BooleanType,
       StringType,
@@ -1600,14 +1601,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       FloatType,
       DoubleType,
       DecimalType(10, 2),
-      DecimalType(38, 18),
+      // DecimalType(38, 18) is excluded for the same reason as the one-dimensional array
+      // matrix: decimal-to-float/double casts can differ by ~1 ULP from Spark.
       DateType,
       TimestampType,
       BinaryType)
-    testArrayCastMatrix(
-      types,
-      dt => ArrayType(ArrayType(dt)),
-      dt => generateArrays(100, ArrayType(dt)))
+    testArrayCastMatrix(types, dt => ArrayType(ArrayType(dt)), dt => generateNestedArrays(20, dt))
   }
 
   // CAST from TimestampNTZType
@@ -1715,7 +1714,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateArrays(rowNum: Int, elementType: DataType): DataFrame = {
-    import scala.collection.JavaConverters._
+    import scala.jdk.CollectionConverters._
     val schema = StructType(Seq(StructField("a", ArrayType(elementType), true)))
     def buildRows(values: Seq[Any]): Seq[Row] = {
       Range(0, rowNum).map { i =>
@@ -1767,6 +1766,37 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       case _ =>
         spark.createDataFrame(withEdgeCaseRows(gen.generateRows(rowNum, schema)).asJava, schema)
     }
+  }
+
+  private def generateNestedArrays(rowNum: Int, elementType: DataType): DataFrame = {
+    import scala.jdk.CollectionConverters._
+    val schema = StructType(Seq(StructField("a", ArrayType(ArrayType(elementType)), true)))
+    val innerArrays = generateArrays(rowNum, elementType)
+      .collect()
+      .map { row =>
+        if (row.isNullAt(0)) {
+          null
+        } else {
+          row.getSeq[Any](0)
+        }
+      }
+      .toSeq
+
+    def buildRows(values: Seq[Seq[Any]]): Seq[Row] = {
+      Range(0, rowNum).map { i =>
+        Row(
+          Seq[Any](
+            values(i % values.length),
+            // Keep every third row's middle nested-array element null.
+            if (i % 3 == 0) null else values((i + 1) % values.length),
+            values((i + 2) % values.length)))
+      }
+    }
+
+    val sampleValue = innerArrays.find(_ != null).orNull
+    val rows = Seq(Row(Seq(sampleValue, null, sampleValue)), Row(Seq.empty[Any]), Row(null)) ++
+      buildRows(innerArrays)
+    spark.createDataFrame(rows.asJava, schema)
   }
 
   // https://github.com/apache/datafusion-comet/issues/2038
