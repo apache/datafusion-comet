@@ -78,7 +78,6 @@ FILTERS = {
     ],
     "docs": [
         ".asf.yaml",
-        ".github/workflows/ci.yml",
         ".github/workflows/docs.yaml",
         "docs/**",
     ],

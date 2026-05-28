@@ -50,21 +50,21 @@ is a `workflow_call` reusable invoked from the umbrella.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                     | Path filter source                            |
-| -------------------- | ------------------------------------------------ | --------------------------------------------- |
-| `preflight`          | every PR / push to main / dispatch               | none (always runs)                            |
-| `changes`            | every PR / push to main / dispatch               | runs `dev/ci/compute-changes.py`              |
-| `pr_build_linux`     | PR or push, paths matched                        | `dev/ci/compute-changes.py`                   |
-| `pr_build_macos`     | PR or push, paths matched                        | `dev/ci/compute-changes.py`                   |
-| `pr_benchmark_check` | PR or push, paths matched                        | benchmark sources only                        |
-| `docs`               | push to main, paths matched                      | `.asf.yaml`, `docs/**`, `ci.yml`, `docs.yaml` |
-| `spark_3_5`          | PR or push, paths matched                        | Spark 3.5 sources                             |
-| `spark_4_0`          | PR or push, paths matched                        | Spark 4.0 sources                             |
-| `spark_3_4`          | push, **or** PR with `run-spark-3.4-tests` label | Spark 3.4 sources                             |
-| `spark_4_1`          | push, **or** PR with `run-spark-4.1-tests` label | Spark 4.1 sources                             |
-| `iceberg_1_10`       | PR or push, paths matched                        | Iceberg sources                               |
-| `iceberg_1_8`        | push only                                        | Iceberg sources                               |
-| `iceberg_1_9`        | push only                                        | Iceberg sources                               |
+| Job in `ci.yml`      | Triggered by                                     | Path filter source                  |
+| -------------------- | ------------------------------------------------ | ----------------------------------- |
+| `preflight`          | every PR / push to main / dispatch               | none (always runs)                  |
+| `changes`            | every PR / push to main / dispatch               | runs `dev/ci/compute-changes.py`    |
+| `pr_build_linux`     | PR or push, paths matched                        | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`     | PR or push, paths matched                        | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check` | PR or push, paths matched                        | benchmark sources only              |
+| `docs`               | push to main, paths matched                      | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`          | PR or push, paths matched                        | Spark 3.5 sources                   |
+| `spark_4_0`          | PR or push, paths matched                        | Spark 4.0 sources                   |
+| `spark_3_4`          | push, **or** PR with `run-spark-3.4-tests` label | Spark 3.4 sources                   |
+| `spark_4_1`          | push, **or** PR with `run-spark-4.1-tests` label | Spark 4.1 sources                   |
+| `iceberg_1_10`       | PR or push, paths matched                        | Iceberg sources                     |
+| `iceberg_1_8`        | push only                                        | Iceberg sources                     |
+| `iceberg_1_9`        | push only                                        | Iceberg sources                     |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
