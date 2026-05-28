@@ -511,6 +511,11 @@
 
 - [ ] from_json
 - [x] get_json_object
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `BinaryExpression with ExpectsInputTypes with CodegenFallback`; `inputTypes = Seq(StringType, StringType) -> StringType`. Eval is inline and uses Jackson with `RawStyle` output. Foldable paths are parsed once. Returns NULL for invalid JSON, missing paths, or `JsonProcessingException`.
+  - Spark 4.0.1 (audited 2026-05-27): the eval is extracted into a `GetJsonObjectEvaluator` helper (no behaviour change). The trait set now mixes in `DefaultStringProducingExpression`, and `inputTypes` is widened to `StringTypeWithCollation(supportsTrimCollation = true)` for both arguments.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+  - Known incompatibility: Spark accepts single-quoted JSON and unescaped control characters; Comet's native parser (built on `serde_json`) rejects both, so those inputs require `spark.comet.expression.GetJsonObject.allowIncompatible=true` and may still produce different results. Non-default Spark 4.0 string collations are not propagated (https://github.com/apache/datafusion-comet/issues/2190).
 - [ ] json_array_length
 - [ ] json_object_keys
 - [ ] json_tuple
