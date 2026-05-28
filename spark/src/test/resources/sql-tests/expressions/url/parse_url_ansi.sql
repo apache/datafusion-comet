@@ -17,7 +17,6 @@
 
 -- Test parse_url() in ANSI mode (failOnError=true -> native "parse_url" path)
 -- Config: spark.sql.ansi.enabled=true
--- Config: spark.comet.expression.ParseUrl.allowIncompatible=true
 
 -- valid URLs should work identically in ANSI mode
 query
@@ -42,12 +41,17 @@ SELECT parse_url('https://user:pass@host:8080/p?k=v#ref', 'REF')
 query
 SELECT parse_url(NULL, 'HOST')
 
--- invalid URL throws in ANSI mode (native returns NULL instead of throwing)
-query ignore(known divergence: native parse_url does not throw INVALID_URL for malformed URLs)
+-- invalid URL throws in ANSI mode
+query expect_error(not a url at all)
 SELECT parse_url('not a url at all', 'HOST')
 
-query ignore(known divergence: native parse_url does not throw INVALID_URL for malformed URLs)
+query expect_error(://missing-scheme)
 SELECT parse_url('://missing-scheme', 'HOST')
 
-query ignore(known divergence: native parse_url does not throw INVALID_URL for malformed URLs)
+-- empty string is a valid URI (no throw), just returns NULL for HOST
+query
 SELECT parse_url('', 'HOST')
+
+-- unbalanced IPv6 bracket throws in ANSI mode
+query expect_error(http://[::1/path)
+SELECT parse_url('http://[::1/path', 'AUTHORITY')

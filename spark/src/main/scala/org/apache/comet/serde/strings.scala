@@ -293,15 +293,15 @@ object CometRight extends CometExpressionSerde[Right] {
 }
 
 object CometConcat extends CometScalarFunction[Concat]("concat") {
-  val unsupportedReason = "CONCAT supports only string input parameters"
+  private val unsupportedReason = "CONCAT supports only string input parameters"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(unsupportedReason)
+  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 
   override def getSupportLevel(expr: Concat): SupportLevel = {
     if (expr.children.forall(_.dataType == DataTypes.StringType)) {
       Compatible()
     } else {
-      Incompatible(Some(unsupportedReason))
+      Unsupported(Some(unsupportedReason))
     }
   }
 }
@@ -582,15 +582,14 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 
 object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
+  private val incompatReason =
     "Spark allows single-quoted JSON and unescaped control characters which Comet does not" +
-      " support")
+      " support"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
   override def getSupportLevel(expr: GetJsonObject): SupportLevel =
-    Incompatible(
-      Some(
-        "Spark allows single-quoted JSON and unescaped control characters " +
-          "which Comet does not support"))
+    Incompatible(Some(incompatReason))
 
   override def convert(
       expr: GetJsonObject,
