@@ -202,6 +202,17 @@
 - [ ] binary
 - [ ] boolean
 - [x] cast
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8 modulo `Cast.canUpCast` refactored to delegate to `UpCastRule.canUpCast`.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Cast(child, dataType, timeZoneId, evalMode)`; eval modes are `LEGACY`, `ANSI`, `TRY`. The legacy `Cast.canCast` matrix and the `Cast.canAnsiCast` matrix decide acceptance per type pair. Comet routes via `CometCast` (`spark/src/main/scala/org/apache/comet/expressions/CometCast.scala`) using a per-source-type support matrix that returns `Compatible`, `Incompatible(reason)`, or `Unsupported(reason)`; literal children are short-circuited to `Compatible()` so `CometLiteral` validates them. The serialized `Cast` proto carries `datatype`, `evalMode`, `timezone` (default `UTC`), `allowIncompat` (from `spark.comet.expression.Cast.allowIncompatible`), and `isSpark4Plus`. The native side (`native/spark-expr/src/conversion_funcs/cast.rs`) implements explicit per-eval-mode branches for narrowing numeric casts that match Spark's overflow exceptions, and falls through to DataFusion `cast_with_options(safe = !ANSI)` for the rest.
+  - Spark 4.0.1 (audited 2026-05-27): `VariantType` added; `StringType` literals replaced with `_: StringType` to accommodate collated strings. `(TimestampType, ByteType|ShortType|IntegerType)` added to `canAnsiCast`. `NullIntolerant` -> `nullIntolerant: Boolean` refactor. New `ToPrettyString.BinaryFormatter` semantics for `Binary -> String` are replicated natively via `spark_binary_formatter`. Numeric-to-numeric matrix unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): `TimeType` added; many `TimeType` arms in `canCast`/`canAnsiCast`. Geospatial `GeographyType` / `GeometryType` types added with their own conversion rules. Numeric-to-numeric matrix unchanged.
+  - Known divergences and gaps:
+    - `CAST(<binary> AS STRING)` uses `unsafe { String::from_utf8_unchecked }` in native code, which is undefined behaviour for non-UTF8 inputs (https://github.com/apache/datafusion-comet/issues/4488).
+    - Spark 4.0 collated `StringType` is not explicitly guarded; pattern equality is expected to keep collated-string casts falling back, but there is no test (https://github.com/apache/datafusion-comet/issues/4489; umbrella #2190).
+    - Spark 4.1 `TimeType` casts have no explicit `Unsupported` arm; they fall back implicitly but do not appear in the auto-generated compatibility doc (https://github.com/apache/datafusion-comet/issues/4490).
+    - `CAST(<map> AS <map>)` falls back to Spark even though native `cast_map_to_map` exists (https://github.com/apache/datafusion-comet/issues/4491).
+    - `spark.sql.legacy.castComplexTypesToString.enabled=true` is not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4492).
+    - `CAST(<float|double> AS DECIMAL)` rounding may differ from Spark (`Incompatible`, gated by `spark.comet.expression.Cast.allowIncompatible`, tracked at https://github.com/apache/datafusion-comet/issues/1371).
 - [ ] date
 - [ ] decimal
 - [ ] double
