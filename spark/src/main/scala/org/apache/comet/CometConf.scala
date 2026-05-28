@@ -388,9 +388,10 @@ object CometConf extends ShimCometConf {
           s"${COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false. `$REGEXP_ENGINE_RUST` runs the " +
           "native DataFusion regexp engine when an implementation exists; setting this is " +
           "itself the opt-in for the semantic differences between Java and Rust regex. " +
-          "Affected expressions: rlike, regexp_extract, regexp_extract_all, regexp_replace, " +
-          "regexp_instr, and split (the extract/instr family has no native Rust path; they " +
-          s"fall back to Spark under `$REGEXP_ENGINE_RUST`).")
+          "Expressions without a native Rust implementation (`regexp_extract`, " +
+          "`regexp_extract_all`, `regexp_instr`) fall through to the JVM codegen dispatcher " +
+          s"under `$REGEXP_ENGINE_RUST` so users still get Comet acceleration with full " +
+          "Spark semantics.")
       .stringConf
       .transform(_.toLowerCase(Locale.ROOT))
       .checkValues(Set(REGEXP_ENGINE_RUST, REGEXP_ENGINE_JAVA))

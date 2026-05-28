@@ -390,4 +390,18 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |""".stripMargin))
     }
   }
+
+  test("engine=rust falls through to JVM dispatcher for expressions with no native path") {
+    withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
+      withSubjects("abc123def", "no match", null, "xyz789") {
+        // regexp_extract / regexp_extract_all / regexp_instr have no native rust path; under
+        // engine=rust they should still run on Comet via the JVM codegen dispatcher rather than
+        // falling back to Spark.
+        checkSparkAnswerAndOperator(
+          sql("SELECT s, regexp_extract(s, '([a-z]+)(\\\\d+)', 2) FROM t"))
+        checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '\\\\d+', 0) FROM t"))
+        checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '\\\\d+', 0) FROM t"))
+      }
+    }
+  }
 }
