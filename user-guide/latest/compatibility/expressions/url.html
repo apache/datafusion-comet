@@ -529,14 +529,7 @@ under the License.
 <section id="url-expressions">
 <h1>URL Expressions<a class="headerlink" href="#url-expressions" title="Link to this heading">#</a></h1>
 <!--BEGIN:EXPR_COMPAT[url]-->
-<section id="parseurl">
-<h2>ParseUrl<a class="headerlink" href="#parseurl" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ParseUrl</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ParseUrl.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Native parse_url diverges from Spark on several edge cases (https://github.com/apache/datafusion/issues/21943)</p></li>
-</ul>
 <!--END:EXPR_COMPAT-->
-</section>
 </section>
 
 

@@ -20,10 +20,4 @@ under the License.
 # URL Expressions
 
 <!--BEGIN:EXPR_COMPAT[url]-->
-
-## ParseUrl
-
-The following incompatibilities cause `ParseUrl` to fall back to Spark by default. Set `spark.comet.expression.ParseUrl.allowIncompatible=true` to enable Comet acceleration despite these differences.
-
-- Native parse_url diverges from Spark on several edge cases (https://github.com/apache/datafusion/issues/21943)
 <!--END:EXPR_COMPAT-->
