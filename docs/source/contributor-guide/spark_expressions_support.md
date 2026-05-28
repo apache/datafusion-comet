@@ -273,14 +273,42 @@
 ### conditional_funcs
 
 - [x] coalesce
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Coalesce(children) extends Expression with ComplexTypeMergingExpression`; returns the first non-null child, evaluated left-to-right with short-circuit. Result type is the merged child type. Comet routes via `CometCoalesce`, which serialises as nested `CaseWhen(IsNotNull(c1) -> c1, IsNotNull(c2) -> c2, ..., else cN)` so the native engine preserves the short-circuit semantics.
+  - Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - [x] if
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `If(predicate, trueValue, falseValue) extends ComplexTypeMergingExpression`; standard ternary semantics with short-circuit, predicate must be `BooleanType`. Comet routes via `CometIf` to the native `IfExpr` proto.
+  - Spark 4.0.1 (audited 2026-05-27): adds an `override def withNewAlwaysEvaluatedInputs(...)` hook for the new optimizer phase; semantics unchanged. Error messages reformatted (`paramIndex` -> `ordinalNumber`).
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] ifnull
+  - Spark 3.4.3 (audited 2026-05-27): registry alias of `Nvl` (`expression[Nvl]("ifnull", setAlias = true)`). Same `RuntimeReplaceable` lowering as `nvl`.
+  - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.
 - [ ] nanvl
 - [x] nullif
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): `NullIf(left, right, replacement) extends RuntimeReplaceable with InheritAnalysisRules`; the analyzer rewrites to `If(EqualTo(left, right), Literal(null, left.dataType), left)`. Comet handles via `CometIf` plus `CometEqualTo`.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.5.8.
 - [ ] nullifzero
 - [x] nvl
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): `Nvl(left, right, replacement) extends RuntimeReplaceable`; analyzer rewrites to `Coalesce(Seq(left, right))`. Comet handles via `CometCoalesce`.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.5.8.
 - [x] nvl2
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): `Nvl2(expr1, expr2, expr3, replacement) extends RuntimeReplaceable`; analyzer rewrites to `If(IsNotNull(expr1), expr2, expr3)`. Comet handles via `CometIf`.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.5.8.
 - [x] when
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): the `CASE WHEN ... THEN ...` SQL form lowers to `CaseWhen(branches: Seq[(Expression, Expression)], elseValue: Option[Expression])`. Spark evaluates left-to-right with short-circuit; result type is the merged branch type. Comet routes via `CometCaseWhen` to the native `CaseWhen` proto.
+  - Spark 4.0.1 (audited 2026-05-27): adds the `withNewAlwaysEvaluatedInputs` optimizer hook; semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [ ] zeroifnull
 
 ### conversion_funcs
