@@ -25,7 +25,7 @@ is a `workflow_call` reusable invoked from the umbrella.
                                             v
                                 +-----------------------+
                                 |        changes        |  ubuntu-slim
-                                | (dorny/paths-filter:  |
+                                | (compute-changes.py:  |
                                 |  one boolean per      |
                                 |  heavy job)           |
                                 +-----------+-----------+
@@ -53,9 +53,9 @@ is a `workflow_call` reusable invoked from the umbrella.
 | Job in `ci.yml`     | Triggered by                            | Path filter source                       |
 |---------------------|-----------------------------------------|------------------------------------------|
 | `preflight`         | every PR / push to main / dispatch      | none (always runs)                       |
-| `changes`           | every PR / push to main / dispatch      | runs `dorny/paths-filter@v3`             |
-| `pr_build_linux`    | PR or push, paths matched               | inlined in `changes` job                 |
-| `pr_build_macos`    | PR or push, paths matched               | inlined in `changes` job                 |
+| `changes`           | every PR / push to main / dispatch      | runs `dev/ci/compute-changes.py`         |
+| `pr_build_linux`    | PR or push, paths matched               | `dev/ci/compute-changes.py`              |
+| `pr_build_macos`    | PR or push, paths matched               | `dev/ci/compute-changes.py`              |
 | `pr_benchmark_check`| PR or push, paths matched               | benchmark sources only                   |
 | `docs`              | push to main, paths matched             | `.asf.yaml`, `docs/**`, `ci.yml`, `docs.yaml` |
 | `spark_3_5`         | PR or push, paths matched               | Spark 3.5 sources                        |
@@ -97,10 +97,11 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Modifying path filters
 
-Each long workflow's "what files trigger me" rules live in the `changes`
-job inside `ci.yml` (in the `dorny/paths-filter` block). When adding a new
-test suite or moving sources, update the filter for the affected job there;
-the gate `if:` on each job consumes `needs.changes.outputs.<name>`.
+Each long workflow's "what files trigger me" rules live in the `FILTERS`
+dict at the top of `dev/ci/compute-changes.py`. The `changes` job in
+`ci.yml` invokes that script and the gate `if:` on each long job consumes
+`needs.changes.outputs.<name>`. When adding a new test suite or moving
+sources, update the relevant filter entry there.
 
 ## Branch protection
 

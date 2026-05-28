@@ -80,9 +80,11 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # changes: compute which long jobs need to run for this event. Replaces the
-  # per-workflow `on: paths:` filters that used to gate triggering. On
-  # workflow_dispatch we force every output true so a manual run can exercise
-  # any gated job.
+  # per-workflow `on: paths:` filters that used to gate triggering. Filter
+  # rules live in dev/ci/compute-changes.py, which is invoked here in lieu of
+  # dorny/paths-filter (not on the apache org actions allow list). On
+  # workflow_dispatch every output is forced true so a manual run can
+  # exercise any gated job.
   # ---------------------------------------------------------------------------
   changes:
     name: Detect changes
@@ -102,233 +104,41 @@ jobs:
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
     steps:
       - uses: actions/checkout@v6
-
-      - name: Run paths filter
-        id: filter
-        if: github.event_name != 'workflow_dispatch'
-        uses: dorny/paths-filter@v3
         with:
-          filters: |
-            build_linux:
-              - "native/**"
-              - "common/**"
-              - "spark/**"
-              - "spark-integration/**"
-              - "pom.xml"
-              - "**/pom.xml"
-              - ".mvn/**"
-              - "mvnw"
-              - "Makefile"
-              - "rust-toolchain.toml"
-              - "dev/ci/**"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/pr_build_linux.yml"
-              - ".github/actions/setup-builder/**"
-              - ".github/actions/java-test/**"
-              - ".github/actions/rust-test/**"
-              - "!**.md"
-              - "!native/core/benches/**"
-              - "!native/spark-expr/benches/**"
-              - "!spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-              - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-            build_macos:
-              - "native/**"
-              - "common/**"
-              - "spark/**"
-              - "spark-integration/**"
-              - "pom.xml"
-              - "**/pom.xml"
-              - ".mvn/**"
-              - "mvnw"
-              - "Makefile"
-              - "rust-toolchain.toml"
-              - "dev/ci/**"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/pr_build_macos.yml"
-              - ".github/actions/setup-macos-builder/**"
-              - ".github/actions/java-test/**"
-              - "!**.md"
-              - "!native/core/benches/**"
-              - "!native/spark-expr/benches/**"
-              - "!spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-              - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-            benchmark:
-              - "native/core/benches/**"
-              - "native/spark-expr/benches/**"
-              - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-            docs:
-              - ".asf.yaml"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/docs.yaml"
-              - "docs/**"
-            spark_3_4:
-              - "native/**/src/**"
-              - "native/**/Cargo.toml"
-              - "native/Cargo.lock"
-              - "!native/hdfs/**"
-              - "!native/fs-hdfs/**"
-              - "common/src/main/**"
-              - "common/pom.xml"
-              - "spark/src/main/**"
-              - "!spark/src/main/spark-3.5/**"
-              - "!spark/src/main/spark-4.0/**"
-              - "!spark/src/main/spark-4.1/**"
-              - "!spark/src/main/spark-4.2/**"
-              - "!spark/src/main/spark-4.x/**"
-              - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-              - "spark/pom.xml"
-              - "dev/diffs/3.4.3.diff"
-              - "pom.xml"
-              - "rust-toolchain.toml"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/spark_sql_test_reusable.yml"
-              - ".github/actions/setup-builder/**"
-              - ".github/actions/setup-spark-builder/**"
-            spark_3_5:
-              - "native/**/src/**"
-              - "native/**/Cargo.toml"
-              - "native/Cargo.lock"
-              - "!native/hdfs/**"
-              - "!native/fs-hdfs/**"
-              - "common/src/main/**"
-              - "common/pom.xml"
-              - "spark/src/main/**"
-              - "!spark/src/main/spark-3.4/**"
-              - "!spark/src/main/spark-4.0/**"
-              - "!spark/src/main/spark-4.1/**"
-              - "!spark/src/main/spark-4.2/**"
-              - "!spark/src/main/spark-4.x/**"
-              - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-              - "spark/pom.xml"
-              - "dev/diffs/3.5.8.diff"
-              - "pom.xml"
-              - "rust-toolchain.toml"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/spark_sql_test_reusable.yml"
-              - ".github/actions/setup-builder/**"
-              - ".github/actions/setup-spark-builder/**"
-            spark_4_0:
-              - "native/**/src/**"
-              - "native/**/Cargo.toml"
-              - "native/Cargo.lock"
-              - "!native/hdfs/**"
-              - "!native/fs-hdfs/**"
-              - "common/src/main/**"
-              - "common/pom.xml"
-              - "spark/src/main/**"
-              - "!spark/src/main/spark-3.4/**"
-              - "!spark/src/main/spark-3.5/**"
-              - "!spark/src/main/spark-3.x/**"
-              - "!spark/src/main/spark-4.1/**"
-              - "!spark/src/main/spark-4.2/**"
-              - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-              - "spark/pom.xml"
-              - "dev/diffs/4.0.2.diff"
-              - "pom.xml"
-              - "rust-toolchain.toml"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/spark_sql_test_reusable.yml"
-              - ".github/actions/setup-builder/**"
-              - ".github/actions/setup-spark-builder/**"
-            spark_4_1:
-              - "native/**/src/**"
-              - "native/**/Cargo.toml"
-              - "native/Cargo.lock"
-              - "!native/hdfs/**"
-              - "!native/fs-hdfs/**"
-              - "common/src/main/**"
-              - "common/pom.xml"
-              - "spark/src/main/**"
-              - "!spark/src/main/spark-3.4/**"
-              - "!spark/src/main/spark-3.5/**"
-              - "!spark/src/main/spark-3.x/**"
-              - "!spark/src/main/spark-4.0/**"
-              - "!spark/src/main/spark-4.2/**"
-              - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-              - "spark/pom.xml"
-              - "dev/diffs/4.1.1.diff"
-              - "pom.xml"
-              - "rust-toolchain.toml"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/spark_sql_test_reusable.yml"
-              - ".github/actions/setup-builder/**"
-              - ".github/actions/setup-spark-builder/**"
-            iceberg_1_8:
-              - "native/**/src/**"
-              - "native/**/Cargo.toml"
-              - "native/Cargo.lock"
-              - "!native/hdfs/**"
-              - "!native/fs-hdfs/**"
-              - "common/src/main/**"
-              - "common/pom.xml"
-              - "spark/src/main/**"
-              - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-              - "spark/pom.xml"
-              - "dev/diffs/iceberg/**"
-              - "pom.xml"
-              - "rust-toolchain.toml"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/iceberg_spark_test_reusable.yml"
-              - ".github/actions/setup-builder/**"
-              - ".github/actions/setup-iceberg-builder/**"
-            iceberg_1_9:
-              - "native/**/src/**"
-              - "native/**/Cargo.toml"
-              - "native/Cargo.lock"
-              - "!native/hdfs/**"
-              - "!native/fs-hdfs/**"
-              - "common/src/main/**"
-              - "common/pom.xml"
-              - "spark/src/main/**"
-              - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-              - "spark/pom.xml"
-              - "dev/diffs/iceberg/**"
-              - "pom.xml"
-              - "rust-toolchain.toml"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/iceberg_spark_test_reusable.yml"
-              - ".github/actions/setup-builder/**"
-              - ".github/actions/setup-iceberg-builder/**"
-            iceberg_1_10:
-              - "native/**/src/**"
-              - "native/**/Cargo.toml"
-              - "native/Cargo.lock"
-              - "!native/hdfs/**"
-              - "!native/fs-hdfs/**"
-              - "common/src/main/**"
-              - "common/pom.xml"
-              - "spark/src/main/**"
-              - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-              - "spark/pom.xml"
-              - "dev/diffs/iceberg/**"
-              - "pom.xml"
-              - "rust-toolchain.toml"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/iceberg_spark_test_reusable.yml"
-              - ".github/actions/setup-builder/**"
-              - ".github/actions/setup-iceberg-builder/**"
+          # Need both branches' history so we can diff base..head for PRs and
+          # before..after for pushes.
+          fetch-depth: 0
 
       - name: Compute outputs
         id: compute
         shell: bash
+        env:
+          EVENT_NAME:  ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER:  ${{ github.sha }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10; do
               echo "${key}=true" >> "$GITHUB_OUTPUT"
             done
-          else
-            echo "build_linux=${{ steps.filter.outputs.build_linux }}"   >> "$GITHUB_OUTPUT"
-            echo "build_macos=${{ steps.filter.outputs.build_macos }}"   >> "$GITHUB_OUTPUT"
-            echo "benchmark=${{ steps.filter.outputs.benchmark }}"       >> "$GITHUB_OUTPUT"
-            echo "docs=${{ steps.filter.outputs.docs }}"                 >> "$GITHUB_OUTPUT"
-            echo "spark_3_4=${{ steps.filter.outputs.spark_3_4 }}"       >> "$GITHUB_OUTPUT"
-            echo "spark_3_5=${{ steps.filter.outputs.spark_3_5 }}"       >> "$GITHUB_OUTPUT"
-            echo "spark_4_0=${{ steps.filter.outputs.spark_4_0 }}"       >> "$GITHUB_OUTPUT"
-            echo "spark_4_1=${{ steps.filter.outputs.spark_4_1 }}"       >> "$GITHUB_OUTPUT"
-            echo "iceberg_1_8=${{ steps.filter.outputs.iceberg_1_8 }}"   >> "$GITHUB_OUTPUT"
-            echo "iceberg_1_9=${{ steps.filter.outputs.iceberg_1_9 }}"   >> "$GITHUB_OUTPUT"
-            echo "iceberg_1_10=${{ steps.filter.outputs.iceberg_1_10 }}" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
+          else
+            # push to main; first push to a branch has all-zero before sha
+            if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
+              git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
+            else
+              git diff --name-only "$PUSH_BEFORE".."$PUSH_AFTER" > changed_files.txt
+            fi
+          fi
+          echo "Changed files:"
+          cat changed_files.txt
+          python3 dev/ci/compute-changes.py changed_files.txt >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
   # Heavy jobs: each is a thin caller of an existing reusable workflow. The
