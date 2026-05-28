@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.arrow.c.{ArrowArrayStream, Data}
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
-import org.apache.arrow.vector.types.pojo.{Field, Schema}
+import org.apache.arrow.vector.types.pojo.{Field, FieldType, Schema}
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
@@ -132,8 +132,14 @@ object CometArrowStream extends Logging {
    * `CometDictionaryVector`, [[ColumnarBatchArrowReader]] decodes it via
    * `DictionaryEncoder.decode` before unloading, so the wire-level field is the dictionary's
    * *value* type, not `Dictionary<index, value>`. For everything else, use the underlying value
-   * vector's field. Field name / nullability / metadata come from `expected` so that consumers
-   * indexing by name keep working.
+   * vector's field.
+   *
+   * Field name and metadata come from `expected` so that consumers indexing by name keep working.
+   * Nullability is the union of the two — a CometVector that happens to hold no nulls in this
+   * batch can still be nullable per Spark's contract (the next batch may have one), and a column
+   * whose actual buffer carries validity bits must stay nullable even if Spark thought otherwise.
+   * Taking only `raw.isNullable` here would advertise non-nullable when the next batch does carry
+   * a null and crash native validation.
    */
   private def actualFieldOf(col: CometVector, expected: Field): Field = {
     val raw = col match {
@@ -143,7 +149,10 @@ object CometArrowStream extends Logging {
         dict.getVector.getField
       case _ => col.getValueVector.getField
     }
-    new Field(expected.getName, raw.getFieldType, raw.getChildren)
+    val nullable = expected.isNullable || raw.isNullable
+    val fieldType =
+      new FieldType(nullable, raw.getType, raw.getDictionary, expected.getMetadata)
+    new Field(expected.getName, fieldType, raw.getChildren)
   }
 
   /**

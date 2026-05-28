@@ -112,4 +112,36 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       allocator.close()
     }
   }
+
+  test("reconcileStreamSchema preserves nullability when expected is nullable but actual is not") {
+    val allocator = new RootAllocator(Integer.MAX_VALUE)
+    try {
+      // Spark catalyst declares the column nullable; the first batch happens to come from a
+      // vector whose Field reports non-nullable. Subsequent batches may carry nulls, so the
+      // wire schema must stay nullable or native validation rejects the next null with
+      // "declared as non-nullable but contains null values".
+      val v = new BigIntVector(
+        new Field(
+          "col_0",
+          new FieldType(false, new ArrowType.Int(64, true), null),
+          java.util.Collections.emptyList[Field]()),
+        allocator)
+      v.allocateNew()
+      v.setSafe(0, 1L)
+      v.setValueCount(1)
+      val cv = new CometPlainVector(v, false)
+      val batch = batchOf(cv)
+      val expected = expectedSchema("c0" -> new ArrowType.Int(64, true)) // nullable=true
+
+      val (returned, _) = CometArrowStream
+        .reconcileStreamSchema("test", expected, Iterator.single(batch))
+
+      val returnedField = returned.getFields.get(0)
+      returnedField.isNullable shouldBe true
+
+      cv.close()
+    } finally {
+      allocator.close()
+    }
+  }
 }
