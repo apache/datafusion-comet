@@ -50,21 +50,21 @@ is a `workflow_call` reusable invoked from the umbrella.
 
 ## What runs when
 
-| Job in `ci.yml`     | Triggered by                            | Path filter source                       |
-|---------------------|-----------------------------------------|------------------------------------------|
-| `preflight`         | every PR / push to main / dispatch      | none (always runs)                       |
-| `changes`           | every PR / push to main / dispatch      | runs `dev/ci/compute-changes.py`         |
-| `pr_build_linux`    | PR or push, paths matched               | `dev/ci/compute-changes.py`              |
-| `pr_build_macos`    | PR or push, paths matched               | `dev/ci/compute-changes.py`              |
-| `pr_benchmark_check`| PR or push, paths matched               | benchmark sources only                   |
-| `docs`              | push to main, paths matched             | `.asf.yaml`, `docs/**`, `ci.yml`, `docs.yaml` |
-| `spark_3_5`         | PR or push, paths matched               | Spark 3.5 sources                        |
-| `spark_4_0`         | PR or push, paths matched               | Spark 4.0 sources                        |
-| `spark_3_4`         | push, **or** PR with `run-spark-3.4-tests` label | Spark 3.4 sources               |
-| `spark_4_1`         | push, **or** PR with `run-spark-4.1-tests` label | Spark 4.1 sources               |
-| `iceberg_1_10`      | PR or push, paths matched               | Iceberg sources                          |
-| `iceberg_1_8`       | push only                               | Iceberg sources                          |
-| `iceberg_1_9`       | push only                               | Iceberg sources                          |
+| Job in `ci.yml`      | Triggered by                                     | Path filter source                            |
+| -------------------- | ------------------------------------------------ | --------------------------------------------- |
+| `preflight`          | every PR / push to main / dispatch               | none (always runs)                            |
+| `changes`            | every PR / push to main / dispatch               | runs `dev/ci/compute-changes.py`              |
+| `pr_build_linux`     | PR or push, paths matched                        | `dev/ci/compute-changes.py`                   |
+| `pr_build_macos`     | PR or push, paths matched                        | `dev/ci/compute-changes.py`                   |
+| `pr_benchmark_check` | PR or push, paths matched                        | benchmark sources only                        |
+| `docs`               | push to main, paths matched                      | `.asf.yaml`, `docs/**`, `ci.yml`, `docs.yaml` |
+| `spark_3_5`          | PR or push, paths matched                        | Spark 3.5 sources                             |
+| `spark_4_0`          | PR or push, paths matched                        | Spark 4.0 sources                             |
+| `spark_3_4`          | push, **or** PR with `run-spark-3.4-tests` label | Spark 3.4 sources                             |
+| `spark_4_1`          | push, **or** PR with `run-spark-4.1-tests` label | Spark 4.1 sources                             |
+| `iceberg_1_10`       | PR or push, paths matched                        | Iceberg sources                               |
+| `iceberg_1_8`        | push only                                        | Iceberg sources                               |
+| `iceberg_1_9`        | push only                                        | Iceberg sources                               |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -75,25 +75,25 @@ passing for branch protection.
 These workflows have their own triggers because they fire on events the
 umbrella doesn't watch, or operate independently of the rest of CI:
 
-| File                          | Why standalone                                  |
-|-------------------------------|-------------------------------------------------|
-| `pr_title_check.yml`          | Fires on `pull_request.types: [edited]` so it re-runs when a PR title is edited without a code push. |
-| `codeql.yml`                  | Security scanner; weekly schedule + on every push/PR. |
-| `miri.yml`                    | Nightly Miri safety checks.                     |
-| `stale.yml`                   | Daily stale-PR closer.                          |
-| `take.yml`                    | Issue-comment trigger for `take` / `untake`.    |
-| `label_new_issues.yml`        | Issue trigger to apply `requires-triage`.       |
+| File                   | Why standalone                                                                                       |
+| ---------------------- | ---------------------------------------------------------------------------------------------------- |
+| `pr_title_check.yml`   | Fires on `pull_request.types: [edited]` so it re-runs when a PR title is edited without a code push. |
+| `codeql.yml`           | Security scanner; weekly schedule + on every push/PR.                                                |
+| `miri.yml`             | Nightly Miri safety checks.                                                                          |
+| `stale.yml`            | Daily stale-PR closer.                                                                               |
+| `take.yml`             | Issue-comment trigger for `take` / `untake`.                                                         |
+| `label_new_issues.yml` | Issue trigger to apply `requires-triage`.                                                            |
 
 ## Reusable workflows (called by `ci.yml`)
 
-| File                                | Called from `ci.yml` job(s)                    |
-|-------------------------------------|------------------------------------------------|
-| `pr_build_linux.yml`                | `pr_build_linux`                                |
-| `pr_build_macos.yml`                | `pr_build_macos`                                |
-| `pr_benchmark_check.yml`            | `pr_benchmark_check`                            |
-| `docs.yaml`                         | `docs`                                          |
-| `spark_sql_test_reusable.yml`       | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1` |
-| `iceberg_spark_test_reusable.yml`   | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`    |
+| File                              | Called from `ci.yml` job(s)                        |
+| --------------------------------- | -------------------------------------------------- |
+| `pr_build_linux.yml`              | `pr_build_linux`                                   |
+| `pr_build_macos.yml`              | `pr_build_macos`                                   |
+| `pr_benchmark_check.yml`          | `pr_benchmark_check`                               |
+| `docs.yaml`                       | `docs`                                             |
+| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1` |
+| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`       |
 
 ## Modifying path filters
 
