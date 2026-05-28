@@ -650,17 +650,63 @@ per-function details are documented in the
 <section id="array-funcs">
 <h3>array_funcs<a class="headerlink" href="#array-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_append</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_compact</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_contains</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_distinct</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_except</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">CreateArray(children,</span> <span class="pre">useStringTypeWhenEmpty)</span></code>; element type is the common type of children. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometCreateArray</span></code> (native <code class="docutils literal notranslate"><span class="pre">make_array</span></code>) and special-cases the empty-array case to dodge a known DataFusion <code class="docutils literal notranslate"><span class="pre">coerce_types</span></code> issue (#3338).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): adds <code class="docutils literal notranslate"><span class="pre">contextIndependentFoldable</span></code> override; runtime semantics unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_append</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): standalone <code class="docutils literal notranslate"><span class="pre">BinaryExpression</span></code>, evaluated directly. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArrayAppend</span></code>.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): now <code class="docutils literal notranslate"><span class="pre">RuntimeReplaceable</span></code> and rewritten to <code class="docutils literal notranslate"><span class="pre">ArrayInsert(arr,</span> <span class="pre">Literal(-1),</span> <span class="pre">elem)</span></code>. <code class="docutils literal notranslate"><span class="pre">CometArrayAppend</span></code> is therefore unreachable; dispatch goes through <code class="docutils literal notranslate"><span class="pre">CometArrayInsert</span></code> (which carries its own <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> notes documented at the <code class="docutils literal notranslate"><span class="pre">array_insert</span></code> entry).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_compact</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">RuntimeReplaceable</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">ArrayFilter(arr,</span> <span class="pre">IsNotNull(lambda))</span></code>. Comet receives the rewritten form, dispatches through <code class="docutils literal notranslate"><span class="pre">CometArrayFilter</span></code>, which delegates back to <code class="docutils literal notranslate"><span class="pre">CometArrayCompact.convert</span></code> for the actual proto emission. The native path uses Comet’s <code class="docutils literal notranslate"><span class="pre">spark_array_compact</span></code> UDF rather than DataFusion’s <code class="docutils literal notranslate"><span class="pre">array_remove_all</span></code> because DataFusion 53 changed <code class="docutils literal notranslate"><span class="pre">array_remove_all</span></code>’s NULL semantics.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): the replacement is wrapped in <code class="docutils literal notranslate"><span class="pre">KnownNotContainsNull(...)</span></code> (analysis-only hint, no semantic change).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_contains</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayContains(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">BinaryExpression</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span> <span class="pre">with</span> <span class="pre">Predicate</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> uses <code class="docutils literal notranslate"><span class="pre">findWiderTypeWithoutStringPromotionForTwo</span></code>. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_contains&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> trait replaced by <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code>; <code class="docutils literal notranslate"><span class="pre">checkInputDataTypes</span></code> adopts <code class="docutils literal notranslate"><span class="pre">DataTypeUtils.sameType</span></code> (collation-aware in 4.x).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known limitation: no NaN-canonicalization guard in <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code>. For <code class="docutils literal notranslate"><span class="pre">Float</span></code>/<code class="docutils literal notranslate"><span class="pre">Double</span></code> arrays containing NaN, Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil</span></code> may produce different results than DataFusion’s IEEE comparison (https://github.com/apache/datafusion-comet/issues/4481).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_distinct</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayDistinct(child)</span></code> over <code class="docutils literal notranslate"><span class="pre">ArraySetLike</span></code>; uses <code class="docutils literal notranslate"><span class="pre">SQLOpenHashSet</span></code> so NaN and <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>/<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> are canonicalized. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_distinct&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: DataFusion <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> uses hash-based equality without NaN/signed-zero canonicalization, so float/double arrays may produce different results (https://github.com/apache/datafusion-comet/issues/4481).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_except</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayExcept(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">ArrayBinaryLike</span> <span class="pre">with</span> <span class="pre">ComplexTypeMergingExpression</span></code>; result preserves left-side first occurrences not present in right. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArrayExcept</span></code> and unconditionally flags <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> (“Null handling and ordering may differ from Spark”); also falls back for <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> / <code class="docutils literal notranslate"><span class="pre">StructType</span></code> element types.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span> <span class="pre">=</span> <span class="pre">true</span></code> moves into <code class="docutils literal notranslate"><span class="pre">ArrayBinaryLike</span></code>; the overflow path uses <code class="docutils literal notranslate"><span class="pre">arrayFunctionWithElementsExceedLimitError</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: same NaN/signed-zero canonicalization gap as <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> for float/double arrays (https://github.com/apache/datafusion-comet/issues/4481).</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_insert</p>
 <ul>
 <li><p>Spark 3.4.3 audited 2026-04-02</p></li>
 <li><p>Spark 3.5.8 audited 2026-04-02</p></li>
 <li><p>Spark 4.0.1 audited 2026-04-02 (pos=0 error message differs from Spark)</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_intersect</p>
@@ -668,25 +714,120 @@ per-function details are documented in the
 <li><p>Spark 3.4.3 audited 2026-04-24 (result element order may differ from Spark when the right array is longer than the left; DataFusion probes the longer side)</p></li>
 <li><p>Spark 3.5.8 audited 2026-04-24 (same ordering incompatibility as 3.4.3)</p></li>
 <li><p>Spark 4.0.1 audited 2026-04-24 (ordering incompatibility as above; collated strings now fall back to Spark)</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_join</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_max</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_min</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_position</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_join</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayJoin(array,</span> <span class="pre">delimiter,</span> <span class="pre">nullReplacement)</span></code>. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArrayJoin</span></code> to DataFusion’s <code class="docutils literal notranslate"><span class="pre">array_to_string</span></code> and is unconditionally flagged <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> (“Null handling may differ from Spark”, #3178).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">AbstractArrayType(StringTypeWithCollation(supportsTrimCollation</span> <span class="pre">=</span> <span class="pre">true))</span></code>; non-binary collations not propagated (https://github.com/apache/datafusion-comet/issues/2190).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): adds <code class="docutils literal notranslate"><span class="pre">contextIndependentFoldable</span></code> override; runtime unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_max</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayMax(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ImplicitCastInputTypes</span></code>; skips NULL elements; for float/double Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil</span></code> treats NaN as greater than any non-NaN. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_max&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: DataFusion’s <code class="docutils literal notranslate"><span class="pre">array_max</span></code> uses Arrow <code class="docutils literal notranslate"><span class="pre">partial_cmp</span></code>-based ordering, so float/double arrays containing NaN may produce different results (https://github.com/apache/datafusion-comet/issues/4482).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_min</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): mirror of <code class="docutils literal notranslate"><span class="pre">ArrayMax</span></code> with <code class="docutils literal notranslate"><span class="pre">evalInternal</span></code> returning the minimum. Same NULL-skip and NaN-ordering semantics. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_min&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): same trait refactor as <code class="docutils literal notranslate"><span class="pre">array_max</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: same NaN-handling gap as <code class="docutils literal notranslate"><span class="pre">array_max</span></code> (https://github.com/apache/datafusion-comet/issues/4482).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_position</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayPosition(left,</span> <span class="pre">right)</span></code>; returns 1-based <code class="docutils literal notranslate"><span class="pre">LongType</span></code> position, 0 if not found, NULL if either input is NULL. <code class="docutils literal notranslate"><span class="pre">CometArrayPosition</span></code> falls back for all-foldable args (constant folding handles those) and for unsupported element types (binary/struct/map/null).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> array_prepend</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_remove</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_repeat</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_union</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> arrays_overlap</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> arrays_zip</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> element_at</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> flatten</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> get</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_remove</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayRemove(left,</span> <span class="pre">right)</span></code>; removes all occurrences equal to <code class="docutils literal notranslate"><span class="pre">right</span></code>. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_remove&quot;)</span></code>. Falls back via <code class="docutils literal notranslate"><span class="pre">ArraysBase.isTypeSupported</span></code> for binary/struct/map/null child types.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_repeat</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayRepeat(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">BinaryExpression</span> <span class="pre">with</span> <span class="pre">ExpectsInputTypes</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(AnyDataType,</span> <span class="pre">IntegerType)</span></code>. NULL count yields NULL; count &lt;= 0 yields empty array; count &gt; <code class="docutils literal notranslate"><span class="pre">MAX_ROUNDED_ARRAY_LENGTH</span></code> throws at runtime. Comet wraps the call in <code class="docutils literal notranslate"><span class="pre">CaseWhen(IsNotNull(right),</span> <span class="pre">array_repeat(...),</span> <span class="pre">null)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): error message uses <code class="docutils literal notranslate"><span class="pre">createArrayWithElementsExceedLimitError(prettyName,</span> <span class="pre">count)</span></code>; semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_union</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayUnion(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">ArrayBinaryLike</span> <span class="pre">with</span> <span class="pre">ComplexTypeMergingExpression</span></code>; result is left-side distinct elements followed by new right-side elements. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_union&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span> <span class="pre">=</span> <span class="pre">true</span></code> moves into <code class="docutils literal notranslate"><span class="pre">ArrayBinaryLike</span></code>; overflow path uses <code class="docutils literal notranslate"><span class="pre">arrayFunctionWithElementsExceedLimitError</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: same NaN/signed-zero canonicalization gap as <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> (https://github.com/apache/datafusion-comet/issues/4481). Result ordering versus DataFusion is also unverified; compare the <code class="docutils literal notranslate"><span class="pre">array_intersect</span></code> ordering caveat.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> arrays_overlap</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArraysOverlap(left,</span> <span class="pre">right)</span></code>; three-valued logic (TRUE if any common non-null element, NULL if a null is present and no overlap is found in non-nulls, FALSE otherwise). Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArraysOverlap</span></code> to the native <code class="docutils literal notranslate"><span class="pre">spark_arrays_overlap</span></code> UDF, which implements the same three-valued logic.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> arrays_zip</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArraysZip(children,</span> <span class="pre">names)</span></code>; returns an array of structs, padding shorter inputs with NULL. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArraysZip</span></code> and rejects unsupported child element types (anything outside primitives, decimals, dates/timestamps, strings, binary, and nested arrays/structs of those).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): the length-mismatch error switches from <code class="docutils literal notranslate"><span class="pre">IllegalArgumentException</span></code> to <code class="docutils literal notranslate"><span class="pre">SparkIllegalArgumentException(&quot;_LEGACY_ERROR_TEMP_3235&quot;)</span></code>; runtime unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> element_at</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ElementAt(left,</span> <span class="pre">right,</span> <span class="pre">defaultValueOutOfBound,</span> <span class="pre">failOnError)</span></code>; group label <code class="docutils literal notranslate"><span class="pre">map_funcs</span></code>. Comet supports only <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> input; <code class="docutils literal notranslate"><span class="pre">MapType</span></code> input falls back.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor; group label changes to <code class="docutils literal notranslate"><span class="pre">collection_funcs</span></code>; ANSI default flips to <code class="docutils literal notranslate"><span class="pre">true</span></code> so out-of-bound throws by default. Comet wires <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> through to native <code class="docutils literal notranslate"><span class="pre">ListExtract</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> flatten</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Flatten(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span></code>; returns NULL if any inner sub-array is NULL. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometFlatten</span></code> and falls back for child types containing <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> / <code class="docutils literal notranslate"><span class="pre">StructType</span></code> / <code class="docutils literal notranslate"><span class="pre">MapType</span></code> (limitation of <code class="docutils literal notranslate"><span class="pre">ArraysBase.isTypeSupported</span></code>).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> get</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">GetArrayItem(child,</span> <span class="pre">ordinal,</span> <span class="pre">failOnError)</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(AnyDataType,</span> <span class="pre">IntegralType)</span></code>. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometGetArrayItem</span></code>, wiring <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> through to the proto.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged; ANSI default flips to <code class="docutils literal notranslate"><span class="pre">true</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> tightened to <code class="docutils literal notranslate"><span class="pre">Seq(ArrayType,</span> <span class="pre">IntegralType)</span></code> (analysis-time only); runtime unchanged.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> sequence</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> shuffle</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> slice</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sort_array</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sort_array</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">SortArray(base,</span> <span class="pre">ascendingOrder)</span> <span class="pre">extends</span> <span class="pre">BinaryExpression</span> <span class="pre">with</span> <span class="pre">ArraySortLike</span></code>; the second arg must be a <code class="docutils literal notranslate"><span class="pre">Literal(_:</span> <span class="pre">Boolean,</span> <span class="pre">BooleanType)</span></code>. Comet <code class="docutils literal notranslate"><span class="pre">CometSortArray</span></code> flags <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> under strict floating-point and falls back for nested arrays whose innermost element is <code class="docutils literal notranslate"><span class="pre">Struct</span></code> or <code class="docutils literal notranslate"><span class="pre">Null</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): trait set changes substantively: <code class="docutils literal notranslate"><span class="pre">ArraySortLike</span></code> and <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> are removed, <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span> <span class="pre">=</span> <span class="pre">true</span></code> becomes an override, and <code class="docutils literal notranslate"><span class="pre">ascendingOrder</span></code> is widened to accept any foldable boolean (not just <code class="docutils literal notranslate"><span class="pre">Literal</span></code>). Comet’s <code class="docutils literal notranslate"><span class="pre">CometSortArray</span></code> still requires a <code class="docutils literal notranslate"><span class="pre">Literal</span></code>, so the new foldable form falls back at convert time.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
 </ul>
 </section>
 <section id="bitwise-funcs">
@@ -737,7 +878,24 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> bigint</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> binary</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> boolean</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cast</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cast</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8 modulo <code class="docutils literal notranslate"><span class="pre">Cast.canUpCast</span></code> refactored to delegate to <code class="docutils literal notranslate"><span class="pre">UpCastRule.canUpCast</span></code>.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Cast(child,</span> <span class="pre">dataType,</span> <span class="pre">timeZoneId,</span> <span class="pre">evalMode)</span></code>; eval modes are <code class="docutils literal notranslate"><span class="pre">LEGACY</span></code>, <code class="docutils literal notranslate"><span class="pre">ANSI</span></code>, <code class="docutils literal notranslate"><span class="pre">TRY</span></code>. The legacy <code class="docutils literal notranslate"><span class="pre">Cast.canCast</span></code> matrix and the <code class="docutils literal notranslate"><span class="pre">Cast.canAnsiCast</span></code> matrix decide acceptance per type pair. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometCast</span></code> (<code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/expressions/CometCast.scala</span></code>) using a per-source-type support matrix that returns <code class="docutils literal notranslate"><span class="pre">Compatible</span></code>, <code class="docutils literal notranslate"><span class="pre">Incompatible(reason)</span></code>, or <code class="docutils literal notranslate"><span class="pre">Unsupported(reason)</span></code>; literal children are short-circuited to <code class="docutils literal notranslate"><span class="pre">Compatible()</span></code> so <code class="docutils literal notranslate"><span class="pre">CometLiteral</span></code> validates them. The serialized <code class="docutils literal notranslate"><span class="pre">Cast</span></code> proto carries <code class="docutils literal notranslate"><span class="pre">datatype</span></code>, <code class="docutils literal notranslate"><span class="pre">evalMode</span></code>, <code class="docutils literal notranslate"><span class="pre">timezone</span></code> (default <code class="docutils literal notranslate"><span class="pre">UTC</span></code>), <code class="docutils literal notranslate"><span class="pre">allowIncompat</span></code> (from <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible</span></code>), and <code class="docutils literal notranslate"><span class="pre">isSpark4Plus</span></code>. The native side (<code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/conversion_funcs/cast.rs</span></code>) implements explicit per-eval-mode branches for narrowing numeric casts that match Spark’s overflow exceptions, and falls through to DataFusion <code class="docutils literal notranslate"><span class="pre">cast_with_options(safe</span> <span class="pre">=</span> <span class="pre">!ANSI)</span></code> for the rest.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">VariantType</span></code> added; <code class="docutils literal notranslate"><span class="pre">StringType</span></code> literals replaced with <code class="docutils literal notranslate"><span class="pre">_:</span> <span class="pre">StringType</span></code> to accommodate collated strings. <code class="docutils literal notranslate"><span class="pre">(TimestampType,</span> <span class="pre">ByteType|ShortType|IntegerType)</span></code> added to <code class="docutils literal notranslate"><span class="pre">canAnsiCast</span></code>. <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor. New <code class="docutils literal notranslate"><span class="pre">ToPrettyString.BinaryFormatter</span></code> semantics for <code class="docutils literal notranslate"><span class="pre">Binary</span> <span class="pre">-&gt;</span> <span class="pre">String</span></code> are replicated natively via <code class="docutils literal notranslate"><span class="pre">spark_binary_formatter</span></code>. Numeric-to-numeric matrix unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">TimeType</span></code> added; many <code class="docutils literal notranslate"><span class="pre">TimeType</span></code> arms in <code class="docutils literal notranslate"><span class="pre">canCast</span></code>/<code class="docutils literal notranslate"><span class="pre">canAnsiCast</span></code>. Geospatial <code class="docutils literal notranslate"><span class="pre">GeographyType</span></code> / <code class="docutils literal notranslate"><span class="pre">GeometryType</span></code> types added with their own conversion rules. Numeric-to-numeric matrix unchanged.</p></li>
+<li><p>Known divergences and gaps:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">CAST(&lt;binary&gt;</span> <span class="pre">AS</span> <span class="pre">STRING)</span></code> uses <code class="docutils literal notranslate"><span class="pre">unsafe</span> <span class="pre">{</span> <span class="pre">String::from_utf8_unchecked</span> <span class="pre">}</span></code> in native code, which is undefined behaviour for non-UTF8 inputs (https://github.com/apache/datafusion-comet/issues/4488).</p></li>
+<li><p>Spark 4.0 collated <code class="docutils literal notranslate"><span class="pre">StringType</span></code> is not explicitly guarded; pattern equality is expected to keep collated-string casts falling back, but there is no test (https://github.com/apache/datafusion-comet/issues/4489; umbrella #2190).</p></li>
+<li><p>Spark 4.1 <code class="docutils literal notranslate"><span class="pre">TimeType</span></code> casts have no explicit <code class="docutils literal notranslate"><span class="pre">Unsupported</span></code> arm; they fall back implicitly but do not appear in the auto-generated compatibility doc (https://github.com/apache/datafusion-comet/issues/4490).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CAST(&lt;map&gt;</span> <span class="pre">AS</span> <span class="pre">&lt;map&gt;)</span></code> falls back to Spark even though native <code class="docutils literal notranslate"><span class="pre">cast_map_to_map</span></code> exists (https://github.com/apache/datafusion-comet/issues/4491).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.castComplexTypesToString.enabled=true</span></code> is not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4492).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CAST(&lt;float|double&gt;</span> <span class="pre">AS</span> <span class="pre">DECIMAL)</span></code> rounding may differ from Spark (<code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>, gated by <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible</span></code>, tracked at https://github.com/apache/datafusion-comet/issues/1371).</p></li>
+</ul>
+</li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> date</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> decimal</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> double</p></li>
