@@ -31,15 +31,24 @@ import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
+
+  private val duplicateNamesReason =
+    "`CreateNamedStruct` with duplicate field names is not supported"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(duplicateNamesReason)
+
+  override def getSupportLevel(expr: CreateNamedStruct): SupportLevel = {
+    if (expr.names.length != expr.names.distinct.length) {
+      Unsupported(Some(duplicateNamesReason))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: CreateNamedStruct,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (expr.names.length != expr.names.distinct.length) {
-      withInfo(expr, "CreateNamedStruct with duplicate field names are not supported")
-      return None
-    }
-
     val valExprs = expr.valExprs.map(exprToProtoInternal(_, inputs, binding))
 
     if (valExprs.forall(_.isDefined)) {
