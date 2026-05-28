@@ -25,7 +25,17 @@ import org.apache.arrow.vector.util.TransferPair;
 import org.apache.parquet.Preconditions;
 import org.apache.spark.unsafe.types.UTF8String;
 
-/** A column vector whose elements are dictionary-encoded. */
+/**
+ * A {@link CometDecodedVector} for dictionary-encoded columns, holding an indices vector plus a
+ * separate {@link CometDictionary} of values.
+ *
+ * <p>Required as a distinct subclass because Spark's {@link
+ * org.apache.spark.sql.vectorized.ColumnVector} contract exposes per-row scalar accessors (e.g.
+ * {@code getInt(i)}, {@code getUTF8String(i)}) that must lazily decode {@code values[indices[i]]};
+ * Arrow's own {@code DictionaryEncoding} metadata alone does not provide this. Slicing produces a
+ * vector that aliases the same dictionary; lifecycle tracking via {@code isAlias} prevents
+ * double-closing the shared dictionary.
+ */
 public class CometDictionaryVector extends CometDecodedVector {
   public final CometPlainVector indices;
   public final CometDictionary values;

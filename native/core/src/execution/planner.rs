@@ -629,7 +629,11 @@ impl PhysicalPlanner {
             }
             ExprStruct::ToJson(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(ToJson::new(child, &expr.timezone)))
+                Ok(Arc::new(ToJson::new(
+                    child,
+                    &expr.timezone,
+                    expr.ignore_null_fields,
+                )))
             }
             ExprStruct::ToPrettyString(expr) => {
                 let mut spark_cast_options =
@@ -1518,6 +1522,7 @@ impl PhysicalPlanner {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 let metadata_location = common.metadata_location.clone();
+                let catalog_name = common.catalog_name.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
                 let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
 
@@ -1525,6 +1530,7 @@ impl PhysicalPlanner {
                     metadata_location,
                     required_schema,
                     catalog_properties,
+                    catalog_name,
                     tasks,
                     data_file_concurrency_limit,
                 )?;

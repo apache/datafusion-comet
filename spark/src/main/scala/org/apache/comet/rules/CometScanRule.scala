@@ -367,12 +367,13 @@ case class CometScanRule(session: SparkSession)
             val hadoopDerivedProperties =
               CometIcebergNativeScan.hadoopToIcebergS3Properties(hadoopS3Options)
 
-            // Extract vended credentials from FileIO (REST catalog credential vending).
-            // FileIO properties take precedence over Hadoop-derived properties because
-            // they contain per-table credentials vended by the REST catalog.
+            // Forward the full FileIO property bag (including credentials.uri, OAuth tokens,
+            // tenant-id, etc.) so a CometS3CredentialProvider can see everything LoadTableResponse
+            // returned. The storage-prefix narrowing happens native-side just before
+            // FileIOBuilder.with_prop, since iceberg-rust's FileIO is the only consumer that
+            // requires the narrowed view.
             val fileIOProperties = tableOpt
               .flatMap(IcebergReflection.getFileIOProperties)
-              .map(CometIcebergNativeScan.filterStorageProperties)
               .getOrElse(Map.empty)
 
             val catalogProperties = hadoopDerivedProperties ++ fileIOProperties

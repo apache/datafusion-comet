@@ -404,8 +404,10 @@ private[codegen] object CometBatchKernelCodegenInput {
   /**
    * Java method name for the per-column null check. Primitive scalars wrapped in
    * [[CometPlainVector]] expose `isNullAt`; Arrow typed fields expose `isNull`. Same semantics.
+   * Used both by `emitTypedGetters` (for the kernel's `isNullAt` switch) and by
+   * `CometBatchKernelCodegen.defaultBody` (for the `NullIntolerant` short-circuit).
    */
-  private def nullCheckMethod(spec: ArrowColumnSpec): String = spec match {
+  def nullCheckMethod(spec: ArrowColumnSpec): String = spec match {
     case sc: ScalarColumnSpec if wrapsInCometPlainVector(sc.vectorClass) => "isNullAt"
     case _ => "isNull"
   }
