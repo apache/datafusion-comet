@@ -23,21 +23,9 @@ Comet aims to provide consistent results with the version of Apache Spark that i
 
 This guide documents areas where Comet's behavior is known to differ from Spark. Topics are grouped by subsystem:
 
-- **Parquet**: limitations when reading Parquet files (both scan implementations, shared and per-implementation).
+- **Parquet**: limitations when reading Parquet files.
 - **Floating-point comparison**: NaN and signed-zero handling in comparisons.
 - **Regular expressions**: differences between the Rust regexp crate and Java's regex engine.
 - **Operators**: operator-level compatibility notes, including window functions and round-robin partitioning.
 - **Expressions**: per-expression compatibility notes, including cast.
 - **Spark versions**: version-specific known issues and limitations.
-
-```{toctree}
-:maxdepth: 1
-:hidden:
-
-scans
-floating-point
-regex
-operators
-expressions/index
-spark-versions
-```

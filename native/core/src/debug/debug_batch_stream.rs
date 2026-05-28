@@ -21,7 +21,6 @@ use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema};
-use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::Result;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::ColumnarValue;
@@ -87,12 +86,6 @@ impl datafusion::physical_plan::ExecutionPlan for DebugExecutionDataStream {
     }
     fn children(&self) -> Vec<&Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
         vec![&self.inner]
-    }
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
-    ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
     }
     fn with_new_children(
         self: Arc<Self>,

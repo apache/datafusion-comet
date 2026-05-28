@@ -191,7 +191,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("native_datafusion scan reports task-level input metrics matching Spark") {
+  test("native scan reports task-level input metrics matching Spark") {
     val totalRows = 10000
     withTempPath { dir =>
       spark
@@ -206,11 +206,10 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "SELECT * FROM tbl where _1 > 2000",
           CometConf.COMET_ENABLED.key -> "false")
 
-      // Collect input metrics from Comet native_datafusion scan.
+      // Collect input metrics from Comet native scan.
       val (cometBytes, cometRecords, cometPlan) = collectInputMetrics(
         "SELECT * FROM tbl where _1 > 2000",
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+        CometConf.COMET_ENABLED.key -> "true")
 
       // Verify the plan actually used CometNativeScanExec
       assert(
@@ -258,10 +257,8 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           collectInputMetrics(joinQuery, CometConf.COMET_ENABLED.key -> "false")
 
         // Collect from Comet native scan
-        val (cometBytes, cometRecords, cometPlan) = collectInputMetrics(
-          joinQuery,
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+        val (cometBytes, cometRecords, cometPlan) =
+          collectInputMetrics(joinQuery, CometConf.COMET_ENABLED.key -> "true")
 
         // Verify the plan has multiple CometNativeScanExec nodes
         val scanCount = collect(cometPlan) { case s: CometNativeScanExec =>
@@ -329,10 +326,8 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           collectInputMetrics(unionQuery, CometConf.COMET_ENABLED.key -> "false")
 
         // Collect from Comet native scan
-        val (cometBytes, cometRecords, cometPlan) = collectInputMetrics(
-          unionQuery,
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+        val (cometBytes, cometRecords, cometPlan) =
+          collectInputMetrics(unionQuery, CometConf.COMET_ENABLED.key -> "true")
 
         // Verify the plan has multiple CometNativeScanExec nodes
         val scanCount = collect(cometPlan) { case s: CometNativeScanExec =>

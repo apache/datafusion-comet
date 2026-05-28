@@ -42,8 +42,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -54,8 +53,10 @@ import com.google.protobuf.CodedOutputStream
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
@@ -425,10 +426,6 @@ abstract class CometNativeExec extends CometExec {
         throw new CometRuntimeException(
           s"CometNativeExec should not be executed directly without a serialized plan: $this")
       case Some(serializedPlan) =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        SQLConf.get.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-
         val serializedPlanCopy = serializedPlan
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
@@ -1218,7 +1215,8 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (op.generator.children.length != 1) {
       return Unsupported(Some("generators with multiple inputs are not supported"))
     }
-    if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
+    val nodeName = op.generator.nodeName.toLowerCase(Locale.ROOT)
+    if (nodeName != "explode" && nodeName != "posexplode") {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
     if (op.outer) {
@@ -1262,10 +1260,13 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       return None
     }
 
+    val isPosExplode = op.generator.nodeName.toLowerCase(Locale.ROOT) == "posexplode"
+
     val explodeBuilder = OperatorOuterClass.Explode
       .newBuilder()
       .setChild(childExprProto.get)
       .setOuter(op.outer)
+      .setPosition(isPosExplode)
       .addAllProjectList(projectExprs.map(_.get).asJava)
 
     Some(builder.setExplode(explodeBuilder).build())
@@ -1404,13 +1405,6 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
-  private def containsMapType(dt: DataType): Boolean = dt match {
-    case _: MapType => true
-    case StructType(fields) => fields.exists(f => containsMapType(f.dataType))
-    case ArrayType(elementType, _) => containsMapType(elementType)
-    case _ => false
-  }
-
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -1423,10 +1417,29 @@ trait CometBaseAggregate {
     // We support {Partial, PartialMerge} mix; other combinations are rejected.
     val multiMode = modes.size > 1 && modeSet != Set(Partial, PartialMerge)
     // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation.
+    // if there is Comet partial aggregation, unless all aggregates have compatible
+    // intermediate buffer formats (safe for mixed Spark/Comet execution).
     val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
 
-    if (multiMode || sparkFinalMode) {
+    if (multiMode) {
+      withInfo(aggregate, s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
+      return None
+    }
+
+    if (sparkFinalMode &&
+      !QueryPlanSerde.allAggsSupportMixedExecution(aggregate.aggregateExpressions)) {
+      withInfo(
+        aggregate,
+        "Spark Final aggregate without Comet Partial requires compatible " +
+          "intermediate buffer formats")
+      return None
+    }
+
+    // Check if this aggregate has been tagged as unsafe for mixed execution
+    // (Comet partial + Spark final with incompatible intermediate buffers)
+    val unsafeReason = aggregate.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL)
+    if (unsafeReason.isDefined) {
+      withInfo(aggregate, unsafeReason.get)
       return None
     }
 
@@ -1441,7 +1454,7 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (groupingExpressions.exists(expr => containsMapType(expr.dataType))) {
+    if (groupingExpressions.exists(expr => QueryPlanSerde.containsMapType(expr.dataType))) {
       withInfo(aggregate, "Grouping on map-containing types is not supported")
       return None
     }
@@ -1678,6 +1691,20 @@ object CometObjectHashAggregateExec
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def getSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
+    // Mirror the same test-knobs as CometHashAggregateExec so that mixed-execution
+    // unit tests can selectively disable partial or final ObjectHashAggregateExec conversion.
+    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
+      return Unsupported(Some("Partial aggregates disabled via test config"))
+    }
+    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(_.mode == Final)) {
+      return Unsupported(Some("Final aggregates disabled via test config"))
+    }
+    Compatible()
+  }
 
   override def convert(
       aggregate: ObjectHashAggregateExec,

@@ -1,0 +1,57 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Runs on main only. Oldest supported Iceberg version, paired with Spark 3.4.
+name: Iceberg Spark SQL Tests (Iceberg 1.8)
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "native/**/src/**"
+      - "native/**/Cargo.toml"
+      - "native/Cargo.lock"
+      - "!native/hdfs/**"
+      - "!native/fs-hdfs/**"
+      - "common/src/main/**"
+      - "common/pom.xml"
+      - "spark/src/main/**"
+      - "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "spark/pom.xml"
+      - "dev/diffs/iceberg/**"
+      - "pom.xml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/iceberg_spark_test_1_8.yml"
+      - ".github/workflows/iceberg_spark_test_reusable.yml"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-iceberg-builder/**"
+  workflow_dispatch:
+
+jobs:
+  iceberg-spark:
+    uses: ./.github/workflows/iceberg_spark_test_reusable.yml
+    with:
+      iceberg-short: '1.8'
+      iceberg-full: '1.8.1'
+      spark-short: '3.4'
+      spark-full: '3.4.3'
+      java: 11

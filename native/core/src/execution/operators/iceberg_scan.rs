@@ -25,7 +25,6 @@ use std::task::{Context, Poll};
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::SchemaRef;
-use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::Column;
@@ -107,13 +106,6 @@ impl IcebergScanExec {
 impl ExecutionPlan for IcebergScanExec {
     fn name(&self) -> &str {
         "IcebergScanExec"
-    }
-
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> DFResult<TreeNodeRecursion>,
-    ) -> DFResult<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
     }
 
     fn schema(&self) -> SchemaRef {
