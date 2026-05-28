@@ -38,7 +38,10 @@ class CometJoinSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey("BroadcastNestedLoopJoinExec") -> "true") {
         testFun
       }
     }
@@ -704,14 +707,81 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("BroadcastNestedLoopJoin with unequal filter") {
-    withSQLConf(
-      CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED.key -> "true",
-      CometConf.getOperatorAllowIncompatConfigKey("BroadcastNestedLoopJoinExec") -> "true",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
         withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
           val df =
             sql("SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a JOIN tbl_b ON tbl_a._1 > tbl_b._1")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin cross join with count-only output") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 5).map(i => (i, s"w_$i")), "tbl_b") {
+          val df = sql("SELECT /*+ BROADCAST(tbl_b) */ count(*) FROM tbl_a, tbl_b")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin LEFT OUTER with inequality") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
+          val df =
+            sql(
+              "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._1 > tbl_b._1")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin RIGHT OUTER with inequality") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
+          val df =
+            sql("SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._1 > tbl_b._1")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin LEFT SEMI with inequality") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
+          val df =
+            sql("SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT SEMI JOIN tbl_b ON tbl_a._1 > tbl_b._1")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin LEFT ANTI with inequality") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
+          val df =
+            sql("SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b ON tbl_a._1 > tbl_b._1")
           checkSparkAnswerAndOperator(
             df,
             Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
