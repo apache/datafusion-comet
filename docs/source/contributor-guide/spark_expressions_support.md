@@ -311,8 +311,23 @@
 - [ ] array_size
 - [ ] cardinality
 - [x] concat
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Concat(children) extends ComplexTypeMergingExpression with QueryErrorsBase`; `allowedTypes = Seq(StringType, BinaryType, ArrayType)`; result type is the merged child type. Empty children is allowed and returns the empty string of the result type.
+  - Spark 4.0.1 (audited 2026-05-27): `allowedTypes` widens `StringType` to `StringTypeWithCollation(supportsTrimCollation = true)`. Error-formatting helper changes from `paramIndex` to `ordinalNumber`. Runtime semantics unchanged for `UTF8_BINARY`.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+  - Known limitation: Comet only supports `StringType` children natively; `BinaryType` and `ArrayType` inputs fall back to Spark (https://github.com/apache/datafusion-comet/issues/4471). Non-default Spark 4.0 string collations are not propagated (https://github.com/apache/datafusion-comet/issues/2190).
 - [x] reverse
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Reverse(child) extends UnaryExpression with ImplicitCastInputTypes with NullIntolerant`; `inputTypes = Seq(TypeCollection(StringType, ArrayType))`; `dataType = child.dataType`. For string, calls `UTF8String.reverse()`; for array, reverses element order in-place via `GenericArrayData`.
+  - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `override def nullIntolerant: Boolean = true`; `inputTypes` widened to `Seq(TypeCollection(StringTypeWithCollation(supportsTrimCollation = true), ArrayType))`. Semantics unchanged for `UTF8_BINARY`.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+  - Known limitation: `Reverse` on an array containing `BinaryType` elements is reported as `Incompatible` and falls back unless explicitly enabled (https://github.com/apache/datafusion-comet/issues/2763).
 - [x] size
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Size(child, legacySizeOfNull) extends UnaryExpression with ExpectsInputTypes`; `inputTypes = Seq(TypeCollection(ArrayType, MapType)) -> IntegerType`. `legacySizeOfNull=true` returns `-1` for NULL input; `false` returns NULL. Comet routes via `CometSize`, which emits a `CaseWhen(isNotNull(child), size_scalar(child), Literal(legacySizeOfNull))`.
+  - Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
+  - Known limitation: `Size` over `MapType` falls back to Spark (https://github.com/apache/datafusion-comet/issues/4472).
 
 ### conditional_funcs
 
