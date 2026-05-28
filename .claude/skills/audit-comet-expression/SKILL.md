@@ -209,6 +209,11 @@ and in EXPLAIN output, so they are user-facing.
 - Use backticks around config keys, type names, and SQL identifiers.
 - Link to a tracking GitHub issue for known incompatibilities so users can
   follow progress: `(https://github.com/apache/datafusion-comet/issues/NNNN)`.
+  **Verify the issue exists and is open** before citing it
+  (`gh issue view <N> --repo apache/datafusion-comet`). Issue numbers
+  invented from context or recalled from memory are a recurring failure
+  mode: a stale link is worse than no link because the reader follows it
+  and finds nothing.
 - Keep it concise. Single sentence is best.
 - Do not write "Incompatible reason: ..." or "Unsupported because ...".
   The doc generator adds the framing.
@@ -390,6 +395,49 @@ finding for Step 6.
    read like internal implementation notes ("DataFusion probes the longer
    side") or that mismatch their support level (an "Incompatible" reason
    that says "X is not supported").
+10. **Expression-shape restrictions live in `getSupportLevel`.** Any
+    restriction that is knowable from the expression alone (literal-only
+    arguments, unsupported child data type, foldable-only options, a
+    specific operator shape) must be declared as an
+    `Unsupported(Some(reason))` branch in `getSupportLevel`, not gated
+    inside `convert` with a `withInfo` + `return None`. Putting the
+    check in `convert` means EXPLAIN surfaces the reason only at
+    conversion time, the doc generator never sees it, and the
+    dispatcher cannot route around it. The literal-only `len`
+    restrictions on `CometLeft`, `CometRight`, and `CometSubstring`
+    are the canonical example of the in-`convert` pattern that this
+    skill forbids: lift them into `getSupportLevel`.
+11. **Spark 4.0 collation divergences are flagged, not glossed over.**
+    If the Spark 4.0/4.1 implementation routes through
+    `CollationSupport.X.exec(..., collationId)` (or uses
+    `StringTypeWithCollation` / `StringTypeNonCSAICollation` for input
+    types) and the Comet path does not propagate collation, the
+    expression is `Incompatible` for non-default collations. Mark the
+    branch `Incompatible(Some(reason))` linking to the collation
+    umbrella issue
+    (https://github.com/apache/datafusion-comet/issues/4496) so the
+    follow-up sweep can find every site. "Behaviour unchanged for
+    `UTF8_BINARY`" alone is not a justification for leaving the
+    support level at `Compatible`: users running with non-default
+    collations get silently wrong answers.
+12. **Known divergences flip the support level.** If you find yourself
+    writing the words "Known divergence" or "Known limitation" in the
+    support-doc sub-bullet while leaving `getSupportLevel` returning
+    `Compatible`, the audit has skipped its job. A documented
+    divergence is by definition not `Compatible`. Promote the branch
+    to `Incompatible(Some(reason))` (or `Unsupported` if the native
+    path errors rather than producing a wrong answer) and link the
+    tracking issue. The `replace` empty-search-string divergence with
+    DataFusion is the canonical example of this anti-pattern.
+13. **Unreachable serde mappings are removed.** Expressions registered
+    as `RuntimeReplaceable` (or otherwise rewritten by an analyzer
+    rule before serde) never reach `QueryPlanSerde.exprToProtoInternal`
+    with their original class. If the audit finds that a registered
+    `CometScalarFunction("name")` or `CometExpressionSerde` entry can
+    never be hit (e.g. the `btrim` mapping for `StringTrimBoth`, which
+    is rewritten to `StringTrim` before serde runs), delete the
+    registration in the same audit PR. Documenting the dead code in
+    the support doc is not enough.
 
 ---
 
@@ -509,6 +557,24 @@ need user approval. The classes of fix are:
 - Hoist a reason shared by multiple serdes (e.g. a recurring
   TimestampNTZ caveat) into a small `private object` companion in the
   same file, mirroring `UTCTimestampSerde`.
+- Lift expression-shape restrictions (literal-only argument, foldable
+  child, unsupported child data type) out of `convert`'s `withInfo` +
+  `return None` and into an `Unsupported(Some(reason))` branch in
+  `getSupportLevel`. The `convert` body should then assume the
+  precondition holds and stop calling `withInfo` for that case.
+- Promote a documented "Known divergence" or "Known limitation" sub-
+  bullet from a `Compatible` branch to `Incompatible(Some(reason))`
+  (or `Unsupported` if the native path errors) and link the tracking
+  issue. The sub-bullet stays as user-facing documentation. The
+  support level catches up to match.
+- Mark expressions whose Spark 4.0+ path routes through
+  `CollationSupport.X.exec` (or accepts `StringTypeWithCollation` /
+  `StringTypeNonCSAICollation`) as `Incompatible(Some(reason))` for
+  non-default collations, linking
+  https://github.com/apache/datafusion-comet/issues/4496.
+- Delete unreachable serde registrations (`RuntimeReplaceable` rewrites
+  the expression before serde runs, an analyzer rule strips the case,
+  etc.) rather than documenting them as a curiosity.
 
 Each fix is one of these patterns. If a finding requires a semantics
 decision (e.g. is a specific branch really `Unsupported`, or is it
@@ -542,7 +608,13 @@ For each follow-up:
 
 1. Search for an existing issue first
    (`gh issue list --search "<expression> <symptom> in:title,body" --state all --limit 5`).
-   If one exists, link it from the PR description and the support-doc
+   If a candidate match comes back, **open it
+   (`gh issue view <N> --repo apache/datafusion-comet`) and confirm the
+   title and body actually describe the divergence you found, and that
+   the issue is still `OPEN`**. A closed-but-fixed issue cited as
+   "known divergence" is worse than no citation, because the reader
+   follows the link and finds a fix that was already shipped. If it
+   matches, link it from the PR description and the support-doc
    sub-bullet, and stop.
 2. If no issue exists, file one with `gh issue create` using the
    `correctness` label (or `documentation` for doc-only gaps) plus any
