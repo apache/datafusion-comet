@@ -20,12 +20,12 @@ use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
 use std::{any::Any, sync::Arc};
 
 use crate::bloom_filter::spark_bloom_filter;
-use crate::bloom_filter::spark_bloom_filter::SparkBloomFilter;
+use crate::bloom_filter::spark_bloom_filter::{SparkBloomFilter, SparkBloomFilterVersion};
 
 use arrow::array::ArrayRef;
 use arrow::array::BinaryArray;
 use datafusion::common::{downcast_value, ScalarValue};
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{AggregateUDFImpl, Signature};
 use datafusion::physical_expr::expressions::Literal;
@@ -37,6 +37,10 @@ pub struct BloomFilterAgg {
     signature: Signature,
     num_items: i32,
     num_bits: i32,
+    /// Output serialization version. Spark <= 4.0 only knows V1; Spark 4.1+'s
+    /// `BloomFilter.create` defaults to V2, so the JVM serde sets this to V2 on
+    /// 4.1+ to keep `bloom_filter_agg` byte-equivalent with Spark's aggregator.
+    version: SparkBloomFilterVersion,
 }
 
 #[inline]
@@ -54,6 +58,7 @@ impl BloomFilterAgg {
         num_items: Arc<dyn PhysicalExpr>,
         num_bits: Arc<dyn PhysicalExpr>,
         data_type: DataType,
+        version: SparkBloomFilterVersion,
     ) -> Self {
         assert!(matches!(data_type, DataType::Binary));
         Self {
@@ -70,6 +75,7 @@ impl BloomFilterAgg {
             ),
             num_items: extract_i32_from_literal(num_items),
             num_bits: extract_i32_from_literal(num_bits),
+            version,
         }
     }
 }
@@ -92,10 +98,13 @@ impl AggregateUDFImpl for BloomFilterAgg {
     }
 
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::new(SparkBloomFilter::from((
+        Ok(Box::new(SparkBloomFilter::new(
+            self.version,
             spark_bloom_filter::optimal_num_hash_functions(self.num_items, self.num_bits),
             self.num_bits,
-        ))))
+            // Spark's BloomFilterAggregate always uses BloomFilterImplV2.DEFAULT_SEED (= 0).
+            0,
+        )))
     }
 
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
@@ -132,8 +141,16 @@ impl Accumulator for SparkBloomFilter {
                 ScalarValue::Utf8(Some(value)) => {
                     self.put_binary(value.as_bytes());
                 }
-                _ => {
-                    unreachable!()
+                // Spark's BloomFilterAggregate.update ignores null inputs.
+                ScalarValue::Int8(None)
+                | ScalarValue::Int16(None)
+                | ScalarValue::Int32(None)
+                | ScalarValue::Int64(None)
+                | ScalarValue::Utf8(None) => {}
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "bloom_filter_agg received an unsupported input type: {other:?}"
+                    )));
                 }
             }
             Ok(())
@@ -141,6 +158,13 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
+        // Spark's BloomFilterAggregate.eval returns NULL when no bit is set,
+        // i.e. the aggregate saw no non-null input. Mirror that here so an
+        // empty-input bloom_filter_agg yields NULL rather than a serialized
+        // empty filter.
+        if self.cardinality() == 0 {
+            return Ok(ScalarValue::Binary(None));
+        }
         Ok(ScalarValue::Binary(Some(self.spark_serialization())))
     }
 
@@ -164,7 +188,34 @@ impl Accumulator for SparkBloomFilter {
         );
         assert_eq!(states[0].len(), 1);
         let state_sv = downcast_value!(states[0], BinaryArray);
-        self.merge_filter(state_sv.value_data());
-        Ok(())
+        self.merge_filter(state_sv.value_data())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spark's BloomFilterAggregate.eval returns NULL when the filter saw no
+    /// non-null input (cardinality 0); an untouched accumulator must match.
+    #[test]
+    fn evaluate_empty_filter_yields_null() {
+        let num_bits = 1024;
+        let num_hash = spark_bloom_filter::optimal_num_hash_functions(100, num_bits);
+        let mut acc = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::Binary(None));
+    }
+
+    /// A filter with at least one set bit serializes to a non-null binary.
+    #[test]
+    fn evaluate_non_empty_filter_yields_binary() {
+        let num_bits = 1024;
+        let num_hash = spark_bloom_filter::optimal_num_hash_functions(100, num_bits);
+        let mut acc = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
+        acc.put_long(42);
+        assert!(matches!(
+            acc.evaluate().unwrap(),
+            ScalarValue::Binary(Some(_))
+        ));
     }
 }

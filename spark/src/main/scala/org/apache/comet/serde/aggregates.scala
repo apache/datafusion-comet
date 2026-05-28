@@ -21,18 +21,20 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withInfo}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
+
+  override def supportsMixedPartialFinal: Boolean = true
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -80,6 +82,8 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 }
 
 object CometMax extends CometAggregateExpressionSerde[Max] {
+
+  override def supportsMixedPartialFinal: Boolean = true
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -151,8 +155,8 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Falls back to Spark in ANSI mode. Supports all numeric inputs except decimal types.")
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "YearMonthIntervalType and DayTimeIntervalType inputs are not supported")
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -319,6 +323,8 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
 }
 
 object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
+  override def supportsMixedPartialFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bitAnd: BitAndAgg,
@@ -353,6 +359,8 @@ object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
 }
 
 object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
+  override def supportsMixedPartialFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bitOr: BitOrAgg,
@@ -387,6 +395,8 @@ object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
 }
 
 object CometBitXOrAgg extends CometAggregateExpressionSerde[BitXorAgg] {
+  override def supportsMixedPartialFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bitXor: BitXorAgg,
@@ -628,6 +638,8 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
 
 object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilterAggregate] {
 
+  override def supportsMixedPartialFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bloomFilter: BloomFilterAggregate,
@@ -637,8 +649,20 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
     // We ignore mutableAggBufferOffset and inputAggBufferOffset because they are
     // implementation details for Spark's ObjectHashAggregate.
     val childExpr = exprToProto(bloomFilter.child, inputs, binding)
-    val numItemsExpr = exprToProto(bloomFilter.estimatedNumItemsExpression, inputs, binding)
-    val numBitsExpr = exprToProto(bloomFilter.numBitsExpression, inputs, binding)
+    // Spark's BloomFilterAggregate caps numItems / numBits at the configured maxima
+    // (its `estimatedNumItems` / `numBits` lazy vals). Comet's native aggregate stores
+    // these as i32, so an uncapped Long literal (e.g. the Long.MaxValue cases in
+    // BloomFilterAggregateQuerySuite) would wrap to a bogus negative size and abort the
+    // executor with a multi-exabyte allocation. Apply the same cap here so the native
+    // side always receives a sane, Spark-equivalent value.
+    val numItems = math.min(
+      bloomFilter.estimatedNumItemsExpression.eval().asInstanceOf[Number].longValue,
+      conf.getConf(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_ITEMS))
+    val numBits = math.min(
+      bloomFilter.numBitsExpression.eval().asInstanceOf[Number].longValue,
+      conf.getConf(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_BITS))
+    val numItemsExpr = exprToProto(Literal(numItems, LongType), inputs, binding)
+    val numBitsExpr = exprToProto(Literal(numBits, LongType), inputs, binding)
     val dataType = serializeDataType(bloomFilter.dataType)
 
     if (childExpr.isDefined &&
@@ -660,6 +684,13 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
       builder.setNumItems(numItemsExpr.get)
       builder.setNumBits(numBitsExpr.get)
       builder.setDatatype(dataType.get)
+      // SPARK-47547 (Spark 4.1) introduced a V2 BloomFilter binary format with
+      // different bit-scattering. Spark 4.1's `BloomFilter.create` (used by
+      // `BloomFilterAggregate`) defaults to V2; older Spark always wrote V1. Match
+      // the Spark version so `bloom_filter_agg` outputs are byte-equivalent.
+      builder.setVersion(
+        if (isSpark41Plus) ExprOuterClass.BloomFilterVersion.BLOOM_FILTER_VERSION_V2
+        else ExprOuterClass.BloomFilterVersion.BLOOM_FILTER_VERSION_V1)
 
       Some(
         ExprOuterClass.AggExpr

@@ -46,9 +46,7 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(
-        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+      withSQLConf(CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true") {
         testFun
       }
     }

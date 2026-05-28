@@ -24,6 +24,7 @@ pub mod operator_registry;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
+    expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
@@ -69,7 +70,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    SumInteger, ToCsv,
+    SparkBloomFilterVersion, SumInteger, ToCsv,
 };
 use datafusion_spark::function::aggregate::collect::SparkCollectSet;
 use iceberg::expr::Bind;
@@ -116,16 +117,16 @@ use datafusion_comet_proto::{
     },
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide,
-        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        upper_window_frame_bound::UpperFrameBoundStruct, AggregateMode as ProtoAggregateMode,
+        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation,
+    Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
+    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal,
+    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -150,6 +151,25 @@ struct JoinParameters {
     pub join_type: DFJoinType,
 }
 
+/// If `expr` evaluates to `Timestamp(_, Some(_))` against `schema`, wrap it in a
+/// metadata-only cast to `Timestamp(_, None)`. This is required because
+/// DataFusion's `SortMergeJoinExec` comparator only supports timezone-less
+/// timestamp types, while Spark's `TimestampType` serializes as
+/// `Timestamp(µs, "UTC")`. The cast preserves ordering on the same time unit.
+fn strip_timestamp_tz(
+    expr: Arc<dyn PhysicalExpr>,
+    schema: &Schema,
+) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+    match expr.data_type(schema)? {
+        DataType::Timestamp(unit, Some(_)) => Ok(Arc::new(CastExpr::new(
+            expr,
+            DataType::Timestamp(unit, None),
+            None,
+        ))),
+        _ => Ok(expr),
+    }
+}
+
 #[derive(Default)]
 pub struct BinaryExprOptions {
     pub is_integral_div: bool,
@@ -164,6 +184,9 @@ pub struct PhysicalPlanner {
     partition: i32,
     session_ctx: Arc<SessionContext>,
     query_context_registry: Arc<datafusion_comet_spark_expr::QueryContextMap>,
+    /// Captured at `createPlan` time on `ExecutionContext`; see that struct for the
+    /// propagation rationale. `None` when no driving Spark task is available.
+    task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl Default for PhysicalPlanner {
@@ -179,16 +202,24 @@ impl PhysicalPlanner {
             session_ctx,
             partition,
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
+            task_context: None,
         }
     }
 
-    pub fn with_exec_id(self, exec_context_id: i64) -> Self {
-        Self {
-            exec_context_id,
-            partition: self.partition,
-            session_ctx: Arc::clone(&self.session_ctx),
-            query_context_registry: Arc::clone(&self.query_context_registry),
-        }
+    pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
+        self.exec_context_id = exec_context_id;
+        self
+    }
+
+    /// Attach a propagated Spark `TaskContext` global reference. Called by the JNI `executePlan`
+    /// entry with whatever was captured at `createPlan` time. The planner clones this `Option`
+    /// into every `JvmScalarUdfExpr` it builds.
+    pub fn with_task_context(
+        mut self,
+        task_context: Option<Arc<Global<JObject<'static>>>>,
+    ) -> Self {
+        self.task_context = task_context;
+        self
     }
 
     /// Return session context of this planner.
@@ -325,6 +356,9 @@ impl PhysicalPlanner {
                         DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
                         DataType::List(f) => DataType::List(f).try_into()?,
                         DataType::Null => ScalarValue::Null,
+                        DataType::Time64(TimeUnit::Nanosecond) => {
+                            ScalarValue::Time64Nanosecond(None)
+                        }
                         dt => {
                             return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
@@ -594,7 +628,11 @@ impl PhysicalPlanner {
             }
             ExprStruct::ToJson(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(ToJson::new(child, &expr.timezone)))
+                Ok(Arc::new(ToJson::new(
+                    child,
+                    &expr.timezone,
+                    expr.ignore_null_fields,
+                )))
             }
             ExprStruct::ToPrettyString(expr) => {
                 let mut spark_cast_options =
@@ -699,6 +737,31 @@ impl PhysicalPlanner {
                 Ok(Arc::new(SparkArraysZipFunc::new(
                     children,
                     expr.names.clone(),
+                )))
+            }
+            ExprStruct::JvmScalarUdf(udf) => {
+                let args = udf
+                    .args
+                    .iter()
+                    .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let return_type =
+                    to_arrow_datatype(udf.return_type.as_ref().ok_or_else(|| {
+                        GeneralError("JvmScalarUdf missing return_type".to_string())
+                    })?);
+                // Invariant: task_context is propagated for every JvmScalarUdfExpr built during
+                // normal execution. The TEST_EXEC_CONTEXT_ID path is the only context in which
+                // task_context may legitimately be None (unit tests, direct native driver runs).
+                debug_assert!(
+                    self.task_context.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
+                    "task_context must be set for non-test execution"
+                );
+                Ok(Arc::new(JvmScalarUdfExpr::new(
+                    udf.class_name.clone(),
+                    args,
+                    return_type,
+                    udf.return_nullable,
+                    self.task_context.clone(),
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
@@ -985,11 +1048,25 @@ impl PhysicalPlanner {
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
                 let schema = child.schema();
 
-                let mode = if agg.mode == 0 {
-                    DFAggregateMode::Partial
-                } else {
-                    DFAggregateMode::Final
+                let proto_mode = ProtoAggregateMode::try_from(agg.mode).map_err(|_| {
+                    ExecutionError::GeneralError(format!(
+                        "Unsupported aggregate mode: {}",
+                        agg.mode
+                    ))
+                })?;
+                let mode = match proto_mode {
+                    ProtoAggregateMode::Partial => DFAggregateMode::Partial,
+                    ProtoAggregateMode::Final => DFAggregateMode::Final,
+                    // PartialMerge: Partial + MergeAsPartial
+                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Partial,
                 };
+
+                // Check if any expression uses PartialMerge mode. When present,
+                // those expressions are wrapped with MergeAsPartial to get merge
+                // semantics inside a Partial-mode AggregateExec.
+                let partial_merge_value = ProtoAggregateMode::PartialMerge as i32;
+                let has_partial_merge = proto_mode == ProtoAggregateMode::PartialMerge
+                    || agg.expr_modes.contains(&partial_merge_value);
 
                 let agg_exprs: PhyAggResult = agg
                     .agg_exprs
@@ -997,7 +1074,68 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_agg_expr(expr, Arc::clone(&schema)))
                     .collect();
 
-                let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
+                let aggr_expr: Vec<Arc<AggregateFunctionExpr>> = if has_partial_merge {
+                    // Wrap PartialMerge expressions with MergeAsPartial.
+                    // State fields in the child's output start at initial_input_buffer_offset.
+                    let mut state_offset = agg.initial_input_buffer_offset as usize;
+                    let per_expr_modes: Vec<i32> = if !agg.expr_modes.is_empty() {
+                        agg.expr_modes.clone()
+                    } else {
+                        vec![agg.mode; agg.agg_exprs.len()]
+                    };
+
+                    agg_exprs?
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, expr)| {
+                            if per_expr_modes[idx] == partial_merge_value {
+                                // PartialMerge: wrap with MergeAsPartial
+                                let state_fields = expr
+                                    .state_fields()
+                                    .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+                                let num_state_fields = state_fields.len();
+
+                                let state_cols: Vec<Arc<dyn PhysicalExpr>> = (0..num_state_fields)
+                                    .map(|i| {
+                                        let col_idx = state_offset + i;
+                                        let field = schema.field(col_idx);
+                                        Arc::new(Column::new(field.name(), col_idx))
+                                            as Arc<dyn PhysicalExpr>
+                                    })
+                                    .collect();
+                                state_offset += num_state_fields;
+
+                                let merge_udf =
+                                    crate::execution::merge_as_partial::MergeAsPartialUDF::new(
+                                        &expr,
+                                    )
+                                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?;
+                                let merge_udf_arc = Arc::new(
+                                    datafusion::logical_expr::AggregateUDF::new_from_impl(
+                                        merge_udf,
+                                    ),
+                                );
+
+                                let merge_expr =
+                                    AggregateExprBuilder::new(merge_udf_arc, state_cols)
+                                        .schema(Arc::clone(&schema))
+                                        .alias(format!("col_{idx}"))
+                                        .with_ignore_nulls(expr.ignore_nulls())
+                                        .with_distinct(expr.is_distinct())
+                                        .build()
+                                        .map_err(|e| {
+                                            ExecutionError::DataFusionError(e.to_string())
+                                        })?;
+
+                                Ok(Arc::new(merge_expr))
+                            } else {
+                                Ok(Arc::new(expr))
+                            }
+                        })
+                        .collect::<Result<Vec<_>, ExecutionError>>()?
+                } else {
+                    agg_exprs?.into_iter().map(Arc::new).collect()
+                };
 
                 // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
                 // Filters are only present in Partial mode; Final/PartialMerge always get None.
@@ -1248,8 +1386,12 @@ impl PhysicalPlanner {
                     default_values,
                     common.session_timezone.as_str(),
                     common.case_sensitive,
+                    common.return_null_struct_if_all_fields_missing,
+                    common.allow_type_promotion,
                     self.session_ctx(),
                     common.encryption_enabled,
+                    common.use_field_id,
+                    common.ignore_missing_field_id,
                 )?;
                 Ok((
                     vec![],
@@ -1345,6 +1487,7 @@ impl PhysicalPlanner {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 let metadata_location = common.metadata_location.clone();
+                let catalog_name = common.catalog_name.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
                 let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
 
@@ -1352,6 +1495,7 @@ impl PhysicalPlanner {
                     metadata_location,
                     required_schema,
                     catalog_properties,
+                    catalog_name,
                     tasks,
                     data_file_concurrency_limit,
                 )?;
@@ -1529,12 +1673,8 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, child.schema()))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // For UnnestExec, we need to add a projection to put the columns in the right order:
-                // 1. First add all projection columns
-                // 2. Then add the array column to be exploded
-                // Then UnnestExec will unnest the last column
-
-                // Use return_field() to get the proper column names from the expressions
+                // For posexplode, a parallel List<Int32> positions column is added before the
+                // array column so UnnestExec can unnest both in parallel.
                 let child_schema = child.schema();
                 let mut project_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projections
                     .iter()
@@ -1547,24 +1687,26 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                // Add the array column as the last column
                 let array_field = child_expr
                     .return_field(&child_schema)
                     .expect("Failed to get field from array expression");
                 let array_col_name = array_field.name().to_string();
+
+                if explode.position {
+                    let positions_expr: Arc<dyn PhysicalExpr> =
+                        Arc::new(ListPositionsExpr::new(Arc::clone(&child_expr)));
+                    project_exprs.push((positions_expr, "pos".to_string()));
+                }
                 project_exprs.push((Arc::clone(&child_expr), array_col_name.clone()));
 
-                // Create a projection to arrange columns as needed
                 let project_exec = Arc::new(ProjectionExec::try_new(
                     project_exprs,
                     Arc::clone(&child.native_plan),
                 )?);
 
-                // Get the input schema from the projection
                 let project_schema = project_exec.schema();
 
                 // Build the output schema for UnnestExec
-                // The output schema replaces the list column with its element type
                 let mut output_fields: Vec<Field> = Vec::new();
 
                 // Add all projection columns (non-array columns)
@@ -1572,9 +1714,17 @@ impl PhysicalPlanner {
                     output_fields.push(project_schema.field(i).clone());
                 }
 
-                // Add the unnested array element field
+                let array_input_index = if explode.position {
+                    // With outer=true, UnnestExec preserves rows whose array is empty or NULL
+                    // and emits a NULL position for them, so pos must be nullable in that case.
+                    output_fields.push(Field::new("pos", DataType::Int32, explode.outer));
+                    projections.len() + 1
+                } else {
+                    projections.len()
+                };
+
                 // Extract the element type from the list/array type
-                let array_field = project_schema.field(projections.len());
+                let array_field = project_schema.field(array_input_index);
                 let element_type = match array_field.data_type() {
                     DataType::List(field) => field.data_type().clone(),
                     dt => {
@@ -1585,8 +1735,6 @@ impl PhysicalPlanner {
                     }
                 };
 
-                // The output column has the same name as the input array column
-                // but with the element type instead of the list type
                 output_fields.push(Field::new(
                     array_field.name(),
                     element_type,
@@ -1595,12 +1743,17 @@ impl PhysicalPlanner {
 
                 let output_schema = Arc::new(Schema::new(output_fields));
 
-                // Use UnnestExec to explode the last column (the array column)
-                // ListUnnest specifies which column to unnest and the depth (1 for single level)
-                let list_unnest = ListUnnest {
-                    index_in_input_schema: projections.len(), // Index of the array column to unnest
-                    depth: 1, // Unnest one level (explode single array)
-                };
+                let mut list_unnests = Vec::with_capacity(2);
+                if explode.position {
+                    list_unnests.push(ListUnnest {
+                        index_in_input_schema: projections.len(),
+                        depth: 1,
+                    });
+                }
+                list_unnests.push(ListUnnest {
+                    index_in_input_schema: array_input_index,
+                    depth: 1,
+                });
 
                 let unnest_options = UnnestOptions {
                     preserve_nulls: explode.outer,
@@ -1609,7 +1762,7 @@ impl PhysicalPlanner {
 
                 let unnest_exec = Arc::new(UnnestExec::new(
                     project_exec,
-                    vec![list_unnest],
+                    list_unnests,
                     vec![], // No struct columns to unnest
                     output_schema,
                     unnest_options,
@@ -1649,10 +1802,23 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                let left_schema = left.schema();
+                let right_schema = right.schema();
+                let join_on = join_params
+                    .join_on
+                    .into_iter()
+                    .map(|(l, r)| {
+                        Ok((
+                            strip_timestamp_tz(l, left_schema.as_ref())?,
+                            strip_timestamp_tz(r, right_schema.as_ref())?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, ExecutionError>>()?;
+
                 let join = Arc::new(SortMergeJoinExec::try_new(
                     Arc::clone(&left),
                     Arc::clone(&right),
-                    join_params.join_on,
+                    join_on,
                     join_params.join_filter,
                     join_params.join_type,
                     sort_options,
@@ -1688,6 +1854,17 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                // Null-aware anti-join must run in CollectLeft mode. In Partitioned mode
+                // each partition only sees per-partition null/emptiness state, which can
+                // produce wrong NOT IN results across partitions. DataFusion's JoinSelection
+                // rewrites null-aware joins to CollectLeft for this reason, but Comet
+                // executes the physical plan directly so we must pick the mode here.
+                let partition_mode = if join.null_aware_anti_join {
+                    PartitionMode::CollectLeft
+                } else {
+                    PartitionMode::Partitioned
+                };
+
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
                     right,
@@ -1695,20 +1872,18 @@ impl PhysicalPlanner {
                     join_params.join_filter,
                     &join_params.join_type,
                     None,
-                    PartitionMode::Partitioned,
+                    partition_mode,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
-                    // null_aware is for null-aware anti joins (NOT IN subqueries).
-                    // NullEquality controls whether NULL = NULL in join keys generally,
-                    // while null_aware changes anti-join semantics so any NULL changes
-                    // the entire result. Spark doesn't use this path (it rewrites
-                    // EqualNullSafe at plan time), so false is correct.
-                    false,
+                    join.null_aware_anti_join,
                 )?);
 
-                // If the hash join is build right, we need to swap the left and right
-                if join.build_side == BuildSide::BuildLeft as i32 {
+                // If the hash join is build right, we need to swap the left and right.
+                // Exception: null-aware anti-join requires LeftAnti + build-right semantics
+                // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
+                // into RightAnti, which DataFusion rejects with null_aware=true.
+                if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
                     Ok((
                         scans,
                         shuffle_scans,
@@ -2278,10 +2453,17 @@ impl PhysicalPlanner {
                 let num_bits =
                     self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let version = match expr.version() {
+                    spark_expression::BloomFilterVersion::V2 => SparkBloomFilterVersion::V2,
+                    // Default (Unspecified or V1) preserves the pre-Spark-4.1 format that
+                    // Comet has always emitted, keeping older Spark versions byte-equivalent.
+                    _ => SparkBloomFilterVersion::V1,
+                };
                 let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
                     Arc::clone(&num_items),
                     Arc::clone(&num_bits),
                     datatype,
+                    version,
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
             }
@@ -2926,11 +3108,16 @@ fn convert_spark_types_to_arrow_schema(
     let arrow_fields = spark_types
         .iter()
         .map(|spark_type| {
-            Field::new(
+            let field = Field::new(
                 String::clone(&spark_type.name),
                 to_arrow_datatype(spark_type.data_type.as_ref().unwrap()),
                 spark_type.nullable,
-            )
+            );
+            if spark_type.metadata.is_empty() {
+                field
+            } else {
+                field.with_metadata(spark_type.metadata.clone())
+            }
         })
         .collect_vec();
     let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));
@@ -4038,6 +4225,7 @@ mod tests {
                 join_type: 0,
                 condition: None,
                 build_side: 0,
+                null_aware_anti_join: false,
             })),
         };
 

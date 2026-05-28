@@ -84,9 +84,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     Seq("false", "true").foreach { _ =>
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
-          withSQLConf(
-            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio,
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+          withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
             withParquetTable(
               (0 until 50).map(i => (i, Seq(Seq(i + 1), Seq(i + 2), Seq(i + 3)), i + 1)),
               "tbl") {
@@ -278,6 +276,53 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         df.col("_3"),
         df.col("_1"))
       checkShuffleAnswer(rangePartitioned4, 1)
+    }
+  }
+
+  private val floatingPointRangePartitionData: Seq[(Double, Int)] = (0 until 100).map { i =>
+    val doubleValue = i % 4 match {
+      case 0 => Double.NaN
+      case 1 => -0.0d
+      case 2 => 0.0d
+      case _ => i.toDouble
+    }
+    (doubleValue, i)
+  }
+
+  test("range partitioning on floating-point falls back when strictFloatingPoint=true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      // Bypass the CometSortOrder-level Incompatible check so that only
+      // supportedRangePartitioningDataType is exercised as the guard.
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true") {
+      withParquetTable(floatingPointRangePartitionData, "tbl") {
+        Seq(("FLOAT", "FloatType"), ("DOUBLE", "DoubleType")).foreach {
+          case (sqlType, sparkType) =>
+            val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
+              .repartitionByRange(4, $"c")
+
+            checkSparkAnswerAndFallbackReason(
+              df,
+              s"Range partitioning on $sparkType is not 100% compatible with Spark")
+        }
+      }
+    }
+  }
+
+  test(
+    "range partitioning on floating-point uses native shuffle when strictFloatingPoint=false") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false") {
+      withParquetTable(floatingPointRangePartitionData, "tbl") {
+        Seq("FLOAT", "DOUBLE").foreach { sqlType =>
+          val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
+            .repartitionByRange(4, $"c")
+
+          checkShuffleAnswer(df, 1)
+        }
+      }
     }
   }
 
@@ -481,7 +526,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           .parquet(dir.toString)
       }
       withSQLConf(
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
         val testDF = spark.read.parquet(dir.toString).repartition(10)
         // Verify CometShuffleExchangeExec is in the plan

@@ -1,0 +1,215 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Reusable Iceberg Spark test workflow. Invoked once per Iceberg version by
+# the iceberg_spark_test_<version>.yml caller workflows. Keep all job logic
+# here so the per-version callers stay thin.
+
+name: Iceberg Spark SQL Tests (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      iceberg-short:
+        description: 'Iceberg minor version, e.g. 1.10'
+        required: true
+        type: string
+      iceberg-full:
+        description: 'Iceberg full version, e.g. 1.10.0'
+        required: true
+        type: string
+      spark-short:
+        description: 'Spark minor version, e.g. 3.5'
+        required: true
+        type: string
+      spark-full:
+        description: 'Spark full version, e.g. 3.5.8'
+        required: true
+        type: string
+      java:
+        description: 'JDK major version, e.g. 17'
+        required: true
+        type: number
+      scala:
+        description: 'Scala minor version, e.g. 2.13'
+        required: false
+        default: '2.13'
+        type: string
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
+
+jobs:
+  # Build native library once and share with all test jobs
+  build-native:
+    name: Build Native Library
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Build native library
+        # Use CI profile for faster builds (no LTO) and to share cache with pr_build_linux.yml.
+        run: |
+          cd native && cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-lib-iceberg
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+  iceberg-spark:
+    needs: build-native
+    name: iceberg-spark/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ inputs.java }}
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-iceberg
+          path: native/target/release/
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ inputs.spark-short }} -Pscala-${{ inputs.scala }}
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-builder
+        with:
+          iceberg-version: ${{ inputs.iceberg-full }}
+      - name: Run Iceberg Spark tests
+        run: |
+          cd apache-iceberg
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
+            :iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            -Pquick=true -x javadoc
+
+  iceberg-spark-extensions:
+    needs: build-native
+    name: iceberg-spark-extensions/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ inputs.java }}
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-iceberg
+          path: native/target/release/
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ inputs.spark-short }} -Pscala-${{ inputs.scala }}
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-builder
+        with:
+          iceberg-version: ${{ inputs.iceberg-full }}
+      - name: Run Iceberg Spark extensions tests
+        run: |
+          cd apache-iceberg
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
+            :iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            -Pquick=true -x javadoc
+
+  iceberg-spark-runtime:
+    needs: build-native
+    name: iceberg-spark-runtime/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ inputs.java }}
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-iceberg
+          path: native/target/release/
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ inputs.spark-short }} -Pscala-${{ inputs.scala }}
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-builder
+        with:
+          iceberg-version: ${{ inputs.iceberg-full }}
+      - name: Run Iceberg Spark runtime tests
+        run: |
+          cd apache-iceberg
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
+            :iceberg-spark:iceberg-spark-runtime-${{ inputs.spark-short }}_${{ inputs.scala }}:integrationTest \
+            -Pquick=true -x javadoc
