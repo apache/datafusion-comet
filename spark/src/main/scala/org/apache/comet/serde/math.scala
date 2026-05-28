@@ -197,7 +197,7 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
 }
 
 object CometPow extends CometExpressionSerde[Pow] {
-  
+
   // https://github.com/apache/datafusion/issues/22598
   val unsupportedReason: String = "Power has correctness issues"
 
