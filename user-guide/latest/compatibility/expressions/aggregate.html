@@ -531,9 +531,9 @@ under the License.
 <!--BEGIN:EXPR_COMPAT[aggregate]-->
 <section id="average">
 <h2>Average<a class="headerlink" href="#average" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Average</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Average.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>The following cases are not supported by Comet:</p>
 <ul class="simple">
-<li><p>Falls back to Spark in ANSI mode. Supports all numeric inputs except decimal types.</p></li>
+<li><p>YearMonthIntervalType and DayTimeIntervalType inputs are not supported</p></li>
 </ul>
 </section>
 <section id="collectset">

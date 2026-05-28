@@ -43,6 +43,9 @@
 - [ ] approx_top_k_combine
 - [ ] array_agg
 - [x] avg
+  - Spark 3.4.3 (2026-05-26)
+  - Spark 3.5.8 (2026-05-26): aggregate logic identical to 3.4.3
+  - Spark 4.0.1 (2026-05-26): aggregate logic identical to 3.5.8; only `QueryContext` import path differs. `YearMonthIntervalType` and `DayTimeIntervalType` inputs (supported by Spark) fall back to Spark in Comet.
 - [x] bit_and
   - Spark 3.4.3 (2026-05-26)
   - Spark 3.5.8 (2026-05-26)

@@ -553,7 +553,13 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> approx_top_k_accumulate</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> approx_top_k_combine</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> array_agg</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> avg</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> avg</p>
+<ul>
+<li><p>Spark 3.4.3 (2026-05-26)</p></li>
+<li><p>Spark 3.5.8 (2026-05-26): aggregate logic identical to 3.4.3</p></li>
+<li><p>Spark 4.0.1 (2026-05-26): aggregate logic identical to 3.5.8; only <code class="docutils literal notranslate"><span class="pre">QueryContext</span></code> import path differs. <code class="docutils literal notranslate"><span class="pre">YearMonthIntervalType</span></code> and <code class="docutils literal notranslate"><span class="pre">DayTimeIntervalType</span></code> inputs (supported by Spark) fall back to Spark in Comet.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> bit_and</p>
 <ul>
 <li><p>Spark 3.4.3 (2026-05-26)</p></li>

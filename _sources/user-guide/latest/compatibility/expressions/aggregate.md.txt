@@ -23,9 +23,9 @@ under the License.
 
 ## Average
 
-The following incompatibilities cause `Average` to fall back to Spark by default. Set `spark.comet.expression.Average.allowIncompatible=true` to enable Comet acceleration despite these differences.
+The following cases are not supported by Comet:
 
-- Falls back to Spark in ANSI mode. Supports all numeric inputs except decimal types.
+- YearMonthIntervalType and DayTimeIntervalType inputs are not supported
 
 ## CollectSet
 
