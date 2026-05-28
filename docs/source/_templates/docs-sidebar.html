@@ -17,13 +17,23 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-{# Start the sidebar from the deepest captioned section the page lives under:
-   - user-guide/latest/* lives under user-guide/index.md → user-guide/latest/index.rst, so start at depth 2
-   - contributor-guide/* lives under contributor-guide/index.md, so start at depth 1
-   - root and orphan pages (search, genindex) fall back to the global toctree (depth 0). #}
-{% if pagename.startswith("user-guide/latest/") and not suppress_sidebar_toctree(startdepth=2, includehidden=True) %}
-  {% set sidebar_startdepth = 2 %}
-{% elif not suppress_sidebar_toctree(startdepth=1, includehidden=True) %}
+{# Use startdepth=1 consistently across ALL pages so the sidebar stays
+   stable as users navigate within a section. Only the .current highlight
+   moves; the tree structure (e.g. 0.16.x / Dev Snapshot / Older Versions
+   inside User Guide) does not change between sibling pages.
+
+   We deliberately drop upstream's startdepth=2 exception for
+   /user-guide/latest/*. That exception swapped the visible toctree to
+   the snapshot's own captioned subgroups (Getting Started / What Comet
+   Supports / Compatibility), which made clicking a Dev Snapshot child
+   page reload the sidebar with a completely different tree. Reviewers
+   and users found that disorienting. With startdepth=1 fixed, the same
+   three groups stay visible everywhere in User Guide, the active page
+   is highlighted in orange, and parent groups expand inline.
+
+   Orphan pages (no parent section toctree at depth 1) fall back to the
+   global toctree at depth 0. #}
+{% if not suppress_sidebar_toctree(startdepth=1, includehidden=True) %}
   {% set sidebar_startdepth = 1 %}
 {% else %}
   {% set sidebar_startdepth = 0 %}
@@ -33,4 +43,3 @@ under the License.
     {{ generate_toctree_html("sidebar", startdepth=sidebar_startdepth, maxdepth=4, collapse=False, includehidden=True, titles_only=True) }}
   </div>
 </nav>
-

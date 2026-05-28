@@ -39,9 +39,10 @@
   // real <button> for every nav item that has children so the user can
   // expand/collapse sections independently of which page they're on.
   function initSidebarToggle() {
-    var items = document.querySelectorAll(
-      '.bd-links li.toctree-l1, .bd-links li.toctree-l2'
-    );
+    // Match any toctree item with children, not just L1/L2 — Older Versions
+    // contains nested version groups (0.15.x, 0.14.x) at L3 that need their
+    // own expand/collapse arrows.
+    var items = document.querySelectorAll('.bd-links li[class*="toctree-l"]');
     items.forEach(function (li) {
       var ul = li.querySelector(':scope > ul');
       var link = li.querySelector(':scope > a');

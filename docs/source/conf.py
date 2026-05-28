@@ -95,8 +95,7 @@ html_theme_options = {
 
     "use_edit_page_button": False,
     "secondary_sidebar_items": ["page-toc"],
-    "collapse_navigation": False,
-    "show_nav_level": 1,
+    "collapse_navigation": True,
     "navbar_start": ["navbar-logo"],
     "navbar_center": ["navbar-nav"],
     "navbar_end": ["navbar-icon-links", "theme-switcher"],

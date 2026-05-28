@@ -136,6 +136,7 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 
 ```{toctree}
 :maxdepth: 1
+:caption: Index
 :hidden:
 
 User Guide <user-guide/index>

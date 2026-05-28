@@ -1,10 +1,20 @@
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * for licensing details.
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Custom theme overrides — Claude API Docs aesthetic
- * Targets pydata_sphinx_theme 0.16.x
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
 /* ─── Google Fonts ─────────────────────────────────────────────────── */
@@ -422,35 +432,16 @@ html[data-theme="dark"] .bd-sidebar form.bd-search {
 }
 
 /* ── Section-scoped sidebar ─────────────────────────────────────────── */
-/* The top nav already tells the user which section they're in.
-   The sidebar should show ONLY the contents of the current section,
-   not duplicate the section list. Standard pattern in Stripe/Vercel/Linear docs. */
+/* Section scoping is now handled at the template level by docs-sidebar.html
+   (generate_toctree_html with startdepth=1 picks the section's own toctree
+   as the root). No CSS hiding needed — the rendered tree already contains
+   only the current section's contents. The full tree stays stable as the
+   user clicks around within a section; only the .current highlight moves. */
 
-/* Hide non-active top-level sections — but only when a section is active
-   AND we're not in search-filter mode (which needs cross-section visibility) */
-.bd-links:not(.comet-filtering):has(.toctree-l1.current) .toctree-l1:not(.current) {
-  display: none !important;
-}
-
-/* Hide the active section's own link + toggle ONLY when the section has
-   children to show in its place. Leaf-l1 pages (no nested toctree) keep
-   their link visible so the sidebar isn't empty. */
-.bd-links:not(.comet-filtering):has(.toctree-l1.current) .toctree-l1.current:has(> ul) > a.reference,
-.bd-links:not(.comet-filtering):has(.toctree-l1.current) .toctree-l1.current:has(> ul) > .comet-toggle {
-  display: none !important;
-}
-
-/* Always show the active section's children */
-.bd-links:not(.comet-filtering) .toctree-l1.current > ul {
-  display: block !important;
-}
-
-/* When the active section's children become the new top-level items:
-   - l2 items that are containers (have child <ul>) act as group headers
-     → slightly stronger weight, darker color
-   - l2 items that are leaf pages stay as plain nav links
-     → muted color (matches every other nav link in the sidebar) */
-.bd-links:not(.comet-filtering) .toctree-l1.current > ul > .toctree-l2:has(> ul) > a.reference {
+/* L1 items (the section's direct children — e.g. 0.16.x, Dev Snapshot,
+   Older Versions inside User Guide) carry slightly stronger weight when
+   they're containers, to read as group headers. */
+.bd-links:not(.comet-filtering) .toctree-l1:has(> ul) > a.reference {
   font-weight: 500 !important;
   color: var(--pst-color-on-surface) !important;
   font-size: 14px !important;
@@ -458,7 +449,7 @@ html[data-theme="dark"] .bd-sidebar form.bd-search {
   padding-bottom: 8px !important;
 }
 
-.bd-links:not(.comet-filtering) .toctree-l1.current > ul > .toctree-l2:not(:has(> ul)) > a.reference {
+.bd-links:not(.comet-filtering) .toctree-l1:not(:has(> ul)) > a.reference {
   font-weight: 400 !important;
   color: var(--pst-color-text-muted) !important;
   font-size: 14px !important;
@@ -469,7 +460,9 @@ html[data-theme="dark"] .bd-sidebar form.bd-search {
 /* ── Collapse: hide children of sections that are not explicitly expanded ── */
 /* Visibility is now controlled by the .comet-expanded class (toggled via JS button) */
 .bd-links .toctree-l1:not(.comet-expanded) > ul,
-.bd-links .toctree-l2:not(.comet-expanded) > ul {
+.bd-links .toctree-l2:not(.comet-expanded) > ul,
+.bd-links .toctree-l3:not(.comet-expanded) > ul,
+.bd-links .toctree-l4:not(.comet-expanded) > ul {
   display: none !important;
 }
 
@@ -637,9 +630,14 @@ html[data-theme="light"] .bd-links li.current:not(:has(li.current)) > a.current.
   background: transparent !important;
 }
 
-/* Hide right TOC when there are no anchors to navigate */
+/* Hide the right TOC when there are no anchors to navigate.
+   We use visibility: hidden (not display: none) so the empty TOC's
+   column still occupies its 240px of grid space — that keeps the
+   article's left edge in the SAME horizontal position whether the
+   TOC is rendered or not. Without this, the grid collapses on
+   TOC-less pages and the article shifts right to fill the gap. */
 .bd-sidebar-secondary.comet-toc-empty {
-  display: none !important;
+  visibility: hidden !important;
 }
 
 .bd-main {
@@ -741,6 +739,11 @@ html[data-theme="light"] .bd-links li.current:not(:has(li.current)) > a.current.
   max-width: 860px !important;
   padding: 44px 60px 88px !important;
   margin: 0 !important;
+  /* Anchor to the left edge of the grid cell so the article's left
+     position stays stable whether or not the right-side TOC is rendered.
+     Without justify-self:start, pydata's grid centers the container in
+     its cell — which shifts the content right on TOC-less pages. */
+  justify-self: start !important;
 }
 
 article.bd-article {
@@ -859,21 +862,39 @@ div[class*="highlight-"] pre {
   color: #e2e8f0 !important;
 }
 
+/* Code blocks always use a dark background (both light and dark site
+   themes), so they need a dark-friendly syntax palette regardless of mode.
+   Pydata ships theme-scoped Pygments rules — html[data-theme="light"]
+   .highlight .TOKEN — whose specificity (0-3-1) beats our plain
+   div.highlight .TOKEN selectors, and in light mode those rules set DARK
+   text that's invisible on our dark background. We use !important here to
+   win that battle uniformly. The base-span rule catches every token we
+   don't explicitly theme (console prompt, names, output) so nothing is
+   ever invisible. */
+div.highlight pre span,
+div[class*="highlight-"] pre span {
+  color: #e2e8f0 !important;
+}
+
 div.highlight .k,
 div.highlight .kn,
-div.highlight .kd  { color: #c792ea; }
+div.highlight .kd  { color: #c792ea !important; }
 div.highlight .s,
 div.highlight .s1,
-div.highlight .s2  { color: #c3e88d; }
+div.highlight .s2  { color: #c3e88d !important; }
 div.highlight .c,
 div.highlight .c1,
-div.highlight .cm  { color: #546e7a; font-style: italic; }
+div.highlight .cm  { color: #546e7a !important; font-style: italic; }
 div.highlight .nf,
-div.highlight .nb  { color: #82aaff; }
+div.highlight .nb  { color: #82aaff !important; }
 div.highlight .mi,
-div.highlight .mf  { color: #f78c6c; }
-div.highlight .o   { color: #89ddff; }
-div.highlight .nc  { color: #ffcb6b; }
+div.highlight .mf  { color: #f78c6c !important; }
+div.highlight .o   { color: #89ddff !important; }
+div.highlight .nc  { color: #ffcb6b !important; }
+/* Console prompt (scala>, >>>, $) and program output — muted but legible. */
+div.highlight .gp,
+div.highlight .go,
+div.highlight .gt  { color: #8a9bb3 !important; }
 
 button.copybtn {
   background: rgba(255,255,255,0.07) !important;
@@ -943,9 +964,13 @@ div.admonition p.admonition-title {
   text-transform: uppercase !important;
   letter-spacing: 0.06em !important;
   margin-bottom: 6px !important;
-  padding: 0 !important;
+  /* Reserve room for the icon (which pydata positions absolutely at left:0
+     via a ::before pseudo-element). Without this padding the icon overlaps
+     the first letters of the title. */
+  padding: 0 0 0 26px !important;
   background: none !important;
   border: none !important;
+  position: relative !important;
 }
 
 div.note    { background: rgba(59,130,246,0.06) !important;  border-color: rgba(59,130,246,0.25) !important; }
@@ -1769,7 +1794,7 @@ html[data-theme="dark"] .comet-cards {
 .comet-terminal__body {
   font-family: var(--comet-mono) !important;
   font-size: 13px !important;
-  line-height: 1.7 !important;
+  line-height: 1.5 !important;
   color: #d4d8de !important;
   padding: 22px 24px 26px !important;
   margin: 0 !important;
@@ -1781,13 +1806,17 @@ html[data-theme="dark"] .comet-cards {
   text-align: left !important;
 }
 
+/* Lines must stay inline — the <pre> already has a literal newline after
+   each <span>, which provides the line break. Making them display:block
+   would add a SECOND break per line, double-spacing the whole block. */
 .comet-terminal__body .term-line {
-  display: block;
+  display: inline;
 }
 
+/* A blank line between sections comes from the spacer span's trailing
+   newline in the <pre>; no explicit height needed. */
 .comet-terminal__body .term-spacer {
-  display: block;
-  height: 6px;
+  display: inline;
 }
 
 .comet-terminal__body .term-comment {
