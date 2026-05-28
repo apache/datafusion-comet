@@ -113,7 +113,8 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  test("reconcileStreamSchema preserves nullability when expected is nullable but actual is not") {
+  test(
+    "reconcileStreamSchema preserves nullability when expected is nullable but actual is not") {
     val allocator = new RootAllocator(Integer.MAX_VALUE)
     try {
       // Spark catalyst declares the column nullable; the first batch happens to come from a
