@@ -334,10 +334,12 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
 
 object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExprShim {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Null handling and ordering may differ from Spark")
+  private val incompatReason = "Null handling and ordering may differ from Spark"
 
-  override def getSupportLevel(expr: ArrayExcept): SupportLevel = Incompatible(None)
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: ArrayExcept): SupportLevel = Incompatible(
+    Some(incompatReason))
 
   @tailrec
   def isTypeSupported(dt: DataType): Boolean = {
@@ -376,9 +378,11 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
 
 object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq("Null handling may differ from Spark")
+  private val incompatReason = "Null handling may differ from Spark"
 
-  override def getSupportLevel(expr: ArrayJoin): SupportLevel = Incompatible(None)
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: ArrayJoin): SupportLevel = Incompatible(Some(incompatReason))
 
   override def convert(
       expr: ArrayJoin,
