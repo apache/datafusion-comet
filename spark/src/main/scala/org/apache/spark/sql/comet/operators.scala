@@ -42,8 +42,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -54,8 +53,10 @@ import com.google.protobuf.CodedOutputStream
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
@@ -425,10 +426,6 @@ abstract class CometNativeExec extends CometExec {
         throw new CometRuntimeException(
           s"CometNativeExec should not be executed directly without a serialized plan: $this")
       case Some(serializedPlan) =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        SQLConf.get.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-
         val serializedPlanCopy = serializedPlan
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
@@ -664,15 +661,23 @@ abstract class CometNativeExec extends CometExec {
   private def findAllPlanData(
       plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
     plan match {
-      // Found an Iceberg scan with planning data
-      case iceberg: CometIcebergNativeScanExec
-          if iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty =>
-        (
-          Map(iceberg.metadataLocation -> iceberg.commonData),
-          Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+      case iceberg: CometIcebergNativeScanExec =>
+        // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
+        // InSubqueryExec values are resolved before commonData is read. Without this,
+        // the parent CometNativeExec.executeQuery flow never invokes the scan's
+        // executeQuery, leaving DPP unresolved and forcing a sync-on-this await inside
+        // the serializedPartitionData lazy val initializer (a known deadlock surface).
+        iceberg.ensureSubqueriesResolved()
+        if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
+          (
+            Map(iceberg.metadataLocation -> iceberg.commonData),
+            Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+        } else {
+          (Map.empty, Map.empty)
+        }
 
-      // Found a NativeScan with planning data
       case nativeScan: CometNativeScanExec =>
+        nativeScan.ensureSubqueriesResolved()
         (
           Map(nativeScan.sourceKey -> nativeScan.commonData),
           Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
@@ -767,7 +772,24 @@ abstract class CometNativeExec extends CometExec {
   }
 }
 
-abstract class CometLeafExec extends CometNativeExec with LeafExecNode
+abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
+
+  /**
+   * Public bridge to Spark's `prepare()` + `waitForSubqueries()` lifecycle. Comet's parent
+   * `CometNativeExec` reads scan data via `findAllPlanData -> commonData` rather than invoking
+   * `executeColumnar` on its scan children, which means Spark's standard `executeQuery` chain
+   * never fires on the scan and DPP InSubqueryExec values are never resolved through
+   * `waitForSubqueries`. Calling this method before reading `commonData` restores the standard
+   * lifecycle: `prepare()` collects subqueries into `runningSubqueries` (via
+   * `prepareSubqueries`), then `waitForSubqueries()` resolves them via `updateResult()`. After
+   * this returns, any `e.values()` access on the scan's runtime/partition filter
+   * `InSubqueryExec`s returns the resolved values directly without further await.
+   */
+  def ensureSubqueriesResolved(): Unit = {
+    prepare()
+    waitForSubqueries()
+  }
+}
 
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode
 
@@ -1193,7 +1215,8 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (op.generator.children.length != 1) {
       return Unsupported(Some("generators with multiple inputs are not supported"))
     }
-    if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
+    val nodeName = op.generator.nodeName.toLowerCase(Locale.ROOT)
+    if (nodeName != "explode" && nodeName != "posexplode") {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
     if (op.outer) {
@@ -1237,10 +1260,13 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       return None
     }
 
+    val isPosExplode = op.generator.nodeName.toLowerCase(Locale.ROOT) == "posexplode"
+
     val explodeBuilder = OperatorOuterClass.Explode
       .newBuilder()
       .setChild(childExprProto.get)
       .setOuter(op.outer)
+      .setPosition(isPosExplode)
       .addAllProjectList(projectExprs.map(_.get).asJava)
 
     Some(builder.setExplode(explodeBuilder).build())
@@ -1317,8 +1343,37 @@ case class CometUnionExec(
     children: Seq[SparkPlan])
     extends CometExec {
 
+  // CometExec's default outputPartitioning delegates to `originalPlan`, which captures the
+  // children that were live at CometExecRule conversion time. AQE post-stage rewrites
+  // (coalesce, skew join, etc.) later re-parent our `children` field but do not update
+  // `originalPlan`, so the partitioning read from the frozen snapshot can describe a
+  // pre-coalesce layout with more partitions than the RDDs will actually produce. Recompute
+  // from current children so SPARK-52921's union-output-partitioning inference is based on
+  // the live plan. Safe on older Spark too: UnionExec.outputPartitioning returns
+  // UnknownPartitioning when UNION_OUTPUT_PARTITIONING is off (the pre-4.1 default).
+  //
+  // Only advertise SinglePartition or HashPartitioningLike — the same whitelist that Spark's
+  // UnionExec.comparePartitioning uses and that ShimCometUnionExec.unionRDDs honors via
+  // SQLPartitioningAwareUnionRDD. For anything else, report UnknownPartitioning so that the
+  // declared partitioning and the RDD layer always agree.
+  override lazy val outputPartitioning: Partitioning = {
+    originalPlan.withNewChildren(children).outputPartitioning match {
+      case p @ (SinglePartition | _: HashPartitioningLike) => p
+      case p => UnknownPartitioning(p.numPartitions)
+    }
+  }
+
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    sparkContext.union(children.map(_.executeColumnar()))
+    // Spark 4.1's UnionExec (SPARK-52921) can report a non-trivial output partitioning when all
+    // children share the same hash/single partitioning, and downstream plans may skip an
+    // otherwise-required shuffle in response. Plain `sparkContext.union` concatenates partitions
+    // (so partition i of the result holds only one child's partition i), which violates that
+    // partitioning claim and silently corrupts aggregates layered above the union. The shim
+    // routes through SQLPartitioningAwareUnionRDD on 4.1+ when a known partitioning is declared.
+    shims.ShimCometUnionExec.unionRDDs(
+      sparkContext,
+      children.map(_.executeColumnar()),
+      outputPartitioning)
   }
 
   override protected def withNewChildrenInternal(newChildren: IndexedSeq[SparkPlan]): SparkPlan =
@@ -1362,10 +1417,29 @@ trait CometBaseAggregate {
     // We support {Partial, PartialMerge} mix; other combinations are rejected.
     val multiMode = modes.size > 1 && modeSet != Set(Partial, PartialMerge)
     // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation.
+    // if there is Comet partial aggregation, unless all aggregates have compatible
+    // intermediate buffer formats (safe for mixed Spark/Comet execution).
     val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
 
-    if (multiMode || sparkFinalMode) {
+    if (multiMode) {
+      withInfo(aggregate, s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
+      return None
+    }
+
+    if (sparkFinalMode &&
+      !QueryPlanSerde.allAggsSupportMixedExecution(aggregate.aggregateExpressions)) {
+      withInfo(
+        aggregate,
+        "Spark Final aggregate without Comet Partial requires compatible " +
+          "intermediate buffer formats")
+      return None
+    }
+
+    // Check if this aggregate has been tagged as unsafe for mixed execution
+    // (Comet partial + Spark final with incompatible intermediate buffers)
+    val unsafeReason = aggregate.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL)
+    if (unsafeReason.isDefined) {
+      withInfo(aggregate, unsafeReason.get)
       return None
     }
 
@@ -1380,12 +1454,8 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (groupingExpressions.exists(expr =>
-        expr.dataType match {
-          case _: MapType => true
-          case _ => false
-        })) {
-      withInfo(aggregate, "Grouping on map types is not supported")
+    if (groupingExpressions.exists(expr => QueryPlanSerde.containsMapType(expr.dataType))) {
+      withInfo(aggregate, "Grouping on map-containing types is not supported")
       return None
     }
 
@@ -1621,6 +1691,20 @@ object CometObjectHashAggregateExec
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def getSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
+    // Mirror the same test-knobs as CometHashAggregateExec so that mixed-execution
+    // unit tests can selectively disable partial or final ObjectHashAggregateExec conversion.
+    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
+      return Unsupported(Some("Partial aggregates disabled via test config"))
+    }
+    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(_.mode == Final)) {
+      return Unsupported(Some("Final aggregates disabled via test config"))
+    }
+    Compatible()
+  }
 
   override def convert(
       aggregate: ObjectHashAggregateExec,
@@ -2216,7 +2300,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true
-    case TimestampNTZType => true
+    case TimestampNTZType | _: TimestampType => true
     case _ => false
   }
 

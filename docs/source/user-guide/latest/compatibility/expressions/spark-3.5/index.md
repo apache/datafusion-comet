@@ -36,5 +36,6 @@ math
 misc
 string
 struct
+url
 cast
 ```

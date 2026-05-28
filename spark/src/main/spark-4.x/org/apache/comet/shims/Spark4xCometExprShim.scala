@@ -22,9 +22,11 @@ package org.apache.comet.shims
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, StringType}
 
+import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.{CometExpressionSerde, CometMapSort, CometToPrettyString, CometWidthBucket, CommonStringExprs}
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -89,16 +91,30 @@ trait Spark4xCometExprShim extends CommonStringExprs {
         val Seq(bin, charset, _, _) = s.arguments
         stringDecode(expr, charset, bin, inputs, binding)
 
-      // On Spark 4.0+, StructsToJson is a RuntimeReplaceable whose replacement is
-      // Invoke(Literal(StructsToJsonEvaluator), "evaluate", ...). Reconstruct the
-      // original StructsToJson and recurse so support-level checks apply.
+      // On Spark 4.0+, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
+      // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression and
+      // recurse so support-level checks apply, propagating any explain info back onto the
+      // outer Invoke so fallback reasons surface to the user.
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
-            exprToProtoInternal(
-              StructsToJson(evaluator.options, child, evaluator.timeZoneId),
-              inputs,
-              binding)
+            val toJson = StructsToJson(evaluator.options, child, evaluator.timeZoneId)
+            val exprProto = exprToProtoInternal(toJson, inputs, binding)
+            if (exprProto.isEmpty) {
+              toJson
+                .getTagValue(CometExplainInfo.EXTENSION_INFO)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+            }
+            exprProto
+          case (Literal(evaluator: ParseUrlEvaluator, _), "evaluate", args) =>
+            val parseUrl = ParseUrl(args, evaluator.failOnError)
+            val result = exprToProtoInternal(parseUrl, inputs, binding)
+            if (result.isEmpty) {
+              parseUrl
+                .getTagValue(CometExplainInfo.EXTENSION_INFO)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+            }
+            result
           case _ => None
         }
 

@@ -138,16 +138,17 @@ html_sidebars = {
     "**": ["docs-sidebar.html"],
 }
 
-# tell myst_parser to auto-generate anchor links for headers h1, h2, h3
-myst_heading_anchors = 3
+# tell myst_parser to auto-generate anchor links for headers h1, h2, h3, h4
+myst_heading_anchors = 4
 
 # enable nice rendering of checkboxes for the task lists
 myst_enable_extensions = ["colon_fence", "deflist", "tasklist"]
 
 redirects = {
-    "overview.html": "about/index.html",
+    "overview.html": "index.html",
+    "about/index.html": "../index.html",
     "gluten_comparison.html": "about/gluten_comparison.html",
-    "user-guide/overview.html": "../about/overview.html",
+    "user-guide/overview.html": "../index.html",
     "user-guide/gluten_comparison.html": "../about/gluten_comparison.html",
     "user-guide/compatibility.html": "latest/compatibility.html",
     "user-guide/configs.html": "latest/configs.html",

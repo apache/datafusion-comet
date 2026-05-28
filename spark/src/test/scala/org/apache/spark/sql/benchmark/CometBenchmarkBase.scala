@@ -38,7 +38,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.{SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 import org.apache.comet.CometSparkSessionExtensions
 
 trait CometBenchmarkBase
@@ -97,8 +96,8 @@ trait CometBenchmarkBase
   }
 
   /**
-   * Runs an expression benchmark with standard cases: Spark, Comet (Scan), Comet (Scan + Exec).
-   * This provides a consistent benchmark structure for expression evaluation.
+   * Runs an expression benchmark with standard cases: Spark, Comet. This provides a consistent
+   * benchmark structure for expression evaluation.
    *
    * @param name
    *   Benchmark name
@@ -107,7 +106,7 @@ trait CometBenchmarkBase
    * @param query
    *   SQL query to benchmark
    * @param extraCometConfigs
-   *   Additional configurations to apply for Comet cases (optional)
+   *   Additional configurations to apply for the Comet case (optional)
    */
   final def runExpressionBenchmark(
       name: String,
@@ -118,14 +117,6 @@ trait CometBenchmarkBase
 
     benchmark.addCase("Spark") { _ =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.sql(query).noop()
-      }
-    }
-
-    benchmark.addCase("Comet (Scan)") { _ =>
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "false") {
         spark.sql(query).noop()
       }
     }
@@ -158,7 +149,7 @@ trait CometBenchmarkBase
       }
     }
 
-    benchmark.addCase("Comet (Scan + Exec)") { _ =>
+    benchmark.addCase("Comet") { _ =>
       withSQLConf(cometExecConfigs.toSeq: _*) {
         spark.sql(query).noop()
       }
@@ -180,15 +171,12 @@ trait CometBenchmarkBase
       }
     }
 
-    for (scanImpl <- Seq(SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT)) {
-      benchmark.addCase(s"SQL Parquet - Comet ($scanImpl)$suffix") { _ =>
-        withSQLConf(
-          (extraConf ++ Map(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl)).toSeq: _*) {
-          spark.sql(query).noop()
-        }
+    benchmark.addCase(s"SQL Parquet - Comet$suffix") { _ =>
+      withSQLConf(
+        (extraConf ++ Map(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true")).toSeq: _*) {
+        spark.sql(query).noop()
       }
     }
   }

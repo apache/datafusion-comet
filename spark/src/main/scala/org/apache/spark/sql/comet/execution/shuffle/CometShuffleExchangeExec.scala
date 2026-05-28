@@ -243,9 +243,6 @@ object CometShuffleExchangeExec
       op: ShuffleExchangeExec): CometNativeExec = {
     shuffleSupported(op) match {
       case Some(CometNativeShuffle) if op.children.forall(_.isInstanceOf[CometNativeExec]) =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
         CometSinkPlaceHolder(
           nativeOp,
           op,
@@ -898,7 +895,8 @@ object CometShuffleExchangeExec
         shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
         shuffleType = CometColumnarShuffle,
         schema = Some(fromAttributes(outputAttributes)),
-        decodeTime = writeMetrics("decode_time"))
+        decodeTime = writeMetrics("decode_time"),
+        shuffleWriteMetrics = writeMetrics)
 
     dependency
   }

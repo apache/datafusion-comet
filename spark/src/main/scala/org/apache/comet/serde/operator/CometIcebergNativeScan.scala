@@ -500,21 +500,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
   }
 
-  /** Storage-related property prefixes passed through to native FileIO. */
-  private val storagePropertyPrefixes =
-    Seq("s3.", "gcs.", "adls.", "client.")
-
-  /**
-   * Filters a properties map to only include storage-related keys. FileIO.properties() may
-   * contain catalog URIs, bearer tokens, and other non-storage settings that should not be passed
-   * to the native FileIO builder.
-   */
-  def filterStorageProperties(props: Map[String, String]): Map[String, String] = {
-    props.filter { case (key, _) =>
-      storagePropertyPrefixes.exists(prefix => key.startsWith(prefix))
-    }
-  }
-
   /**
    * Transforms Hadoop S3A configuration keys to Iceberg FileIO property keys.
    *
@@ -771,6 +756,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
+    metadata.catalogName.foreach(commonBuilder.setCatalogName)
     metadata.catalogProperties.foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
     }
@@ -819,7 +805,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           inputPartitions.foreach { inputPartition =>
             val inputPartClass = inputPartition.getClass
 
-            try {
+            {
               val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
               taskGroupMethod.setAccessible(true)
               val taskGroup = taskGroupMethod.invoke(inputPartition)
@@ -985,8 +971,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
           perPartitionBuilders += partitionBuilder.build()
         }
-      case _ =>
-        throw new IllegalStateException("Expected DataSourceRDD from BatchScanExec")
+      case other if other.getClass.getName == "org.apache.spark.rdd.ParallelCollectionRDD" =>
+        // Spark's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) when
+        // DPP filtering removes all input partitions. That ParallelCollectionRDD is the only
+        // non-DataSourceRDD shape its inputRDD produces, so reaching this branch means "DPP
+        // pruned everything"; emit no per-partition data and let native execution return empty.
+        // Re-querying scan.toBatch.planInputPartitions() to verify is unreliable because
+        // Iceberg's Scan state after filter() doesn't always reflect post-DPP partitions on
+        // a re-call (V2 scan state is one-shot for the materialized inputRDD). Matched by class
+        // name because ParallelCollectionRDD is private[spark].
+        logDebug(
+          "BatchScanExec.inputRDD is ParallelCollectionRDD (DPP pruned all partitions); " +
+            "skipping per-partition serialization")
+      case other =>
+        throw new IllegalStateException(
+          "Expected DataSourceRDD or ParallelCollectionRDD from BatchScanExec, " +
+            s"got ${other.getClass.getName}")
     }
 
     // Log deduplication summary
