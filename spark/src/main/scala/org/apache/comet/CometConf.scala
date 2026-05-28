@@ -384,7 +384,7 @@ object CometConf extends ShimCometConf {
         "Selects the engine used to evaluate Spark regular-expression expressions. " +
           s"`$REGEXP_ENGINE_JAVA` (default) routes through the Arrow-direct codegen dispatcher " +
           "so Spark's own `doGenCode` (backed by `java.util.regex.Pattern`) runs inside the " +
-          s"Comet pipeline; this falls back to Spark when " +
+          "Comet pipeline; this falls back to Spark when " +
           s"${COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false. `$REGEXP_ENGINE_RUST` runs the " +
           "native DataFusion regexp engine when an implementation exists; setting this is " +
           "itself the opt-in for the semantic differences between Java and Rust regex. " +
