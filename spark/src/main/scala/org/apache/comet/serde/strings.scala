@@ -63,8 +63,8 @@ private object RegexpRoute {
   /**
    * Pick a route given the user's config and whether a native Rust implementation exists for the
    * expression. `engine=java` (default) routes through the codegen dispatcher when
-   * [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] is true; otherwise Spark fallback.
-   * `engine=rust` runs native if available; else Spark fallback.
+   * [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] is true (also the default); otherwise Spark
+   * fallback. `engine=rust` runs native if available; else Spark fallback.
    */
   def choose(exprName: String, hasNative: Boolean): RegexpRoute = {
     val engine = CometConf.COMET_REGEXP_ENGINE.get()
@@ -88,8 +88,7 @@ private object RegexpRoute {
         } else {
           Fallback(
             s"$exprName requires ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true when " +
-              s"${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_JAVA}. " +
-              "The codegen dispatcher is experimental and disabled by default.")
+              s"${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_JAVA}.")
         }
 
       case other => Fallback(s"Unknown ${CometConf.COMET_REGEXP_ENGINE.key}=$other")

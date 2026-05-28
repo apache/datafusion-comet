@@ -43,8 +43,8 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  *   - Python / Pandas UDFs.
  *   - Hive `GenericUDF` / `SimpleUDF`.
  *
- * Gated by [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]]. When disabled, plans containing a
- * `ScalaUDF` fall back to Spark for the enclosing operator.
+ * Gated by [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] (default `true`). When disabled, plans
+ * containing a `ScalaUDF` fall back to Spark for the enclosing operator.
  *
  * [[emitJvmCodegenDispatch]] exposes the same closure-serialize + dispatcher-proto path to other
  * serdes that want to keep a built-in Spark expression inside the Comet pipeline when no native

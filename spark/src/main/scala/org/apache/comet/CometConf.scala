@@ -365,14 +365,14 @@ object CometConf extends ShimCometConf {
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Experimental. Whether to route Spark `ScalaUDF` expressions through Comet's " +
-        "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
-        "a per-batch kernel that reads and writes Arrow vectors directly from native " +
-        "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
-        "enclosing operator. The same dispatcher backs `spark.comet.exec.regexp.engine=java` " +
-        "so the regex family routes through it as well.")
+      .doc("Whether to route Spark `ScalaUDF` expressions through Comet's Arrow-direct codegen " +
+        "dispatcher. When enabled (the default), a supported ScalaUDF is compiled into a " +
+        "per-batch kernel that reads and writes Arrow vectors directly from native execution. " +
+        "When disabled, plans containing a ScalaUDF fall back to Spark for the enclosing " +
+        "operator. The same dispatcher backs `spark.comet.exec.regexp.engine=java` so the " +
+        "regex family routes through it as well.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val REGEXP_ENGINE_RUST = "rust"
   val REGEXP_ENGINE_JAVA = "java"
@@ -384,13 +384,13 @@ object CometConf extends ShimCometConf {
         "Selects the engine used to evaluate Spark regular-expression expressions. " +
           s"`$REGEXP_ENGINE_JAVA` (default) routes through the Arrow-direct codegen dispatcher " +
           "so Spark's own `doGenCode` (backed by `java.util.regex.Pattern`) runs inside the " +
-          s"Comet pipeline; this requires ${COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true and " +
-          s"falls back to Spark otherwise. `$REGEXP_ENGINE_RUST` runs the native DataFusion " +
-          "regexp engine when an implementation exists; setting this is itself the opt-in " +
-          "for the semantic differences between Java and Rust regex. Affected expressions: " +
-          "rlike, regexp_extract, regexp_extract_all, regexp_replace, regexp_instr, and " +
-          "split (the extract/instr family has no native Rust path; they fall back to Spark " +
-          s"under `$REGEXP_ENGINE_RUST`).")
+          s"Comet pipeline; this falls back to Spark when " +
+          s"${COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false. `$REGEXP_ENGINE_RUST` runs the " +
+          "native DataFusion regexp engine when an implementation exists; setting this is " +
+          "itself the opt-in for the semantic differences between Java and Rust regex. " +
+          "Affected expressions: rlike, regexp_extract, regexp_extract_all, regexp_replace, " +
+          "regexp_instr, and split (the extract/instr family has no native Rust path; they " +
+          s"fall back to Spark under `$REGEXP_ENGINE_RUST`).")
       .stringConf
       .transform(_.toLowerCase(Locale.ROOT))
       .checkValues(Set(REGEXP_ENGINE_RUST, REGEXP_ENGINE_JAVA))
