@@ -921,82 +921,322 @@ per-function details are documented in the
 <section id="math-funcs">
 <h3>math_funcs<a class="headerlink" href="#math-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">%</span></code></p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">*</span></code></p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">+</span></code></p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">-</span></code></p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">/</span></code></p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> abs</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> acos</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> acosh</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> asin</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> asinh</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> atan</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> atan2</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> atanh</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> bin</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">%</span></code></p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Remainder(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code> signature identical across versions. Native path uses Rust <code class="docutils literal notranslate"><span class="pre">spark_modulo</span></code> UDF; non-ANSI returns NULL on divide-by-zero, ANSI raises <code class="docutils literal notranslate"><span class="pre">DIVIDE_BY_ZERO</span></code> / <code class="docutils literal notranslate"><span class="pre">REMAINDER_BY_ZERO</span></code>. <code class="docutils literal notranslate"><span class="pre">CometRemainder</span></code> rejects <code class="docutils literal notranslate"><span class="pre">EvalMode.TRY</span></code>, so <code class="docutils literal notranslate"><span class="pre">try_mod</span></code> (Spark 4.0+) falls back to Spark (https://github.com/apache/datafusion-comet/issues/4484).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">*</span></code></p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Multiply(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code> signature identical. Decimal results exceeding <code class="docutils literal notranslate"><span class="pre">DECIMAL128_MAX_PRECISION</span></code> go through <code class="docutils literal notranslate"><span class="pre">WideDecimalBinaryExpr</span></code> (Decimal256 intermediate); smaller decimals and primitives use DataFusion <code class="docutils literal notranslate"><span class="pre">BinaryExpr</span></code>. ANSI integer overflow uses Rust <code class="docutils literal notranslate"><span class="pre">checked_mul</span></code>. Interval multiplication falls back.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">+</span></code></p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Add(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code> with the same Decimal / ANSI plumbing as <code class="docutils literal notranslate"><span class="pre">*</span></code>. <code class="docutils literal notranslate"><span class="pre">Date</span> <span class="pre">+</span> <span class="pre">Int8/16/32</span></code> dispatches to the Rust <code class="docutils literal notranslate"><span class="pre">date_add</span></code> UDF to work around DataFusion’s Date32 + Interval-only kernel.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">-</span></code></p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Subtract(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code> mirrors <code class="docutils literal notranslate"><span class="pre">+</span></code>. <code class="docutils literal notranslate"><span class="pre">Date</span> <span class="pre">-</span> <span class="pre">Int8/16/32</span></code> uses the Rust <code class="docutils literal notranslate"><span class="pre">date_sub</span></code> UDF.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">/</span></code></p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Divide(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code>. Non-ANSI mode wraps the divisor in <code class="docutils literal notranslate"><span class="pre">If(EqualTo(right,</span> <span class="pre">0),</span> <span class="pre">null,</span> <span class="pre">right)</span></code> so DataFusion never throws. Decimal output is wrapped in <code class="docutils literal notranslate"><span class="pre">CheckOverflow(failOnError</span> <span class="pre">=</span> <span class="pre">ANSI)</span></code>; ANSI surfaces <code class="docutils literal notranslate"><span class="pre">NUMERIC_VALUE_OUT_OF_RANGE</span></code>, non-ANSI returns NULL.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> abs</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Abs(child,</span> <span class="pre">failOnError)</span></code> over <code class="docutils literal notranslate"><span class="pre">NumericType</span></code> plus the two interval types. <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> (ANSI) is propagated to the native <code class="docutils literal notranslate"><span class="pre">abs</span></code> UDF, which throws <code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> on <code class="docutils literal notranslate"><span class="pre">Int.MinValue</span></code> / <code class="docutils literal notranslate"><span class="pre">Long.MinValue</span></code> / Decimal MIN. <code class="docutils literal notranslate"><span class="pre">DayTimeIntervalType</span></code> and <code class="docutils literal notranslate"><span class="pre">YearMonthIntervalType</span></code> fall back to Spark. Spark 4.0 / 4.1 do the <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor; behaviour unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> acos</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.acos,</span> <span class="pre">&quot;ACOS&quot;)</span></code> unchanged across versions; wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;acos&quot;)</span></code> to DataFusion’s <code class="docutils literal notranslate"><span class="pre">acos</span></code> UDF. NaN for <code class="docutils literal notranslate"><span class="pre">|x|</span> <span class="pre">&gt;</span> <span class="pre">1</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> acosh</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">StrictMath.log(x</span> <span class="pre">+</span> <span class="pre">sqrt(x*x</span> <span class="pre">-</span> <span class="pre">1))</span></code> unchanged across versions. NaN for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;</span> <span class="pre">1</span></code>. Routes to DataFusion’s <code class="docutils literal notranslate"><span class="pre">acosh</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> asin</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.asin,</span> <span class="pre">&quot;ASIN&quot;)</span></code> unchanged. NaN for <code class="docutils literal notranslate"><span class="pre">|x|</span> <span class="pre">&gt;</span> <span class="pre">1</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> asinh</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): special-cases <code class="docutils literal notranslate"><span class="pre">Double.NegativeInfinity</span></code> to avoid <code class="docutils literal notranslate"><span class="pre">log(NaN)</span></code>, otherwise <code class="docutils literal notranslate"><span class="pre">StrictMath.log(x</span> <span class="pre">+</span> <span class="pre">sqrt(x*x</span> <span class="pre">+</span> <span class="pre">1))</span></code>. Identical across versions.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> atan</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.atan,</span> <span class="pre">&quot;ATAN&quot;)</span></code> unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> atan2</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">BinaryMathExpression(math.atan2,</span> <span class="pre">&quot;ATAN2&quot;)</span></code> with both inputs adjusted by <code class="docutils literal notranslate"><span class="pre">+0.0</span></code> to flip <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> to <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>. <code class="docutils literal notranslate"><span class="pre">CometAtan2</span></code> reproduces this by wrapping each child in <code class="docutils literal notranslate"><span class="pre">Add(child,</span> <span class="pre">Literal.default(child.dataType))</span></code> before dispatching to DataFusion’s <code class="docutils literal notranslate"><span class="pre">atan2</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> atanh</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">0.5</span> <span class="pre">*</span> <span class="pre">(log1p(x)</span> <span class="pre">-</span> <span class="pre">log1p(-x))</span></code> (SPARK-28519). NaN for <code class="docutils literal notranslate"><span class="pre">|x|</span> <span class="pre">&gt;</span> <span class="pre">1</span></code>, +/-Infinity for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">=</span> <span class="pre">+/-1</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> bin</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Bin(child)</span></code> over <code class="docutils literal notranslate"><span class="pre">LongType</span> <span class="pre">-&gt;</span> <span class="pre">StringType</span></code>. Spark 4.x gains <code class="docutils literal notranslate"><span class="pre">DefaultStringProducingExpression</span></code> and the <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor; no behaviour change. Routes to datafusion-spark <code class="docutils literal notranslate"><span class="pre">SparkBin</span></code>.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> bround</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cbrt</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> ceil</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> ceiling</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cbrt</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): passthrough to DataFusion <code class="docutils literal notranslate"><span class="pre">cbrt</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> ceil</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): one-arg <code class="docutils literal notranslate"><span class="pre">ceil(expr)</span></code> supported (<code class="docutils literal notranslate"><span class="pre">LongType</span></code> / <code class="docutils literal notranslate"><span class="pre">DoubleType</span></code> / <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> with scale &gt;= 0). Decimal with negative scale falls back at convert time. The two-arg <code class="docutils literal notranslate"><span class="pre">ceil(expr,</span> <span class="pre">scale)</span></code> form (<code class="docutils literal notranslate"><span class="pre">RoundCeil</span></code>) is not wired and falls back to Spark.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> ceiling</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Ceil</span></code>. Same support as <code class="docutils literal notranslate"><span class="pre">ceil</span></code>.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> conv</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cos</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cosh</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cot</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> csc</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> degrees</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> div</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cos</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.cos,</span> <span class="pre">&quot;COS&quot;)</span></code> unchanged across versions.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cosh</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.cosh,</span> <span class="pre">&quot;COSH&quot;)</span></code> unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cot</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">/</span> <span class="pre">math.tan(x)</span></code>. DataFusion’s <code class="docutils literal notranslate"><span class="pre">cot</span></code> is also <code class="docutils literal notranslate"><span class="pre">1.0</span> <span class="pre">/</span> <span class="pre">tan(x)</span></code>, so the result matches.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> csc</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">/</span> <span class="pre">math.sin(x)</span></code>. Routed to datafusion-spark’s <code class="docutils literal notranslate"><span class="pre">SparkCsc</span></code> (registered in <code class="docutils literal notranslate"><span class="pre">jni_api.rs</span></code>).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> degrees</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.toDegrees,</span> <span class="pre">&quot;DEGREES&quot;)</span></code> unchanged across versions.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> div</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">IntegralDivide(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code>. Non-decimal operands are cast to <code class="docutils literal notranslate"><span class="pre">DecimalType(19,</span> <span class="pre">0)</span></code>; result is recomputed per <code class="docutils literal notranslate"><span class="pre">IntegralDivide.resultDecimalType</span></code>, wrapped in <code class="docutils literal notranslate"><span class="pre">CheckOverflow</span></code>, then cast to <code class="docutils literal notranslate"><span class="pre">Long</span></code>. ANSI overflow for <code class="docutils literal notranslate"><span class="pre">Long.MinValue</span> <span class="pre">div</span> <span class="pre">-1</span></code> and decimal-overflow ANSI cases are covered by existing tests.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> e</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> exp</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> expm1</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> exp</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(StrictMath.exp,</span> <span class="pre">&quot;EXP&quot;)</span></code> unchanged. ULP-level differences vs DataFusion <code class="docutils literal notranslate"><span class="pre">exp</span></code> are possible but unflagged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> expm1</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(StrictMath.expm1,</span> <span class="pre">&quot;EXPM1&quot;)</span></code> unchanged.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> factorial</p>
 <ul>
 <li><p>3.4.3 (audited 2026-05-15): identical to v3.5.8.</p></li>
 <li><p>3.5.8 (audited 2026-05-15): canonical reference; <code class="docutils literal notranslate"><span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ImplicitCastInputTypes</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span></code>. Returns NULL for NULL input or values outside <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">20]</span></code>.</p></li>
 <li><p>4.0.1 (audited 2026-05-15): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> trait replaced by <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> method override; behavior unchanged.</p></li>
+<li><p>4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> floor</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> greatest</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> hex</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> floor</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): mirror of <code class="docutils literal notranslate"><span class="pre">ceil</span></code>. Two-arg <code class="docutils literal notranslate"><span class="pre">floor(expr,</span> <span class="pre">scale)</span></code> form (<code class="docutils literal notranslate"><span class="pre">RoundFloor</span></code>) falls back to Spark.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> greatest</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): NULL-skipping variadic. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;greatest&quot;)</span></code> to DataFusion’s <code class="docutils literal notranslate"><span class="pre">GreatestFunc</span></code>. Comet does not gate input types, so interval inputs and other Spark-only orderings rely on the native UDF accepting them; no explicit fallback path.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> hex</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): accepts <code class="docutils literal notranslate"><span class="pre">LongType</span></code> / <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> / <code class="docutils literal notranslate"><span class="pre">StringType</span></code>. Spark 4.x widens <code class="docutils literal notranslate"><span class="pre">StringType</span></code> to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code> and preserves collation in <code class="docutils literal notranslate"><span class="pre">dataType</span></code>; <code class="docutils literal notranslate"><span class="pre">CometHex</span></code> passes <code class="docutils literal notranslate"><span class="pre">expr.dataType</span></code> to native <code class="docutils literal notranslate"><span class="pre">SparkHex</span></code>, which always returns <code class="docutils literal notranslate"><span class="pre">Utf8</span></code> – collation propagation may diverge on Spark 4.x.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> hypot</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> least</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> ln</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> log</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> log10</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> least</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): mirror of <code class="docutils literal notranslate"><span class="pre">greatest</span></code>; same caveats. Spark 4.1.1 adds <code class="docutils literal notranslate"><span class="pre">contextIndependentFoldable</span></code> (no Comet impact).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> ln</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Log</span></code>. Comet wires through <code class="docutils literal notranslate"><span class="pre">CometLog</span></code> to DataFusion <code class="docutils literal notranslate"><span class="pre">ln</span></code> with a <code class="docutils literal notranslate"><span class="pre">nullIfNegative</span></code> rewrite to match Spark’s NULL behaviour for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> log</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): one-arg <code class="docutils literal notranslate"><span class="pre">log(x)</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">CometLog</span></code> (DataFusion <code class="docutils literal notranslate"><span class="pre">ln</span></code>); two-arg <code class="docutils literal notranslate"><span class="pre">log(base,</span> <span class="pre">x)</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">CometLogarithm</span></code> (custom <code class="docutils literal notranslate"><span class="pre">spark_log</span></code> UDF, returns NULL when <code class="docutils literal notranslate"><span class="pre">base</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code> or <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code> to match <code class="docutils literal notranslate"><span class="pre">Logarithm.nullSafeEval</span></code>).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> log10</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryLogExpression(StrictMath.log10,</span> <span class="pre">&quot;LOG10&quot;)</span></code>; returns NULL for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code>. Possible ULP differences from <code class="docutils literal notranslate"><span class="pre">StrictMath</span></code>.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> log1p</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> log2</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> mod</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> negative</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> pi</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> log2</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryLogExpression(StrictMath.log(x)</span> <span class="pre">/</span> <span class="pre">StrictMath.log(2),</span> <span class="pre">&quot;LOG2&quot;)</span></code>; returns NULL for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> mod</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Remainder</span></code>. Same support as <code class="docutils literal notranslate"><span class="pre">%</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> negative</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMinus(child,</span> <span class="pre">failOnError)</span></code> -&gt; Rust <code class="docutils literal notranslate"><span class="pre">NegativeExpr</span></code>. ANSI overflow is detected for <code class="docutils literal notranslate"><span class="pre">Int8/Int16/Int32/Int64</span></code> and <code class="docutils literal notranslate"><span class="pre">IntervalYearMonth/IntervalDayTime</span></code>. Float / Double / Decimal cannot overflow on negate. Spark 4.0 <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor; no impact.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> pi</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">LeafMathExpression(math.Pi,</span> <span class="pre">&quot;PI&quot;)</span></code>; foldable, so Spark <code class="docutils literal notranslate"><span class="pre">ConstantFolding</span></code> rewrites it to a <code class="docutils literal notranslate"><span class="pre">Literal</span></code> before Comet sees the plan. The <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;pi&quot;)</span></code> registration is exercised only when <code class="docutils literal notranslate"><span class="pre">ConstantFolding</span></code> is excluded.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> pmod</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> positive</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> pow</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> power</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> radians</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> rand</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> randn</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> positive</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryPositive(child)</span></code> is a regular expression. There is no Comet serde for <code class="docutils literal notranslate"><span class="pre">UnaryPositive</span></code>, so projections containing <code class="docutils literal notranslate"><span class="pre">+col</span></code> silently disable Comet for the projection on 3.4/3.5.</p></li>
+<li><p>Spark 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryPositive</span></code> is <code class="docutils literal notranslate"><span class="pre">RuntimeReplaceable</span></code> with <code class="docutils literal notranslate"><span class="pre">replacement</span> <span class="pre">=</span> <span class="pre">child</span></code>; the optimizer removes it before Comet sees the plan, so the gap is transparent on 4.x.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> pow</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Pow(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">BinaryMathExpression(StrictMath.pow,</span> <span class="pre">&quot;POWER&quot;)</span></code>; routes to DataFusion <code class="docutils literal notranslate"><span class="pre">pow</span></code>. ULP-level differences possible.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> power</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Pow</span></code>. Same support as <code class="docutils literal notranslate"><span class="pre">pow</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> radians</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.toRadians,</span> <span class="pre">&quot;RADIANS&quot;)</span></code> unchanged across versions.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> rand</p>
+<ul>
+<li><p>See <code class="docutils literal notranslate"><span class="pre">misc_funcs</span> <span class="pre">/</span> <span class="pre">rand</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> randn</p>
+<ul>
+<li><p>See <code class="docutils literal notranslate"><span class="pre">misc_funcs</span> <span class="pre">/</span> <span class="pre">randn</span></code>.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> random</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> randstr</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> rint</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> round</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sec</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> shiftleft</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sign</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> signum</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sin</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sinh</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sqrt</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> tan</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> tanh</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_add</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_divide</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> rint</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.rint,</span> <span class="pre">&quot;ROUND&quot;)</span></code> with <code class="docutils literal notranslate"><span class="pre">funcName</span> <span class="pre">=</span> <span class="pre">&quot;rint&quot;</span></code>. Passthrough to DataFusion <code class="docutils literal notranslate"><span class="pre">rint</span></code> (round-half-to-even).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> round</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): HALF_UP rounding for integer / decimal. Float / Double child types always fall back to Spark because <code class="docutils literal notranslate"><span class="pre">BigDecimal</span></code>-via-<code class="docutils literal notranslate"><span class="pre">toString</span></code> rounding cannot be precisely matched (documented inline in <code class="docutils literal notranslate"><span class="pre">CometRound</span></code>). ANSI <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> is propagated for integer overflow. <code class="docutils literal notranslate"><span class="pre">BRound</span></code> (HALF_EVEN) is not wired.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sec</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">/</span> <span class="pre">math.cos(x)</span></code>. Routed to datafusion-spark’s <code class="docutils literal notranslate"><span class="pre">SparkSec</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> shiftleft</p>
+<ul>
+<li><p>See <code class="docutils literal notranslate"><span class="pre">bitwise_funcs</span> <span class="pre">/</span> <span class="pre">&lt;&lt;</span></code> (audited in PR #4479). Same support as the operator alias added in 4.0.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sign</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Signum</span></code>. Same support as <code class="docutils literal notranslate"><span class="pre">signum</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> signum</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Signum(child)</span></code> over <code class="docutils literal notranslate"><span class="pre">DoubleType</span></code>. Spark also restricts to the two interval types via <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code>; Comet handles only the <code class="docutils literal notranslate"><span class="pre">Double</span></code> case via DataFusion <code class="docutils literal notranslate"><span class="pre">signum</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sin</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.sin,</span> <span class="pre">&quot;SIN&quot;)</span></code> unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sinh</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.sinh,</span> <span class="pre">&quot;SINH&quot;)</span></code> unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sqrt</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.sqrt,</span> <span class="pre">&quot;SQRT&quot;)</span></code> unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> tan</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.tan,</span> <span class="pre">&quot;TAN&quot;)</span></code> unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> tanh</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.tanh,</span> <span class="pre">&quot;TANH&quot;)</span></code> unchanged.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_add</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">TryAdd</span></code> is <code class="docutils literal notranslate"><span class="pre">RuntimeReplaceable</span></code> and rewrites to <code class="docutils literal notranslate"><span class="pre">Add(..,</span> <span class="pre">EvalMode.TRY)</span></code> for numeric inputs (datetime / interval go through <code class="docutils literal notranslate"><span class="pre">TryEval(Add(..,</span> <span class="pre">ANSI))</span></code> and fall back). Numeric path uses the Rust <code class="docutils literal notranslate"><span class="pre">checked_add</span></code> UDF, returning NULL on overflow. Decimal goes through <code class="docutils literal notranslate"><span class="pre">WideDecimalBinaryExpr</span></code> with <code class="docutils literal notranslate"><span class="pre">EvalMode.Try</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_divide</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">TryDivide</span></code> rewrites to <code class="docutils literal notranslate"><span class="pre">Divide(..,</span> <span class="pre">EvalMode.TRY)</span></code>. The <code class="docutils literal notranslate"><span class="pre">nullIfWhenPrimitive</span></code> wrapper swaps zero divisors to NULL; integer / float divide uses <code class="docutils literal notranslate"><span class="pre">checked_div</span></code>; decimal uses <code class="docutils literal notranslate"><span class="pre">decimal_div</span></code> + <code class="docutils literal notranslate"><span class="pre">CheckOverflow(failOnError</span> <span class="pre">=</span> <span class="pre">false)</span></code> returning NULL.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_mod</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_multiply</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_subtract</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> unhex</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_multiply</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): rewrites to <code class="docutils literal notranslate"><span class="pre">Multiply(..,</span> <span class="pre">EvalMode.TRY)</span></code>. Integer path uses <code class="docutils literal notranslate"><span class="pre">checked_mul</span></code>; decimal uses <code class="docutils literal notranslate"><span class="pre">WideDecimalBinaryExpr</span></code> with <code class="docutils literal notranslate"><span class="pre">EvalMode.Try</span></code>, returning NULL on overflow.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_subtract</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): rewrites to <code class="docutils literal notranslate"><span class="pre">Subtract(..,</span> <span class="pre">EvalMode.TRY)</span></code>. Integer path uses <code class="docutils literal notranslate"><span class="pre">checked_sub</span></code>; decimal uses <code class="docutils literal notranslate"><span class="pre">WideDecimalBinaryExpr</span></code> as needed.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> unhex</p>
+<ul>
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Unhex(child,</span> <span class="pre">failOnError)</span></code>. Spark 4.x widens input to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code> and wraps the inner call in try/catch; Comet <code class="docutils literal notranslate"><span class="pre">CometUnhex</span></code> forwards <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> to native <code class="docutils literal notranslate"><span class="pre">spark_unhex</span></code> but does not gate on collation.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> uniform</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> width_bucket</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> width_bucket</p>
+<ul>
+<li><p>Spark 3.5.8 (audited 2026-05-27): introduced; not available in 3.4.3.</p></li>
+<li><p>Spark 4.0.1, 4.1.1 (audited 2026-05-27): same semantics; <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor.</p></li>
+<li><p>Known limitation: wired via per-version <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> rather than a <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde</span></code>, so it bypasses the support-level framework and the auto-generated compatibility doc (https://github.com/apache/datafusion-comet/issues/4485). Native path uses datafusion-spark <code class="docutils literal notranslate"><span class="pre">SparkWidthBucket</span></code>; interval input types are not exercised by Comet tests.</p></li>
+</ul>
+</li>
 </ul>
 </section>
 <section id="misc-funcs">
