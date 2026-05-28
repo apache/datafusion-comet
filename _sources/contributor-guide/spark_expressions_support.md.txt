@@ -250,17 +250,61 @@
 ### bitwise_funcs
 
 - [x] `&`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `BitwiseAnd(left, right) extends BinaryArithmetic` over `IntegralType`. Comet routes via `CometBitwiseAnd` to the proto's `bitwise_and` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `NullIntolerant` trait replaced by `nullIntolerant: Boolean`.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] `<<`
+  - Spark 3.4.3 (audited 2026-05-27): only the function form `shiftleft(...)` exists; the `<<` operator alias is added in Spark 4.0.
+  - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-27): `<<` parses to `ShiftLeft` (the same `case class` as `shiftleft`) via a parser alias. `ShiftLeft` now extends a shared `BitShiftOperation` trait; eval semantics unchanged. Comet `CometShiftLeft` casts the `right` operand to `LongType` when `left.dataType == LongType` because DataFusion's bitwise shift requires matching operand types.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] `>>`
+  - Spark 3.4.3 (audited 2026-05-27): same as `<<` history — only the function form exists pre-4.0.
+  - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-27): `>>` parses to `ShiftRight`. Comet `CometShiftRight` mirrors the same operand-cast logic as `CometShiftLeft`.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [ ] `>>>`
 - [x] `^`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `BitwiseXor(left, right) extends BinaryArithmetic` over `IntegralType`. Comet routes via `CometBitwiseXor` to the proto's `bitwise_xor` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `nullIntolerant` field refactor.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] bit_count
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `BitwiseCount(child) extends UnaryExpression`; accepts `IntegralType` or `BooleanType` and returns the population count as `IntegerType`. Wired as `CometScalarFunction("bit_count")`.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] bit_get
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `BitwiseGet(left, right) extends BinaryExpression`; `inputTypes = (IntegralType, IntegerType) -> ByteType`. The position is bounds-checked at runtime via `BitwiseGetUtil.checkPosition`. Comet routes via `CometBitwiseGet` to the native `bit_get` scalar.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] getbit
+  - Spark 3.4.3 (audited 2026-05-27): registry alias of `BitwiseGet`. Same support as `bit_get`.
+  - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.
 - [x] shiftright
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. Function name for `ShiftRight`. Same support as the `>>` operator alias added in 4.0.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8 (the `>>` operator is the only addition).
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] shiftrightunsigned
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `ShiftRightUnsigned(left, right) extends BinaryExpression`; uses Java's `>>>` (zero-fill) semantics. Comet wires as `CometScalarFunction("shiftrightunsigned")` (added in #4375).
+  - Spark 4.0.1 (audited 2026-05-27): now extends the shared `BitShiftOperation` trait; eval semantics unchanged. The `>>>` operator alias is added at the parser level.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] `|`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `BitwiseOr(left, right) extends BinaryArithmetic` over `IntegralType`. Comet routes via `CometBitwiseOr` to the proto's `bitwise_or` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `nullIntolerant` field refactor.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] `~`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `BitwiseNot(child) extends UnaryExpression`; accepts `IntegralType` and returns the bitwise complement of the same type. Comet routes via `CometBitwiseNot` to the native `bitwise_not` scalar.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `nullIntolerant` field refactor.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
 ### collection_funcs
 
@@ -273,14 +317,42 @@
 ### conditional_funcs
 
 - [x] coalesce
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Coalesce(children) extends Expression with ComplexTypeMergingExpression`; returns the first non-null child, evaluated left-to-right with short-circuit. Result type is the merged child type. Comet routes via `CometCoalesce`, which serialises as nested `CaseWhen(IsNotNull(c1) -> c1, IsNotNull(c2) -> c2, ..., else cN)` so the native engine preserves the short-circuit semantics.
+  - Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - [x] if
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `If(predicate, trueValue, falseValue) extends ComplexTypeMergingExpression`; standard ternary semantics with short-circuit, predicate must be `BooleanType`. Comet routes via `CometIf` to the native `IfExpr` proto.
+  - Spark 4.0.1 (audited 2026-05-27): adds an `override def withNewAlwaysEvaluatedInputs(...)` hook for the new optimizer phase; semantics unchanged. Error messages reformatted (`paramIndex` -> `ordinalNumber`).
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] ifnull
+  - Spark 3.4.3 (audited 2026-05-27): registry alias of `Nvl` (`expression[Nvl]("ifnull", setAlias = true)`). Same `RuntimeReplaceable` lowering as `nvl`.
+  - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.
 - [ ] nanvl
 - [x] nullif
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): `NullIf(left, right, replacement) extends RuntimeReplaceable with InheritAnalysisRules`; the analyzer rewrites to `If(EqualTo(left, right), Literal(null, left.dataType), left)`. Comet handles via `CometIf` plus `CometEqualTo`.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.5.8.
 - [ ] nullifzero
 - [x] nvl
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): `Nvl(left, right, replacement) extends RuntimeReplaceable`; analyzer rewrites to `Coalesce(Seq(left, right))`. Comet handles via `CometCoalesce`.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.5.8.
 - [x] nvl2
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): `Nvl2(expr1, expr2, expr3, replacement) extends RuntimeReplaceable`; analyzer rewrites to `If(IsNotNull(expr1), expr2, expr3)`. Comet handles via `CometIf`.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.5.8.
 - [x] when
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): the `CASE WHEN ... THEN ...` SQL form lowers to `CaseWhen(branches: Seq[(Expression, Expression)], elseValue: Option[Expression])`. Spark evaluates left-to-right with short-circuit; result type is the merged branch type. Comet routes via `CometCaseWhen` to the native `CaseWhen` proto.
+  - Spark 4.0.1 (audited 2026-05-27): adds the `withNewAlwaysEvaluatedInputs` optimizer hook; semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [ ] zeroifnull
 
 ### conversion_funcs
@@ -660,26 +732,96 @@
 ### predicate_funcs
 
 - [x] `!`
+  - Spark 3.4.3 (audited 2026-05-27): registry alias of `Not`. Same support as `not`.
+  - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.
 - [x] `<`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `LessThan(left, right) extends BinaryComparison`. Comet routes via `CometLessThan` to the proto's `lt` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] `<=`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `LessThanOrEqual(left, right) extends BinaryComparison`. Comet routes via `CometLessThanOrEqual` to the proto's `lt_eq` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] `<=>`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `EqualNullSafe(left, right) extends BinaryComparison`; treats two NULLs as equal and a NULL with a non-NULL as not equal. Comet routes via `CometEqualNullSafe` to the proto's `eq_null_safe` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] `=`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `EqualTo(left, right) extends BinaryComparison`. Comet routes via `CometEqualTo` to the proto's `eq` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] `==`
+  - Spark 3.4.3 (audited 2026-05-27): registry alias of `EqualTo`. Same support as `=`.
+  - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.
 - [x] `>`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `GreaterThan(left, right) extends BinaryComparison`. Comet routes via `CometGreaterThan` to the proto's `gt` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] `>=`
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `GreaterThanOrEqual(left, right) extends BinaryComparison`. Comet routes via `CometGreaterThanOrEqual` to the proto's `gt_eq` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] and
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `And(left, right) extends BinaryOperator with Predicate`; short-circuit left-to-right. Comet routes via `CometAnd` to the proto's `and` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] between
+  - Spark 3.4.3 (audited 2026-05-27): the SQL form `expr BETWEEN low AND high` is rewritten at the parser level to `expr >= low AND expr <= high`. Comet sees only the resulting `And(GreaterThanOrEqual, LessThanOrEqual)` and routes via `CometAnd` + `CometGreaterThanOrEqual` + `CometLessThanOrEqual`.
+  - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.
 - [x] ilike
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `ILike(left, right, escapeChar) extends RuntimeReplaceable`; the analyzer rewrites to `Like(Lower(left), Lower(right), escapeChar)`. Comet handles via `CometLike` and `CometLower` (case-conversion path, gated by `spark.comet.caseConversion.enabled=false` by default).
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] in
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `In(value, list: Seq[Expression]) extends Predicate`; NULL-sensitive set membership (NULL in any element of the list yields NULL when no match found). Comet routes via `CometIn` to the proto's `In` expression with `negated = false`; `InSet` is rewritten to `In` so the native side can perform its own set-lookup optimization.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] isnan
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `IsNaN(child) extends UnaryExpression`; returns `BooleanType`; `false` for NULL or non-float types. Comet routes via `CometIsNaN` to the native `isnan` scalar.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] isnotnull
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `IsNotNull(child) extends UnaryExpression with Predicate`. Comet routes via `CometIsNotNull` to the proto's `is_not_null` unary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] isnull
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `IsNull(child) extends UnaryExpression with Predicate`. Comet routes via `CometIsNull` to the proto's `is_null` unary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] like
+  - See `string_funcs / like` (audited in PR #4461). `CometLike` only supports the default `\\` escape character.
 - [x] not
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Not(child) extends UnaryExpression with Predicate`. Comet routes via `CometNot`, which optimizes a few special cases: `Not(EqualTo)` -> proto `neq`, `Not(EqualNullSafe)` -> proto `neq_null_safe`, `Not(In)` -> proto `In(negated = true)`.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] or
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Or(left, right) extends BinaryOperator with Predicate`; short-circuit left-to-right. Comet routes via `CometOr` to the proto's `or` binary expression.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [ ] regexp
 - [ ] regexp_like
 - [x] rlike
+  - See `string_funcs / regexp_replace` and the `CometRLike` notes (audited in PR #4461). Uses the Rust `regex` crate, which differs from Java's `Pattern` engine; requires `spark.comet.expression.regexp.allowIncompatible=true`.
 
 ### string_funcs
 
