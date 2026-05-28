@@ -44,7 +44,8 @@ private object CometGetDateField extends Enumeration {
   // 2 = Monday, ..., 7 = Saturday).
   val DayOfWeek: Value = Value("dow")
   val DayOfYear: Value = Value("doy")
-  val WeekDay: Value = Value("isodow") // day of the week where Monday is 0
+  // Datafusion `isodow` is 1..=7 with Monday=1; Spark `WeekDay` is 0..=6 with Monday=0.
+  val WeekDay: Value = Value("isodow")
   val WeekOfYear: Value = Value("week")
   val Quarter: Value = Value("quarter")
 }
@@ -144,7 +145,25 @@ object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateF
       expr: WeekDay,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
+    // Datafusion `isodow` is 1..=7 with Monday=1, but Spark `WeekDay` is 0..=6 with Monday=0,
+    // so subtract 1 from the result of datepart(isodow, ...).
+    val optExpr = getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
+      .zip(exprToProtoInternal(Literal(1), inputs, binding))
+      .map { case (left, right) =>
+        Expr
+          .newBuilder()
+          .setSubtract(
+            ExprOuterClass.MathExpr
+              .newBuilder()
+              .setLeft(left)
+              .setRight(right)
+              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+              .setReturnType(serializeDataType(IntegerType).get)
+              .build())
+          .build()
+      }
+      .headOption
+    optExprWithInfo(optExpr, expr, expr.child)
   }
 }
 
