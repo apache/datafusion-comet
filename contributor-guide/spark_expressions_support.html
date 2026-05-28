@@ -1166,8 +1166,23 @@ per-function details are documented in the
 <section id="struct-funcs">
 <h3>struct_funcs<a class="headerlink" href="#struct-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> named_struct</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> struct</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> named_struct</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">CreateNamedStruct(children)</span></code> with <code class="docutils literal notranslate"><span class="pre">NoThrow</span></code>; <code class="docutils literal notranslate"><span class="pre">children</span></code> is <code class="docutils literal notranslate"><span class="pre">Seq(name1,</span> <span class="pre">val1,</span> <span class="pre">name2,</span> <span class="pre">val2,</span> <span class="pre">...)</span></code>. Names must be foldable <code class="docutils literal notranslate"><span class="pre">StringType</span></code> and distinct; non-null. <code class="docutils literal notranslate"><span class="pre">dataType</span></code> is the <code class="docutils literal notranslate"><span class="pre">StructType</span></code> of the resulting fields. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometCreateNamedStruct</span></code>, builds a <code class="docutils literal notranslate"><span class="pre">CreateNamedStruct</span></code> proto, and the native <code class="docutils literal notranslate"><span class="pre">CreateNamedStruct</span></code> expression (in <code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/struct_funcs/create_named_struct.rs</span></code>) emits a <code class="docutils literal notranslate"><span class="pre">StructArray</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged; an <code class="docutils literal notranslate"><span class="pre">override</span> <span class="pre">def</span> <span class="pre">stateful:</span> <span class="pre">Boolean</span> <span class="pre">=</span> <span class="pre">true</span></code> flag is added for the optimizer. Parser-level Alias unwrapping (<code class="docutils literal notranslate"><span class="pre">case</span> <span class="pre">(a:</span> <span class="pre">Alias,</span> <span class="pre">_)</span> <span class="pre">=&gt;</span> <span class="pre">Seq(Literal(a.name),</span> <span class="pre">a)</span></code>) is transparent to Comet.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): semantics unchanged; adds <code class="docutils literal notranslate"><span class="pre">override</span> <span class="pre">def</span> <span class="pre">contextIndependentFoldable:</span> <span class="pre">Boolean</span> <span class="pre">=</span> <span class="pre">children.forall(_.contextIndependentFoldable)</span></code> for the new constant-folding pass; no impact on Comet conversion.</p></li>
+<li><p>Comet limitation: a <code class="docutils literal notranslate"><span class="pre">CreateNamedStruct</span></code> whose names contain duplicates falls back to Spark. (Spark’s analyzer also tolerates duplicates at the column-name level, but the proto layer would lose them, so the fallback is the safe choice.)</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> struct</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): the SQL function <code class="docutils literal notranslate"><span class="pre">struct(a,</span> <span class="pre">b,</span> <span class="pre">c)</span></code> is built by <code class="docutils literal notranslate"><span class="pre">CreateStruct.create</span></code>, which lowers to a <code class="docutils literal notranslate"><span class="pre">CreateNamedStruct</span></code> with synthetic field names <code class="docutils literal notranslate"><span class="pre">col1</span></code>, <code class="docutils literal notranslate"><span class="pre">col2</span></code>, etc. Comet handles both <code class="docutils literal notranslate"><span class="pre">struct</span></code> and <code class="docutils literal notranslate"><span class="pre">named_struct</span></code> via the same <code class="docutils literal notranslate"><span class="pre">CometCreateNamedStruct</span></code> path; the synthetic-name and explicit-name cases behave identically.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): same lowering; identical to 3.5.8.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): same lowering; identical to 3.5.8.</p></li>
+</ul>
+</li>
 </ul>
 </section>
 <section id="url-funcs">
