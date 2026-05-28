@@ -1480,6 +1480,7 @@ impl PhysicalPlanner {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 let metadata_location = common.metadata_location.clone();
+                let catalog_name = common.catalog_name.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
                 let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
 
@@ -1487,6 +1488,7 @@ impl PhysicalPlanner {
                     metadata_location,
                     required_schema,
                     catalog_properties,
+                    catalog_name,
                     tasks,
                     data_file_concurrency_limit,
                 )?;
