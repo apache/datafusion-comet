@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Pow, Unhex}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -193,6 +193,27 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
         childExpr,
         failOnErrorExpr)
     optExprWithInfo(optExpr, expr, expr.child)
+  }
+}
+
+object CometPow extends CometExpressionSerde[Pow] {
+  
+  // https://github.com/apache/datafusion/issues/22598
+  val unsupportedReason: String = "Power has correctness issues"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
+
+  override def getSupportLevel(expr: Pow): SupportLevel =
+    Unsupported(Some(unsupportedReason))
+
+  override def convert(
+      expr: Pow,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
+    val optExpr = scalarFunctionExprToProto("pow", leftExpr, rightExpr)
+    optExprWithInfo(optExpr, expr, expr.left, expr.right)
   }
 }
 

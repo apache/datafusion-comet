@@ -148,6 +148,7 @@ object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateF
     // Datafusion `isodow` is 1..=7 with Monday=1, but Spark `WeekDay` is 0..=6 with Monday=0,
     // so subtract 1 from the result of datepart(isodow, ...).
     // TODO: fix upstream to avoid substraction
+    // https://github.com/apache/datafusion/issues/22599
     val optExpr = getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
       .zip(exprToProtoInternal(Literal(1), inputs, binding))
       .map { case (left, right) =>
