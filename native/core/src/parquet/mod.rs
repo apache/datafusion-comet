@@ -24,7 +24,7 @@ pub mod schema_adapter;
 pub mod util;
 
 mod cast_column;
-mod objectstore;
+pub(crate) mod objectstore;
 
 use std::collections::HashMap;
 use std::task::Poll;
