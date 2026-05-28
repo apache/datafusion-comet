@@ -10,7 +10,7 @@ CometNativeColumnarToRow
          :                 +- Exchange
          :                    +- HashAggregate
          :                       +- Project
-         :                          +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
+         :                          +-  BroadcastHashJoin [COMET: upper(ca_country#1) is not fully compatible with Spark (Results can vary depending on locale and character set (https://github.com/apache/datafusion-comet/issues/2190).). To enable it anyway, set spark.comet.expression.Upper.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
          :                             :- CometNativeColumnarToRow
          :                             :  +- CometProject
          :                             :     +- CometBroadcastHashJoin
@@ -54,7 +54,7 @@ CometNativeColumnarToRow
                      +- Exchange
                         +- HashAggregate
                            +- Project
-                              +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
+                              +-  BroadcastHashJoin [COMET: upper(ca_country#2) is not fully compatible with Spark (Results can vary depending on locale and character set (https://github.com/apache/datafusion-comet/issues/2190).). To enable it anyway, set spark.comet.expression.Upper.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
                                  :- CometNativeColumnarToRow
                                  :  +- CometProject
                                  :     +- CometBroadcastHashJoin
