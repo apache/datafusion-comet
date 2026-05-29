@@ -86,7 +86,7 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
           runExpressionBenchmark(
             "range join (BETWEEN)",
             probeRows,
-            "SELECT count(*) FROM probe p " +
+            "SELECT /*+ BROADCAST(b) */ count(*) FROM probe p " +
               "JOIN build b ON p.k BETWEEN b.lo AND b.hi",
             cometConfigs)
         }
@@ -95,7 +95,7 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
           runExpressionBenchmark(
             "inequality join (>)",
             probeRows,
-            "SELECT count(*) FROM probe p " +
+            "SELECT /*+ BROADCAST(b) */ count(*) FROM probe p " +
               "JOIN build b ON p.k > b.lo",
             cometConfigs)
         }
@@ -104,7 +104,7 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
           runExpressionBenchmark(
             "left outer non-equi",
             probeRows,
-            "SELECT count(*) FROM probe p " +
+            "SELECT /*+ BROADCAST(b) */ count(*) FROM probe p " +
               "LEFT OUTER JOIN build b ON p.k BETWEEN b.lo AND b.hi",
             cometConfigs)
         }
