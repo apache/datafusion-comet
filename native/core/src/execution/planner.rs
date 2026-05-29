@@ -1225,17 +1225,34 @@ impl PhysicalPlanner {
                     None,
                 )?);
 
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        nested_loop_join,
-                        vec![join_params.left, join_params.right],
-                    )),
-                ))
+                if bnlj.build_side == BuildSide::BuildRight as i32 {
+                    let swapped_join = nested_loop_join.as_ref().swap_inputs()?;
+                    let mut additional_native_plans = vec![];
+                    if swapped_join.as_any().is::<ProjectionExec>() {
+                        additional_native_plans.push(Arc::clone(swapped_join.children()[0]));
+                    }
+                    Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            swapped_join,
+                            vec![join_params.left, join_params.right],
+                            additional_native_plans,
+                        )),
+                    ))
+                } else {
+                    Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            nested_loop_join,
+                            vec![join_params.left, join_params.right],
+                        )),
+                    ))
+                }
             }
-
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
                 let num = limit.limit;
