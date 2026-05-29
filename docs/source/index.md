@@ -32,23 +32,18 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 <span class="comet-terminal__dots" aria-hidden="true"><i></i><i></i><i></i></span>
 <span class="comet-terminal__title">spark-shell &mdash; comet enabled</span>
 </div>
-<pre class="comet-terminal__body"><span class="term-line term-comment"># Download the Comet plugin for your Spark / Scala version</span>
-<span class="term-line"><span class="term-prompt">$</span> <span class="term-var">export</span> COMET_JAR=comet-spark-spark4.1_2.13-0.16.0.jar</span>
-<span class="term-line term-spacer"></span>
-<span class="term-line term-comment"># Launch Spark with Comet enabled — drop-in, no code changes</span>
+<pre class="comet-terminal__body"><span class="term-line term-comment"># Add the Comet jar to your existing Spark job — no code changes</span>
 <span class="term-line"><span class="term-prompt">$</span> $SPARK_HOME/bin/spark-shell \</span>
-<span class="term-line term-indent">--jars $COMET_JAR \</span>
-<span class="term-line term-indent">--conf spark.driver.extraClassPath=$COMET_JAR \</span>
-<span class="term-line term-indent">--conf spark.executor.extraClassPath=$COMET_JAR \</span>
+<span class="term-line term-indent">--jars comet-spark-spark4.1_2.13-0.16.0.jar \</span>
 <span class="term-line term-indent">--conf spark.plugins=org.apache.spark.CometPlugin \</span>
-<span class="term-line term-indent">--conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \</span>
-<span class="term-line term-indent">--conf spark.memory.offHeap.enabled=true \</span>
-<span class="term-line term-indent">--conf spark.memory.offHeap.size=4g</span>
+<span class="term-line term-indent">--conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager</span>
 <span class="term-line term-spacer"></span>
-<span class="term-line term-comment">// Your existing Spark queries — now accelerated by Comet via Apache DataFusion</span>
+<span class="term-line term-comment">// Your existing queries now run on the DataFusion native engine</span>
 <span class="term-line"><span class="term-prompt">scala&gt;</span> spark.sql(<span class="term-str">"SELECT category, COUNT(*) FROM events GROUP BY category"</span>).show()</span>
 <span class="term-line term-cursor"><span class="term-prompt">scala&gt;</span> <span class="term-blink">▍</span></span></pre>
 </div>
+
+<p class="comet-hero__note">Off-heap memory and classpath tuning flags are covered in the <a href="user-guide/latest/installation.html">installation guide</a>.</p>
 
 <div class="comet-hero__ctas">
 <a class="comet-cta comet-cta--primary" href="user-guide/latest/installation.html">Install Comet <span aria-hidden="true">→</span></a>
@@ -142,7 +137,5 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 User Guide <user-guide/index>
 Contributor Guide <contributor-guide/index>
 Changelog <changelog/index>
-Comparison with Gluten <about/gluten_comparison>
-Versioning Policy <about/versioning_policy>
-ASF Links <asf/index>
+About <about/index>
 ```

@@ -25,20 +25,68 @@
 
 /* ─── Shared tokens ────────────────────────────────────────────────── */
 :root {
-  --comet-accent:      #e8650a;                       /* brand orange — buttons, backgrounds, large headings */
-  --comet-accent-lite: #f07830;                       /* hover variant */
-  --comet-accent-dim:  rgba(232, 101, 10, 0.10);      /* translucent fill */
-  --comet-accent-text: #a84808;                       /* AA-passing variant for small text on light bg (~5.9:1) — default */
+  /* Brand orange — SINGLE SOURCE OF TRUTH.
+     --comet-accent-rgb holds the raw channels so every translucent tint
+     (fills, focus rings, link underlines, glows) is composed with
+     rgba(var(--comet-accent-rgb), <alpha>) instead of re-typing the hex.
+     Change the brand color here and every orange on the site follows. */
+  --comet-accent-rgb:  232, 101, 10;
+  --comet-accent:      rgb(var(--comet-accent-rgb));   /* brand orange — buttons, backgrounds, large headings */
+  --comet-accent-lite: #f07830;                        /* hover variant */
+  --comet-accent-text: #a84808;                        /* AA-passing variant for small text on light bg (~5.9:1) — default */
+  --comet-accent-dim:       rgba(var(--comet-accent-rgb), 0.10);  /* translucent fill */
+  --comet-accent-underline: rgba(var(--comet-accent-rgb), 0.30);  /* link underline rest state */
+  --comet-accent-ring:      rgba(var(--comet-accent-rgb), 0.18);  /* focus ring */
+  --comet-accent-tint:      rgba(var(--comet-accent-rgb), 0.05);  /* faint hover wash */
+  --comet-accent-glow:      rgba(var(--comet-accent-rgb), 0.08);  /* card hover shadow */
+
+  /* Surfaces that aren't covered by PST's palette. */
+  --comet-figure-bg:   #ffffff;   /* charts/diagrams assume a white canvas */
+
   --comet-radius:      6px;
   --comet-font:        'Inter', system-ui, -apple-system, sans-serif;
   --comet-mono:        'JetBrains Mono', 'Fira Code', monospace;
   --comet-sidebar-w:   280px;
+
+  /* ── Code & terminal palette ──────────────────────────────────────
+     Code blocks and the hero terminal use a DARK background in BOTH the
+     light and dark site themes, so their syntax colors must read well on
+     near-black regardless of mode. We define them once here and share
+     them between the Pygments-rendered blocks (.highlight) and the
+     hand-built hero terminal (.comet-terminal) so the two never drift.
+     Every color below clears WCAG AA (≥ 4.5:1) on --comet-code-bg. */
+  --comet-code-bg:       #0e0e0e;   /* code block surface */
+  --comet-code-fg:       #e2e8f0;   /* default text + any untyped token */
+  --comet-code-keyword:  #c792ea;   /* keywords, storage, declarations */
+  --comet-code-string:   #c3e88d;   /* string + char literals */
+  --comet-code-comment:  #8a98a5;   /* comments — was #546e7a (too dim) */
+  --comet-code-func:     #82aaff;   /* function / builtin names */
+  --comet-code-number:   #f78c6c;   /* numeric literals */
+  --comet-code-operator: #89ddff;   /* operators, punctuation accents */
+  --comet-code-class:    #ffcb6b;   /* class / type names */
+  --comet-code-meta:     #9fb0c3;   /* console prompt, output, traceback */
+  --comet-code-prompt:   #f07830;   /* terminal "$" / "scala>" prompt */
+
+  /* Hero terminal chrome — a faintly blue near-black so the framed
+     "terminal app" reads as distinct from inline code blocks. */
+  --comet-terminal-bg:     #0d0f12;
+  --comet-terminal-bar:    #15181c;
+  --comet-terminal-border: #1f242b;
 }
 
 /* In dark mode the lighter orange has plenty of contrast on near-black,
    so use it as the text variant instead of the darkened light-mode one. */
 html[data-theme="dark"] {
   --comet-accent-text: #f07830;                       /* 5.1:1 on #0a0a0a */
+  --comet-surface-sunken: #0e0e0e;                    /* alternating-section bg, dark mode only */
+
+  /* In dark mode the page background is near-black (#0a0a0a), so the
+     default code surface (#0e0e0e) sits almost flush with the page and
+     the terminal "disappears." Lift it to a brighter shade here so the
+     code block reads as a raised surface — classic dark-mode elevation.
+     The token also feeds the hero terminal so the lift is consistent. */
+  --comet-code-bg:     #1c1c1c;                       /* raised code surface */
+  --comet-terminal-bg: #1c1c1c;
 }
 
 /* ─── PST overrides — LIGHT ────────────────────────────────────────── */
@@ -278,7 +326,7 @@ html[data-theme="dark"] .bd-sidebar form.bd-search {
 .bd-sidebar form.bd-search:focus-within {
   border-color: var(--comet-accent) !important;
   outline: none !important;
-  box-shadow: 0 0 0 3px rgba(232, 101, 10, 0.18) !important;
+  box-shadow: 0 0 0 3px var(--comet-accent-ring) !important;
 }
 
 /* Kill default browser/Bootstrap focus rings on the form + input */
@@ -807,7 +855,7 @@ article a.reference.external,
 article a.reference.internal {
   color: var(--comet-accent-text) !important;
   text-decoration: none !important;
-  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+  border-bottom: 1px solid var(--comet-accent-underline) !important;
   transition: border-color 120ms ease !important;
 }
 
@@ -841,12 +889,32 @@ html[data-theme="light"] td code {
 }
 
 /* ─── CODE BLOCKS ──────────────────────────────────────────────────── */
+/* Pydata wraps every code block in TWO containers — an outer
+   <div class="highlight-LANG"> and an inner <div class="highlight">. Both
+   selectors are listed here so a code block gets the rounded dark frame
+   whether only one wrapper is present (rare) or both are nested (default).
+   The dark background is set on the wrappers so any sub-pixel gap between
+   wrapper edge and the <pre> inside it reads as part of the same surface
+   (no visible light strip above/below the code). */
 div.highlight,
 div[class*="highlight-"] {
   border-radius: var(--comet-radius) !important;
   border: 1px solid var(--pst-color-border) !important;
   overflow: hidden !important;
+  background: var(--comet-code-bg) !important;
   margin: 18px 0 !important;
+  padding: 0 !important;
+}
+
+/* When the wrappers nest (the common case), the inner div.highlight must
+   sit flush inside the outer frame — no margin (otherwise its top/bottom
+   margin pushes the <pre> away from the outer border, creating the
+   thin light bands users were seeing) and no redundant border. */
+div[class*="highlight-"] > div.highlight {
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
 }
 
 div.highlight pre,
@@ -858,8 +926,8 @@ div[class*="highlight-"] pre {
   margin: 0 !important;
   border: none !important;
   border-radius: 0 !important;
-  background: #0e0e0e !important;
-  color: #e2e8f0 !important;
+  background: var(--comet-code-bg) !important;
+  color: var(--comet-code-fg) !important;
 }
 
 /* Code blocks always use a dark background (both light and dark site
@@ -868,33 +936,55 @@ div[class*="highlight-"] pre {
    .highlight .TOKEN — whose specificity (0-3-1) beats our plain
    div.highlight .TOKEN selectors, and in light mode those rules set DARK
    text that's invisible on our dark background. We use !important here to
-   win that battle uniformly. The base-span rule catches every token we
-   don't explicitly theme (console prompt, names, output) so nothing is
-   ever invisible. */
+   win that battle uniformly.
+
+   The base-span rule is the safety net: it paints EVERY token we don't
+   explicitly theme below (names, punctuation, console output, Rust types,
+   etc.) in the readable default foreground, so nothing can ever fall back
+   to an invisible light-theme color. The named rules then layer specific
+   hues on top of that floor. */
 div.highlight pre span,
 div[class*="highlight-"] pre span {
-  color: #e2e8f0 !important;
+  color: var(--comet-code-fg) !important;
 }
 
-div.highlight .k,
-div.highlight .kn,
-div.highlight .kd  { color: #c792ea !important; }
-div.highlight .s,
-div.highlight .s1,
-div.highlight .s2  { color: #c3e88d !important; }
-div.highlight .c,
-div.highlight .c1,
-div.highlight .cm  { color: #546e7a !important; font-style: italic; }
-div.highlight .nf,
-div.highlight .nb  { color: #82aaff !important; }
-div.highlight .mi,
-div.highlight .mf  { color: #f78c6c !important; }
-div.highlight .o   { color: #89ddff !important; }
-div.highlight .nc  { color: #ffcb6b !important; }
-/* Console prompt (scala>, >>>, $) and program output — muted but legible. */
-div.highlight .gp,
-div.highlight .go,
-div.highlight .gt  { color: #8a9bb3 !important; }
+/* Keywords: keyword, k.namespace, k.declaration, k.constant, k.pseudo,
+   k.reserved, k.type (Rust/Go primitive types). */
+div.highlight .k,  div.highlight .kn, div.highlight .kd,
+div.highlight .kc, div.highlight .kp, div.highlight .kr,
+div.highlight .kt  { color: var(--comet-code-keyword) !important; }
+
+/* Strings: string + all subtypes (single, double, char, doc, escape …). */
+div.highlight .s,   div.highlight .s1,  div.highlight .s2,
+div.highlight .sb,  div.highlight .sc,  div.highlight .sd,
+div.highlight .se,  div.highlight .sh,  div.highlight .si,
+div.highlight .sx,  div.highlight .sr,  div.highlight .ss,
+div.highlight .dl   { color: var(--comet-code-string) !important; }
+
+/* Comments: comment + subtypes (line, multiline, preproc, special). */
+div.highlight .c,  div.highlight .c1, div.highlight .cm,
+div.highlight .cp, div.highlight .cs, div.highlight .ch,
+div.highlight .cpf { color: var(--comet-code-comment) !important; font-style: italic; }
+
+/* Function + builtin names. */
+div.highlight .nf, div.highlight .nb,
+div.highlight .fm  { color: var(--comet-code-func) !important; }
+
+/* Numbers: int, float, hex, oct, bin, long, imaginary. */
+div.highlight .m,  div.highlight .mi, div.highlight .mf,
+div.highlight .mh, div.highlight .mo, div.highlight .mb,
+div.highlight .il  { color: var(--comet-code-number) !important; }
+
+/* Operators + punctuation. */
+div.highlight .o,  div.highlight .ow { color: var(--comet-code-operator) !important; }
+
+/* Class / type / namespace names. */
+div.highlight .nc, div.highlight .nn,
+div.highlight .no  { color: var(--comet-code-class) !important; }
+
+/* Console prompt (scala>, >>>, $) and program output/traceback. */
+div.highlight .gp, div.highlight .go,
+div.highlight .gt  { color: var(--comet-code-meta) !important; }
 
 button.copybtn {
   background: rgba(255,255,255,0.07) !important;
@@ -981,8 +1071,8 @@ div.tip     { background: rgba(34,197,94,0.06) !important;   border-color: rgba(
 div.tip     p.admonition-title { color: #16a34a !important; }
 div.important,
 div.caution {
-  background: rgba(232,101,10,0.06) !important;
-  border-color: rgba(232,101,10,0.28) !important;
+  background: rgba(var(--comet-accent-rgb),0.06) !important;
+  border-color: rgba(var(--comet-accent-rgb),0.28) !important;
 }
 div.important p.admonition-title,
 div.caution   p.admonition-title { color: var(--comet-accent-text) !important; }
@@ -1006,7 +1096,7 @@ footer.prev-next-footer {
 
 .prev-next-area a:hover {
   border-color: var(--comet-accent) !important;
-  background: rgba(232,101,10,0.05) !important;
+  background: rgba(var(--comet-accent-rgb),0.05) !important;
 }
 
 .prev-next-subtitle {
@@ -1297,8 +1387,8 @@ body:has(.comet-hero) .bd-main {
   padding: 88px 0 72px;
   border-bottom: 1px solid var(--pst-color-border-muted);
   background:
-    radial-gradient(circle at 80% -20%, rgba(232, 101, 10, 0.08), transparent 55%),
-    radial-gradient(circle at 10% 110%, rgba(232, 101, 10, 0.05), transparent 50%);
+    radial-gradient(circle at 80% -20%, rgba(var(--comet-accent-rgb),0.08), transparent 55%),
+    radial-gradient(circle at 10% 110%, rgba(var(--comet-accent-rgb),0.05), transparent 50%);
 }
 
 /* Terminal-style hero variant — centered layout with terminal block centerpiece */
@@ -1417,6 +1507,21 @@ body:has(.comet-hero) .bd-main {
   margin: 0 !important;
 }
 
+/* Small caption under the hero terminal: keeps the full tuning config
+   discoverable without crowding the drop-in demo. */
+.comet-hero__note {
+  font-size: 13px !important;
+  color: var(--pst-color-text-muted) !important;
+  margin: 0 0 22px 0 !important;
+  text-align: center;
+}
+
+.comet-hero__note a {
+  color: var(--comet-accent-text) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid var(--comet-accent-underline) !important;
+}
+
 /* ── Install block ────────────────────────────────────────────────── */
 .comet-install {
   padding: 56px 0;
@@ -1425,7 +1530,7 @@ body:has(.comet-hero) .bd-main {
 }
 
 html[data-theme="dark"] .comet-install {
-  background: #0e0e0e;
+  background: var(--comet-surface-sunken);
 }
 
 .comet-install__label {
@@ -1466,7 +1571,7 @@ html[data-theme="dark"] .comet-install__cmd {
 .comet-install__hint a {
   color: var(--comet-accent-text) !important;
   text-decoration: none !important;
-  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+  border-bottom: 1px solid var(--comet-accent-underline) !important;
 }
 
 .comet-install__hint a:hover {
@@ -1536,7 +1641,7 @@ html[data-theme="dark"] .comet-install__cmd {
 .comet-perf__detail a {
   color: var(--comet-accent-text) !important;
   text-decoration: none !important;
-  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+  border-bottom: 1px solid var(--comet-accent-underline) !important;
 }
 
 .comet-perf__chart figure {
@@ -1549,7 +1654,7 @@ html[data-theme="dark"] .comet-install__cmd {
   display: block !important;
   border-radius: 10px !important;
   border: 1px solid var(--pst-color-border) !important;
-  background: #ffffff !important;
+  background: var(--comet-figure-bg) !important;
   padding: 16px !important;
 }
 
@@ -1569,7 +1674,7 @@ html[data-theme="dark"] .comet-install__cmd {
 }
 
 html[data-theme="dark"] .comet-cards {
-  background: #0e0e0e;
+  background: var(--comet-surface-sunken);
 }
 
 .comet-cards__title {
@@ -1602,7 +1707,7 @@ html[data-theme="dark"] .comet-cards {
 .comet-card:hover {
   border-color: var(--comet-accent) !important;
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(232, 101, 10, 0.08);
+  box-shadow: 0 8px 24px var(--comet-accent-glow);
 }
 
 .comet-card__icon {
@@ -1708,7 +1813,7 @@ html[data-theme="dark"] .comet-cards {
   height: auto !important;
   border-radius: 8px !important;
   border: 1px solid var(--pst-color-border) !important;
-  background: #ffffff;
+  background: var(--comet-figure-bg);
   padding: 12px;
 }
 
@@ -1717,7 +1822,7 @@ html[data-theme="dark"] .comet-cards {
   padding: 88px 0;
   text-align: center;
   background:
-    radial-gradient(circle at 50% 0%, rgba(232, 101, 10, 0.06), transparent 60%);
+    radial-gradient(circle at 50% 0%, rgba(var(--comet-accent-rgb),0.06), transparent 60%);
 }
 
 .comet-foot-cta__title {
@@ -1749,19 +1854,19 @@ html[data-theme="dark"] .comet-cards {
   border-radius: 12px;
   overflow: hidden;
   text-align: left;
-  background: #0d0f12;
-  border: 1px solid #1f242b;
+  background: var(--comet-terminal-bg);
+  border: 1px solid var(--comet-terminal-border);
   box-shadow:
     0 24px 60px -20px rgba(0, 0, 0, 0.35),
-    0 8px 24px -8px rgba(232, 101, 10, 0.10);
+    0 8px 24px -8px rgba(var(--comet-accent-rgb),0.10);
 }
 
 .comet-terminal__bar {
   display: flex;
   align-items: center;
   padding: 10px 14px;
-  background: #15181c;
-  border-bottom: 1px solid #1f242b;
+  background: var(--comet-terminal-bar);
+  border-bottom: 1px solid var(--comet-terminal-border);
   position: relative;
 }
 
@@ -1795,10 +1900,10 @@ html[data-theme="dark"] .comet-cards {
   font-family: var(--comet-mono) !important;
   font-size: 13px !important;
   line-height: 1.5 !important;
-  color: #d4d8de !important;
+  color: var(--comet-code-fg) !important;
   padding: 22px 24px 26px !important;
   margin: 0 !important;
-  background: #0d0f12 !important;
+  background: var(--comet-terminal-bg) !important;
   border: none !important;
   border-radius: 0 !important;
   overflow-x: auto !important;
@@ -1820,22 +1925,25 @@ html[data-theme="dark"] .comet-cards {
 }
 
 .comet-terminal__body .term-comment {
-  color: #6a737d;
+  color: var(--comet-code-comment);
   font-style: italic;
 }
 
+/* The terminal sits on a dark surface in BOTH site themes, so the prompt
+   uses the fixed bright orange (--comet-code-prompt), not --comet-accent-text
+   — the latter darkens to #a84808 in light mode and would lose contrast here. */
 .comet-terminal__body .term-prompt {
-  color: var(--comet-accent-text);
+  color: var(--comet-code-prompt);
   margin-right: 6px;
   user-select: none;
 }
 
 .comet-terminal__body .term-var {
-  color: #c792ea;
+  color: var(--comet-code-keyword);
 }
 
 .comet-terminal__body .term-str {
-  color: #c3e88d;
+  color: var(--comet-code-string);
 }
 
 .comet-terminal__body .term-indent {
@@ -1845,7 +1953,7 @@ html[data-theme="dark"] .comet-cards {
 
 .comet-terminal__body .term-blink {
   display: inline-block;
-  color: var(--comet-accent-text);
+  color: var(--comet-code-prompt);
   animation: term-blink 1s steps(2, end) infinite;
 }
 
@@ -1885,7 +1993,7 @@ html[data-theme="dark"] .comet-cards {
 .comet-prose__lede a {
   color: var(--comet-accent-text) !important;
   text-decoration: none !important;
-  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+  border-bottom: 1px solid var(--comet-accent-underline) !important;
 }
 
 /* ── Stacked perf section (two charts, full-width) ────────────────── */
@@ -1927,7 +2035,7 @@ html[data-theme="dark"] .comet-cards {
 
 .comet-perf__figure {
   margin: 0 0 40px 0 !important;
-  background: #ffffff;
+  background: var(--comet-figure-bg);
   border: 1px solid var(--pst-color-border);
   border-radius: 12px;
   padding: 24px;
@@ -1967,7 +2075,7 @@ html[data-theme="dark"] .comet-cards {
 }
 
 html[data-theme="dark"] .comet-feature--alt {
-  background: #0e0e0e;
+  background: var(--comet-surface-sunken);
 }
 
 .comet-feature__inner {
@@ -2032,7 +2140,7 @@ html[data-theme="dark"] .comet-feature--alt {
 
 .comet-feature__figure {
   margin: 28px 0 0 0 !important;
-  background: #ffffff;
+  background: var(--comet-figure-bg);
   border: 1px solid var(--pst-color-border);
   border-radius: 12px;
   padding: 24px;
@@ -2090,7 +2198,7 @@ html[data-theme="dark"] .comet-feature--alt {
 
 .comet-arch__figure {
   margin: 0 !important;
-  background: #ffffff;
+  background: var(--comet-figure-bg);
   border: 1px solid var(--pst-color-border);
   border-radius: 12px;
   padding: 24px;
@@ -2123,7 +2231,7 @@ html[data-theme="dark"] .comet-feature--alt {
 }
 
 html[data-theme="dark"] .comet-community {
-  background: #0e0e0e;
+  background: var(--comet-surface-sunken);
 }
 
 .comet-community__inner {
@@ -2164,7 +2272,7 @@ html[data-theme="dark"] .comet-community {
 .comet-community__body a {
   color: var(--comet-accent-text) !important;
   text-decoration: none !important;
-  border-bottom: 1px solid rgba(232, 101, 10, 0.3) !important;
+  border-bottom: 1px solid var(--comet-accent-underline) !important;
 }
 
 /* ── Responsive collapses ─────────────────────────────────────────── */
