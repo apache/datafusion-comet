@@ -26,7 +26,9 @@ use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
-    operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, ShuffleScanExec},
+    operators::{
+        ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, SchemaAlignExec, ShuffleScanExec,
+    },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
@@ -1515,9 +1517,14 @@ impl PhysicalPlanner {
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
 
+                let writer_input = align_shuffle_writer_input(
+                    Arc::clone(&child.native_plan),
+                    &writer.expected_output_schema,
+                )?;
+
                 let partitioning = self.create_partitioning(
                     writer.partitioning.as_ref().unwrap(),
-                    child.native_plan.schema(),
+                    writer_input.schema(),
                 )?;
 
                 let codec = match writer.codec.try_into() {
@@ -1535,7 +1542,7 @@ impl PhysicalPlanner {
 
                 let write_buffer_size = writer.write_buffer_size as usize;
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Arc::clone(&child.native_plan),
+                    writer_input,
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -3122,6 +3129,20 @@ fn convert_spark_types_to_arrow_schema(
         .collect_vec();
     let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));
     arrow_schema
+}
+
+/// Wrap `child` in a `SchemaAlignExec` when its output drifts from what Spark catalyst
+/// declared. See <https://github.com/apache/datafusion-comet/issues/4515>.
+fn align_shuffle_writer_input(
+    child: Arc<dyn ExecutionPlan>,
+    expected_proto: &[spark_operator::SparkStructField],
+) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+    if expected_proto.is_empty() {
+        return Ok(child);
+    }
+    let expected = convert_spark_types_to_arrow_schema(expected_proto);
+    SchemaAlignExec::try_new_or_passthrough(child, &expected)
+        .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
 }
 
 /// Converts a protobuf PartitionValue to an iceberg Literal.

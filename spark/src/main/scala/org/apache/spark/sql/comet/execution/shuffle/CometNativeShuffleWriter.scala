@@ -34,10 +34,12 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometScalarSubquery, PlanDataInjector}
 import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.types.StructField
 
 import org.apache.comet.{CometConf, CometExecIterator}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
+import org.apache.comet.serde.operator.schema2Proto
 
 /**
  * Drives the native shuffle write in a single [[CometExecIterator]] per partition. The plan is
@@ -328,6 +330,13 @@ class CometNativeShuffleWriter[K, V](
     }
 
     shuffleWriterBuilder.setTracingEnabled(CometConf.COMET_TRACING_ENABLED.get())
+
+    // Used by the native planner to cast the inlined child's output when DataFusion's
+    // declared return type drifts from Spark catalyst (see comet#4515).
+    val expectedFields = outputAttributes
+      .map(a => StructField(a.name, a.dataType, a.nullable, a.metadata))
+      .toArray
+    schema2Proto(expectedFields).foreach(shuffleWriterBuilder.addExpectedOutputSchema)
 
     OperatorOuterClass.Operator
       .newBuilder()
