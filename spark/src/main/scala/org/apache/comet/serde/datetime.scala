@@ -653,8 +653,9 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
     "Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC " +
       "sessions. Other format strings (including non-literal formats), as well as non-UTC " +
       "sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct " +
-      "codegen dispatcher (default). Set `spark.comet.exec.scalaUDF.codegen.enabled=false` to " +
-      "fall back to Spark for those cases instead.")
+      "codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true`. When the " +
+      "codegen dispatcher is disabled (default) the operator falls back to Spark in those " +
+      "cases.")
 
   override def convert(
       expr: DateFormatClass,

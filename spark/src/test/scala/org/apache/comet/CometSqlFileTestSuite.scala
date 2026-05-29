@@ -99,11 +99,6 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   /**
    * Pin the sentinel-query convention for fixtures that route an `expect_error` through the
    * codegen dispatcher. See [[ExpectError]] for the failure mode this guards against.
-   *
-   * Fires for fixtures that explicitly opt into the codegen dispatcher via `--CONFIG`. The
-   * dispatcher now defaults to enabled, but most expression fixtures use their own native paths
-   * and do not exercise the dispatcher, so we still key off the explicit opt-in rather than
-   * forcing every fixture in the repo to add a sentinel.
    */
   private def requireSentinelForCodegenExpectError(
       relativePath: String,
