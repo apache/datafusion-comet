@@ -1805,15 +1805,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     (1 to 50).flatMap(_ => Seq((maxDec38_0, 1)))
   }
 
-  // SparkPlan.executeCollect wraps task failures in SparkException("Job aborted..."), so the
-  // typed exception thrown by Comet (SparkArithmeticException, which extends ArithmeticException)
-  // ends up in the cause chain rather than at the top.
-  private def hasArithmeticInChain(t: Throwable): Boolean =
-    Iterator
-      .iterate[Throwable](t)(_.getCause)
-      .takeWhile(_ != null)
-      .exists(_.isInstanceOf[ArithmeticException])
-
   test("ANSI support - SUM function") {
     Seq(true, false).foreach { ansiEnabled =>
       withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
