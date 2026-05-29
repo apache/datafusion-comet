@@ -294,11 +294,8 @@ message Sort {
 message HashAggregate {
   repeated spark.spark_expression.Expr grouping_exprs = 1;
   repeated spark.spark_expression.AggExpr agg_exprs = 2;
-  // Field 3 (`result_exprs`) and field 8 (`apply_result_projection`) were used to apply a
-  // post-aggregate projection inside the HashAggregate operator. The same effect is now
-  // expressed by emitting an explicit `Projection` op above the `HashAggregate` from the
-  // JVM serializer when needed (see `CometBaseAggregate.doConvert`). Reserved to avoid
-  // accidental reuse at incompatible semantics.
+  // Was result_exprs / apply_result_projection; now expressed as an explicit Projection
+  // op above HashAggregate (see CometBaseAggregate.doConvert, comet#4515).
   reserved 3, 8;
   reserved "result_exprs", "apply_result_projection";
   AggregateMode mode = 5;

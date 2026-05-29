@@ -2109,95 +2109,43 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // Regression for comet#4515: a HashAggregateExec whose `resultExpressions` (and therefore
-  // `output`) catalyst has pruned to empty must still produce 0-col batches at runtime.
-  // Catalyst prunes `resultExpressions=[]` for plans where the aggregate's column values are
-  // unused downstream - classically EXISTS subqueries that get rewritten into a literal-`1`
-  // wrapper. Before the fix, the native HashAggregate emitted its natural output (the
-  // grouping keys) regardless of the pruned JVM `output`, so any boundary that derived a
-  // schema from `output` (e.g. a wrapping vanilla Spark `ShuffleExchangeExec.output =
-  // child.output = []`, or a JVM-bridge Scan synthesized from the same `output`) declared
-  // 0 columns while the runtime RDD produced 1. The mismatch tripped
-  // `NativeUtil.exportBatch` with an ArrayIndexOutOfBoundsException on a length-0
-  // schemaAddrs[].
+  // Regression for comet#4515: catalyst prunes `HashAggregateExec.resultExpressions` to
+  // empty for EXISTS / row-existence-only subqueries. The native HashAggregate's natural
+  // output (the grouping keys) then disagrees with the pruned JVM `output`, leaking through
+  // any boundary that derived its schema from `output`. The fix wraps the aggregate in an
+  // explicit Projection op when natural != declared.
   //
-  // The bug needs a specific catalyst optimizer state: `HashAggregateExec.
-  // resultExpressions.isEmpty`. Whether the optimizer reaches that state from a given SQL
-  // depends on Spark version, scan source (LocalTableScan vs Parquet/native), AQE state,
-  // and which Comet rules already fired - we observed it in the SQL-tests harness running
-  // `subquery/exists-subquery/exists-orderby-limit.sql` on Spark 4.0.2 with parquet-backed
-  // temp views, but not via `Dataset.collect` over `LocalTableScan`-backed temp views
-  // under `CometTestBase`. So the test below writes parquet (matching the harness's scan
-  // shape), tries several known triggers, runs whichever (if any) produces the bug shape
-  // under `checkSparkAnswer`, and skips cleanly otherwise. The upstream SQL-tests run
-  // remains the primary safety net for the harness-only path.
+  // Surfaced upstream in `subquery/exists-subquery/exists-orderby-limit.sql` (query #19,
+  // an EXISTS over `max(...) GROUP BY state LIMIT 1 OFFSET 2`). The exact `EXISTS-in-WHERE`
+  // shape doesn't reproduce under CometTestBase's optimizer state, but `count(*)` over the
+  // same derived aggregate triggers the equivalent ColumnPruning path locally - we assert
+  // the inner HashAgg's resultExpressions actually got pruned, so a future Spark version
+  // that breaks the trigger fails the test loudly rather than passing silently.
   test("HashAggregate with catalyst-pruned resultExpressions returns 0-col output (#4515)") {
     withTempDir { dir =>
-      withTempView("emp", "dept") {
-        // Write parquet so Comet's native scan path (vs LocalTableScan) is the source -
-        // matches the SQL-tests harness setup that surfaced the bug.
-        val empPath = new java.io.File(dir, "emp").getAbsolutePath
-        val deptPath = new java.io.File(dir, "dept").getAbsolutePath
-
-        spark
-          .sql("""SELECT * FROM VALUES
-                 |  (100, 'emp 1', 100.0D, 10),
-                 |  (200, 'emp 2', 200.0D, 10),
-                 |  (300, 'emp 3', 300.0D, 20),
-                 |  (400, 'emp 4', 400.0D, 30),
-                 |  (500, 'emp 5', 400.0D, NULL),
-                 |  (700, 'emp 7', 400.0D, 100),
-                 |  (800, 'emp 8', 150.0D, 70)
-                 |AS t(id, emp_name, salary, dept_id)""".stripMargin)
-          .write
-          .parquet(empPath)
-        spark
-          .sql("""SELECT * FROM VALUES
-                 |  (10, 'CA'), (20, 'NY'), (30, 'TX'),
-                 |  (40, 'OR'), (50, 'NJ'), (70, 'FL')
-                 |AS t(dept_id, state)""".stripMargin)
-          .write
-          .parquet(deptPath)
-
-        spark.read.parquet(empPath).createOrReplaceTempView("emp")
-        spark.read.parquet(deptPath).createOrReplaceTempView("dept")
-
-        val candidates = Seq(
-          // The original failing SQL from the harness - EXISTS with grouped agg + LIMIT/OFFSET.
-          """SELECT * FROM emp
-            |WHERE EXISTS (
-            |  SELECT max(dept.dept_id) FROM dept GROUP BY state LIMIT 1 OFFSET 2)""".stripMargin,
-          // Inline view + outer constant: ColumnPruning may strip the inner agg's output.
-          """SELECT 1 FROM (
-            |  SELECT max(dept_id) FROM dept GROUP BY state LIMIT 1 OFFSET 2) sub""".stripMargin,
-          // Scalar subquery returning a constant.
-          """SELECT (SELECT 1 FROM dept GROUP BY state LIMIT 1 OFFSET 2)""".stripMargin,
-          // count(*) over a derived table: outer doesn't reference inner cols.
+      val deptPath = new Path(dir.toURI.toString, "dept")
+      spark
+        .sql("""SELECT * FROM VALUES
+               |  (10, 'CA'), (20, 'NY'), (30, 'TX'),
+               |  (40, 'OR'), (50, 'NJ'), (70, 'FL')
+               |AS t(dept_id, state)""".stripMargin)
+        .write
+        .parquet(deptPath.toUri.toString)
+      withParquetTable(deptPath.toUri.toString, "dept") {
+        val sql =
           """SELECT count(*) FROM (
-            |  SELECT max(dept_id) AS m FROM dept GROUP BY state LIMIT 1 OFFSET 2) sub""".stripMargin)
-
-        // Find a candidate whose plan has a HashAggregateExec (Spark or Comet) with empty
-        // resultExpressions. collectWithSubqueries traverses Subquery nodes too.
-        val triggering = candidates.find { sql =>
-          val plan = spark.sql(sql).queryExecution.executedPlan
-          collectWithSubqueries(plan) {
-            case a: org.apache.spark.sql.execution.aggregate.HashAggregateExec
-                if a.resultExpressions.isEmpty =>
-              a
-            case a: CometHashAggregateExec if a.resultExpressions.isEmpty => a
-          }.nonEmpty
+            |  SELECT max(dept_id) AS m FROM dept GROUP BY state LIMIT 1 OFFSET 2) sub""".stripMargin
+        val plan = spark.sql(sql).queryExecution.executedPlan
+        val pruned = collectWithSubqueries(plan) {
+          case a: org.apache.spark.sql.execution.aggregate.HashAggregateExec
+              if a.resultExpressions.isEmpty =>
+            a
+          case a: CometHashAggregateExec if a.resultExpressions.isEmpty => a
         }
-
-        triggering match {
-          case Some(sql) => checkSparkAnswer(sql)
-          case None =>
-            cancel(
-              "No candidate query produced a HashAggregateExec with empty resultExpressions " +
-                "in this environment. The catalyst-pruned shape that exercises #4515 only " +
-                "appears under specific optimizer/AQE state we couldn't reproduce here. The " +
-                "upstream SQL-tests run (subquery/exists-subquery/exists-orderby-limit.sql) " +
-                "covers this path.")
-        }
+        assert(
+          pruned.nonEmpty,
+          s"Expected a HashAggregateExec with empty resultExpressions in:\n$plan")
+        checkSparkAnswerAndOperator(sql)
       }
     }
   }
