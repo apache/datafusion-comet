@@ -1951,10 +1951,10 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
 
   override def getSupportLevel(op: BroadcastNestedLoopJoinExec): SupportLevel =
     (op.joinType, op.buildSide) match {
-      case (LeftOuter, BuildLeft)   => Unsupported(Some(unmatchedDuplicationReason))
+      case (LeftOuter, BuildLeft) => Unsupported(Some(unmatchedDuplicationReason))
       case (RightOuter, BuildRight) => Unsupported(Some(unmatchedDuplicationReason))
-      case (FullOuter, _)           => Unsupported(Some(unmatchedDuplicationReason))
-      case _                        => Compatible(None)
+      case (FullOuter, _) => Unsupported(Some(unmatchedDuplicationReason))
+      case _ => Compatible(None)
     }
 
   /**
