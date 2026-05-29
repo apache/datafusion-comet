@@ -92,6 +92,27 @@ class CometExecIterator(
     val conf = SparkEnv.get.conf
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
+    // [#4515 instrumentation] Dump proto plan + per-input iterator class so we can correlate
+    // a 0-col Scan in the proto with the JVM iterator that will feed it.
+    {
+      val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
+      val parsed =
+        scala.util
+          .Try(
+            org.apache.comet.serde.OperatorOuterClass.Operator
+              .parseFrom(protobufQueryPlan)
+              .toString)
+          .toOption
+          .getOrElse("<failed to parse>")
+      val itersDesc = inputIterators.zipWithIndex
+        .map { case (it, idx) => s"  inputIterators[$idx] cls=${it.getClass.getName}" }
+        .mkString("\n")
+      log.warn(
+        s"CometExecIterator constructing plan id=$id partition=$partitionIndex " +
+          s"numParts=$numParts numOutputCols=$numOutputCols\n$itersDesc\n" +
+          s"  proto plan:\n$parsed")
+    }
+
     // serialize Comet related Spark configs in protobuf format
     val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs()
 

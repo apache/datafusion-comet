@@ -243,6 +243,23 @@ case class CometShuffleExchangeExec(
    * Comet returns RDD[ColumnarBatch] for columnar execution.
    */
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    // [#4515 instrumentation] Track every doExecuteColumnar call: which CometShuffleExchange
+    // instance, its output, and the call site. Helps confirm whether this PR's changes
+    // cause an extra EnsureRequirements-inserted vanilla Exchange to wrap us, and what
+    // RDD is being plumbed where.
+    {
+      val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
+      val callerStack = new RuntimeException(
+        "[#4515] CometShuffleExchangeExec.doExecuteColumnar caller").getStackTrace
+        .take(15)
+        .map(f => s"    at ${f}")
+        .mkString("\n")
+      log.warn(
+        s"CometShuffleExchangeExec.doExecuteColumnar this=${System.identityHashCode(this)} " +
+          s"shuffleType=$shuffleType outputPartitioning=$outputPartitioning " +
+          s"output=$output\n" +
+          s"  caller stack:\n$callerStack")
+    }
     // Returns the same CometShuffledBatchRDD if this plan is used by multiple plans.
     if (cachedShuffleRDD == null) {
       cachedShuffleRDD = new CometShuffledBatchRDD(shuffleDependency, readMetrics)
@@ -686,6 +703,22 @@ object CometShuffleExchangeExec
       outputPartitioning: Partitioning,
       serializer: Serializer,
       metrics: Map[String, SQLMetric]): ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
+
+    // [#4515 instrumentation] Track every placeholder-Scan ShuffleDependency we build, with
+    // outputAttributes (drives Scan declared schema) and call site.
+    {
+      val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
+      val callerStack =
+        new RuntimeException("[#4515] prepareShuffleDependency caller").getStackTrace
+          .take(15)
+          .map(f => s"    at ${f}")
+          .mkString("\n")
+      log.warn(
+        s"prepareShuffleDependency outputAttributes=$outputAttributes " +
+          s"outputAttributes.size=${outputAttributes.size} " +
+          s"outputPartitioning=$outputPartitioning rdd.numPartitions=${rdd.getNumPartitions}\n" +
+          s"  caller stack:\n$callerStack")
+    }
 
     val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
     val scanTypes = outputAttributes.flatten { attr =>

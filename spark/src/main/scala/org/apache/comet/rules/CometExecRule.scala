@@ -166,6 +166,16 @@ case class CometExecRule(session: SparkSession)
             val reverted =
               s.originalPlan.withNewChildren(Seq(s.child)).asInstanceOf[ShuffleExchangeExec]
             reverted.setTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG, ())
+            // [#4515 instrumentation] Log every revert: this is a primary place where
+            // vanilla ShuffleExchangeExec instances enter the plan post-Comet-rewrite.
+            org.slf4j.LoggerFactory
+              .getLogger("[#4515]")
+              .warn(
+                s"revertRedundantColumnarShuffle revert: parentAgg=${op.getClass.getSimpleName} " +
+                  s"(output=${op.output}) cometShuffle.output=${s.output} " +
+                  s"reverted.output=${reverted.output} reverted.identityHash=${System
+                      .identityHashCode(reverted)}\n" +
+                  s"  reverted tree:\n${reverted.treeString(verbose = true, addSuffix = false)}")
             logInfo(
               "Reverting Comet columnar shuffle to Spark shuffle between " +
                 s"${op.getClass.getSimpleName} and ${s.child.getClass.getSimpleName} " +
@@ -545,6 +555,20 @@ case class CometExecRule(session: SparkSession)
            |=== Applying Rule $ruleName ===
            |${sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
            |""".stripMargin)
+    }
+    // [#4515 instrumentation] Dump the plan in/out of CometExecRule to correlate with the
+    // 0-col Scan synthesized later. Logs the operator-class diff so we can see what
+    // CometExecRule did or didn't replace, especially around ShuffleExchangeExec wrappers
+    // inside subqueries.
+    if (!newPlan.fastEquals(plan)) {
+      val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
+      log.warn(
+        "CometExecRule rewrote plan:\n  IN classes: " +
+          plan.collect { case p => p.getClass.getSimpleName }.mkString(",") +
+          "\n  OUT classes: " +
+          newPlan.collect { case p => p.getClass.getSimpleName }.mkString(",") +
+          s"\n  IN tree:\n${plan.treeString(verbose = true, addSuffix = false)}" +
+          s"\n  OUT tree:\n${newPlan.treeString(verbose = true, addSuffix = false)}")
     }
     newPlan
   }

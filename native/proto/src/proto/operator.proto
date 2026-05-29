@@ -303,6 +303,12 @@ message HashAggregate {
   // Offset in the child's output where aggregate buffer attributes start.
   // Used by PartialMerge to locate state fields in the input.
   int32 initial_input_buffer_offset = 7;
+  // Whether the native planner should wrap the aggregate in a ProjectionExec using
+  // `result_exprs`. Disambiguates `result_exprs` empty-because-absent (no projection
+  // needed) from empty-because-catalyst-pruned-to-zero-cols (project to nothing).
+  // Without this bit, both wire as `repeated` length 0 and were collapsed to "no
+  // projection," leaking grouping keys when Spark intent was 0 columns.
+  bool apply_result_projection = 8;
 }
 
 message Limit {

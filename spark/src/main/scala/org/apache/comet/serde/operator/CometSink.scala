@@ -49,6 +49,12 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
       op: T,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    // [#4515 instrumentation]
+    val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
+    log.warn(
+      s"CometSink[${this.getClass.getSimpleName}].convert op=${op.getClass.getName} " +
+        s"simpleString='${op.simpleStringWithNodeId()}' output=${op.output} " +
+        s"output.size=${op.output.size}")
     val supportedTypes =
       op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
 
@@ -72,6 +78,53 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
     }
 
     if (scanTypes.length == op.output.length) {
+      // [#4515 instrumentation] Log when we synthesize a Scan with zero declared columns.
+      // The runtime JVM iterator may still produce columns (subquery output shrunk by
+      // catalyst before serialization while the underlying RDD reflects the pre-shrink shape),
+      // tripping the column-count guard in NativeUtil.exportBatch.
+      if (scanTypes.isEmpty) {
+        val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
+        // scalastyle:off line.size.limit
+        val childInfo = op.children.zipWithIndex
+          .map { case (c, i) =>
+            val canonOut = scala.util
+              .Try(c.canonicalized.output)
+              .toOption
+              .map(_.toString)
+              .getOrElse("<canonicalize failed>")
+            s"  child[$i] cls=${c.getClass.getName} simpleString='${c.simpleString(
+                80)}' output=${c.output} outputSize=${c.output.size} identityHash=${System
+                .identityHashCode(c)} canonicalized.output=$canonOut"
+          }
+          .mkString("\n")
+        val opCanonOut = scala.util
+          .Try(op.canonicalized.output)
+          .toOption
+          .map(_.toString)
+          .getOrElse("<canonicalize failed>")
+        val subqueryInfo = scala.util
+          .Try(op.subqueries.map(s => s"${s.getClass.getName}(output=${s.output}, prepared=?)"))
+          .toOption
+          .getOrElse(Nil)
+          .mkString("[", ", ", "]")
+        val callerStack =
+          new RuntimeException("[#4515] CometSink 0-col Scan caller").getStackTrace
+            .take(20)
+            .map(f => s"    at ${f}")
+            .mkString("\n")
+        log.warn(s"CometSink synthesizing 0-col Scan for op=${op.getClass.getName}\n" +
+          s"  simpleString='${op.simpleStringWithNodeId()}'\n" +
+          s"  op.output=${op.output} op.outputSet=${op.outputSet} op.references=${op.references}\n" +
+          s"  op.canonicalized.output=$opCanonOut\n" +
+          s"  op.subqueries=$subqueryInfo\n" +
+          s"  op identityHash=${System.identityHashCode(op)}\n" +
+          s"  children classes=${op.children.map(_.getClass.getSimpleName).mkString("[", ",", "]")}\n" +
+          childInfo + "\n" +
+          s"  caller stack:\n$callerStack\n" +
+          s"  op tree:\n${op.treeString(verbose = true, addSuffix = false)}")
+        // scalastyle:on line.size.limit
+      }
+
       scanBuilder.addAllFields(scanTypes.asJava)
 
       // Sink operators don't have children
@@ -94,6 +147,27 @@ object CometExchangeSink extends CometSink[SparkPlan] {
       op: SparkPlan,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    // [#4515 instrumentation]
+    val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
+    val isVanillaSparkExchange =
+      op.getClass.getName == "org.apache.spark.sql.execution.exchange.ShuffleExchangeExec"
+    log.warn(
+      s"CometExchangeSink.convert op=${op.getClass.getName} " +
+        s"simpleString='${op.simpleStringWithNodeId()}' output=${op.output} " +
+        s"useShuffleScan=${shouldUseShuffleScan(op)} " +
+        s"children=${op.children.map(_.getClass.getSimpleName).mkString("[", ",", "]")}")
+    if (isVanillaSparkExchange) {
+      val callerStack =
+        new RuntimeException("[#4515] vanilla ShuffleExchangeExec caller").getStackTrace
+          .take(20)
+          .map(f => s"    at ${f}")
+          .mkString("\n")
+      log.warn(
+        "  vanilla ShuffleExchangeExec being processed by CometExchangeSink:\n" +
+          s"  output=${op.output}\n" +
+          s"  caller stack:\n$callerStack\n" +
+          s"  op tree:\n${op.treeString(verbose = true, addSuffix = false)}")
+    }
     if (shouldUseShuffleScan(op)) {
       convertToShuffleScan(op, builder)
     } else {
