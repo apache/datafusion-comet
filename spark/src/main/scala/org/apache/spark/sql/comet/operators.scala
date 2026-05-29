@@ -1612,7 +1612,7 @@ trait CometBaseAggregate {
 
         // Final aggregations may carry a result projection (e.g. `COUNT(col) + 1`) that
         // catalyst encodes via `resultExpressions`. Partial / PartialMerge aggregates emit
-        // raw state buffers and never need it. See comet#4515.
+        // raw state buffers and never need it.
         if (mode == CometAggregateMode.Final) {
           buildAggOp(
             builder,
@@ -1640,7 +1640,7 @@ trait CometBaseAggregate {
    * declared - alias renames, `COUNT(col) + 1`, or empty output for catalyst-pruned EXISTS /
    * row-existence-only subqueries - is expressed as a separate Projection above the HashAgg. Both
    * ops share the caller's `plan_id` so the aggregate's native metrics roll up under the same
-   * Spark operator. See comet#4515.
+   * Spark operator.
    */
   private def buildAggOp(
       builder: Operator.Builder,

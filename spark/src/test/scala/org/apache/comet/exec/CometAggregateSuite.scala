@@ -2109,7 +2109,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // Regression for comet#4515: catalyst prunes `HashAggregateExec.resultExpressions` to
+  // Regression: Catalyst prunes `HashAggregateExec.resultExpressions` to
   // empty for EXISTS / row-existence-only subqueries. The native HashAggregate's natural
   // output (the grouping keys) then disagrees with the pruned JVM `output`, leaking through
   // any boundary that derived its schema from `output`. The fix wraps the aggregate in an
@@ -2121,7 +2121,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // same derived aggregate triggers the equivalent ColumnPruning path locally - we assert
   // the inner HashAgg's resultExpressions actually got pruned, so a future Spark version
   // that breaks the trigger fails the test loudly rather than passing silently.
-  test("HashAggregate with catalyst-pruned resultExpressions returns 0-col output (#4515)") {
+  test("HashAggregate with catalyst-pruned resultExpressions returns 0-col output") {
     withTempDir { dir =>
       val deptPath = new Path(dir.toURI.toString, "dept")
       spark
