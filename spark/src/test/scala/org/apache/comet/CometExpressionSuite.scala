@@ -962,6 +962,36 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("withInfo does not cause fallback and renders in verbose explain") {
+    val table = "with_info_msg"
+    withTable(table) {
+      sql(s"create table $table(id int) using parquet")
+      sql(s"insert into $table values(1)")
+      val query = sql(s"select cast(id as string) from $table")
+      val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+      val project = stripAQEPlan(cometPlan).collectFirst { case p: CometProjectExec => p }.get
+
+      // Tagging info must NOT mark the node as falling back.
+      CometSparkSessionExtensions.withInfo(project, "faster path available")
+      assert(!CometSparkSessionExtensions.hasFallbackReason(project))
+
+      // Verbose explain shows it under the distinct COMET-INFO label.
+      withSQLConf(
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
+        assert(explain.contains("[COMET-INFO: faster path available]"))
+        assert(!explain.contains("[COMET: faster path available]"))
+
+        // A second info message accumulates rather than replacing the first.
+        CometSparkSessionExtensions.withInfo(project, "second hint")
+        val explain2 = new ExtendedExplainInfo().generateExtendedInfo(project)
+        assert(explain2.contains("faster path available"))
+        assert(explain2.contains("second hint"))
+      }
+    }
+  }
+
   test("rlike fallback for non scalar pattern") {
     val table = "rlike_fallback"
     withTable(table) {

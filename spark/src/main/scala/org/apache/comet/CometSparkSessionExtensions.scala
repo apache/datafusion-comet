@@ -361,4 +361,22 @@ object CometSparkSessionExtensions extends Logging {
     node.getTagValue(CometExplainInfo.FALLBACK_REASONS).exists(_.nonEmpty)
   }
 
+  /**
+   * Record a purely informational message on a `TreeNode`. Unlike `withFallbackReason`, this does
+   * NOT cause the node to fall back to Spark: the rules never read this tag. Messages are
+   * accumulated (never overwritten) on the node's `EXTENSION_INFO` tag and surfaced in verbose
+   * extended explain output under a `[COMET-INFO: ...]` label.
+   *
+   * Use this to point the user at a faster or alternative execution path that is available but
+   * not currently selected, for example a native implementation gated behind a config.
+   */
+  def withInfo[T <: TreeNode[_]](node: T, message: String): T = {
+    if (message != null && message.nonEmpty) {
+      val existing =
+        node.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+      node.setTagValue(CometExplainInfo.EXTENSION_INFO, existing + message)
+    }
+    node
+  }
+
 }
