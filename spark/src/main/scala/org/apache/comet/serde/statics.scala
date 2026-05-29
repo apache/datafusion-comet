@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
@@ -48,7 +48,7 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       case Some(handler) =>
         handler.convert(expr, inputs, binding)
       case None =>
-        withInfo(
+        withFallbackReason(
           expr,
           s"Static invoke expression: ${expr.functionName} is not supported",
           expr.children: _*)

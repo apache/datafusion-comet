@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -104,7 +104,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       }
 
       if (scanTypes.length != cmd.query.output.length) {
-        withInfo(op, "Cannot serialize data types for native write")
+        withFallbackReason(op, "Cannot serialize data types for native write")
         return None
       }
 
@@ -124,7 +124,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
         case "none" => OperatorOuterClass.CompressionCodec.None
         case other =>
-          withInfo(op, s"Unsupported compression codec: $other")
+          withFallbackReason(op, s"Unsupported compression codec: $other")
           return None
       }
 
@@ -157,7 +157,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       Some(writerOperator)
     } catch {
       case e: Exception =>
-        withInfo(
+        withFallbackReason(
           op,
           "Failed to convert DataWritingCommandExec to native execution: " +
             s"${e.getMessage}")

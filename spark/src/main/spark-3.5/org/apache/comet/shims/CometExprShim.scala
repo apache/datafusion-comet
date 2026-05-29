@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.types.DataTypes
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
@@ -75,7 +75,7 @@ trait CometExprShim extends CommonStringExprs {
                   .setToPrettyString(toPrettyString)
                   .build())
             case _ =>
-              withInfo(expr, child)
+              withFallbackReason(expr, child)
               None
           }
         } else {

@@ -30,7 +30,7 @@ import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType, TimeType}
 
 import org.apache.comet.{CometConf, CometExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
@@ -132,7 +132,7 @@ trait CometExprShim extends CommonStringExprs {
                   .setToPrettyString(toPrettyString)
                   .build())
             case _ =>
-              withInfo(expr, child)
+              withFallbackReason(expr, child)
               None
           }
         } else {
@@ -154,8 +154,8 @@ trait CometExprShim extends CommonStringExprs {
             val exprProto = exprToProtoInternal(toJson, inputs, binding)
             if (exprProto.isEmpty) {
               toJson
-                .getTagValue(CometExplainInfo.EXTENSION_INFO)
-                .foreach(reasons => i.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
             }
             exprProto
           case (Literal(evaluator: ParseUrlEvaluator, _), "evaluate", args) =>
@@ -163,8 +163,8 @@ trait CometExprShim extends CommonStringExprs {
             val result = exprToProtoInternal(parseUrl, inputs, binding)
             if (result.isEmpty) {
               parseUrl
-                .getTagValue(CometExplainInfo.EXTENSION_INFO)
-                .foreach(reasons => i.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
             }
             result
           case (Literal(parser: ToTimeParser, _), "parse", args)
@@ -194,11 +194,11 @@ trait CometExprShim extends CommonStringExprs {
       case ms: MapSort =>
         val keyType = ms.dataType.asInstanceOf[MapType].keyType
         if (!supportedScalarSortElementType(keyType)) {
-          withInfo(ms, s"MapSort on map with key type $keyType is not supported")
+          withFallbackReason(ms, s"MapSort on map with key type $keyType is not supported")
           None
         } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
           SupportLevel.containsFloatingPoint(keyType)) {
-          withInfo(
+          withFallbackReason(
             ms,
             "MapSort on floating-point key is not 100% compatible with Spark, and Comet is " +
               s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +

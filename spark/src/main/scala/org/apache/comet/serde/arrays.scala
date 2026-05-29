@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
@@ -44,7 +44,7 @@ object CometArrayRemove
     val inputTypes: Set[DataType] = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {
-        withInfo(expr, s"data type not supported: $dt")
+        withFallbackReason(expr, s"data type not supported: $dt")
         return None
       }
     }
@@ -100,7 +100,7 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
           .setCaseWhen(caseWhenExpr)
           .build())
     } else {
-      withInfo(expr, expr.children: _*)
+      withFallbackReason(expr, expr.children: _*)
       None
     }
   }
@@ -177,7 +177,7 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
           exprToProtoInternal(Literal(direction), inputs, binding),
           exprToProtoInternal(Literal(nullOrdering), inputs, binding))
       case other =>
-        withInfo(expr, s"ascendingOrder must be a boolean literal: $other")
+        withFallbackReason(expr, s"ascendingOrder must be a boolean literal: $other")
         (None, None)
     }
 
@@ -361,7 +361,7 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
     val inputTypes = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {
-        withInfo(expr, s"data type not supported: $dt")
+        withFallbackReason(expr, s"data type not supported: $dt")
         return None
       }
     }
@@ -440,7 +440,7 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
           .setArrayInsert(arrayInsertBuilder)
           .build())
     } else {
-      withInfo(
+      withFallbackReason(
         expr,
         "unsupported arguments for ArrayInsert",
         expr.children.head,
@@ -485,7 +485,7 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
     if (childExprs.forall(_.isDefined)) {
       scalarFunctionExprToProto("make_array", childExprs: _*)
     } else {
-      withInfo(expr, "unsupported arguments for CreateArray", children: _*)
+      withFallbackReason(expr, "unsupported arguments for CreateArray", children: _*)
       None
     }
   }
@@ -514,7 +514,7 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
           .setListExtract(listExtractBuilder)
           .build())
     } else {
-      withInfo(expr, "unsupported arguments for GetArrayItem", expr.child, expr.ordinal)
+      withFallbackReason(expr, "unsupported arguments for GetArrayItem", expr.child, expr.ordinal)
       None
     }
   }
@@ -547,7 +547,7 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!isTypeSupported(expr.child.dataType)) {
-      withInfo(expr, s"child data type not supported: ${expr.child.dataType}")
+      withFallbackReason(expr, s"child data type not supported: ${expr.child.dataType}")
       return None
     }
     val reverseExprProto = exprToProto(expr.child, inputs, binding)
@@ -571,7 +571,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
     val defaultExpr = expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
 
     if (!expr.left.dataType.isInstanceOf[ArrayType]) {
-      withInfo(expr, "Input is not an array")
+      withFallbackReason(expr, "Input is not an array")
       return None
     }
 
@@ -592,7 +592,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
           .setListExtract(arrayExtractBuilder)
           .build())
     } else {
-      withInfo(expr, "unsupported arguments for ElementAt", expr.left, expr.right)
+      withFallbackReason(expr, "unsupported arguments for ElementAt", expr.left, expr.right)
       None
     }
   }
@@ -607,7 +607,7 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
     val inputTypes = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {
-        withInfo(expr, s"data type not supported: $dt")
+        withFallbackReason(expr, s"data type not supported: $dt")
         return None
       }
     }
@@ -703,14 +703,14 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (expr.children.forall(_.foldable)) {
-      withInfo(expr, "all arguments are literals, falling back to Spark")
+      withFallbackReason(expr, "all arguments are literals, falling back to Spark")
       return None
     }
     // Check if input types are supported
     val inputTypes: Set[DataType] = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {
-        withInfo(expr, s"data type not supported: $dt")
+        withFallbackReason(expr, s"data type not supported: $dt")
         return None
       }
     }
@@ -789,7 +789,10 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
           .build())
 
     } else {
-      withInfo(expr, "unsupported arguments for ArraysZip", expr.children ++ expr.names: _*)
+      withFallbackReason(
+        expr,
+        "unsupported arguments for ArraysZip",
+        expr.children ++ expr.names: _*)
       None
     }
   }

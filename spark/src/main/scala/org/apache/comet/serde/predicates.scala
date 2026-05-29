@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.types.BooleanType
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
 
@@ -271,7 +271,7 @@ object ComparisonUtils {
           .build())
     } else {
       val allExprs = list ++ Seq(value)
-      withInfo(expr, allExprs: _*)
+      withFallbackReason(expr, allExprs: _*)
       None
     }
   }

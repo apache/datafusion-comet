@@ -103,8 +103,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
   /**
    * Plan-time predicate. `None` greenlights the serde to emit the codegen proto; `Some(reason)`
-   * forces a Spark fallback (typically `withInfo(...) + None`) so the operator falls back cleanly
-   * rather than crashing the Janino compile at execute time.
+   * forces a Spark fallback (typically `withFallbackReason(...) + None`) so the operator falls
+   * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
    * [[isSupportedDataType]], rejects aggregates / generators / `CodegenFallback` (other than

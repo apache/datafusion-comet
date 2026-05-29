@@ -938,7 +938,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("withInfo") {
+  test("withFallbackReason") {
     val table = "with_info"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -947,14 +947,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val (_, cometPlan) = checkSparkAnswerAndOperator(query)
       val project = stripAQEPlan(cometPlan).collectFirst { case p: CometProjectExec => p }.get
       val id = project.expressions.head
-      CometSparkSessionExtensions.withInfo(id, "reason 1")
-      CometSparkSessionExtensions.withInfo(project, "reason 2")
-      CometSparkSessionExtensions.withInfo(project, "reason 3", id)
-      CometSparkSessionExtensions.withInfo(project, id)
-      CometSparkSessionExtensions.withInfo(project, "reason 4")
-      CometSparkSessionExtensions.withInfo(project, "reason 5", id)
-      CometSparkSessionExtensions.withInfo(project, id)
-      CometSparkSessionExtensions.withInfo(project, "reason 6")
+      CometSparkSessionExtensions.withFallbackReason(id, "reason 1")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 2")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 3", id)
+      CometSparkSessionExtensions.withFallbackReason(project, id)
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 4")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 5", id)
+      CometSparkSessionExtensions.withFallbackReason(project, id)
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 6")
       val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
       for (i <- 1 until 7) {
         assert(explain.contains(s"reason $i"))

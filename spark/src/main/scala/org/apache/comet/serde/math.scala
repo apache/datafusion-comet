@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Unhex}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
@@ -50,7 +50,7 @@ object CometCeil extends CometExpressionSerde[Ceil] {
       case t: DecimalType if t.scale == 0 => // zero scale is no-op
         childExpr
       case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withInfo(expr, s"Decimal type $t has negative scale")
+        withFallbackReason(expr, s"Decimal type $t has negative scale")
         None
       case _ =>
         val optExpr =
@@ -70,7 +70,7 @@ object CometFloor extends CometExpressionSerde[Floor] {
       case t: DecimalType if t.scale == 0 => // zero scale is no-op
         childExpr
       case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withInfo(expr, s"Decimal type $t has negative scale")
+        withFallbackReason(expr, s"Decimal type $t has negative scale")
         None
       case _ =>
         val optExpr =
@@ -237,7 +237,7 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
           .setCheckOverflow(builder)
           .build())
     } else {
-      withInfo(expr, expr.child)
+      withFallbackReason(expr, expr.child)
       None
     }
   }

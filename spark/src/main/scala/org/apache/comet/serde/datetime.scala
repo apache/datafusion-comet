@@ -27,7 +27,7 @@ import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType,
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -216,7 +216,7 @@ object CometHour extends CometExpressionSerde[Hour] {
           .setHour(builder)
           .build())
     } else {
-      withInfo(expr, expr.child)
+      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -258,7 +258,7 @@ object CometMinute extends CometExpressionSerde[Minute] {
           .setMinute(builder)
           .build())
     } else {
-      withInfo(expr, expr.child)
+      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -300,7 +300,7 @@ object CometSecond extends CometExpressionSerde[Second] {
           .setSecond(builder)
           .build())
     } else {
-      withInfo(expr, expr.child)
+      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -336,7 +336,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!isSupportedInputType(expr)) {
       val inputType = expr.children.head.dataType
-      withInfo(expr, s"unix_timestamp does not support input type: $inputType")
+      withFallbackReason(expr, s"unix_timestamp does not support input type: $inputType")
       return None
     }
 
@@ -355,7 +355,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
           .setUnixTimestamp(builder)
           .build())
     } else {
-      withInfo(expr, expr.children.head)
+      withFallbackReason(expr, expr.children.head)
       None
     }
   }
@@ -587,7 +587,7 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
           .setTruncTimestamp(builder)
           .build())
     } else {
-      withInfo(expr, expr.timestamp, expr.format)
+      withFallbackReason(expr, expr.timestamp, expr.format)
       None
     }
   }
@@ -645,8 +645,8 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
     "yyyy-MM-dd'T'HH:mm:ss" -> "%Y-%m-%dT%H:%M:%S")
 
   // Compatibility is decided inside `convert`: the native path covers a subset, and the codegen
-  // dispatcher covers everything else when enabled. Plan-time tagging happens via `withInfo` on
-  // the path that returns None.
+  // dispatcher covers everything else when enabled. Plan-time tagging happens via
+  // `withFallbackReason` on the path that returns None.
   override def getSupportLevel(expr: DateFormatClass): SupportLevel = Compatible()
 
   override def getCompatibleNotes(): Seq[String] = Seq(
@@ -716,7 +716,7 @@ object CometHours extends CometExpressionSerde[Hours] {
             .build()
         }
       case other =>
-        withInfo(expr, s"Hours does not support input type: $other")
+        withFallbackReason(expr, s"Hours does not support input type: $other")
         None
     }
     optExprWithInfo(optExpr, expr, expr.child)
@@ -749,7 +749,7 @@ object CometDays extends CometExpressionSerde[Days] {
           CometCast.castToProto(expr, Some(timezone), DateType, child, CometEvalMode.LEGACY)
         }
       case other =>
-        withInfo(expr, s"Days does not support input type: $other")
+        withFallbackReason(expr, s"Days does not support input type: $other")
         None
     }
 

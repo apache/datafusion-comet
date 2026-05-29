@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, serializeDataType}
 
 object CometKnownFloatingPointNormalized
@@ -50,7 +50,7 @@ object CometKnownFloatingPointNormalized
 
     val dataType = serializeDataType(wrapped.dataType)
     if (dataType.isEmpty) {
-      withInfo(wrapped, s"Unsupported datatype ${wrapped.dataType}")
+      withFallbackReason(wrapped, s"Unsupported datatype ${wrapped.dataType}")
       return None
     }
     val ex = exprToProtoInternal(wrapped, inputs, binding)

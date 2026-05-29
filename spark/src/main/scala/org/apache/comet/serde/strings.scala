@@ -26,7 +26,7 @@ import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
@@ -60,7 +60,7 @@ class CometCaseConversionBase[T <: Expression](function: String)
 
   override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (!CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
-      withInfo(
+      withFallbackReason(
         expr,
         "Comet is not compatible with Spark for case conversion in " +
           s"locale-specific cases. Set ${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true " +
@@ -119,11 +119,11 @@ object CometSubstring extends CometExpressionSerde[Substring] {
             builder.setLen(len.asInstanceOf[Int])
             Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
           case None =>
-            withInfo(expr, expr.str)
+            withFallbackReason(expr, expr.str)
             None
         }
       case _ =>
-        withInfo(expr, "Substring pos and len must be literals")
+        withFallbackReason(expr, "Substring pos and len must be literals")
         None
     }
   }
@@ -162,11 +162,11 @@ object CometLeft extends CometExpressionSerde[Left] {
             builder.setLen(lenValue.asInstanceOf[Int])
             Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
           case None =>
-            withInfo(expr, expr.str)
+            withFallbackReason(expr, expr.str)
             None
         }
       case _ =>
-        withInfo(expr, "LEFT len must be a literal")
+        withFallbackReason(expr, "LEFT len must be a literal")
         None
     }
   }
@@ -204,12 +204,12 @@ object CometRight extends CometExpressionSerde[Right] {
               builder.setLen(lenInt)
               Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
             case None =>
-              withInfo(expr, expr.str)
+              withFallbackReason(expr, expr.str)
               None
           }
         }
       case _ =>
-        withInfo(expr, "RIGHT len must be a literal")
+        withFallbackReason(expr, "RIGHT len must be a literal")
         None
     }
   }
@@ -249,7 +249,7 @@ object CometConcatWs extends CometExpressionSerde[ConcatWs] {
 
       case _ if expr.children.forall(_.foldable) =>
         // Fall back to Spark for all-literal args so ConstantFolding can handle it
-        withInfo(expr, "all arguments are foldable")
+        withFallbackReason(expr, "all arguments are foldable")
         None
 
       case _ =>
@@ -271,7 +271,9 @@ object CometLike extends CometExpressionSerde[Like] {
         binding,
         (builder, binaryExpr) => builder.setLike(binaryExpr))
     } else {
-      withInfo(expr, s"custom escape character ${expr.escapeChar} not supported in LIKE")
+      withFallbackReason(
+        expr,
+        s"custom escape character ${expr.escapeChar} not supported in LIKE")
       None
     }
   }
@@ -287,7 +289,7 @@ object CometRLike extends CometExpressionSerde[RLike] {
       case Literal(pattern, DataTypes.StringType) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
           !CometConf.isExprAllowIncompat("regexp")) {
-          withInfo(
+          withFallbackReason(
             expr,
             s"Regexp pattern $pattern is not compatible with Spark. " +
               s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
@@ -303,7 +305,7 @@ object CometRLike extends CometExpressionSerde[RLike] {
             (builder, binaryExpr) => builder.setRlike(binaryExpr))
         }
       case _ =>
-        withInfo(expr, "Only scalar regexp patterns are supported")
+        withFallbackReason(expr, "Only scalar regexp patterns are supported")
         None
     }
   }
@@ -376,7 +378,7 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
   override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
     if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
       !CometConf.isExprAllowIncompat("regexp")) {
-      withInfo(
+      withFallbackReason(
         expr,
         s"Regexp pattern ${expr.regexp} is not compatible with Spark. " +
           s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
@@ -487,11 +489,11 @@ trait CommonStringExprs {
         if (binExpr.isDefined) {
           CometCast.castToProto(expr, None, DataTypes.StringType, binExpr.get, CometEvalMode.TRY)
         } else {
-          withInfo(expr, bin)
+          withFallbackReason(expr, bin)
           None
         }
       case _ =>
-        withInfo(expr, "Comet only supports decoding with 'utf-8'.")
+        withFallbackReason(expr, "Comet only supports decoding with 'utf-8'.")
         None
     }
   }
