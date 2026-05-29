@@ -148,6 +148,7 @@ object Utils extends CometTypeShim with Logging {
         }
       case TimestampNTZType =>
         new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)
+      case NullType => ArrowType.Null.INSTANCE
       case dt if isTimeType(dt) =>
         new ArrowType.Time(TimeUnit.NANOSECOND, 64)
       case _ =>
