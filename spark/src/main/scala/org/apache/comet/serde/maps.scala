@@ -134,8 +134,10 @@ object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
 }
 
 object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from_entries") {
-  val keyUnsupportedReason = "Using BinaryType as Map keys is not allowed in map_from_entries"
-  val valueUnsupportedReason = "Using BinaryType as Map values is not allowed in map_from_entries"
+  val keyUnsupportedReason =
+    "`BinaryType` is not supported as a map key in `map_from_entries`"
+  val valueUnsupportedReason =
+    "`BinaryType` is not supported as a map value in `map_from_entries`"
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(keyUnsupportedReason, valueUnsupportedReason)
@@ -160,9 +162,4 @@ object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from
   }
 }
 
-object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
-
-  override def getSupportLevel(expr: StringToMap): SupportLevel = {
-    Compatible(None)
-  }
-}
+object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map")
