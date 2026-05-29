@@ -1164,9 +1164,6 @@ impl PhysicalPlanner {
                     )?,
                 );
 
-                // HashAggregate emits its natural shape (group keys + agg results); any
-                // post-aggregate projection is serialized as an explicit `OpStruct::Projection`
-                // op above by the JVM serializer (see `CometBaseAggregate.doConvert`)
                 Ok((
                     scans,
                     shuffle_scans,

@@ -16,11 +16,11 @@
 // under the License.
 
 //! `SchemaAlignExec` reshapes its child's output so the per-column Arrow type and field-level
-//! nullability match what Spark catalyst declared. Used between an inlined native subtree and
-//! `ShuffleWriterExec` when the FFI deep-copy + `ScanExec` cast in `build_record_batch` are both
-//! gone, so DataFusion / `datafusion-spark` return-type drift would otherwise be written into
-//! shuffle blocks. See <https://github.com/apache/datafusion-comet/issues/4515> for the running
-//! list of mismatched functions.
+//! nullability match what Spark catalyst declared, casting where necessary. Sits between a native
+//! subtree and `ShuffleWriterExec` so DataFusion / `datafusion-spark` return-type drift is caught
+//! before it reaches shuffle blocks. See
+//! <https://github.com/apache/datafusion-comet/issues/4515> for the running list of mismatched
+//! functions.
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::compute::{cast_with_options, CastOptions};
@@ -53,6 +53,9 @@ fn warn_dedup() -> &'static Mutex<HashSet<String>> {
     SET.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+/// Casts each column of `child`'s output to the data_type Spark catalyst declared, widening
+/// nullability to `actual.nullable || expected.nullable`. See
+/// <https://github.com/apache/datafusion-comet/issues/4515>.
 #[derive(Debug)]
 pub struct SchemaAlignExec {
     child: Arc<dyn ExecutionPlan>,
@@ -74,8 +77,7 @@ impl SchemaAlignExec {
     /// Build a SchemaAlignExec that aligns `child`'s output to `expected`. Returns
     /// `Ok(child)` unchanged when no per-column reshape is needed; otherwise wraps `child`
     /// in a SchemaAlignExec whose target schema preserves `expected`'s data_type and metadata
-    /// but widens nullability to `actual.nullable || expected.nullable` (matching the
-    /// reconciliation rule used at the FFI boundary on `main`).
+    /// but widens nullability to `actual.nullable || expected.nullable`.
     pub fn try_new_or_passthrough(
         child: Arc<dyn ExecutionPlan>,
         expected: &SchemaRef,

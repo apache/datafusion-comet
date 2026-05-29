@@ -124,7 +124,7 @@ case class CometShuffleExchangeExec(
           ctx.shuffleScanIndices)
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
-        // built via the legacy convenience overload below; we just need a real RDD of batches.
+        // built via the convenience overload below; we just need a real RDD of batches.
         child.executeColumnar()
     }
   } else if (shuffleType == CometColumnarShuffle) {
@@ -676,9 +676,8 @@ object CometShuffleExchangeExec
    * Implemented as a thin wrapper around [[prepareNativeShuffleDependency]]: synthesizes a
    * `Scan("ShuffleWriterInput")` as the child native op (so the writer's plan is still
    * `ShuffleWriter -> Scan`, consuming JVM batches via Arrow C Stream), wraps `rdd` as the single
-   * leaf input of a thin scheduling RDD, and supplies a minimal [[NativeExecContext]]. Same wire
-   * shape as before; one writer code path for both this case and the [[CometShuffleExchangeExec]]
-   * case.
+   * leaf input of a thin scheduling RDD, and supplies a minimal [[NativeExecContext]]. Lets the
+   * writer use one code path for both this case and the [[CometShuffleExchangeExec]] case.
    */
   def prepareShuffleDependency(
       rdd: RDD[ColumnarBatch],
