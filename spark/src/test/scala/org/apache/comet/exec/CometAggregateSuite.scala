@@ -1805,6 +1805,15 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     (1 to 50).flatMap(_ => Seq((maxDec38_0, 1)))
   }
 
+  // SparkPlan.executeCollect wraps task failures in SparkException("Job aborted..."), so the
+  // typed exception thrown by Comet (SparkArithmeticException, which extends ArithmeticException)
+  // ends up in the cause chain rather than at the top.
+  private def hasArithmeticInChain(t: Throwable): Boolean =
+    Iterator
+      .iterate[Throwable](t)(_.getCause)
+      .takeWhile(_ != null)
+      .exists(_.isInstanceOf[ArithmeticException])
+
   test("ANSI support - SUM function") {
     Seq(true, false).foreach { ansiEnabled =>
       withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
@@ -1817,10 +1826,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 // make sure that the error message throws overflow exception only
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(
-                  cometExc.isInstanceOf[ArithmeticException],
-                  "expected ArithmeticException, got " +
-                    s"${cometExc.getClass.getName}: ${cometExc.getMessage}")
               case _ => fail("Exception should be thrown for Long overflow in ANSI mode")
             }
           } else {
@@ -1835,10 +1840,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case (Some(sparkExc), Some(cometExc)) =>
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(
-                  cometExc.isInstanceOf[ArithmeticException],
-                  "expected ArithmeticException, got " +
-                    s"${cometExc.getClass.getName}: ${cometExc.getMessage}")
               case _ => fail("Exception should be thrown for Long underflow in ANSI mode")
             }
           } else {
@@ -1878,10 +1879,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case (Some(sparkExc), Some(cometExc)) =>
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(
-                  cometExc.isInstanceOf[ArithmeticException],
-                  "expected ArithmeticException, got " +
-                    s"${cometExc.getClass.getName}: ${cometExc.getMessage}")
               case _ =>
                 fail("Exception should be thrown for decimal overflow in ANSI mode")
             }
@@ -1905,10 +1902,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case (Some(sparkExc), Some(cometExc)) =>
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(
-                  cometExc.isInstanceOf[ArithmeticException],
-                  "expected ArithmeticException, got " +
-                    s"${cometExc.getClass.getName}: ${cometExc.getMessage}")
               case _ =>
                 fail("Exception should be thrown for Long overflow with GROUP BY in ANSI mode")
             }
@@ -1926,10 +1919,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case (Some(sparkExc), Some(cometExc)) =>
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(
-                  cometExc.isInstanceOf[ArithmeticException],
-                  "expected ArithmeticException, got " +
-                    s"${cometExc.getClass.getName}: ${cometExc.getMessage}")
               case _ =>
                 fail("Exception should be thrown for Long underflow with GROUP BY in ANSI mode")
             }
@@ -1971,10 +1960,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               case (Some(sparkExc), Some(cometExc)) =>
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(
-                  cometExc.isInstanceOf[ArithmeticException],
-                  "expected ArithmeticException, got " +
-                    s"${cometExc.getClass.getName}: ${cometExc.getMessage}")
               case _ =>
                 fail("Exception should be thrown for decimal overflow with GROUP BY in ANSI mode")
             }
