@@ -26,20 +26,11 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.comet.CometShuffleBlockIterator
 
 /**
- * Thin RDD that anchors Spark scheduling for the native-shuffle path. Native execution itself is
- * driven by [[CometNativeShuffleWriter]] using the unified `ShuffleWriter(child = childNativeOp)`
- * plan.
- *
- * The RDD's role here is twofold:
- *   - declare `OneToOneDependency` on each leaf input RDD so the DAGScheduler walks the lineage
- *     and triggers prior stages, broadcast materialization, etc.
- *   - construct the per-partition leaf iterators (and shuffle-block iterators where applicable)
- *     in `compute`, packaged into a [[CometNativeShuffleInputIterator]] that the writer downcasts
- *     to extract the inputs it needs to feed the native plan.
- *
- * The iterator returned by `compute` always reports `hasNext = false`. Spark's `ShuffleMapTask`
- * will hand it to `writer.write`; the writer ignores it as an iterator and reads its exposed
- * fields directly.
+ * Thin scheduling-anchor RDD for the native-shuffle path. Declares `OneToOneDependency` on each
+ * leaf input RDD (so the DAGScheduler triggers prior stages, broadcasts, etc.) and constructs
+ * per-partition leaf iterators in `compute`, packaged into a [[CometNativeShuffleInputIterator]].
+ * The iterator reports `hasNext = false`; [[CometNativeShuffleWriter]] downcasts it and reads the
+ * leaf iterators directly to drive the unified `ShuffleWriter(child = childNativeOp)` plan.
  */
 private[shuffle] class CometNativeShuffleInputRDD(
     sc: SparkContext,
@@ -114,6 +105,6 @@ private[shuffle] class CometNativeShuffleInputIterator(
 
   override def next(): Product2[Int, ColumnarBatch] =
     throw new NoSuchElementException(
-      "CometNativeShuffleInputIterator does not produce elements; CometNativeShuffleWriter " +
-        "drives native execution via the iterator's exposed fields.")
+      "CometNativeShuffleInputIterator should never be drained as an iterator. Reaching this " +
+        "code means a non-Comet ShuffleWriter is consuming the input, which is a bug.")
 }

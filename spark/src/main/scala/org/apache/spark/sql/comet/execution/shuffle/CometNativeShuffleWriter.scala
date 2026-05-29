@@ -32,7 +32,7 @@ import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsR
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
-import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometScalarSubquery, NativeExecContext, PlanDataInjector}
+import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometScalarSubquery, PlanDataInjector}
 import org.apache.spark.sql.execution.metric.SQLMetric
 
 import org.apache.comet.{CometConf, CometExecIterator}
@@ -40,26 +40,16 @@ import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, Query
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 
 /**
- * A [[ShuffleWriter]] that drives the native shuffle write in a single [[CometExecIterator]] per
- * partition. The unified plan it executes has [[OperatorOuterClass.ShuffleWriter]] at the root
- * with `childNativeOp` as its only child. Leaf input iterators come from
- * [[CometNativeShuffleInputIterator]] (constructed by [[CometNativeShuffleInputRDD.compute]]).
- *
- * Two flavors of `childNativeOp` are in use:
- *   - rich Comet native subtree (e.g. HashAgg / Filter / ShuffleScan), supplied by
- *     [[CometShuffleExchangeExec]] when its child is a
- *     [[org.apache.spark.sql.comet.CometNativeExec]].
- *   - synthetic `Scan("ShuffleWriterInput")` placeholder, supplied by the convenience overload of
- *     [[CometShuffleExchangeExec.prepareShuffleDependency]] for callers that already hold an
- *     `RDD[ColumnarBatch]` of native-driven batches (e.g.
- *     [[org.apache.spark.sql.comet.CometCollectLimitExec]]).
- *
- * The writer treats both shapes identically.
+ * Drives the native shuffle write in a single [[CometExecIterator]] per partition. The plan is
+ * `ShuffleWriter(child = childNativeOp)`; leaf iterators come from a
+ * [[CometNativeShuffleInputIterator]]. `childNativeOp` is either a rich Comet native subtree
+ * (when fed by [[CometShuffleExchangeExec]] with a [[org.apache.spark.sql.comet.CometNativeExec]]
+ * child) or a synthetic `Scan("ShuffleWriterInput")` placeholder (the
+ * [[CometShuffleExchangeExec.prepareShuffleDependency]] convenience overload). Same handling
+ * either way.
  */
 class CometNativeShuffleWriter[K, V](
-    childNativeOp: Operator,
-    childMetricNode: CometMetricNode,
-    nativeContext: NativeExecContext,
+    spec: NativeShuffleSpec,
     outputPartitioning: Partitioning,
     outputAttributes: Seq[Attribute],
     metrics: Map[String, SQLMetric],
@@ -87,19 +77,28 @@ class CometNativeShuffleWriter[K, V](
     val tempDataFilePath = Paths.get(tempDataFilename)
     val tempIndexFilePath = Paths.get(tempIndexFilename)
 
-    // Pull the per-partition leaf iterators and partition index from the iterator handed to us
-    // by Spark's ShuffleMapTask. CometNativeShuffleInputRDD.compute always returns this exact
-    // iterator type; no other RDD layers between produce a Product2[Int, ColumnarBatch].
-    val shuffleInputIter = inputs.asInstanceOf[CometNativeShuffleInputIterator]
+    // The dep's _rdd is always a CometNativeShuffleInputRDD on this path. Pattern-match instead
+    // of asInstanceOf so a future RDD-layering change produces a clear error here rather than a
+    // bare ClassCastException deeper in the stack.
+    val shuffleInputIter = inputs match {
+      case it: CometNativeShuffleInputIterator => it
+      case other =>
+        throw new IllegalStateException(
+          "CometNativeShuffleWriter expects its input iterator to be a " +
+            "CometNativeShuffleInputIterator (produced by CometNativeShuffleInputRDD), got " +
+            s"${other.getClass.getName}")
+    }
     val partitionIdx = shuffleInputIter.partitionIndex
     val leafIterators = shuffleInputIter.leafIterators
     val shuffleBlockIters = shuffleInputIter.shuffleBlockIterators
 
     val unifiedPlan = buildUnifiedPlan(tempDataFilename, tempIndexFilename)
-    val finalNativePlan = if (nativeContext.commonByKey.nonEmpty) {
-      val partitionDataByKey =
-        nativeContext.perPartitionByKey.map { case (k, arr) => k -> arr(partitionIdx) }
-      PlanDataInjector.injectPlanData(unifiedPlan, nativeContext.commonByKey, partitionDataByKey)
+    val ctx = spec.execContext
+    val finalNativePlan = if (ctx.commonByKey.nonEmpty) {
+      val partitionDataByKey = ctx.perPartitionByKey.map { case (k, arr) =>
+        k -> arr(partitionIdx)
+      }
+      PlanDataInjector.injectPlanData(unifiedPlan, ctx.commonByKey, partitionDataByKey)
     } else {
       unifiedPlan
     }
@@ -119,30 +118,29 @@ class CometNativeShuffleWriter[K, V](
       "write_time" -> metricsWriteTime) ++
       metrics.filterKeys(detailedMetrics.contains)
 
-    // ShuffleWriter metrics live at the root of the metric tree; the child operator's metric
-    // tree (rich subtree or empty leaf for the Scan placeholder) is attached underneath so the
-    // SQL UI sees the same per-node breakdown the split-driver flow produced.
-    val nativeMetrics = CometMetricNode(shuffleWriterSQLMetrics, Seq(childMetricNode))
+    // ShuffleWriter metrics at the root; child's metric tree underneath so the SQL UI's per-node
+    // breakdown matches what the split-driver flow showed.
+    val nativeMetrics = CometMetricNode(shuffleWriterSQLMetrics, Seq(spec.childMetricNode))
 
     val cometIter = new CometExecIterator(
       CometExec.newIterId,
       leafIterators,
       outputAttributes.length,
-      PlanDataInjector.serializeOperator(finalNativePlan),
+      CometExec.serializeNativePlan(finalNativePlan),
       nativeMetrics,
       numParts,
       partitionIdx,
-      nativeContext.broadcastedHadoopConfForEncryption,
-      nativeContext.encryptedFilePaths,
+      ctx.broadcastedHadoopConfForEncryption,
+      ctx.encryptedFilePaths,
       shuffleBlockIters)
 
     // Register subqueries against the iterator id so native callbacks resolve them to values.
-    nativeContext.subqueries.foreach { sub =>
+    ctx.subqueries.foreach { sub =>
       CometScalarSubquery.setSubquery(cometIter.id, sub)
     }
     Option(context).foreach { taskCtx =>
       taskCtx.addTaskCompletionListener[Unit] { _ =>
-        nativeContext.subqueries.foreach { sub =>
+        ctx.subqueries.foreach { sub =>
           CometScalarSubquery.removeSubquery(cometIter.id, sub)
         }
       }
@@ -334,7 +332,7 @@ class CometNativeShuffleWriter[K, V](
     OperatorOuterClass.Operator
       .newBuilder()
       .setShuffleWriter(shuffleWriterBuilder)
-      .addChildren(childNativeOp)
+      .addChildren(spec.childNativeOp)
       .build()
   }
 

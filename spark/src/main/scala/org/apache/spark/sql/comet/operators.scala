@@ -383,15 +383,11 @@ object CometExec {
 
 /**
  * Per-partition execution context for a native subtree rooted at a [[CometNativeExec]] boundary.
- *
- * Built once on the driver from the SparkPlan tree and consumed by either:
- *   - [[CometNativeExec.doExecuteColumnar]] to construct a [[CometExecRDD]], or
- *   - the native-shuffle path, where [[CometNativeShuffleWriter]] drives the same child plan with
- *     a `ShuffleWriter` operator as its root.
- *
- * The fields capture everything that depends on tree-walking the SparkPlan and aligning leaf
- * input RDDs (broadcast partition counts, plan-data, subqueries, encryption options) so callers
- * do not have to re-derive them.
+ * Built once on the driver from the SparkPlan tree, then consumed by either
+ * [[CometNativeExec.executeColumnarWithContext]] (to build a [[CometExecRDD]]) or the
+ * native-shuffle path (to drive [[CometNativeShuffleWriter]]). Captures broadcast partition
+ * alignment, plan-data, subqueries, and encryption options so each consumer doesn't re-walk the
+ * tree.
  */
 private[comet] case class NativeExecContext(
     inputs: Seq[RDD[ColumnarBatch]],
@@ -402,7 +398,15 @@ private[comet] case class NativeExecContext(
     commonByKey: Map[String, Array[Byte]],
     perPartitionByKey: Map[String, Array[Array[Byte]]],
     shuffleScanIndices: Set[Int],
-    hasScanInput: Boolean)
+    hasScanInput: Boolean) {
+  // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
+  // filtering) at construction so consumers don't trip ArrayIndexOutOfBoundsException at
+  // partition idx access time.
+  require(
+    perPartitionByKey.values.forall(_.length == numPartitions),
+    s"All per-partition arrays must have length $numPartitions, but found: " +
+      perPartitionByKey.map { case (key, arr) => s"$key -> ${arr.length}" }.mkString(", "))
+}
 
 /**
  * A Comet native physical operator.
@@ -442,90 +446,68 @@ abstract class CometNativeExec extends CometExec {
     runningSubqueries.clear()
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    serializedPlanOpt.plan match {
-      case None =>
-        // This is in the middle of a native execution, it should not be executed directly.
-        throw new CometRuntimeException(
-          s"CometNativeExec should not be executed directly without a serialized plan: $this")
-      case Some(serializedPlan) =>
-        // TODO: support native metrics for all operators.
-        val nativeMetrics = CometMetricNode.fromCometPlan(this)
-        val ctx = buildNativeContext()
+  override def doExecuteColumnar(): RDD[ColumnarBatch] =
+    executeColumnarWithContext(buildNativeContext())
 
-        new CometExecRDD(
-          sparkContext,
-          ctx.inputs,
-          ctx.commonByKey,
-          ctx.perPartitionByKey,
-          serializedPlan,
-          ctx.numPartitions,
-          output.length,
-          nativeMetrics,
-          ctx.subqueries,
-          ctx.broadcastedHadoopConfForEncryption,
-          ctx.encryptedFilePaths,
-          ctx.shuffleScanIndices) {
-          override def compute(
-              split: Partition,
-              context: TaskContext): Iterator[ColumnarBatch] = {
-            val res = super.compute(split, context)
+  /**
+   * Build a [[CometExecRDD]] from a precomputed [[NativeExecContext]]. Public so the native
+   * shuffle path can sample (RangePartitioning) without re-walking the SparkPlan tree and
+   * re-broadcasting the encryption Hadoop conf.
+   */
+  private[comet] def executeColumnarWithContext(ctx: NativeExecContext): RDD[ColumnarBatch] = {
+    val serializedPlan = serializedPlanOpt.plan.getOrElse(
+      throw new CometRuntimeException(
+        s"CometNativeExec should not be executed directly without a serialized plan: $this"))
+    val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
-            // Report scan input metrics only when the native plan contains a scan.
-            if (ctx.hasScanInput) {
-              Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-            }
-
-            res
-          }
+    new CometExecRDD(
+      sparkContext,
+      ctx.inputs,
+      ctx.commonByKey,
+      ctx.perPartitionByKey,
+      serializedPlan,
+      ctx.numPartitions,
+      output.length,
+      nativeMetrics,
+      ctx.subqueries,
+      ctx.broadcastedHadoopConfForEncryption,
+      ctx.encryptedFilePaths,
+      ctx.shuffleScanIndices) {
+      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+        val res = super.compute(split, context)
+        if (ctx.hasScanInput) {
+          Option(context).foreach(nativeMetrics.reportScanInputMetrics)
         }
+        res
+      }
     }
   }
 
   /**
    * Walk this CometNativeExec subtree once and gather everything needed to launch native
-   * execution: leaf input RDDs (with broadcast partition counts aligned to the first
-   * non-broadcast plan), per-partition planning data, subqueries, encryption options, and
-   * shuffle-scan indices. See [[NativeExecContext]] for the full set of fields.
-   *
-   * Used by [[doExecuteColumnar]] (CometExecRDD path) and by the native-shuffle path
-   * (CometShuffleExchangeExec) so both observe the same input alignment.
+   * execution. See [[NativeExecContext]] for the field set.
    */
   private[comet] def buildNativeContext(): NativeExecContext = {
-    // Go over all the native scans, in order to see if they need encryption options.
-    // For each relation in a CometNativeScan generate a hadoopConf,
-    // for each file path in a relation associate with hadoopConf
-    // This is done per native plan, so only count scans until a comet input is reached.
+    // Find native scans that need encryption: build a hadoopConf per relation, broadcast it once
+    // so executors can decrypt on read. Capped at one because we only broadcast one conf per
+    // CometExecIterator (see #2447 for history of the per-relation map approach).
     val encryptionOptions =
       mutable.ArrayBuffer.empty[(Broadcast[SerializableConfiguration], Seq[String])]
     foreachUntilCometInput(this) {
       case scan: CometNativeScanExec =>
-        // This creates a hadoopConf that brings in any SQLConf "spark.hadoop.*" configs and
-        // per-relation configs since different tables might have different decryption
-        // properties.
         val hadoopConf = scan.relation.sparkSession.sessionState
           .newHadoopConfWithOptions(scan.relation.options)
-        val encryptionEnabled = CometParquetUtils.encryptionEnabled(hadoopConf)
-        if (encryptionEnabled) {
-          // hadoopConf isn't serializable, so we have to do a broadcasted config.
-          val broadcastedConf =
-            scan.relation.sparkSession.sparkContext
-              .broadcast(new SerializableConfiguration(hadoopConf))
-
-          val optsTuple: (Broadcast[SerializableConfiguration], Seq[String]) =
-            (broadcastedConf, scan.relation.inputFiles.toSeq)
-          encryptionOptions += optsTuple
+        if (CometParquetUtils.encryptionEnabled(hadoopConf)) {
+          val broadcastedConf = scan.relation.sparkSession.sparkContext
+            .broadcast(new SerializableConfiguration(hadoopConf))
+          encryptionOptions += ((broadcastedConf, scan.relation.inputFiles.toSeq))
         }
-      case _ => // no-op
+      case _ =>
     }
     assert(
       encryptionOptions.size <= 1,
       "We expect one native scan that requires encryption reading in a Comet plan," +
         " since we will broadcast one hadoopConf.")
-    // If this assumption changes in the future, you can look at the commit history of #2447
-    // to see how there used to be a map of relations to broadcasted confs in case multiple
-    // relations in a single plan. The example that came up was UNION. See discussion at:
-    // https://github.com/apache/datafusion-comet/pull/2447#discussion_r2406118264
     val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
       encryptionOptions.headOption match {
         case Some((conf, paths)) => (Some(conf), paths)

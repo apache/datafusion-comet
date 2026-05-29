@@ -102,14 +102,11 @@ case class CometShuffleExchangeExec(
     new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))
 
   /**
-   * Per-partition execution context for the child native subtree, computed once and shared
-   * between [[inputRDD]] (which uses it to wire DAGScheduler dependencies) and
-   * [[shuffleDependency]] (which threads it through to [[CometNativeShuffleWriter]] for
-   * single-iterator native execution). Only populated when `shuffleType == CometNativeShuffle`
-   * AND the child is a [[CometNativeExec]] subtree we can inline. When the child is a non-native
-   * Comet plan (e.g. [[org.apache.spark.sql.comet.CometSparkToColumnarExec]]), this stays `None`
-   * and the shuffle falls back to the legacy `Scan("ShuffleWriterInput") -> ShuffleWriter` plan
-   * via the convenience overload of `prepareShuffleDependency`.
+   * Single-driver native-shuffle context, computed once and shared between [[inputRDD]] and
+   * [[shuffleDependency]]. `Some` only when `shuffleType == CometNativeShuffle` AND the child is
+   * a [[CometNativeExec]] subtree. Otherwise the dep is built via the
+   * [[CometShuffleExchangeExec.prepareShuffleDependency]] convenience overload (synthetic Scan
+   * placeholder).
    */
   @transient private lazy val nativeChildContext: Option[NativeExecContext] = child match {
     case nativeChild: CometNativeExec if shuffleType == CometNativeShuffle =>
@@ -120,23 +117,19 @@ case class CometShuffleExchangeExec(
   @transient lazy val inputRDD: RDD[_] = if (shuffleType == CometNativeShuffle) {
     nativeChildContext match {
       case Some(ctx) =>
-        // Single-driver path: thin scheduling anchor; CometNativeShuffleWriter drives the
-        // unified ShuffleWriter + child plan in a single CometExecIterator per partition.
         new CometNativeShuffleInputRDD(
           sparkContext,
           ctx.inputs,
           ctx.numPartitions,
           ctx.shuffleScanIndices)
       case None =>
-        // Child is a Comet plan but not a CometNativeExec subtree (e.g. CometSparkToColumnarExec).
-        // No native subtree to inline; the writer's plan is `Scan("ShuffleWriterInput") ->
-        // ShuffleWriter` and JVM batches flow into native through Arrow C Stream Interface.
+        // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
+        // built via the legacy convenience overload below; we just need a real RDD of batches.
         child.executeColumnar()
     }
   } else if (shuffleType == CometColumnarShuffle) {
-    // CometColumnarShuffle uses Spark's row-based execute() API. For Spark row-based plans,
-    // rows flow directly. For Comet native plans, their doExecute() wraps with ColumnarToRowExec
-    // to convert columnar batches to rows.
+    // Row-based shuffle. CometNativeExec.doExecute wraps columnar output with
+    // ColumnarToRowExec; non-Comet children flow through directly.
     child.execute()
   } else {
     throw new UnsupportedOperationException(
@@ -180,12 +173,11 @@ case class CometShuffleExchangeExec(
     if (shuffleType == CometNativeShuffle) {
       val dep = nativeChildContext match {
         case Some(ctx) =>
-          // Single-driver path: child is a CometNativeExec subtree. RangePartitioning needs real
-          // rows to compute partition bounds; use a regular columnar execution of the child for
-          // sampling only. The actual shuffle still goes through the single-iterator path.
           val nativeChild = child.asInstanceOf[CometNativeExec]
+          // RangePartitioner needs real rows for sampling. Reuse the precomputed context so we
+          // don't re-walk the SparkPlan tree or re-broadcast the encryption Hadoop conf.
           val samplingRDD: Option[RDD[ColumnarBatch]] = outputPartitioning match {
-            case _: RangePartitioning => Some(child.executeColumnar())
+            case _: RangePartitioning => Some(nativeChild.executeColumnarWithContext(ctx))
             case _ => None
           }
           CometShuffleExchangeExec.prepareNativeShuffleDependency(
@@ -195,12 +187,11 @@ case class CometShuffleExchangeExec(
             outputPartitioning,
             serializer,
             metrics,
-            ctx,
-            nativeChild.nativeOp,
-            CometMetricNode.fromCometPlan(nativeChild))
+            NativeShuffleSpec(
+              nativeChild.nativeOp,
+              CometMetricNode.fromCometPlan(nativeChild),
+              ctx))
         case None =>
-          // Child is a non-native Comet plan; the writer falls back to its Scan-placeholder
-          // path via the convenience overload of prepareShuffleDependency.
           CometShuffleExchangeExec.prepareShuffleDependency(
             inputRDD.asInstanceOf[RDD[ColumnarBatch]],
             child.output,
@@ -733,18 +724,16 @@ object CometShuffleExchangeExec
       outputPartitioning,
       serializer,
       metrics,
-      ctx,
-      scanOp,
-      CometMetricNode(Map.empty))
+      NativeShuffleSpec(scanOp, CometMetricNode(Map.empty), ctx))
   }
 
   /**
    * Build a Comet native shuffle dependency for the [[CometShuffleExchangeExec]] case where the
    * shuffle is fed by a [[CometNativeExec]] child. The writer drives the unified
    * `ShuffleWriter(child = childNativeOp)` plan in a single
-   * [[org.apache.comet.CometExecIterator]] per partition. The returned dep carries the child's
-   * per-partition execution context, root native operator, and metric node so
-   * [[CometNativeShuffleWriter]] can reach them at task time.
+   * [[org.apache.comet.CometExecIterator]] per partition. The returned dep carries the
+   * [[NativeShuffleSpec]] so [[CometNativeShuffleWriter]] can reach the child's per-partition
+   * execution context, root native operator, and metric node at task time.
    *
    * @param thinRDD
    *   scheduling-anchor RDD whose `compute` returns a [[CometNativeShuffleInputIterator]];
@@ -760,9 +749,7 @@ object CometShuffleExchangeExec
       outputPartitioning: Partitioning,
       serializer: Serializer,
       metrics: Map[String, SQLMetric],
-      nativeExecContext: NativeExecContext,
-      childNativeOp: OperatorOuterClass.Operator,
-      childMetricNode: CometMetricNode): ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
+      spec: NativeShuffleSpec): ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
     val numParts = thinRDD.getNumPartitions
 
     // The code block below is mostly brought over from
@@ -821,7 +808,7 @@ object CometShuffleExchangeExec
           None)
     }
 
-    val dependency = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
+    new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
       thinRDD,
       serializer = serializer,
       shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(metrics),
@@ -833,10 +820,7 @@ object CometShuffleExchangeExec
       shuffleWriteMetrics = metrics,
       numParts = numParts,
       rangePartitionBounds = rangePartitionBounds,
-      nativeExecContext = Some(nativeExecContext),
-      childNativeOp = Some(childNativeOp),
-      childMetricNode = Some(childMetricNode))
-    dependency
+      nativeShuffleSpec = Some(spec))
   }
 
   /**
