@@ -20,7 +20,7 @@ under the License.
 # Regular Expressions
 
 Comet provides two regexp engines for evaluating regular expressions: a **Rust engine** that uses the Rust
-[`regex`] crate natively, and an experimental **Java engine** that runs Spark's own `doGenCode` for the
+[`regex`] crate natively, and a **Java engine** that runs Spark's own `doGenCode` for the
 expression inside Comet's Arrow-direct codegen dispatcher (the same dispatcher used by Comet's
 `ScalaUDF` codegen path). The engine is selected with `spark.comet.exec.regexp.engine`, which accepts:
 
@@ -33,8 +33,8 @@ expression inside Comet's Arrow-direct codegen dispatcher (the same dispatcher u
   `regexp_extract_all`, `regexp_instr`) fall through to the Java engine so users still get Comet
   acceleration with full Spark semantics.
 
-The codegen dispatcher is experimental and disabled by default. With pure defaults
-(`engine=java`, `scalaUDF.codegen.enabled=false`), all regex expressions fall back to Spark.
+With `engine=java` and `scalaUDF.codegen.enabled=true`, all regex expressions run on the Comet
+path with full Spark compatibility.
 
 ## Disabling Comet for individual regex expressions
 
@@ -54,7 +54,7 @@ the engine selector:
 
 ## Choosing an engine
 
-|                      | Rust engine                                                                                                         | Java engine (experimental, default)                                                                                 |
+|                      | Rust engine                                                                                                         | Java engine (default)                                                                                               |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **Compatibility**    | Differs from Java regex (see below)                                                                                 | 100% compatible with Spark                                                                                          |
 | **Feature coverage** | `rlike`, `regexp_replace`, `split` natively; `regexp_extract`, `regexp_extract_all`, `regexp_instr` via fallthrough | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`) |
@@ -65,9 +65,8 @@ The **Rust engine** is faster but cannot match Java regex semantics for every pa
 choice is itself the opt-in, setting `spark.comet.exec.regexp.engine=rust` declares acceptance of those
 differences without a separate per-expression flag.
 
-The **Java engine** is the default but the underlying codegen dispatcher is experimental and gated behind
-`spark.comet.exec.scalaUDF.codegen.enabled=true`; the behavior, configuration, and supported expressions
-may change in future releases.
+The **Java engine** is the default and is gated behind `spark.comet.exec.scalaUDF.codegen.enabled`
+so the codegen dispatcher can be disabled globally without changing the regex engine selector.
 
 ## Why the engines differ
 
@@ -129,7 +128,7 @@ shape and want to avoid the JNI overhead of the Java engine, switching to the Ru
 `allowIncompatible=true` is generally safe.
 
 For anything that uses backreferences, lookaround, or relies on Java's specific Unicode or line-handling
-defaults, use the experimental Java engine.
+defaults, use the Java engine.
 
 [`java.util.regex`]: https://docs.oracle.com/javase/8/docs/api/java/util/regex/Pattern.html
 [`regex`]: https://docs.rs/regex/latest/regex/
