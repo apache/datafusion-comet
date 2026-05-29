@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ce
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
   override def convert(
@@ -36,7 +36,7 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
     val optExpr = scalarFunctionExprToProto("atan2", leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
+    optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
   }
 }
 
@@ -55,7 +55,7 @@ object CometCeil extends CometExpressionSerde[Ceil] {
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("ceil", expr.dataType, false, childExpr)
-        optExprWithInfo(optExpr, expr, expr.child)
+        optExprWithFallbackReason(optExpr, expr, expr.child)
     }
   }
 }
@@ -75,7 +75,7 @@ object CometFloor extends CometExpressionSerde[Floor] {
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("floor", expr.dataType, false, childExpr)
-        optExprWithInfo(optExpr, expr, expr.child)
+        optExprWithFallbackReason(optExpr, expr, expr.child)
     }
   }
 }
@@ -90,7 +90,7 @@ object CometLog extends CometExpressionSerde[Log] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
     val optExpr = scalarFunctionExprToProto("ln", childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -101,7 +101,7 @@ object CometLog10 extends CometExpressionSerde[Log10] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
     val optExpr = scalarFunctionExprToProto("log10", childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -112,7 +112,7 @@ object CometLog2 extends CometExpressionSerde[Log2] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
     val optExpr = scalarFunctionExprToProto("log2", childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
 
   }
 }
@@ -128,7 +128,7 @@ object CometLogarithm extends CometExpressionSerde[Logarithm] {
     val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
     val optExpr =
       scalarFunctionExprToProtoWithReturnType("spark_log", DoubleType, false, leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
+    optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
   }
 }
 
@@ -139,7 +139,7 @@ object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProtoWithReturnType("hex", expr.dataType, false, childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -158,7 +158,7 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
         false,
         childExpr,
         failOnErrorExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -192,7 +192,7 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
         false,
         childExpr,
         failOnErrorExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 

@@ -29,7 +29,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -47,7 +47,7 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
     val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
     val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
     val optExpr = scalarFunctionExprToProto("repeat", leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, leftCast, rightCast)
+    optExprWithFallbackReason(optExpr, expr, leftCast, rightCast)
   }
 }
 
@@ -140,7 +140,7 @@ object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
     val countExpr = exprToProtoInternal(countCast, inputs, binding)
     val optExpr =
       scalarFunctionExprToProto("substring_index", strExpr, delimExpr, countExpr)
-    optExprWithInfo(optExpr, expr, expr.strExpr, expr.delimExpr, expr.countExpr)
+    optExprWithFallbackReason(optExpr, expr, expr.strExpr, expr.delimExpr, expr.countExpr)
   }
 }
 
@@ -407,7 +407,7 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       patternExpr,
       replacementExpr,
       flagsExpr)
-    optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
+    optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
   }
 }
 
@@ -438,7 +438,7 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
       strExpr,
       regexExpr,
       limitExpr)
-    optExprWithInfo(optExpr, expr, expr.str, expr.regex, expr.limit)
+    optExprWithFallbackReason(optExpr, expr, expr.str, expr.regex, expr.limit)
   }
 }
 
@@ -465,7 +465,7 @@ object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
       false,
       jsonExpr,
       pathExpr)
-    optExprWithInfo(optExpr, expr, expr.json, expr.path)
+    optExprWithFallbackReason(optExpr, expr, expr.json, expr.path)
   }
 }
 

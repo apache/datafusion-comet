@@ -864,8 +864,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
   }
 
-  // Utility method. Adds explain info if the result of calling exprToProto is None
-  def optExprWithInfo(
+  // Utility method. Adds fallback reason if the result of calling exprToProto is None
+  def optExprWithFallbackReason(
       optExpr: Option[Expr],
       expr: Expression,
       childExpr: Expression*): Option[Expr] = {
