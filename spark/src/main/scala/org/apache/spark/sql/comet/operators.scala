@@ -1945,8 +1945,19 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
     Some(CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED)
   }
 
+  private val unmatchedDuplicationReason =
+    "BNLJ with preserved-build side (LeftOuter+BuildLeft, RightOuter+BuildRight, FullOuter)" +
+      " duplicates unmatched rows across partitions because the broadcast side is replicated"
+
   override def getSupportLevel(op: BroadcastNestedLoopJoinExec): SupportLevel =
-    Compatible(None)
+    (op.joinType, op.buildSide) match {
+      case (LeftOuter, BuildLeft)   => Unsupported(Some(unmatchedDuplicationReason))
+      case (RightOuter, BuildRight) => Unsupported(Some(unmatchedDuplicationReason))
+      case (FullOuter, _)           => Unsupported(Some(unmatchedDuplicationReason))
+      case _                        => Compatible(None)
+    }
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(unmatchedDuplicationReason)
 
   /**
    * Convert a Spark operator into a protocol buffer representation that can be passed into native
