@@ -33,12 +33,6 @@ The following incompatibilities cause `GetJsonObject` to fall back to Spark by d
 
 - Spark allows single-quoted JSON and unescaped control characters which Comet does not support
 
-## InitCap
-
-The following incompatibilities cause `InitCap` to fall back to Spark by default. Set `spark.comet.expression.InitCap.allowIncompatible=true` to enable Comet acceleration despite these differences.
-
-- Treats hyphen as a word separator (e.g. `robert rose-smith` produces `Robert Rose-Smith` instead of Spark's `Robert Rose-smith`) (https://github.com/apache/datafusion-comet/issues/1052)
-
 ## Left
 
 The following cases are not supported by Comet:
@@ -51,12 +45,6 @@ The following cases are not supported by Comet:
 The following cases are not supported by Comet:
 
 - `BinaryType` input is not supported
-
-## Lower
-
-The following incompatibilities cause `Lower` to fall back to Spark by default. Set `spark.comet.expression.Lower.allowIncompatible=true` to enable Comet acceleration despite these differences.
-
-- Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` to enable.
 
 ## RLike
 
@@ -109,10 +97,4 @@ The following differences from Spark are always present and do not require any a
 The following incompatibilities cause `StringSplit` to fall back to Spark by default. Set `spark.comet.expression.StringSplit.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Regex engine differences between Java and Rust
-
-## Upper
-
-The following incompatibilities cause `Upper` to fall back to Spark by default. Set `spark.comet.expression.Upper.allowIncompatible=true` to enable Comet acceleration despite these differences.
-
-- Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` to enable.
 <!--END:EXPR_COMPAT-->

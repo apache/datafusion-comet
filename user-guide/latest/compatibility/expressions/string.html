@@ -543,13 +543,6 @@ under the License.
 <li><p>Spark allows single-quoted JSON and unescaped control characters which Comet does not support</p></li>
 </ul>
 </section>
-<section id="initcap">
-<h2>InitCap<a class="headerlink" href="#initcap" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">InitCap</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.InitCap.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Treats hyphen as a word separator (e.g. <code class="docutils literal notranslate"><span class="pre">robert</span> <span class="pre">rose-smith</span></code> produces <code class="docutils literal notranslate"><span class="pre">Robert</span> <span class="pre">Rose-Smith</span></code> instead of Spark’s <code class="docutils literal notranslate"><span class="pre">Robert</span> <span class="pre">Rose-smith</span></code>) (https://github.com/apache/datafusion-comet/issues/1052)</p></li>
-</ul>
-</section>
 <section id="left">
 <h2>Left<a class="headerlink" href="#left" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
@@ -563,13 +556,6 @@ under the License.
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> input is not supported</p></li>
-</ul>
-</section>
-<section id="lower">
-<h2>Lower<a class="headerlink" href="#lower" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Lower</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Lower.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Results can vary depending on locale and character set. Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code> to enable.</p></li>
 </ul>
 </section>
 <section id="rlike">
@@ -630,13 +616,6 @@ under the License.
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StringSplit</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringSplit.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Regex engine differences between Java and Rust</p></li>
-</ul>
-</section>
-<section id="upper">
-<h2>Upper<a class="headerlink" href="#upper" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Upper</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Upper.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Results can vary depending on locale and character set. Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code> to enable.</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
 </section>

@@ -270,6 +270,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.GetJsonObject.enabled` | Enable Comet acceleration for `GetJsonObject` | true |
 | `spark.comet.expression.GetMapValue.enabled` | Enable Comet acceleration for `GetMapValue` | true |
 | `spark.comet.expression.GetStructField.enabled` | Enable Comet acceleration for `GetStructField` | true |
+| `spark.comet.expression.GetTimestamp.enabled` | Enable Comet acceleration for `GetTimestamp` | true |
 | `spark.comet.expression.GreaterThan.enabled` | Enable Comet acceleration for `GreaterThan` | true |
 | `spark.comet.expression.GreaterThanOrEqual.enabled` | Enable Comet acceleration for `GreaterThanOrEqual` | true |
 | `spark.comet.expression.Greatest.enabled` | Enable Comet acceleration for `Greatest` | true |
@@ -348,6 +349,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
 | `spark.comet.expression.Sinh.enabled` | Enable Comet acceleration for `Sinh` | true |
 | `spark.comet.expression.Size.enabled` | Enable Comet acceleration for `Size` | true |
+| `spark.comet.expression.Slice.enabled` | Enable Comet acceleration for `Slice` | true |
 | `spark.comet.expression.SortArray.enabled` | Enable Comet acceleration for `SortArray` | true |
 | `spark.comet.expression.SortOrder.enabled` | Enable Comet acceleration for `SortOrder` | true |
 | `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
