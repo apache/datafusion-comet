@@ -68,17 +68,6 @@ case class CometScanRule(session: SparkSession)
            |${sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
            |""".stripMargin)
     }
-    // [#4515 instrumentation]
-    if (!newPlan.fastEquals(plan)) {
-      val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
-      log.warn(
-        "CometScanRule rewrote plan:\n  IN classes: " +
-          plan.collect { case p => p.getClass.getSimpleName }.mkString(",") +
-          "\n  OUT classes: " +
-          newPlan.collect { case p => p.getClass.getSimpleName }.mkString(",") +
-          s"\n  IN tree:\n${plan.treeString(verbose = true, addSuffix = false)}" +
-          s"\n  OUT tree:\n${newPlan.treeString(verbose = true, addSuffix = false)}")
-    }
     newPlan
   }
 

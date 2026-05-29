@@ -1034,13 +1034,6 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::HashAgg(agg) => {
-                // [#4515 instrumentation] Every HashAgg construction with proto sizes.
-                log::warn!(
-                    "[#4515] OpStruct::HashAgg grouping_exprs.len={} agg_exprs.len={} mode={}",
-                    agg.grouping_exprs.len(),
-                    agg.agg_exprs.len(),
-                    agg.mode
-                );
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
@@ -1423,16 +1416,6 @@ impl PhysicalPlanner {
             }
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
-
-                // [#4515 instrumentation] Log every JVM-bridge Scan's declared column count.
-                // A 0-column scan paired with a JVM iterator producing batches with columns is
-                // the AIOOBE-on-exportBatch shape; a non-empty list confirms the inverse.
-                log::info!(
-                    "[#4515] ScanExec source='{}' declared {} cols: {:?}",
-                    scan.source,
-                    data_types.len(),
-                    data_types
-                );
 
                 // If it is not test execution context for unit test, we should have at least one
                 // input source

@@ -422,15 +422,7 @@ abstract class CometNativeExec extends CometExec {
   /** The Comet native operator */
   def nativeOp: Operator
 
-  override protected def doPrepare(): Unit = {
-    // [#4515 instrumentation] Track when subqueries are prepared for this CometNativeExec.
-    val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
-    log.warn(
-      s"CometNativeExec.doPrepare this=${System.identityHashCode(this)} " +
-        s"cls=${this.getClass.getName} " +
-        s"originalPlan.cls=${originalPlan.getClass.getName}")
-    prepareSubqueries(this)
-  }
+  override protected def doPrepare(): Unit = prepareSubqueries(this)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext)
@@ -571,14 +563,6 @@ abstract class CometNativeExec extends CometExec {
     // same partition number. But for Comet, we need to zip them so we need to adjust the
     // partition number of Broadcast RDDs to make sure they have the same partition number.
     sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
-      // [#4515 instrumentation] Log every JVM-side input plan we wire to native, so we can
-      // correlate the Scan's declared schema with the runtime plan whose RDD feeds it.
-      val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
-      log.warn(
-        s"buildNativeContext binding input[$idx] cls=${plan.getClass.getName} " +
-          s"simpleString='${plan.simpleStringWithNodeId()}' output=${plan.output} " +
-          s"output.size=${plan.output.size} identityHash=${System.identityHashCode(plan)}\n" +
-          s"  subtree:\n${plan.treeString(verbose = true, addSuffix = false)}")
       plan match {
         case c: CometBroadcastExchangeExec =>
           inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
@@ -1532,25 +1516,6 @@ trait CometBaseAggregate {
     // If the aggregateExpressions is empty, we only want to build groupingExpressions,
     // and skip processing of aggregateExpressions.
     if (aggregateExpressions.isEmpty) {
-      // [#4515 instrumentation] Track HashAgg serializations with empty resultExpressions.
-      // Catalyst prunes resultExpressions for EXISTS / row-existence-only subqueries; the
-      // native side currently interprets empty result_exprs as "use aggregate natural
-      // schema", which leaks grouping keys into the output.
-      org.slf4j.LoggerFactory
-        .getLogger("[#4515]")
-        .warn(
-          "HashAgg empty-aggExprs branch: " +
-            s"groupingExprs=${groupingExpressions} " +
-            s"resultExpressions=${resultExpressions} " +
-            s"resultExpressions.size=${resultExpressions.size} " +
-            s"aggregate.output=${aggregate.output} " +
-            s"aggregate.output.size=${aggregate.output.size} " +
-            s"modes(from aggExprs)=${modes} " +
-            s"sparkFinalMode=$sparkFinalMode " +
-            s"requiredChildDistribution=${aggregate.requiredChildDistribution} " +
-            s"isProjectionToEmpty=${resultExpressions.isEmpty && aggregate.output.isEmpty} " +
-            s"naturalEqualsIntent=${resultExpressions.map(_.toAttribute) == groupingExpressions
-                .map(_.toAttribute)}")
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
       // The native HashAggregate emits its natural shape (the grouping keys, since there

@@ -38,8 +38,6 @@ public class CometBatchIterator {
   private final NativeUtil nativeUtil;
   private ColumnarBatch previousBatch = null;
   private ColumnarBatch currentBatch = null;
-  // [#4515 instrumentation] gate first-batch log per instance
-  private boolean loggedFirstBatch = false;
 
   CometBatchIterator(Iterator<ColumnarBatch> input, NativeUtil nativeUtil) {
     this.input = input;
@@ -79,20 +77,6 @@ public class CometBatchIterator {
   public int next(long[] arrayAddrs, long[] schemaAddrs) {
     if (currentBatch == null) {
       return -1;
-    }
-
-    // [#4515 instrumentation] Log first-batch shape per CometBatchIterator instance.
-    if (!loggedFirstBatch) {
-      loggedFirstBatch = true;
-      org.slf4j.LoggerFactory.getLogger("[#4515]")
-          .warn(
-              "CometBatchIterator.next first batch: numCols={} numRows={} arrayAddrs.length={} schemaAddrs.length={} inputCls={} this={}",
-              currentBatch.numCols(),
-              currentBatch.numRows(),
-              arrayAddrs.length,
-              schemaAddrs.length,
-              input.getClass().getName(),
-              System.identityHashCode(this));
     }
 
     // export the batch using the Arrow C Data Interface

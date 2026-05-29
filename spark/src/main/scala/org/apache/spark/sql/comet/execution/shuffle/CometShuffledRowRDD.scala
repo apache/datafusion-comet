@@ -162,34 +162,7 @@ class CometShuffledBatchRDD(
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val reader = createReader(split, context)
     // TODO: Reads IPC by native code
-    val raw = reader.read().asInstanceOf[Iterator[Product2[Int, ColumnarBatch]]].map(_._2)
-    // [#4515 instrumentation] Peek the first decoded batch to confirm wire schema vs caller
-    // expectations. Wraps so we don't consume the iterator.
-    val log = org.slf4j.LoggerFactory.getLogger("[#4515]")
-    new Iterator[ColumnarBatch] {
-      private var logged = false
-      override def hasNext: Boolean = raw.hasNext
-      override def next(): ColumnarBatch = {
-        val b = raw.next()
-        if (!logged) {
-          logged = true
-          val schemaSummary = (0 until b.numCols())
-            .map { i =>
-              val v = b.column(i) match {
-                case cv: org.apache.comet.vector.CometVector => cv.getValueVector
-                case _ => null
-              }
-              if (v != null) s"col[$i]: ${v.getField}"
-              else s"col[$i]: ${b.column(i).getClass.getName}"
-            }
-            .mkString("; ")
-          log.warn(s"CometShuffledBatchRDD.compute first decoded batch: numCols=${b.numCols()} " +
-            s"numRows=${b.numRows()} stage=${context.stageId()} task=${context.taskAttemptId()} " +
-            s"partition=${split.index} schema=[$schemaSummary]")
-        }
-        b
-      }
-    }
+    reader.read().asInstanceOf[Iterator[Product2[Int, ColumnarBatch]]].map(_._2)
   }
 
   override def clearDependencies(): Unit = {

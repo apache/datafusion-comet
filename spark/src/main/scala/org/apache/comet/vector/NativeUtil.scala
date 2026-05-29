@@ -114,28 +114,6 @@ class NativeUtil {
       batch: ColumnarBatch): Int = {
     val numRows = mutable.ArrayBuffer.empty[Int]
 
-    if (arrayAddrs.length != batch.numCols() || schemaAddrs.length != batch.numCols()) {
-      val schemaSummary = (0 until batch.numCols())
-        .map { i =>
-          val v = batch.column(i) match {
-            case cv: CometVector => cv.getValueVector
-            case _ => null
-          }
-          if (v != null) s"col[$i]: ${v.getField}"
-          else s"col[$i]: ${batch.column(i).getClass.getName}"
-        }
-        .mkString("; ")
-      val taskAttempt = Option(org.apache.spark.TaskContext.get())
-        .map(c => s"stage=${c.stageId} task=${c.taskAttemptId} partition=${c.partitionId}")
-        .getOrElse("no-task")
-      throw new SparkException(
-        "CometBatchIterator column-count mismatch [#4515 instrumentation]: " +
-          s"native expected arrayAddrs=${arrayAddrs.length}, schemaAddrs=${schemaAddrs.length}; " +
-          s"JVM iterator produced batch.numCols=${batch.numCols()} ($taskAttempt). " +
-          s"Batch schema: $schemaSummary",
-        new RuntimeException("placeholder for exportBatch column-count mismatch"))
-    }
-
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
         case a: CometVector =>
