@@ -1036,10 +1036,9 @@ impl PhysicalPlanner {
             OpStruct::HashAgg(agg) => {
                 // [#4515 instrumentation] Every HashAgg construction with proto sizes.
                 log::warn!(
-                    "[#4515] OpStruct::HashAgg grouping_exprs.len={} agg_exprs.len={} result_exprs.len={} mode={}",
+                    "[#4515] OpStruct::HashAgg grouping_exprs.len={} agg_exprs.len={} mode={}",
                     agg.grouping_exprs.len(),
                     agg.agg_exprs.len(),
-                    agg.result_exprs.len(),
                     agg.mode
                 );
                 assert_eq!(children.len(), 1);
@@ -1171,55 +1170,19 @@ impl PhysicalPlanner {
                         Arc::clone(&schema),
                     )?,
                 );
-                let result_exprs: PhyExprResult = agg
-                    .result_exprs
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, expr)| {
-                        self.create_expr(expr, aggregate.schema())
-                            .map(|r| (r, format!("col_{idx}")))
-                    })
-                    .collect();
 
-                if !agg.apply_result_projection {
-                    // [#4515 instrumentation] Confirm whether a native HashAggregate is being
-                    // built with empty result_exprs (catalyst-pruned EXISTS / count(*) subquery)
-                    // and what its natural schema would be.
-                    log::warn!(
-                        "[#4515] HashAgg apply_result_projection=false: emitting aggregate natural schema={:?} grouping_exprs.len={} agg_exprs.len={} result_exprs.len={}",
-                        aggregate.schema(),
-                        agg.grouping_exprs.len(),
-                        agg.agg_exprs.len(),
-                        agg.result_exprs.len()
-                    );
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
-                    ))
-                } else {
-                    // For final aggregation, DF's hash aggregate exec doesn't support Spark's
-                    // aggregate result expressions like `COUNT(col) + 1`, but instead relying
-                    // on additional `ProjectionExec` to handle the case. Therefore, here we'll
-                    // add a projection node on top of the aggregate node.
-                    //
-                    // Note that `result_exprs` should only be set for final aggregation on the
-                    // Spark side.
-                    let projection = Arc::new(ProjectionExec::try_new(
-                        result_exprs?,
-                        Arc::clone(&aggregate),
-                    )?);
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            projection,
-                            vec![child],
-                            vec![aggregate],
-                        )),
-                    ))
-                }
+                // The native HashAggregate emits its natural shape (group keys + agg
+                // results / state). Any post-aggregate projection Spark catalyst declares
+                // (`COUNT(col) + 1`, EXISTS-pruned-to-empty output, alias renames, etc.) is
+                // expressed as an explicit `OpStruct::Projection` op above the aggregate
+                // by the JVM serializer (see `CometBaseAggregate.doConvert`). Keeping that
+                // logic on the JVM side means only one place decides plan shape, and the
+                // native side stays a faithful executor. See comet#4515.
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
+                ))
             }
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);

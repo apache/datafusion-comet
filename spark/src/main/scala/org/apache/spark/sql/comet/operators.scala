@@ -1553,25 +1553,48 @@ trait CometBaseAggregate {
                 .map(_.toAttribute)}")
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
-      val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
-      val resultExprs = resultExpressions.map(exprToProto(_, attributes))
-      if (resultExprs.exists(_.isEmpty)) {
-        withInfo(
-          aggregate,
-          s"Unsupported result expressions found in: $resultExpressions",
-          resultExpressions: _*)
-        return None
+      // The native HashAggregate emits its natural shape (the grouping keys, since there
+      // are no aggregate functions). When Spark catalyst declares a different output -
+      // either column-renaming via aliases, or an entirely empty output for catalyst-pruned
+      // EXISTS / row-existence-only subqueries - we wrap the HashAggregate in an explicit
+      // Projection op so the native side reshapes accordingly. See comet#4515: an empty
+      // declared output paired with the natural grouping-key output crashed downstream
+      // boundaries that derived their schema from the declared output.
+      val naturalOutput = groupingExpressions.map(_.toAttribute)
+      val needsProjection = resultExpressions.map(_.toAttribute) != naturalOutput
+      if (needsProjection) {
+        val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
+        val resultExprs = resultExpressions.map(exprToProto(_, attributes))
+        if (resultExprs.exists(_.isEmpty)) {
+          withInfo(
+            aggregate,
+            s"Unsupported result expressions found in: $resultExpressions",
+            resultExpressions: _*)
+          return None
+        }
+        // Build the inner HashAgg op carrying the original child operators from `builder`.
+        // Use a fresh outer builder for the Projection so it gets a single child (the
+        // HashAgg op), not the original children appended on top. Both ops share the same
+        // plan_id so the inner aggregate's native metrics roll up under the same Spark
+        // operator in the metric tree (otherwise they'd orphan against plan_id=0).
+        val hashAggOp = OperatorOuterClass.Operator
+          .newBuilder()
+          .setPlanId(builder.getPlanId)
+          .addAllChildren(builder.getChildrenList)
+          .setHashAgg(hashAggBuilder)
+          .build()
+        val projectionBuilder = OperatorOuterClass.Projection.newBuilder()
+        projectionBuilder.addAllProjectList(resultExprs.map(_.get).asJava)
+        Some(
+          OperatorOuterClass.Operator
+            .newBuilder()
+            .setPlanId(builder.getPlanId)
+            .addChildren(hashAggOp)
+            .setProjection(projectionBuilder)
+            .build())
+      } else {
+        Some(builder.setHashAgg(hashAggBuilder).build())
       }
-      hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
-      // Force native to apply the projection when Spark's expected output (which may
-      // be empty for catalyst-pruned EXISTS / row-existence-only subqueries) differs
-      // from the aggregate's natural grouping output. Without this, an empty proto
-      // result_exprs is indistinguishable from "no projection needed" and the natural
-      // grouping keys leak through.
-      val naturalEqualsIntent =
-        resultExpressions.map(_.toAttribute) == groupingExpressions.map(_.toAttribute)
-      hashAggBuilder.setApplyResultProjection(!naturalEqualsIntent)
-      Some(builder.setHashAgg(hashAggBuilder).build())
     } else {
       // Validate mode combinations. We support:
       // - All Partial
@@ -1640,21 +1663,6 @@ trait CometBaseAggregate {
         val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
         hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
         hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
-        if (mode == CometAggregateMode.Final) {
-          val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
-          val resultExprs = resultExpressions.map(exprToProto(_, attributes))
-          if (resultExprs.exists(_.isEmpty)) {
-            withInfo(
-              aggregate,
-              s"Unsupported result expressions found in: $resultExpressions",
-              resultExpressions: _*)
-            return None
-          }
-          hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
-          // Final aggs always need the projection (matches the existing condition under
-          // which we serialize result_exprs at all). See comet#4515.
-          hashAggBuilder.setApplyResultProjection(true)
-        }
         hashAggBuilder.setModeValue(mode.getNumber)
 
         // Send per-expression modes and buffer offset for PartialMerge handling
@@ -1673,7 +1681,44 @@ trait CometBaseAggregate {
           hashAggBuilder.setInitialInputBufferOffset(aggregate.initialInputBufferOffset)
         }
 
-        Some(builder.setHashAgg(hashAggBuilder).build())
+        // Final aggregations may carry a result projection (e.g. `COUNT(col) + 1`) that
+        // catalyst encodes via `resultExpressions`. DataFusion's hash aggregate only emits
+        // its natural shape (group keys + agg results), so we wrap the HashAggregate in
+        // an explicit Projection op to apply Spark's result expressions. Partial /
+        // PartialMerge aggregates emit raw state buffers and never need the projection.
+        // See comet#4515.
+        if (mode == CometAggregateMode.Final) {
+          val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
+          val resultExprs = resultExpressions.map(exprToProto(_, attributes))
+          if (resultExprs.exists(_.isEmpty)) {
+            withInfo(
+              aggregate,
+              s"Unsupported result expressions found in: $resultExpressions",
+              resultExpressions: _*)
+            return None
+          }
+          // Inner HashAgg keeps the original input children from `builder`. Outer
+          // Projection uses a fresh builder so it has a single child (the HashAgg op).
+          // Both ops share the same plan_id so the aggregate's native metrics aggregate
+          // under the same Spark operator (else they'd orphan against plan_id=0).
+          val hashAggOp = OperatorOuterClass.Operator
+            .newBuilder()
+            .setPlanId(builder.getPlanId)
+            .addAllChildren(builder.getChildrenList)
+            .setHashAgg(hashAggBuilder)
+            .build()
+          val projectionBuilder = OperatorOuterClass.Projection.newBuilder()
+          projectionBuilder.addAllProjectList(resultExprs.map(_.get).asJava)
+          Some(
+            OperatorOuterClass.Operator
+              .newBuilder()
+              .setPlanId(builder.getPlanId)
+              .addChildren(hashAggOp)
+              .setProjection(projectionBuilder)
+              .build())
+        } else {
+          Some(builder.setHashAgg(hashAggBuilder).build())
+        }
       } else {
         val allChildren: Seq[Expression] =
           groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
