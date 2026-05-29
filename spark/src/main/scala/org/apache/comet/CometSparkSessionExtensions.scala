@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
-import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -106,8 +106,12 @@ class CometSparkSessionExtensions
   case class CometExecColumnar(session: SparkSession) extends ColumnarRule {
     override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
 
-    override def postColumnarTransitions: Rule[SparkPlan] =
-      EliminateRedundantTransitions(session)
+    override def postColumnarTransitions: Rule[SparkPlan] = {
+      val rules = Seq(
+        EliminateRedundantTransitions(session),
+        RevertNativeForTransitionHeavyStages(session))
+      plan => rules.foldLeft(plan) { case (p, rule) => rule(p) }
+    }
   }
 }
 

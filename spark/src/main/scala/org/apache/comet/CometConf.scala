@@ -450,6 +450,33 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_EXEC_TRANSITION_REVERT_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.transitionRevert.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, Comet reverts a query stage to Spark row-based execution if the number " +
+          "of columnar-to-row and row-to-columnar transition pairs exceeds the configured " +
+          "threshold. This avoids the overhead of repeated format conversions in stages where " +
+          "many operators fall back to row-based execution.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.transitionRevert.maxTransitions")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "The maximum number of columnar-to-row (C2R) transitions allowed in a single query " +
+          "stage before Comet reverts the entire stage to Spark row-based execution. When " +
+          "columnar shuffle is enabled, each C2R has a corresponding row-to-columnar (R2C) " +
+          "conversion to feed back into the columnar shuffle, so the count reflects full " +
+          "round-trips. Minimum value is 2 because reverting a stage that feeds a columnar " +
+          "shuffle still requires at least one R2C at the shuffle boundary. " +
+          "Only effective when spark.comet.exec.transitionRevert.enabled is true.")
+      .intConf
+      .checkValue(_ >= 2, "Must be >= 2. A reverted stage still requires at least one " +
+        "R2C at the columnar shuffle boundary.")
+      .createWithDefault(2)
+
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
       .category(CATEGORY_SHUFFLE)
