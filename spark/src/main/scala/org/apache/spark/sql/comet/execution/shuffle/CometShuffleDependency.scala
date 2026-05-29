@@ -28,11 +28,19 @@ import org.apache.spark.shuffle.ShuffleWriteProcessor
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
+import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
 
+import org.apache.comet.serde.OperatorOuterClass
+
 /**
  * A [[ShuffleDependency]] that allows us to identify the shuffle dependency as a Comet shuffle.
+ *
+ * On the native-shuffle path, also carries the child plan's per-partition execution context, root
+ * native operator, and metric node so [[CometNativeShuffleWriter]] can drive the unified
+ * `ShuffleWriter(child = childNativeOp)` plan in a single [[org.apache.comet.CometExecIterator]]
+ * per partition. These three fields are populated only when `shuffleType == CometNativeShuffle`.
  */
 class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     @transient private val _rdd: RDD[_ <: Product2[K, V]],
@@ -49,7 +57,10 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     val outputAttributes: Seq[Attribute] = Seq.empty,
     val shuffleWriteMetrics: Map[String, SQLMetric] = Map.empty,
     val numParts: Int = 0,
-    val rangePartitionBounds: Option[Seq[InternalRow]] = None)
+    val rangePartitionBounds: Option[Seq[InternalRow]] = None,
+    val nativeExecContext: Option[NativeExecContext] = None,
+    val childNativeOp: Option[OperatorOuterClass.Operator] = None,
+    val childMetricNode: Option[CometMetricNode] = None)
     extends ShuffleDependency[K, V, C](
       _rdd,
       partitioner,
