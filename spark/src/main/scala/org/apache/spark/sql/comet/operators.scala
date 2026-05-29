@@ -1957,8 +1957,6 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
       case _                        => Compatible(None)
     }
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(unmatchedDuplicationReason)
-
   /**
    * Convert a Spark operator into a protocol buffer representation that can be passed into native
    * code.
