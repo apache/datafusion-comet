@@ -27,7 +27,7 @@ import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType,
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -684,6 +684,14 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
         formatExpr)
       optExprWithInfo(optExpr, expr, expr.left, expr.right)
     } else {
+      if (nativeFormat.isDefined) {
+        // Native `to_char` could run this if allowed; tell the user about the faster path.
+        withInfo(
+          expr,
+          s"a faster native implementation is available; set " +
+            s"${CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr))}=true " +
+            s"to enable it (results may differ from Spark for non-UTC time zones)")
+      }
       // Hand the full `DateFormatClass` (with `timeZoneId` already stamped by `ResolveTimeZone`)
       // to the codegen dispatcher. It closure-serializes the bound tree, so non-UTC timezones
       // and non-whitelisted / non-literal format strings produce Spark-identical results.

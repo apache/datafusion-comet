@@ -3120,4 +3120,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("date_format JVM codegen path hints at faster native option") {
+    val table = "date_format_hint"
+    withTable(table) {
+      sql(s"create table $table(ts timestamp) using parquet")
+      sql(s"insert into $table values(timestamp'2024-01-02 03:04:05')")
+      // Non-UTC session timezone + a natively-supported format => native is blocked only by
+      // allowIncompatible being off, so we take the JVM codegen path and should hint at native.
+      // The codegen dispatcher must be enabled, otherwise date_format has no native or JVM path
+      // here and the operator falls back to Spark (failing checkSparkAnswerAndOperator).
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        "spark.sql.session.timeZone" -> "America/New_York",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val query = sql(s"select date_format(ts, 'yyyy-MM-dd') from $table")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(explain.contains("COMET-INFO"))
+        // Pin the exact config key the hint tells the user to set.
+        assert(explain.contains("DateFormatClass.allowIncompatible"))
+      }
+    }
+  }
+
 }
