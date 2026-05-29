@@ -135,7 +135,7 @@ object CometArrowStream extends Logging {
    * vector's field.
    *
    * Field name and metadata come from `expected` so that consumers indexing by name keep working.
-   * Nullability is the union of the two — a CometVector that happens to hold no nulls in this
+   * Nullability is the union of the two: a CometVector that happens to hold no nulls in this
    * batch can still be nullable per Spark's contract (the next batch may have one), and a column
    * whose actual buffer carries validity bits must stay nullable even if Spark thought otherwise.
    * Taking only `raw.isNullable` here would advertise non-nullable when the next batch does carry
