@@ -71,8 +71,11 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
 
     // Obtain a clean Spark physical plan (Comet disabled) with the FileSourceScanExec, then apply
     // CometScanRule directly. No execution -- we only check whether the rule claims the scan.
-    val sparkPlan: SparkPlan = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      spark.read.parquet(path).queryExecution.executedPlan
+    // Capture via a var inside the block: `SQLTestUtils.withSQLConf` returns Unit on Spark 3.5
+    // but a value on Spark 4.x, so we can't return the plan out of it cross-version.
+    var sparkPlan: SparkPlan = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkPlan = spark.read.parquet(path).queryExecution.executedPlan
     }
 
     withSQLConf(
