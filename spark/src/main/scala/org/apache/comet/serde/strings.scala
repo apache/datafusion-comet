@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -99,6 +99,32 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
       // Falls through to Spark when the dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
+  }
+}
+
+object CometStringReplace extends CometScalarFunction[StringReplace]("replace") {
+
+  override def getSupportLevel(expr: StringReplace): SupportLevel = Compatible()
+
+  override def convert(
+      expr: StringReplace,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (isEmptyStringLiteral(expr.searchExpr) &&
+      !CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      // DataFusion's `replace` inserts the replacement between every character (and at both
+      // boundaries) when the search string is empty, whereas Spark short-circuits and returns
+      // the source unchanged. Route through the codegen dispatcher so Spark's own doGenCode
+      // handles this case. https://github.com/apache/datafusion-comet/issues/4497
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    } else {
+      super.convert(expr, inputs, binding)
+    }
+  }
+
+  private def isEmptyStringLiteral(e: Expression): Boolean = e match {
+    case Literal(s: UTF8String, _: StringType) => s.numBytes() == 0
+    case _ => false
   }
 }
 
