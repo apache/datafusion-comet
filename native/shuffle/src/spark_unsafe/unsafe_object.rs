@@ -19,7 +19,7 @@ use super::list::SparkUnsafeArray;
 use super::map::SparkUnsafeMap;
 use super::row::SparkUnsafeRow;
 use datafusion_comet_common::bytes_to_i128;
-use std::str::from_utf8;
+use std::borrow::Cow;
 
 const MAX_LONG_DIGITS: u8 = 18;
 
@@ -75,19 +75,26 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns string value at the given index of the object.
-    fn get_string(&self, index: usize) -> &str {
+    ///
+    /// Spark's `UnsafeRow.getUTF8String` wraps the bytes via `UTF8String.fromAddress` with no
+    /// UTF-8 validation, and Spark's `cast(BinaryType -> StringType)` is a zero-copy reinterpret
+    /// that can leave arbitrary bytes in a `StringType` column. Strict `from_utf8(..).unwrap()`
+    /// here panics on those rows even though Spark itself treats them as opaque. We use
+    /// `from_utf8_lossy`: it returns the original `&str` borrow for valid UTF-8 (zero-cost) and a
+    /// `String` with `U+FFFD` replacements for invalid bytes (defined behavior, no UB). This
+    /// avoids `from_utf8_unchecked`, which would construct a `&str` from arbitrary bytes -- UB per
+    /// the Rust reference, and would propagate into downstream Arrow ops that internally call
+    /// `str::from_utf8_unchecked` on the buffer.
+    fn get_string(&self, index: usize) -> Cow<'_, str> {
         let (offset, len) = self.get_offset_and_len(index);
         let addr = self.get_row_addr() + offset as i64;
-        // SAFETY: addr points to valid UTF-8 string data within the variable-length region.
-        // Offset and length are read from the fixed-length portion of the row/array.
         debug_assert!(addr != 0, "get_string: null address at index {index}");
         debug_assert!(
             len >= 0,
             "get_string: negative length {len} at index {index}"
         );
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
-
-        from_utf8(slice).unwrap()
+        String::from_utf8_lossy(slice)
     }
 
     /// Returns binary value at the given index of the object.
