@@ -32,7 +32,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
+import org.apache.comet.serde.{CometScalaUDF, CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
@@ -213,6 +213,13 @@ trait CometExprShim extends CommonStringExprs {
             childExpr)
           optExprWithFallbackReason(mapSortExpr, ms, ms.child)
         }
+
+      // dayname / monthname (Spark 4.0+) have no native lowering. Route them through the
+      // Arrow-direct codegen dispatcher so they run Spark's own doGenCode for exact parity
+      // (including locale handling). Returns None and falls back cleanly when the dispatcher is
+      // disabled via spark.comet.exec.scalaUDF.codegen.enabled.
+      case _: DayName | _: MonthName =>
+        CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
 
       case _ => None
     }

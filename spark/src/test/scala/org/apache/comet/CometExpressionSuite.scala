@@ -538,6 +538,70 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // The following tests cover datetime functions that are not registered under their own name in
+  // the Comet expression maps but are still handled: Spark rewrites them to supported expressions
+  // (Cast / GetTimestamp / MakeTimestamp) before Comet sees the plan, or the codegen dispatcher
+  // runs Spark's own generated code.
+
+  test("to_date / to_timestamp without format run natively") {
+    withParquetTable(
+      Seq(("2024-01-15", "2024-01-15 10:30:45"), ("2020-12-31", "2020-12-31 23:59:59")),
+      "tbl") {
+      // These rewrite to Cast(string -> date/timestamp), which Comet supports natively.
+      checkSparkAnswerAndOperator("SELECT to_date(_1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT to_timestamp(_2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT to_timestamp_ntz(_2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT to_timestamp_ltz(_2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT try_to_timestamp(_2) FROM tbl")
+    }
+  }
+
+  test("to_date / to_timestamp with format run via codegen dispatcher") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      withParquetTable(
+        Seq(("2024-01-15", "2024-01-15 10:30:45"), ("2020-12-31", "2020-12-31 23:59:59")),
+        "tbl") {
+        // With a format these rewrite to GetTimestamp, which is routed through the dispatcher.
+        checkSparkAnswerAndOperator("SELECT to_date(_1, 'yyyy-MM-dd') FROM tbl")
+        checkSparkAnswerAndOperator("SELECT to_timestamp(_2, 'yyyy-MM-dd HH:mm:ss') FROM tbl")
+      }
+    }
+  }
+
+  test("make_timestamp_ntz / make_timestamp_ltz run via codegen dispatcher") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      withParquetTable(Seq((2024, 1, 15, 10, 30, 45), (2020, 12, 31, 23, 59, 59)), "tbl") {
+        // The 6-argument forms rewrite to MakeTimestamp, which is routed through the dispatcher.
+        checkSparkAnswerAndOperator("SELECT make_timestamp_ntz(_1, _2, _3, _4, _5, _6) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT make_timestamp_ltz(_1, _2, _3, _4, _5, _6) FROM tbl")
+      }
+    }
+  }
+
+  test("dayname / monthname run via codegen dispatcher") {
+    assume(isSpark40Plus)
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      withParquetTable(
+        Seq(Tuple1("2024-01-15"), Tuple1("2024-06-30"), Tuple1("2020-12-31")),
+        "tbl") {
+        checkSparkAnswerAndOperator("SELECT dayname(CAST(_1 AS DATE)) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT monthname(CAST(_1 AS DATE)) FROM tbl")
+      }
+    }
+  }
+
+  test("current_date / current_timestamp / now constant-folded before Comet") {
+    Seq("current_date()", "current_timestamp()", "now()", "current_date", "current_timestamp")
+      .foreach { fn =>
+        val plan = spark.sql(s"SELECT $fn AS r").queryExecution.optimizedPlan
+        val folded = plan.expressions.exists {
+          case Alias(_: Literal, _) => true
+          case _ => false
+        }
+        assert(folded, s"expected '$fn' to be constant-folded to a Literal before Comet")
+      }
+  }
+
   test("hour on int96 timestamp column") {
     import testImplicits._
 
