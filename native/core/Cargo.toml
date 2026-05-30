@@ -75,6 +75,7 @@ hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { version = "0.56.0", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
+reqsign-core = { workspace = true }
 serde_json = "1.0"
 uuid = "1.23.0"
 
