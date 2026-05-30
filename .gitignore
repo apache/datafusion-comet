@@ -27,3 +27,8 @@ output
 docs/comet-*/
 docs/build/
 docs/temp/
+pr-4366-body*.md
+
+# Claude Code local runtime state (skills under .claude/skills/ are intentionally tracked)
+.claude/scheduled_tasks.lock
+.claude/*.lock
