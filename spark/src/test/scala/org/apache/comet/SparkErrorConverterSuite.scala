@@ -22,6 +22,47 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 class SparkErrorConverterSuite extends AnyFunSuite {
+
+  test("CannotReadFile converts to a FAILED_READ_FILE SparkException naming the file") {
+    val ex = SparkErrorConverter
+      .convertErrorType(
+        "CannotReadFile",
+        "",
+        Map(
+          "filePath" -> "file:/tmp/data/part-0.parquet",
+          "message" -> "Parquet error: bad footer"),
+        Array.empty,
+        null)
+      .getOrElse(fail("Expected CannotReadFile to be converted to a Spark exception"))
+    assert(ex.getMessage.contains("FAILED_READ_FILE"))
+    assert(ex.getMessage.contains("part-0.parquet"))
+  }
+
+  test("CannotReadFile with empty native path falls back to the per-task file list") {
+    // The native error (e.g. corrupt parquet) carries no path; convertToSparkException must fill
+    // it from the per-task file list threaded in from CometExecIterator.
+    val json =
+      """{"errorType":"CannotReadFile","errorClass":"",""" +
+        """"params":{"filePath":"","message":"Parquet error: bad footer"}}"""
+    val ex = SparkErrorConverter.convertToSparkException(
+      new org.apache.comet.exceptions.CometQueryExecutionException(json),
+      taskFilePaths = Seq("file:/tmp/data/part-7.parquet"))
+    assert(ex.getMessage.contains("FAILED_READ_FILE"))
+    assert(ex.getMessage.contains("part-7.parquet"))
+  }
+
+  test("CannotReadFile prefers the native path over the per-task file list") {
+    // When object_store supplied the path (NotFound), keep it rather than the fallback list.
+    val json =
+      """{"errorType":"CannotReadFile","errorClass":"",""" +
+        """"params":{"filePath":"file:/tmp/data/native.parquet","message":"Object at location ... not found"}}"""
+    val ex = SparkErrorConverter.convertToSparkException(
+      new org.apache.comet.exceptions.CometQueryExecutionException(json),
+      taskFilePaths = Seq("file:/tmp/data/fallback.parquet"))
+    assert(ex.getMessage.contains("native.parquet"))
+    assert(!ex.getMessage.contains("fallback.parquet"))
+  }
+
   private def castOverflowError(fromType: String, value: String): Throwable = {
     SparkErrorConverter
       .convertErrorType(

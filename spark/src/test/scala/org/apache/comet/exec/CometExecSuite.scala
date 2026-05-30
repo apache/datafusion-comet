@@ -3974,6 +3974,42 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("native parquet read failure surfaces as FAILED_READ_FILE with the file path") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "corrupt.parquet")
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 1000)
+      // Corrupt column/page data in the middle of the file while leaving the footer intact, so
+      // Spark's JVM-side footer pre-check passes during planning and the native DataFusion reader
+      // fails during execution -- the path CometExecIterator must wrap as FAILED_READ_FILE.
+      val f = new java.io.File(new java.net.URI(path.toString))
+      val raf = new java.io.RandomAccessFile(f, "rw")
+      val len = raf.length()
+      raf.seek(8) // after the "PAR1" magic header, before the footer
+      raf.write(Array.fill[Byte](math.min(2048, (len / 2).toInt))(0xff.toByte))
+      raf.close()
+
+      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+        val e = intercept[Throwable] {
+          spark.read.parquet(path.toString).collect()
+        }
+        // Spark reports its own per-file read failures as FAILED_READ_FILE carrying the path.
+        // Comet's native scan must do the same instead of leaking a raw CometNativeException.
+        val messages = Iterator
+          .iterate(e: Throwable)(_.getCause)
+          .takeWhile(_ != null)
+          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
+          .toList
+        val chain = messages.mkString("\n  ")
+        assert(
+          messages.exists(m => m.contains("FAILED_READ_FILE")),
+          s"Expected a FAILED_READ_FILE exception in the cause chain, but got:\n  $chain")
+        assert(
+          messages.exists(m => m.contains("corrupt.parquet")),
+          s"Expected the offending file path in the cause chain, but got:\n  $chain")
+      }
+    }
+  }
+
 }
 
 case class BucketedTableTestSpec(

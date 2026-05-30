@@ -68,7 +68,8 @@ class CometExecIterator(
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty)
+    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
+    taskFilePaths: Seq[String] = Seq.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -169,29 +170,14 @@ class CometExecIterator(
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
         logError(s"Native execution for task $taskAttemptId failed", e)
-        throw SparkErrorConverter.convertToSparkException(e)
+        throw SparkErrorConverter.convertToSparkException(e, taskFilePaths)
 
       case e: CometNativeException =>
         // it is generally considered bad practice to log and then rethrow an
         // exception, but it really helps debugging to be able to see which task
         // threw the exception, so we log the exception with taskAttemptId here
         logError(s"Native execution for task $taskAttemptId failed", e)
-
-        val parquetError: scala.util.matching.Regex =
-          """^Parquet error: (?:.*)$""".r
-        e.getMessage match {
-          case parquetError() =>
-            // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
-            // See org.apache.parquet.hadoop.ParquetFileReader for error message.
-            // _LEGACY_ERROR_TEMP_2254 has no message placeholders; Spark 4 strict-checks
-            // parameters and raises INTERNAL_ERROR if any are passed.
-            throw new SparkException(
-              errorClass = "_LEGACY_ERROR_TEMP_2254",
-              messageParameters = Map.empty,
-              cause = new SparkException("File is not a Parquet file.", e))
-          case _ =>
-            throw e
-        }
+        throw e
       case e: Throwable =>
         throw e
     }
