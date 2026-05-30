@@ -21,8 +21,11 @@
 
 ## How to Read This Document
 
-- A function marked with `[x]` has a native implementation in Comet and does not fall back to Spark by default.
-- A function marked with `[ ]` has no native Comet implementation and falls back to Spark.
+- A function marked with `[x]` is implemented in Comet and can be evaluated without falling back to Spark. Comet serves such a function through one of two paths:
+  - **Native:** a Rust/DataFusion implementation that runs entirely in native execution. This is the path used for most functions.
+  - **Codegen dispatch:** a JVM kernel that runs Spark's own generated code over Arrow batches, used for some functions that do not have a native implementation. This path is gated by `spark.comet.exec.scalaUDF.codegen.enabled`; when it is disabled, the enclosing operator falls back to Spark.
+  - A few entries (such as `explode` / `posexplode`) are instead handled at the operator level rather than as expressions; these are annotated inline.
+- A function marked with `[ ]` has no Comet implementation and always falls back to Spark.
 
 > **Note:** Some functions listed as supported may still be incompatible with Spark in
 > certain cases (data types, modes, edge values) and fall back to Spark at runtime. Full
