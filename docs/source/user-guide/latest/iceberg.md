@@ -157,12 +157,12 @@ Iceberg ships several `ScalaUDF`s that surface in user queries and maintenance a
   (`INT_ORDERED_BYTES`, `LONG_ORDERED_BYTES`, ..., `INTERLEAVE_BYTES`) over the sort key columns
   during compaction.
 
-By default these UDFs cause the enclosing operator to fall back to Spark, which forces a
-columnar-to-row roundtrip and demotes the surrounding shuffle from `CometExchange` to
-`CometColumnarExchange`. Enabling the experimental
-[Scala UDF and Java UDF Support](scala_java_udfs.md) feature
-(`spark.comet.exec.scalaUDF.codegen.enabled=true`) routes these UDFs through native execution so
-the project, exchange, and sort operators around them stay on the Comet path end-to-end.
+[Scala UDF and Java UDF Support](scala_java_udfs.md) is enabled by default
+(`spark.comet.exec.scalaUDF.codegen.enabled=true`), so these UDFs run through native execution and
+the project, exchange, and sort operators around them stay on the Comet path end-to-end. Setting
+`spark.comet.exec.scalaUDF.codegen.enabled=false` causes the enclosing operator to fall back to
+Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuffle from
+`CometExchange` to `CometColumnarExchange`.
 
 ### Task input metrics
 
