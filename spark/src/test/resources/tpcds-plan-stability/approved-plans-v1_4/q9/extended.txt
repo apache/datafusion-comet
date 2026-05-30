@@ -1,4 +1,4 @@
- Project [COMET: ]
+Project
 :  :- Subquery
 :  :  +- CometNativeColumnarToRow
 :  :     +- CometProject

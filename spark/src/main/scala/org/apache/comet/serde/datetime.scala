@@ -688,9 +688,9 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
         // Native `to_char` could run this if allowed; tell the user about the faster path.
         withInfo(
           expr,
-          s"a faster native implementation is available; set " +
+          "a faster native implementation is available; set " +
             s"${CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr))}=true " +
-            s"to enable it (results may differ from Spark for non-UTC time zones)")
+            "to enable it (results may differ from Spark for non-UTC time zones)")
       }
       // Hand the full `DateFormatClass` (with `timeZoneId` already stamped by `ResolveTimeZone`)
       // to the codegen dispatcher. It closure-serializes the bound tree, so non-UTC timezones
