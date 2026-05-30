@@ -1095,4 +1095,23 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
     }
   }
+
+  test("array of structs with nullability-divergent children") {
+    // Spark's type coercion compares element types with `sameType`, which ignores nullability,
+    // so two struct children that differ ONLY in a nested field's nullability get no unifying
+    // cast -- CreateArray keeps children of different StructTypes. DataFusion's make_array asserts
+    // strict element-type equality (down to nested nullability) and panics on the mismatch. Comet
+    // must decline this CreateArray so Spark's evaluator handles it.
+    withParquetTable((0 until 5).map(i => (i, i.toLong)), "tbl") {
+      val df = spark
+        .table("tbl")
+        .select(
+          array(
+            // ct is NOT NULL (literal)
+            struct(col("_1").as("id"), lit("a").as("ct")),
+            // ct is NULLABLE (when without otherwise) -- same type, different nullability
+            struct(col("_1").as("id"), when(col("_1") === 0, lit("b")).as("ct"))).as("arr"))
+      checkSparkAnswer(df)
+    }
+  }
 }
