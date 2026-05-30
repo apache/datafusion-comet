@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
 object CometXxHash64 extends CometExpressionSerde[XxHash64] {
@@ -79,7 +79,7 @@ object CometSha2 extends CometExpressionSerde[Sha2] {
     // It's possible for spark to dynamically compute the number of bits from input
     // expression, however DataFusion does not support that yet.
     if (!expr.right.foldable) {
-      withInfo(expr, "For Sha2, non literal numBits is not supported")
+      withFallbackReason(expr, "For Sha2, non literal numBits is not supported")
       return None
     }
 
@@ -95,7 +95,7 @@ object CometSha1 extends CometExpressionSerde[Sha1] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!HashUtils.isSupportedType(expr)) {
-      withInfo(expr, s"HashUtils doesn't support dataType: ${expr.child.dataType}")
+      withFallbackReason(expr, s"HashUtils doesn't support dataType: ${expr.child.dataType}")
       return None
     }
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
@@ -118,7 +118,7 @@ private object HashUtils {
       case d: DecimalType if d.precision > 18 =>
         // Spark converts decimals with precision > 18 into
         // Java BigDecimal before hashing
-        withInfo(expr, s"Unsupported datatype: $dt (precision > 18)")
+        withFallbackReason(expr, s"Unsupported datatype: $dt (precision > 18)")
         false
       case s: StructType =>
         s.fields.forall(f => isSupportedDataType(expr, f.dataType))
@@ -127,10 +127,10 @@ private object HashUtils {
       case m: MapType =>
         isSupportedDataType(expr, m.keyType) && isSupportedDataType(expr, m.valueType)
       case dt if isTimeType(dt) =>
-        withInfo(expr, s"Unsupported datatype $dt")
+        withFallbackReason(expr, s"Unsupported datatype $dt")
         false
       case _ if !supportedDataType(dt, allowComplex = true) =>
-        withInfo(expr, s"Unsupported datatype $dt")
+        withFallbackReason(expr, s"Unsupported datatype $dt")
         false
       case _ =>
         true
