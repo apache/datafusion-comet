@@ -233,7 +233,7 @@ case class CometScanRule(session: SparkSession)
       .map(_.getScheme.toLowerCase(Locale.ROOT))
       .toSet
     if (unsupportedFsSchemes.nonEmpty) {
-      withInfo(
+      withFallbackReason(
         scanExec,
         s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
       return None
