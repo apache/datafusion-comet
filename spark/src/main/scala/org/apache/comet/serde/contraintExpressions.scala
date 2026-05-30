@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointN
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, serializeDataType}
 
 object CometKnownFloatingPointNormalized
     extends CometExpressionSerde[KnownFloatingPointNormalized] {
@@ -61,6 +61,6 @@ object CometKnownFloatingPointNormalized
         .setDatatype(dataType.get)
       ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
     }
-    optExprWithInfo(optExpr, expr, wrapped)
+    optExprWithFallbackReason(optExpr, expr, wrapped)
   }
 }

@@ -220,7 +220,7 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, false, childExpr)
 
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 

@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, FromUTCTimestamp, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, NextDay, Quarter, Second, SecondsToTimestamp, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, NextDay, Quarter, Second, SecondsToTimestamp, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -77,7 +77,7 @@ trait CometExprGetDateField[T <: GetDateField] {
               .build())
           .build()
       })
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -135,7 +135,7 @@ object CometDayOfWeek
           .build()
       }
       .headOption
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -388,7 +388,7 @@ object CometFromUTCTimestamp extends CometExpressionSerde[FromUTCTimestamp] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto("from_utc_timestamp", childExprs: _*)
-    optExprWithInfo(optExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
   }
 }
 
@@ -406,7 +406,7 @@ object CometToUTCTimestamp extends CometExpressionSerde[ToUTCTimestamp] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto("to_utc_timestamp", childExprs: _*)
-    optExprWithInfo(optExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
   }
 }
 
@@ -427,7 +427,7 @@ object CometConvertTimezone extends CometExpressionSerde[ConvertTimezone] {
     val ts = exprToProtoInternal(expr.sourceTs, inputs, binding)
     val toUtc = scalarFunctionExprToProto("to_utc_timestamp", ts, srcTz)
     val fromUtc = scalarFunctionExprToProto("from_utc_timestamp", toUtc, tgtTz)
-    optExprWithInfo(fromUtc, expr, expr.children: _*)
+    optExprWithFallbackReason(fromUtc, expr, expr.children: _*)
   }
 }
 
@@ -473,7 +473,7 @@ object CometUnixDate extends CometExpressionSerde[UnixDate] {
             .build())
         .build()
     }
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -515,7 +515,7 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
         false,
         childExpr,
         formatExpr)
-    optExprWithInfo(optExpr, expr, expr.date, expr.format)
+    optExprWithFallbackReason(optExpr, expr, expr.date, expr.format)
   }
 }
 
@@ -682,7 +682,7 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
         false,
         childExpr,
         formatExpr)
-      optExprWithInfo(optExpr, expr, expr.left, expr.right)
+      optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
     } else {
       if (nativeFormat.isDefined) {
         // Native `to_char` could run this if allowed; tell the user about the faster path.
@@ -727,7 +727,7 @@ object CometHours extends CometExpressionSerde[Hours] {
         withFallbackReason(expr, s"Hours does not support input type: $other")
         None
     }
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -776,7 +776,7 @@ object CometDays extends CometExpressionSerde[Days] {
         .build()
     }
 
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -797,3 +797,5 @@ object CometUnixMillis extends CometCodegenDispatch[UnixMillis]
 object CometUnixMicros extends CometCodegenDispatch[UnixMicros]
 
 object CometToUnixTimestamp extends CometCodegenDispatch[ToUnixTimestamp]
+
+object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]

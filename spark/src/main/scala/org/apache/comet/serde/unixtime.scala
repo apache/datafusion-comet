@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, FromUnixTime, Liter
 import org.apache.spark.sql.catalyst.util.TimestampFormatter
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
 
 // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
 // https://github.com/apache/datafusion/issues/16594
@@ -55,7 +55,7 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
       val timestampExpr =
         scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
       val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
-      optExprWithInfo(optExpr, expr, expr.sec, expr.format)
+      optExprWithFallbackReason(optExpr, expr, expr.sec, expr.format)
     } else {
       withFallbackReason(expr, expr.sec, expr.format)
       None

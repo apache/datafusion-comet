@@ -365,13 +365,13 @@ object CometConf extends ShimCometConf {
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Experimental. Whether to route Spark `ScalaUDF` expressions through Comet's " +
+      .doc("Whether to route Spark `ScalaUDF` expressions through Comet's " +
         "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
         "a per-batch kernel that reads and writes Arrow vectors directly from native " +
         "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
         "enclosing operator.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")

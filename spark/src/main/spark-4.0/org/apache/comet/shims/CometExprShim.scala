@@ -33,7 +33,7 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -75,7 +75,7 @@ trait CometExprShim extends CommonStringExprs {
                   returnType,
                   false,
                   arrayExprProto)
-                optExprWithInfo(scalarExpr, knc, arrayChild)
+                optExprWithFallbackReason(scalarExpr, knc, arrayChild)
               case _ => exprToProtoInternal(knc.child, inputs, binding)
             }
           case _ => exprToProtoInternal(knc.child, inputs, binding)
@@ -132,7 +132,7 @@ trait CometExprShim extends CommonStringExprs {
       case wb: WidthBucket =>
         val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
         val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
-        optExprWithInfo(optExpr, wb, wb.children: _*)
+        optExprWithFallbackReason(optExpr, wb, wb.children: _*)
 
       // In Spark 4.x, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
       // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression
@@ -180,7 +180,7 @@ trait CometExprShim extends CommonStringExprs {
             ms.dataType,
             failOnError = false,
             childExpr)
-          optExprWithInfo(mapSortExpr, ms, ms.child)
+          optExprWithFallbackReason(mapSortExpr, ms, ms.child)
         }
 
       case _ => None

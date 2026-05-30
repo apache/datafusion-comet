@@ -63,6 +63,7 @@ mod map_funcs;
 pub use map_funcs::spark_map_sort;
 mod math_funcs;
 mod nondetermenistic_funcs;
+pub mod url_funcs;
 
 pub use array_funcs::*;
 pub use conditional_funcs::*;

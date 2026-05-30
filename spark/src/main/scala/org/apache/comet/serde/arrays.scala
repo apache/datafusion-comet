@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, Slice, SortArray}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -187,7 +187,7 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
         arrayExprProto,
         sortDirectionExprProto,
         nullOrderingExprProto)
-    optExprWithInfo(sortArrayScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(sortArrayScalarExpr, expr, expr.children: _*)
   }
 }
 
@@ -221,7 +221,7 @@ object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] with Com
 
     val arraysIntersectScalarExpr =
       scalarFunctionExprToProto("array_intersect", leftArrayExprProto, rightArrayExprProto)
-    optExprWithInfo(arraysIntersectScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(arraysIntersectScalarExpr, expr, expr.children: _*)
   }
 }
 
@@ -234,7 +234,7 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
 
     val arrayMaxScalarExpr =
       scalarFunctionExprToProto("array_max", arrayExprProto)
-    optExprWithInfo(arrayMaxScalarExpr, expr)
+    optExprWithFallbackReason(arrayMaxScalarExpr, expr)
   }
 }
 
@@ -246,7 +246,7 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
     val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
 
     val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
-    optExprWithInfo(arrayMinScalarExpr, expr)
+    optExprWithFallbackReason(arrayMinScalarExpr, expr)
   }
 }
 
@@ -264,7 +264,7 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
       false,
       leftArrayExprProto,
       rightArrayExprProto)
-    optExprWithInfo(arraysOverlapScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(arraysOverlapScalarExpr, expr, expr.children: _*)
   }
 }
 
@@ -328,16 +328,18 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
       ArrayType(elementType = elementType),
       false,
       arrayExprProto)
-    optExprWithInfo(arrayCompactScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(arrayCompactScalarExpr, expr, expr.children: _*)
   }
 }
 
 object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExprShim {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Null handling and ordering may differ from Spark")
+  private val incompatReason = "Null handling and ordering may differ from Spark"
 
-  override def getSupportLevel(expr: ArrayExcept): SupportLevel = Incompatible(None)
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: ArrayExcept): SupportLevel = Incompatible(
+    Some(incompatReason))
 
   @tailrec
   def isTypeSupported(dt: DataType): Boolean = {
@@ -370,15 +372,17 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
 
     val arrayExceptScalarExpr =
       scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
-    optExprWithInfo(arrayExceptScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(arrayExceptScalarExpr, expr, expr.children: _*)
   }
 }
 
 object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq("Null handling may differ from Spark")
+  private val incompatReason = "Null handling may differ from Spark"
 
-  override def getSupportLevel(expr: ArrayJoin): SupportLevel = Incompatible(None)
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: ArrayJoin): SupportLevel = Incompatible(Some(incompatReason))
 
   override def convert(
       expr: ArrayJoin,
@@ -398,7 +402,7 @@ object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
           delimiterExprProto,
           nullReplacementExprProto)
 
-        optExprWithInfo(
+        optExprWithFallbackReason(
           arrayJoinScalarExpr,
           expr,
           arrayExpr,
@@ -408,7 +412,7 @@ object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
         val arrayJoinScalarExpr =
           scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
 
-        optExprWithInfo(arrayJoinScalarExpr, expr, arrayExpr, arrayExpr.delimiter)
+        optExprWithFallbackReason(arrayJoinScalarExpr, expr, arrayExpr, arrayExpr.delimiter)
     }
   }
 }
@@ -451,6 +455,30 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
   }
 }
 
+object CometSlice extends CometExpressionSerde[Slice] {
+  override def convert(
+      expr: Slice,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val elementType = expr.x.dataType.asInstanceOf[ArrayType].elementType
+    val arrayExprProto = exprToProto(expr.x, inputs, binding)
+    val startExprProto = exprToProto(Cast(expr.start, LongType), inputs, binding)
+    val lengthExprProto = exprToProto(Cast(expr.length, LongType), inputs, binding)
+    // DataFusion list types always have nullable inner elements, so promise
+    // ArrayType(elementType, containsNull = true) here even if Spark's
+    // expr.dataType reports containsNull = false (e.g. for array(1, 2, 3)).
+    val sliceScalarExpr =
+      scalarFunctionExprToProtoWithReturnType(
+        "spark_array_slice",
+        ArrayType(elementType, containsNull = true),
+        false,
+        arrayExprProto,
+        startExprProto,
+        lengthExprProto)
+    optExprWithFallbackReason(sliceScalarExpr, expr, expr.children: _*)
+  }
+}
+
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
   override def convert(
       expr: ArrayUnion,
@@ -461,7 +489,7 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
 
     val arraysUnionScalarExpr =
       scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
-    optExprWithInfo(arraysUnionScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(arraysUnionScalarExpr, expr, expr.children: _*)
   }
 }
 
@@ -552,7 +580,7 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
     }
     val reverseExprProto = exprToProto(expr.child, inputs, binding)
     val reverseScalarExpr = scalarFunctionExprToProto("array_reverse", reverseExprProto)
-    optExprWithInfo(reverseScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(reverseScalarExpr, expr, expr.children: _*)
   }
 
 }
@@ -613,7 +641,7 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
     }
     val flattenExprProto = exprToProto(expr.child, inputs, binding)
     val flattenScalarExpr = scalarFunctionExprToProto("flatten", flattenExprProto)
-    optExprWithInfo(flattenScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(flattenScalarExpr, expr, expr.children: _*)
   }
 }
 
@@ -722,7 +750,7 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
     // (matching Spark's behavior)
     val optExpr =
       scalarFunctionExprToProto("spark_array_position", arrayExprProto, elementExprProto)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
+    optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
   }
 }
 

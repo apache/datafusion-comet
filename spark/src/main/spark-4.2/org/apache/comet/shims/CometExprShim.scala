@@ -34,7 +34,7 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -75,7 +75,7 @@ trait CometExprShim extends CommonStringExprs {
                   returnType,
                   false,
                   arrayExprProto)
-                optExprWithInfo(scalarExpr, knc, arrayChild)
+                optExprWithFallbackReason(scalarExpr, knc, arrayChild)
               case _ => exprToProtoInternal(knc.child, inputs, binding)
             }
           case _ => exprToProtoInternal(knc.child, inputs, binding)
@@ -102,7 +102,7 @@ trait CometExprShim extends CommonStringExprs {
         val childExprs = s.arguments.map(exprToProtoInternal(_, inputs, binding))
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
-        optExprWithInfo(optExpr, expr, s.arguments: _*)
+        optExprWithFallbackReason(optExpr, expr, s.arguments: _*)
 
       case expr @ ToPrettyString(child, timeZoneId) =>
         val castSupported = CometCast.isSupported(
@@ -142,7 +142,7 @@ trait CometExprShim extends CommonStringExprs {
       case wb: WidthBucket =>
         val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
         val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
-        optExprWithInfo(optExpr, wb, wb.children: _*)
+        optExprWithFallbackReason(optExpr, wb, wb.children: _*)
 
       // In Spark 4.x, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
       // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression
@@ -172,7 +172,7 @@ trait CometExprShim extends CommonStringExprs {
             val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
             val optExpr =
               scalarFunctionExprToProtoWithReturnType("to_time", i.dataType, true, childExprs: _*)
-            optExprWithInfo(optExpr, i, args: _*)
+            optExprWithFallbackReason(optExpr, i, args: _*)
           case _ => None
         }
 
@@ -187,7 +187,7 @@ trait CometExprShim extends CommonStringExprs {
               i.dataType,
               false,
               childExprs: _*)
-            optExprWithInfo(optExpr, expr, args: _*)
+            optExprWithFallbackReason(optExpr, expr, args: _*)
           case _ => None
         }
 
@@ -211,7 +211,7 @@ trait CometExprShim extends CommonStringExprs {
             ms.dataType,
             failOnError = false,
             childExpr)
-          optExprWithInfo(mapSortExpr, ms, ms.child)
+          optExprWithFallbackReason(mapSortExpr, ms, ms.child)
         }
 
       case _ => None

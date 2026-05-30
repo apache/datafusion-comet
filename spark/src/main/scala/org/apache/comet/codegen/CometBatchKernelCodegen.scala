@@ -199,7 +199,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
             t)
           throw t
       }
-    logInfo(
+    logDebug(
       s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
         s"-> ${boundExpr.dataType}  inputs=" +
         inputSchema
