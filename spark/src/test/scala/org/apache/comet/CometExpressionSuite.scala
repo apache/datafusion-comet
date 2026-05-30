@@ -3096,4 +3096,25 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("deep AND/OR predicate chains do not overflow the protobuf recursion limit") {
+    // A left-deep chain of N associative boolean operands serializes to a proto nested N
+    // levels deep. With N > protobuf's default recursion limit (100), the message overflows
+    // when the serialized plan is re-parsed (JVM Operator.parseFrom and the Rust prost
+    // decoder), failing an otherwise-supported query. Comet evaluates AND/OR vectorially with
+    // no short-circuit, so the chain is fully associative and safe to rebalance.
+    val n = 200
+    withParquetTable((0 until 100).map(i => (i, i.toLong)), "tbl") {
+      // Project the chains as boolean columns rather than filtering: a top-level filter AND is
+      // split by Spark's splitConjunctivePredicates into many shallow pushed predicates, which
+      // would hide the deep-nesting. A projected expression survives intact. Distinct literals
+      // keep the optimizer from folding the chain; `>`/`<` (not `=`) keeps OptimizeIn from
+      // collapsing the OR chain into a single In.
+      val andChain = (1 to n).map(i => col("_1") > lit(-i)).reduce(_ && _)
+      checkSparkAnswerAndOperator(spark.table("tbl").select(andChain.as("a")))
+
+      val orChain = (1 to n).map(i => col("_1") < lit(i)).reduce(_ || _)
+      checkSparkAnswerAndOperator(spark.table("tbl").select(orChain.as("o")))
+    }
+  }
+
 }
