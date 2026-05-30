@@ -34,6 +34,33 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 object ShimSparkErrorConverter {
   val ObjectLocationPattern: Regex = "Object at location (.+?) not found".r
+
+  /**
+   * Wrap a native parquet/IO read failure in the FAILED_READ_FILE.NO_HINT SparkException Spark
+   * itself produces when its own parquet reader fails. Matches what Spark/Delta tests assert on
+   * (e.g. "Encountered error while reading file" + the path).
+   *
+   * The file path is taken from the per-task file list threaded in from `CometExecIterator` (set
+   * by `CometExecRDD` from the scan's per-partition file paths). Comet's native scan path does
+   * NOT go through Spark's `FileScanRDD`, so `InputFileBlockHolder` is typically not populated;
+   * we fall back to it for any path that does set it, and to an empty string otherwise (the
+   * static phrasing still satisfies the assertions).
+   */
+  def wrapNativeParquetError(
+      cause: Throwable,
+      taskFilePaths: Seq[String] = Seq.empty): Throwable = {
+    val filePath = if (taskFilePaths.nonEmpty) {
+      taskFilePaths.mkString(",")
+    } else {
+      try {
+        val p = org.apache.spark.rdd.InputFileBlockHolder.getInputFilePath
+        if (p == null) "" else p.toString
+      } catch {
+        case _: Throwable => ""
+      }
+    }
+    QueryExecutionErrors.cannotReadFilesError(cause, filePath)
+  }
 }
 
 /**

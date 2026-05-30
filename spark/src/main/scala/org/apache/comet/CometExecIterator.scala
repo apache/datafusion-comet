@@ -68,7 +68,8 @@ class CometExecIterator(
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty)
+    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
+    taskFilePaths: Seq[String] = Seq.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -177,20 +178,14 @@ class CometExecIterator(
         // threw the exception, so we log the exception with taskAttemptId here
         logError(s"Native execution for task $taskAttemptId failed", e)
 
-        val parquetError: scala.util.matching.Regex =
-          """^Parquet error: (?:.*)$""".r
-        e.getMessage match {
-          case parquetError() =>
-            // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
-            // See org.apache.parquet.hadoop.ParquetFileReader for error message.
-            // _LEGACY_ERROR_TEMP_2254 has no message placeholders; Spark 4 strict-checks
-            // parameters and raises INTERNAL_ERROR if any are passed.
-            throw new SparkException(
-              errorClass = "_LEGACY_ERROR_TEMP_2254",
-              messageParameters = Map.empty,
-              cause = new SparkException("File is not a Parquet file.", e))
-          case _ =>
-            throw e
+        if (CometExecIterator.isFileReadError(e.getMessage)) {
+          // Wrap in the FAILED_READ_FILE.NO_HINT SparkException Spark produces when its own
+          // parquet reader fails. The shim accesses spark-private APIs (InputFileBlockHolder,
+          // QueryExecutionErrors) from a Spark-package class.
+          throw org.apache.spark.sql.comet.shims.ShimSparkErrorConverter
+            .wrapNativeParquetError(e, taskFilePaths)
+        } else {
+          throw e
         }
       case e: Throwable =>
         throw e
@@ -270,6 +265,32 @@ class CometExecIterator(
 }
 
 object CometExecIterator extends Logging {
+
+  /**
+   * True when a native error message indicates a per-file read failure that Spark would surface
+   * as `FAILED_READ_FILE.NO_HINT` (so we wrap it via
+   * `ShimSparkErrorConverter.wrapNativeParquetError` for error compatibility, matching what
+   * Spark's own parquet reader produces).
+   *
+   * Covers: DataFusion's `Parquet error: ...` (corrupt footer etc.); arrow-rs's `Arrow: Parquet
+   * argument error: ...` / `External: failed to fill whole buffer` (corrupt page or column data
+   * hit during native execution); a truncated/empty or otherwise unreadable file that fails in
+   * the object_store layer before parquet parsing -- a 0-byte footer read gives "Requested range
+   * was invalid", a deleted file gives "Object at location ... not found".
+   *
+   * We match those specific phrasings rather than the broad object_store "Generic <Store> error:"
+   * prefix, because that prefix is also produced for NON-file config errors -- e.g. "Generic
+   * HadoopFileSystem error: Hdfs support is not enabled in this build" -- which must surface
+   * as-is, not masked behind FAILED_READ_FILE.
+   */
+  def isFileReadError(message: String): Boolean = {
+    if (message == null) return false
+    message.startsWith("Parquet error:") ||
+    message.contains("Parquet argument error") ||
+    message.contains("failed to fill whole buffer") ||
+    message.contains("Requested range was invalid") ||
+    (message.contains("Object at location") && message.contains("not found"))
+  }
 
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))

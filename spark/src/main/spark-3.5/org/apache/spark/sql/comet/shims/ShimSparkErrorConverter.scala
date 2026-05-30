@@ -32,6 +32,28 @@ import org.apache.spark.unsafe.types.UTF8String
 
 object ShimSparkErrorConverter {
   val ObjectLocationPattern: Regex = "Object at location (.+?) not found".r
+
+  /**
+   * Wrap a native parquet/IO read failure in the FAILED_READ_FILE-shaped SparkException Spark
+   * itself produces when its own parquet reader fails. Mirrors the spark-4.x shim of the same
+   * name; `QueryExecutionErrors.cannotReadFilesError(Throwable, String)` has the same signature
+   * in Spark 3.5, so the implementation is identical.
+   */
+  def wrapNativeParquetError(
+      cause: Throwable,
+      taskFilePaths: Seq[String] = Seq.empty): Throwable = {
+    val filePath = if (taskFilePaths.nonEmpty) {
+      taskFilePaths.mkString(",")
+    } else {
+      try {
+        val p = org.apache.spark.rdd.InputFileBlockHolder.getInputFilePath
+        if (p == null) "" else p.toString
+      } catch {
+        case _: Throwable => ""
+      }
+    }
+    QueryExecutionErrors.cannotReadFilesError(cause, filePath)
+  }
 }
 
 /**
