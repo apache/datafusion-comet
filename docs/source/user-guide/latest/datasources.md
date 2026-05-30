@@ -33,6 +33,13 @@ Comet accelerates Iceberg scans of Parquet files. See the [Iceberg Guide] for mo
 
 [Iceberg Guide]: iceberg.md
 
+### Delta Lake
+
+Comet can natively accelerate Delta Lake scans of Parquet files when built with the optional
+`contrib-delta` feature. See the [Delta Lake Guide] for more information.
+
+[Delta Lake Guide]: delta.md
+
 ### CSV
 
 Comet provides experimental native CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files
@@ -52,6 +59,10 @@ converted into Arrow format, allowing native execution to happen after that.
 ### Apache Iceberg
 
 See the dedicated [Comet and Iceberg Guide](iceberg.md).
+
+### Delta Lake
+
+See the dedicated [Comet and Delta Lake Guide](delta.md).
 
 ## Supported Storages
 

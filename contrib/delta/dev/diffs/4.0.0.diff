@@ -1,0 +1,278 @@
+diff --git a/build.sbt b/build.sbt
+index e89a99c..9cf8341 100644
+--- a/build.sbt
++++ b/build.sbt
+@@ -54,6 +54,9 @@ Global / default_scala_version := scala213
+ 
+ val LATEST_RELEASED_SPARK_VERSION = "3.5.3"
+ val SPARK_MASTER_VERSION = "4.0.0"
++// Comet regression testing (added by dev/diffs/delta/4.0.0.diff in Apache DataFusion Comet)
++val cometVersion = "0.17.0-SNAPSHOT"
++ThisBuild / resolvers += Resolver.mavenLocal
+ val sparkVersion = settingKey[String]("Spark version")
+ spark / sparkVersion := getSparkVersion()
+ connectCommon / sparkVersion := getSparkVersion()
+@@ -432,6 +435,19 @@ lazy val spark = (project in file("spark"))
+       "org.apache.spark" %% "spark-sql" % sparkVersion.value % "test" classifier "tests",
+       "org.apache.spark" %% "spark-hive" % sparkVersion.value % "test" classifier "tests",
+       "org.mockito" % "mockito-inline" % "4.11.0" % "test",
++      // Comet regression testing -- pulls comet-spark for Spark 4.0 + Scala 2.13 from
++      // the user's mavenLocal repo. The published artifact is what `mvn install
++      // -Pspark-4.0 -Pcontrib-delta` produces; the contrib's Delta wiring is bundled
++      // into that JAR. No separate Delta-specific Comet artifact.
++      //
++      // `exclude(comet-contrib-delta-deps)`: the published comet-spark pom lists this
++      // as a transitive (advertising `delta-spark` provided-scope to end users), but
++      // its own pom has un-interpolated `${spark.version.short}` / `${scala.binary.version}`
++      // in `<artifactId>` and `<parent>`. Maven re-interpolates from filename, SBT
++      // doesn't -- so SBT fails resolving the parent. Delta's own build already
++      // supplies delta-spark on the test classpath, so the exclude is safe here.
++      ("org.apache.datafusion" % s"comet-spark-spark4.0_${scalaBinaryVersion.value}" % cometVersion % "test")
++        .exclude("org.apache.datafusion", s"comet-contrib-delta-deps-spark4.0_${scalaBinaryVersion.value}"),
+     ),
+     Compile / packageBin / mappings := (Compile / packageBin / mappings).value ++
+         listPythonFiles(baseDirectory.value.getParentFile / "python"),
+@@ -456,7 +472,15 @@ lazy val spark = (project in file("spark"))
+       "-Ddelta.log.cacheSize=3",
+       "-Dspark.databricks.delta.delta.log.cacheSize=3",
+       "-Dspark.sql.sources.parallelPartitionDiscovery.parallelism=5",
+-      "-Xmx1024m"
++      // Bumped from 1024m: 1GB is too tight for Spark + Delta + parquet I/O + Comet
++      // native library + offheap. Caused GC thrashing on memory-heavy suites (DV,
++      // Merge, CDC) under the 3.3.2 regression sweep -- keeping 4g for 4.1.0.
++      "-Xmx4g",
++      // Match stock Delta CI: run on UTC so Delta's force-verify-all-files-in-CRC
++      // path (triggered by non-UTC user.timezone) stays disabled. Otherwise
++      // ChecksumSuite tests fail because `TimeZone.setDefault(UTC)` doesn't
++      // update `System.getProperty("user.timezone")`.
++      "-Duser.timezone=UTC"
+     ),
+ 
+     // Required for testing table features see https://github.com/delta-io/delta/issues/1602
+@@ -482,9 +506,19 @@ lazy val spark = (project in file("spark"))
+     },
+     TestParallelization.settings,
+     // Java-/Scala-/Uni-Doc Settings
+-    scalacOptions ++= Seq(
+-      "-P:genjavadoc:strictVisibility=true" // hide package private types and methods in javadoc
+-    ),
++    // Comet regression testing (added by dev/diffs/delta/4.0.0.diff): removed the
++    // unconditional `-P:genjavadoc:strictVisibility=true` scalacOption. In vanilla
++    // Delta 4.0 it's set on `spark/scalacOptions` regardless of whether the
++    // `genjavadoc-plugin` compilerPlugin is on the classpath, and on our regression
++    // environment (Scala 2.13.13 + genjavadoc-plugin 0.18 + JDK 17) the plugin fails
++    // to register, causing scalac to reject the unknown `-P:genjavadoc:...` option
++    // with `bad option: -P:genjavadoc:strictVisibility=true` (one-line compile
++    // failure -- whole build aborts before any test runs). 4.1 doesn't have this
++    // because Unidoc.scala there inlines the option ONLY when the plugin loads
++    // (genjavadoc-plugin bumped from 0.18 to 0.19). The option is purely a
++    // javadoc-visibility tweak; the regression doesn't generate javadoc, so
++    // removing it has no effect on what we test.
++    scalacOptions ++= Seq.empty[String],
+     unidocSourceFilePatterns := Seq(SourceFilePattern("io/delta/tables/", "io/delta/exceptions/"))
+   ).configureUnidoc(
+   generatedJavaDoc = true,
+diff --git a/build/sbt-config/repositories b/build/sbt-config/repositories
+index 22987ef..600374c 100644
+--- a/build/sbt-config/repositories
++++ b/build/sbt-config/repositories
+@@ -12,3 +12,12 @@
+   repos-spark-packages: https://repos.spark-packages.org
+   typesafe-releases: https://repo.typesafe.com/typesafe/releases/
+   apache-snapshot: https://repository.apache.org/content/groups/snapshots/
++  # Comet regression testing: dev/run-delta-regression.sh publishes Comet's just-built
++  # artifacts to an ISOLATED dir under $TMPDIR rather than ~/.m2/repository/. Pointing
++  # SBT directly at ~/.m2 triggers a coursier sticky-resolver bug: when an unrelated
++  # transitive (parquet/guava/azure/...) has an orphan pom-only entry in ~/.m2 from a
++  # prior `mvn` run, coursier resolves the POM at local-m2, then refuses to fall
++  # through to maven-central for the JAR -- failing the build on artifacts that have
++  # nothing to do with Comet. The isolated dir contains only `org.apache.datafusion:*`
++  # so there are no unrelated POMs to mistakenly match.
++  local-comet: file:///tmp/comet-published-4.0/
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala b/spark/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala
+new file mode 100644
+index 0000000..4023305
+--- /dev/null
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala
+@@ -0,0 +1,82 @@
++/*
++ * Copyright (2021) The Delta Lake Project Authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.spark.sql.delta
++
++import org.apache.spark.sql.{QueryTest, Row}
++import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
++import org.apache.spark.sql.test.SharedSparkSession
++
++/**
++ * Smoke test asserting that Comet is actually loaded and executing queries when the
++ * Delta regression diff is applied. Catches silent configuration drift where Comet
++ * is on the classpath but not wired into the physical plan (e.g. a typo in
++ * `spark.plugins` that Spark silently ignores).
++ *
++ * Added by the Comet regression diff at `dev/diffs/delta/4.0.0.diff` in
++ * Apache DataFusion Comet.
++ */
++class CometSmokeTest extends QueryTest with SharedSparkSession with DeltaSQLCommandTest {
++
++  test("Comet plugin is registered in SparkConf") {
++    val plugins = spark.conf.get("spark.plugins")
++    assert(plugins.contains("CometPlugin"),
++      s"Comet plugin not registered. spark.plugins=$plugins")
++  }
++
++  test("Delta streaming source read returns the micro-batch AddFiles") {
++    // Regression guard for the pre-materialized FileIndex path: Delta's streaming
++    // micro-batch gives us an exact `TahoeBatchFileIndex` with the AddFiles for
++    // [startOffset, endOffset]. The contrib's native Delta scan must honour that
++    // list instead of re-running kernel log replay against the snapshot root
++    // (which would return an empty or different set for a streaming batch).
++    val src = "comet_stream_src"
++    try {
++      spark.sql(s"CREATE TABLE $src (key INT, value INT) USING DELTA")
++      var collected: Seq[org.apache.spark.sql.Row] = Seq.empty
++      val sw = spark.readStream.table(src).writeStream
++        .format("console")
++        .foreachBatch { (df: org.apache.spark.sql.DataFrame, _: Long) =>
++          collected = df.collect().toSeq
++        }
++        .outputMode("append")
++        .start()
++      spark.sql(s"INSERT INTO $src(key, value) VALUES(0, 42)")
++      sw.processAllAvailable()
++      sw.stop()
++      assert(collected.nonEmpty, "Streaming Delta source produced no rows")
++      assert(collected.map(r => (r.getInt(0), r.getInt(1))) == Seq((0, 42)))
++    } finally {
++      spark.sql(s"DROP TABLE IF EXISTS $src")
++    }
++  }
++
++  test("Comet operators appear in Delta query physical plan") {
++    withTempDir { dir =>
++      val path = dir.getCanonicalPath
++      spark.range(10).toDF("id")
++        .write.format("delta").save(path)
++
++      val df = spark.read.format("delta").load(path).filter("id > 2")
++      val planString = df.queryExecution.executedPlan.toString
++
++      assert(planString.contains("Comet"),
++        s"No Comet operators found in physical plan. Is Comet actually wired in?\n$planString")
++
++      checkAnswer(df, (3 until 10).map(i => Row(i)))
++    }
++  }
++}
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
+index 9a81074..2eb213c 100644
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
+@@ -117,6 +117,11 @@ class DeltaSuite extends QueryTest
+       val query = spark.read.format("delta").load(testPath).where("part = 1")
+       val fileScans = query.queryExecution.executedPlan.collect {
+         case f: FileSourceScanExec => f
++        // Comet regression: Comet's planner replaces `FileSourceScanExec` with
++        // `CometDeltaNativeScanExec`. Its `metrics` map aliases `numFiles` to the
++        // post-pruning task count so this assertion exercises the same partition-skip
++        // semantics from the Comet path.
++        case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec => c
+       }
+ 
+       // Force the query to read files and generate metrics
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
+index ed74b41..57f4ffb 100644
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
+@@ -43,6 +43,17 @@ trait DeltaHiveTest extends SparkFunSuite with BeforeAndAfterAll { self: DeltaSQ
+     conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[DeltaCatalog].getName)
+     conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
+       classOf[DeltaSparkSessionExtension].getName)
++    conf.set("spark.plugins", "org.apache.spark.CometPlugin")
++    conf.set("spark.shuffle.manager",
++      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++    conf.set("spark.comet.enabled", "true")
++    conf.set("spark.comet.exec.enabled", "true")
++    conf.set("spark.comet.exec.shuffle.enabled", "true")
++    conf.set("spark.comet.scan.enabled", "true")
++    conf.set("spark.comet.scan.deltaNative.enabled", "true")
++    conf.set("spark.comet.explainFallback.enabled", "true")
++    conf.set("spark.memory.offHeap.enabled", "true")
++    conf.set("spark.memory.offHeap.size", "10g")
+     _sc = new SparkContext("local", this.getClass.getName, conf)
+     _hiveContext = new TestHiveContext(_sc)
+     _session = _hiveContext.sparkSession
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
+index cb28a4f..ea10c78 100644
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
+@@ -35,5 +35,22 @@ trait DeltaSQLCommandTest extends SharedSparkSession {
+         classOf[DeltaSparkSessionExtension].getName)
+       .set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key,
+         classOf[DeltaCatalog].getName)
++      // --- Comet regression wiring (added by dev/diffs/delta/4.0.0.diff) ---
++      // CometPlugin registers the native lib + memory manager. ServiceLoader pulls
++      // the Delta contrib's DeltaScanRuleExtension / DeltaOperatorSerdeExtension out
++      // of META-INF/services in comet-spark.jar at first use.
++      .set("spark.plugins", "org.apache.spark.CometPlugin")
++      .set("spark.shuffle.manager",
++        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++      .set("spark.comet.enabled", "true")
++      .set("spark.comet.exec.enabled", "true")
++      .set("spark.comet.exec.shuffle.enabled", "true")
++      .set("spark.comet.scan.enabled", "true")
++      // Enable the contrib's native Delta scan path. Key is defined in
++      // org.apache.comet.contrib.delta.DeltaConf.
++      .set("spark.comet.scan.deltaNative.enabled", "true")
++      .set("spark.comet.explainFallback.enabled", "true")
++      .set("spark.memory.offHeap.enabled", "true")
++      .set("spark.memory.offHeap.size", "10g")
+   }
+ }
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala
+index 92aa9df..6a0f576 100644
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala
+@@ -44,6 +44,11 @@ trait ScanReportHelper extends SharedSparkSession with AdaptiveSparkPlanHelper {
+     collectWithSubqueries(plan)({
+       case fs: FileSourceScanExec => Seq(fs)
+       case cached: InMemoryTableScanExec => collectScans(cached.relation.cacheBuilder.cachedPlan)
++      // Comet regression: Comet rewrites `FileSourceScanExec` into its own leaf
++      // variants. Tests that inspect scan metrics would otherwise see an empty
++      // list and fail with `MatchError: ArrayBuffer()`.
++      case c: org.apache.spark.sql.comet.CometScanExec => Seq(c.wrapped)
++      case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec => Seq(c.originalPlan)
+     }).flatten
+   }
+ 
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/TestsStatistics.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/TestsStatistics.scala
+index f759967..36eec37 100644
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/test/TestsStatistics.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/TestsStatistics.scala
+@@ -80,6 +80,13 @@ trait TestsStatistics extends DeltaExcludedBySparkVersionTestMixinShims { self:
+       case f: FileSourceScanExec => Some(f)
+       case InputAdapter(f: FileSourceScanExec) => Some(f)
+       case ColumnarToRowExec(InputAdapter(f: FileSourceScanExec)) => Some(f)
++      // Comet regression: unwrap the Comet scan variants Comet's rules produce in
++      // place of Spark's `FileSourceScanExec`. Tests that search for the scan in
++      // the executed plan (e.g. to read its metrics) are otherwise blind to them.
++      case c: org.apache.spark.sql.comet.CometScanExec => Some(c.wrapped)
++      case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec => Some(c.originalPlan)
++      case org.apache.spark.sql.comet.CometNativeColumnarToRowExec(inner) =>
++        unapply(inner)
+       case _ => None
+     }
+   }

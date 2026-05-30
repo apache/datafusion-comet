@@ -79,6 +79,7 @@ to read more.
    :hidden:
 
    Iceberg Guide <iceberg>
+   Delta Lake Guide <delta>
    S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 
