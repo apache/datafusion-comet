@@ -86,19 +86,46 @@ private[comet] trait PlanDataInjector {
 /**
  * Registry and utilities for injecting per-partition planning data into operator trees.
  */
-private[comet] object PlanDataInjector {
+private[comet] object PlanDataInjector extends org.apache.spark.internal.Logging {
 
-  // Registry of injectors for different operator types
-  private val injectors: Seq[PlanDataInjector] = Seq(
-    IcebergPlanDataInjector,
-    NativeScanPlanDataInjector
-    // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
-  )
+  // Registry of injectors for different operator types. The contrib/delta integration's
+  // DeltaPlanDataInjector is appended via one reflective class lookup -- present only when
+  // the contrib was bundled (i.e. -Pcontrib-delta on the Maven build). Default builds get
+  // the empty Option and an unmodified injectors list, so there's zero contrib surface at
+  // runtime on default builds.
+  private val injectors: Seq[PlanDataInjector] = {
+    val builtin: Seq[PlanDataInjector] = Seq(IcebergPlanDataInjector, NativeScanPlanDataInjector)
+    val deltaOpt: Option[PlanDataInjector] =
+      try {
+        // Scala compiles `object Foo` into BOTH `Foo.class` (a static-forwarder
+        // class with no MODULE$ field) AND `Foo$.class` (the module class that
+        // does have MODULE$). The trailing `$` selects the module class.
+        // scalastyle:off classforname
+        val cls = Class.forName("org.apache.spark.sql.comet.DeltaPlanDataInjector$")
+        // scalastyle:on classforname
+        Some(cls.getField("MODULE$").get(null).asInstanceOf[PlanDataInjector])
+      } catch {
+        // Default builds (no -Pcontrib-delta) won't have the class -> silent None.
+        case _: ClassNotFoundException => None
+        // Reflection-binding failures (signature/access drift) -> silent None.
+        case _: NoSuchFieldException | _: IllegalAccessException => None
+        // Anything else (ExceptionInInitializerError, linkage errors, CCE on the
+        // PlanDataInjector cast) is a real bug -- surface it as a log warning and
+        // still decline so the rest of the planner stays alive.
+        case e: Throwable =>
+          logWarning(
+            "Found org.apache.spark.sql.comet.DeltaPlanDataInjector$ on classpath " +
+              "but failed to load it; skipping contrib-delta plan-data injection",
+            e)
+          None
+      }
+    builtin ++ deltaOpt
+  }
 
-  // O(1) lookup by op kind: most operators in any tree don't match any injector, so the per-op
-  // `for (injector <- injectors if injector.canInject(op))` walk was paying N*M canInject calls
-  // (N operators, M injectors) just to find no match. Keying by OpStructCase lets us skip the
-  // iteration entirely for non-scan operators.
+  // O(1) lookup by op kind: most operators in any tree don't match any injector, so the
+  // per-op `for (injector <- injectors if injector.canInject(op))` walk was paying N*M
+  // canInject calls (N operators, M injectors) just to find no match. Keying by
+  // `OpStructCase` lets us skip the iteration entirely for non-scan operators.
   private val injectorsByKind: Map[Operator.OpStructCase, PlanDataInjector] =
     injectors.map(i => i.opStructCase -> i).toMap
 
@@ -577,6 +604,24 @@ abstract class CometNativeExec extends CometExec {
         // Unified RDD creation - CometExecRDD handles all cases
         val subqueries = collectSubqueries(this)
         val hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec])
+        // Collect per-partition file paths from any scan that exposes file-level
+        // provenance via the `CometScanWithPlanData` trait (covers `CometNativeScanExec`
+        // and contrib leaves like `CometDeltaNativeScanExec`) so `CometExecIterator` can
+        // report a per-file read failure as `FAILED_READ_FILE.NO_HINT` with the offending
+        // path. Done here (not in the leaf's own `inputRDD`) so it also fires when the scan
+        // is embedded inside a larger parent native tree. Multiple scans (joins) get
+        // concatenated per partition.
+        val perPartitionFilePaths: Array[Seq[String]] = {
+          val scans = sparkPlans.collect { case s: CometScanWithPlanData => s }
+          if (scans.isEmpty) Array.empty[Seq[String]]
+          else {
+            val perScan = scans.map(_.perPartitionFilePaths)
+            val n = firstNonBroadcastPlanNumPartitions
+            (0 until n).map { idx =>
+              perScan.flatMap { arr => if (arr.length > idx) arr(idx) else Seq.empty }.toSeq
+            }.toArray
+          }
+        }
         new CometExecRDD(
           sparkContext,
           inputs.toSeq,
@@ -589,7 +634,8 @@ abstract class CometNativeExec extends CometExec {
           subqueries,
           broadcastedHadoopConfForEncryption,
           encryptedFilePaths,
-          shuffleScanIndices) {
+          shuffleScanIndices,
+          perPartitionFilePaths = perPartitionFilePaths) {
           override def compute(
               split: Partition,
               context: TaskContext): Iterator[ColumnarBatch] = {
@@ -627,8 +673,16 @@ abstract class CometNativeExec extends CometExec {
    */
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
-      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
-          _: CometIcebergNativeScanExec | _: CometCsvNativeScanExec | _: ShuffleQueryStageExec |
+      // Match `CometLeafExec` first so contrib leaf scans (e.g. the Delta
+      // contrib's `CometDeltaNativeScanExec`) are recognised as input boundaries
+      // without requiring a core compile-time reference to the contrib class.
+      // All built-in leaf scans (`CometNativeScanExec`, `CometIcebergNativeScanExec`,
+      // `CometCsvNativeScanExec`) also extend `CometLeafExec`, so this is a
+      // strict superset of the previous enumeration -- it just generalises the
+      // input-boundary concept from "this fixed list" to "any leaf Comet exec".
+      case _: CometLeafExec =>
+        func(plan)
+      case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
           _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
           _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
           _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
@@ -696,11 +750,16 @@ abstract class CometNativeExec extends CometExec {
           (Map.empty, Map.empty)
         }
 
-      case nativeScan: CometNativeScanExec =>
-        nativeScan.ensureSubqueriesResolved()
-        (
-          Map(nativeScan.sourceKey -> nativeScan.commonData),
-          Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
+      // Generic path for leaf scans that surface planning data via the
+      // `CometScanWithPlanData` trait. Catches `CometNativeScanExec` and any contrib
+      // leaf scan (e.g. the Delta contrib's `CometDeltaNativeScanExec`) without
+      // requiring core to compile-time reference contrib classes.
+      case s: CometScanWithPlanData =>
+        s match {
+          case leaf: CometLeafExec => leaf.ensureSubqueriesResolved()
+          case _ => // no DPP lifecycle to drive
+        }
+        (Map(s.sourceKey -> s.commonData), Map(s.sourceKey -> s.perPartitionData))
 
       // Broadcast stages are boundaries - don't collect per-partition data from inside them.
       // After DPP filtering, broadcast scans may have different partition counts than the
@@ -809,6 +868,48 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
     prepare()
     waitForSubqueries()
   }
+}
+
+/**
+ * Marker trait for scan execs that surface planning data (a `commonData` block + per-partition
+ * task bytes keyed by `sourceKey`) so that a parent `CometNativeExec` can find and inject the
+ * data when the scan is fused into a larger native subtree.
+ *
+ * Implemented by `CometNativeScanExec` and the contrib's `CometDeltaNativeScanExec` -- without
+ * it, [[PlanDataInjector.findAllPlanData]] cannot collect the per-partition tasks and the
+ * parent's native execution receives an empty input. (`CometIcebergNativeScanExec` does NOT use
+ * this trait; it has a dedicated `findAllPlanData` case.)
+ *
+ * Each implementation also resolves its own DPP subqueries via `ensureSubqueriesResolved`
+ * (overridden from [[CometLeafExec]]) before `commonData`/`perPartitionData` are read.
+ */
+trait CometScanWithPlanData {
+  def sourceKey: String
+  def commonData: Array[Byte]
+  def perPartitionData: Array[Array[Byte]]
+  // Per-partition list of file paths produced by this scan. Used by `CometExecRDD` to
+  // report a per-file read failure as `FAILED_READ_FILE.NO_HINT` with the offending path
+  // (see `SparkErrorConverter.convertToSparkException`). Empty when the scan doesn't track
+  // file-level provenance.
+  def perPartitionFilePaths: Array[Seq[String]] = Array.empty
+
+  // DPP / partition filters that may carry AQE SubqueryAdaptiveBroadcast
+  // subqueries needing rewrite by CometPlanAdaptiveDynamicPruningFilters.
+  // Default empty: scans with dedicated handling (CometNativeScanExec,
+  // CometIcebergNativeScanExec) don't use this path.
+  def dynamicPruningFilters: Seq[Expression] = Nil
+
+  // Install rewritten DPP filters on this scan. Implementers whose filters live
+  // in a @transient field (which TreeNode.makeCopy can't carry, #3510) update
+  // them via a transient side-channel and return `this` -- so the optimizer
+  // rule's rewrite lands on the SAME instance that executes, instead of a copy
+  // that gets dropped when the enclosing native block is rebuilt. Only called
+  // when `dynamicPruningFilters` is non-empty, so the default is never reached
+  // for scans that leave it empty.
+  def withDynamicPruningFilters(filters: Seq[Expression]): SparkPlan =
+    throw new UnsupportedOperationException(
+      s"${getClass.getSimpleName} exposes dynamicPruningFilters but does not " +
+        "override withDynamicPruningFilters")
 }
 
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode

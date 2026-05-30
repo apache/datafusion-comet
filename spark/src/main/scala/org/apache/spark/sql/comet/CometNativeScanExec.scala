@@ -71,7 +71,8 @@ case class CometNativeScanExec(
     sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
     extends CometLeafExec
     with DataSourceScanExec
-    with ShimStreamSourceAwareSparkPlan {
+    with ShimStreamSourceAwareSparkPlan
+    with CometScanWithPlanData {
 
   override lazy val metadata: Map[String, String] =
     if (originalPlan != null) originalPlan.metadata else Map.empty
@@ -238,7 +239,7 @@ case class CometNativeScanExec(
 
   def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 
-  def perPartitionFilePaths: Array[Seq[String]] = serializedPartitionData._3
+  override def perPartitionFilePaths: Array[Seq[String]] = serializedPartitionData._3
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
