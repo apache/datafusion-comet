@@ -19,7 +19,10 @@
 
 package org.apache.comet.rules
 
+import java.lang.{Boolean => JBoolean}
 import java.net.URI
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -215,7 +218,7 @@ case class CometScanRule(session: SparkSession)
     // ParquetReadFromFakeHadoopFsSuite).
     val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
       case Some(s) =>
-        s.split(",").map(_.trim.toLowerCase(java.util.Locale.ROOT)).filter(_.nonEmpty).toSet
+        s.split(",").map(_.trim.toLowerCase(Locale.ROOT)).filter(_.nonEmpty).toSet
       case None => Set.empty
     }
     val unsupportedFsSchemes = r.location.rootPaths
@@ -223,11 +226,11 @@ case class CometScanRule(session: SparkSession)
       .filter { uri =>
         val sch = uri.getScheme
         sch != null && {
-          val sl = sch.toLowerCase(java.util.Locale.ROOT)
+          val sl = sch.toLowerCase(Locale.ROOT)
           !libhdfsSchemes.contains(sl) && !CometScanRule.isNativelyReadableScheme(uri)
         }
       }
-      .map(_.getScheme.toLowerCase(java.util.Locale.ROOT))
+      .map(_.getScheme.toLowerCase(Locale.ROOT))
       .toSet
     if (unsupportedFsSchemes.nonEmpty) {
       withInfo(
@@ -765,7 +768,7 @@ object CometScanRule extends Logging {
   // Per-scheme memo of `NativeBase.isObjectStoreSchemeSupported`. The answer depends only on the
   // URL scheme, so we cache by scheme and never re-cross the JNI boundary for a repeated scheme.
   private val schemeSupportCache =
-    new java.util.concurrent.ConcurrentHashMap[String, java.lang.Boolean]()
+    new ConcurrentHashMap[String, JBoolean]()
 
   /**
    * True when Comet's native object_store layer recognizes this URI's scheme (so the scan is
@@ -775,16 +778,16 @@ object CometScanRule extends Logging {
    * early-fallback optimization, and a build without a working native library can't run Comet's
    * native scan anyway, so declining here would only over-restrict.
    */
-  private[rules] def isNativelyReadableScheme(uri: java.net.URI): Boolean = {
+  private[rules] def isNativelyReadableScheme(uri: URI): Boolean = {
     val scheme = uri.getScheme
     if (scheme == null) return true
     schemeSupportCache
       .computeIfAbsent(
-        scheme.toLowerCase(java.util.Locale.ROOT),
+        scheme.toLowerCase(Locale.ROOT),
         _ =>
-          try java.lang.Boolean.valueOf(NativeBase.isObjectStoreSchemeSupported(uri.toString))
+          try JBoolean.valueOf(NativeBase.isObjectStoreSchemeSupported(uri.toString))
           catch {
-            case _: Throwable => java.lang.Boolean.TRUE
+            case _: Throwable => JBoolean.TRUE
           })
       .booleanValue()
   }
