@@ -110,21 +110,16 @@ object CometStringReplace extends CometScalarFunction[StringReplace]("replace") 
       expr: StringReplace,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (isEmptyStringLiteral(expr.searchExpr) &&
-      !CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
-      // DataFusion's `replace` inserts the replacement between every character (and at both
-      // boundaries) when the search string is empty, whereas Spark short-circuits and returns
-      // the source unchanged. Route through the codegen dispatcher so Spark's own doGenCode
-      // handles this case. https://github.com/apache/datafusion-comet/issues/4497
-      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
-    } else {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      // Native path: faster, but DataFusion's `replace` diverges from Spark when the search
+      // string is empty — it inserts the replacement between every character and at both
+      // boundaries, while Spark short-circuits and returns the source unchanged. Opt-in.
       super.convert(expr, inputs, binding)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode handles the
+      // empty-search edge case. https://github.com/apache/datafusion-comet/issues/4497
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
-  }
-
-  private def isEmptyStringLiteral(e: Expression): Boolean = e match {
-    case Literal(s: UTF8String, _: StringType) => s.numBytes() == 0
-    case _ => false
   }
 }
 

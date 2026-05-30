@@ -19,7 +19,7 @@ statement
 CREATE TABLE test_str_replace(s string, search string, replace string) USING parquet
 
 statement
-INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', 'a', 'bb'), ('hello', 'xyz', 'abc'), ('', 'a', 'b'), (NULL, 'a', 'b')
+INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', 'a', 'bb'), ('hello', 'xyz', 'abc'), ('', 'a', 'b'), (NULL, 'a', 'b'), ('hello', '', 'x')
 
 query
 SELECT replace(s, search, replace) FROM test_str_replace
