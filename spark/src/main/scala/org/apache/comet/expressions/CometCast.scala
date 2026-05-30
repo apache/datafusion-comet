@@ -24,7 +24,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
@@ -81,7 +81,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           if (childExpr.isDefined) {
             castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, cometEvalMode)
           } else {
-            withInfo(cast, cast.child)
+            withFallbackReason(cast, cast.child)
             None
           }
         }
@@ -131,7 +131,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
             .setCast(castBuilder)
             .build())
       case _ =>
-        withInfo(expr, s"Unsupported datatype in castToProto: $dt")
+        withFallbackReason(expr, s"Unsupported datatype in castToProto: $dt")
         None
     }
   }

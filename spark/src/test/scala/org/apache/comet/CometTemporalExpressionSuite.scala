@@ -214,25 +214,20 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_format - timestamp_ntz input") {
-    // TimestampNTZ is timezone-independent, so date_format should produce the same
-    // formatted string regardless of session timezone. Comet currently only runs this
-    // natively for UTC; for non-UTC it falls back to Spark. We verify correctness
-    // (matching Spark's output) in all cases.
+    // TimestampNTZ is timezone-independent, so date_format must produce the same string
+    // regardless of session timezone. With the codegen dispatcher enabled, non-UTC sessions
+    // stay in Comet by running Spark's own `DateFormatClass.doGenCode` via the dispatcher.
     val r = new Random(42)
     val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
     val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
     ntzDF.createOrReplaceTempView("ntz_tbl")
     val supportedFormats =
       CometDateFormat.supportedFormats.keys.toSeq.filterNot(_.contains("'"))
-    for (tz <- crossTimezones) {
-      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
-        for (format <- supportedFormats) {
-          if (tz == "UTC") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      for (tz <- crossTimezones) {
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+          for (format <- supportedFormats) {
             checkSparkAnswerAndOperator(
-              s"SELECT ts_ntz, date_format(ts_ntz, '$format') from ntz_tbl order by ts_ntz")
-          } else {
-            // Non-UTC falls back to Spark but should still produce correct results
-            checkSparkAnswer(
               s"SELECT ts_ntz, date_format(ts_ntz, '$format') from ntz_tbl order by ts_ntz")
           }
         }
@@ -476,34 +471,62 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("date_format unsupported format falls back to Spark") {
+  test("date_format unsupported format routes via codegen dispatcher") {
     createTimestampTestData.createOrReplaceTempView("tbl")
 
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
-      // Unsupported format string
-      checkSparkAnswerAndFallbackReason(
-        "SELECT c0, date_format(c0, 'yyyy-MM-dd EEEE') from tbl order by c0",
-        "Format 'yyyy-MM-dd EEEE' is not supported")
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      checkSparkAnswerAndOperator(
+        "SELECT c0, date_format(c0, 'yyyy-MM-dd EEEE') from tbl order by c0")
     }
   }
 
-  test("date_format with non-UTC timezone falls back to Spark") {
+  test("date_format unsupported format falls back when codegen dispatcher disabled") {
+    createTimestampTestData.createOrReplaceTempView("tbl")
+
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT c0, date_format(c0, 'yyyy-MM-dd EEEE') from tbl order by c0",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key)
+    }
+  }
+
+  test("date_format with non-UTC timezone routes via codegen dispatcher") {
     createTimestampTestData.createOrReplaceTempView("tbl")
 
     val nonUtcTimezones =
       Seq("America/New_York", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
 
     for (tz <- nonUtcTimezones) {
-      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
-        // Non-UTC timezones should fall back to Spark as Incompatible
-        checkSparkAnswerAndFallbackReason(
-          "SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0",
-          s"Non-UTC timezone '$tz' may produce different results")
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+        checkSparkAnswerAndOperator(
+          "SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0")
       }
     }
   }
 
-  test("date_format with non-UTC timezone works when allowIncompatible is enabled") {
+  test("date_format with non-UTC timezone falls back when codegen dispatcher disabled") {
+    createTimestampTestData.createOrReplaceTempView("tbl")
+
+    val nonUtcTimezones = Seq("America/New_York", "Europe/London")
+
+    for (tz <- nonUtcTimezones) {
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key)
+      }
+    }
+  }
+
+  test("date_format with non-UTC timezone takes native path when allowIncompatible is enabled") {
     createTimestampTestData.createOrReplaceTempView("tbl")
 
     val nonUtcTimezones = Seq("America/New_York", "Europe/London", "Asia/Tokyo")
@@ -511,10 +534,13 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (tz <- nonUtcTimezones) {
       withSQLConf(
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
-        "spark.comet.expr.DateFormatClass.allowIncompatible" -> "true") {
-        // With allowIncompatible enabled, Comet will execute the expression
-        // Results may differ from Spark but should not throw errors
-        checkSparkAnswer("SELECT c0, date_format(c0, 'yyyy-MM-dd') from tbl order by c0")
+        "spark.comet.expression.DateFormatClass.allowIncompatible" -> "true") {
+        // Native to_char results may diverge from Spark for non-UTC timezones (the reason the
+        // JVM UDF is the default), so we only check that execution stays inside Comet. ORDER BY
+        // is omitted to keep the plan free of AQEShuffleRead.
+        val df = sql("SELECT c0, date_format(c0, 'yyyy-MM-dd') from tbl")
+        df.collect()
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
       }
     }
   }

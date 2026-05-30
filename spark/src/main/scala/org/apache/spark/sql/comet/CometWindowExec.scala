@@ -33,7 +33,7 @@ import org.apache.spark.sql.types.DecimalType
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto}
@@ -68,7 +68,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }.toArray
 
     if (winExprs.length != op.windowExpression.length) {
-      withInfo(op, "Unsupported window expression(s)")
+      withFallbackReason(op, "Unsupported window expression(s)")
       return None
     }
 
@@ -115,14 +115,14 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               if (AggSerde.minMaxDataTypeSupported(min.dataType)) {
                 Some(agg)
               } else {
-                withInfo(windowExpr, s"datatype ${min.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${min.dataType} is not supported", expr)
                 None
               }
             case max: Max =>
               if (AggSerde.minMaxDataTypeSupported(max.dataType)) {
                 Some(agg)
               } else {
-                withInfo(windowExpr, s"datatype ${max.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${max.dataType} is not supported", expr)
                 None
               }
             case s: Sum =>
@@ -130,11 +130,11 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                   .isInstanceOf[DecimalType]) {
                 Some(agg)
               } else {
-                withInfo(windowExpr, s"datatype ${s.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${s.dataType} is not supported", expr)
                 None
               }
             case _ =>
-              withInfo(
+              withFallbackReason(
                 windowExpr,
                 s"aggregate ${agg.aggregateFunction}" +
                   " is not supported for window function",
@@ -311,7 +311,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     val partitionColumnNames = partitionSpec.collect {
       case a: AttributeReference => a.name
       case other =>
-        withInfo(op, s"Unsupported partition expression: ${other.getClass.getSimpleName}")
+        withFallbackReason(
+          op,
+          s"Unsupported partition expression: ${other.getClass.getSimpleName}")
         return false
     }
 
@@ -319,7 +321,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       s.child match {
         case a: AttributeReference => a.name
         case other =>
-          withInfo(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
+          withFallbackReason(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
           return false
       }
     }
@@ -327,7 +329,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
         partCol != orderCol
       }) {
-      withInfo(op, "Partitioning and sorting specifications must be the same.")
+      withFallbackReason(op, "Partitioning and sorting specifications must be the same.")
       return false
     }
 

@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, BindReferences, BoundReference}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometAlias extends CometExpressionSerde[Alias] {
@@ -31,7 +31,7 @@ object CometAlias extends CometExpressionSerde[Alias] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val r = exprToProtoInternal(a.child, inputs, binding)
     if (r.isEmpty) {
-      withInfo(a, a.child)
+      withFallbackReason(a, a.child)
     }
     r
   }
@@ -53,7 +53,7 @@ object CometAttributeReference extends CometExpressionSerde[AttributeReference] 
           .bindReference(attr, inputs, allowFailures = true)
 
         if (boundRef.isInstanceOf[AttributeReference]) {
-          withInfo(attr, s"cannot resolve $attr among ${inputs.mkString(", ")}")
+          withFallbackReason(attr, s"cannot resolve $attr among ${inputs.mkString(", ")}")
           return None
         }
 
@@ -82,7 +82,7 @@ object CometAttributeReference extends CometExpressionSerde[AttributeReference] 
             .build())
       }
     } else {
-      withInfo(attr, s"unsupported datatype: ${attr.dataType}")
+      withFallbackReason(attr, s"unsupported datatype: ${attr.dataType}")
       None
     }
 

@@ -103,8 +103,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
   /**
    * Plan-time predicate. `None` greenlights the serde to emit the codegen proto; `Some(reason)`
-   * forces a Spark fallback (typically `withInfo(...) + None`) so the operator falls back cleanly
-   * rather than crashing the Janino compile at execute time.
+   * forces a Spark fallback (typically `withFallbackReason(...) + None`) so the operator falls
+   * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
    * [[isSupportedDataType]], rejects aggregates / generators / `CodegenFallback` (other than
@@ -199,7 +199,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
             t)
           throw t
       }
-    logInfo(
+    logDebug(
       s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
         s"-> ${boundExpr.dataType}  inputs=" +
         inputSchema
@@ -261,7 +261,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       val subExprsCode = ctx.subexprFunctionsCode
       val (cls, setup, snippet) =
         CometBatchKernelCodegenOutput.emitOutputWriter(boundExpr.dataType, ev.value, ctx)
-      (cls, setup, defaultBody(boundExpr, ev, snippet, subExprsCode))
+      (cls, setup, defaultBody(boundExpr, inputSchema, ev, snippet, subExprsCode))
     }
 
     val typedFieldDecls = CometBatchKernelCodegenInput.emitInputFieldDecls(inputSchema)
@@ -343,6 +343,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    */
   private def defaultBody(
       boundExpr: Expression,
+      inputSchema: Seq[ArrowColumnSpec],
       ev: ExprCode,
       writeSnippet: String,
       subExprsCode: String): String = {
@@ -353,9 +354,17 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         // make this incorrect (`coalesce(null, x)` is `x`); `allNullIntolerant` rejects those.
         val inputOrdinals =
           boundExpr.collect { case b: BoundReference => b.ordinal }.distinct
+        // Primitive Arrow vectors are wrapped in `CometPlainVector` at input-cast time, which
+        // exposes `isNullAt(int)` rather than the raw Arrow `isNull(int)`. Pick the right method
+        // per ordinal so the short-circuit compiles for timestamp / int / float columns too,
+        // not just VarChar / Decimal vectors that stay as raw Arrow types.
+        def nullCheckCall(ord: Int): String = {
+          val method = CometBatchKernelCodegenInput.nullCheckMethod(inputSchema(ord))
+          s"this.col$ord.$method(i)"
+        }
         val nullCheck =
           if (inputOrdinals.isEmpty) "false"
-          else inputOrdinals.map(ord => s"this.col$ord.isNull(i)").mkString(" || ")
+          else inputOrdinals.map(nullCheckCall).mkString(" || ")
         s"""
            |if ($nullCheck) {
            |  output.setNull(i);
