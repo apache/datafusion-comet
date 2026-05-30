@@ -1452,13 +1452,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         true
       }.length
     }
-    withParquetTable(Seq(0, 1, 2).map(n => (n.toString, n.toString)), "tbl") {
-      val sql = "select initcap(_1) from tbl"
-      val (_, cometPlan) = checkSparkAnswer(sql)
-      assert(1 == countSparkProjectExec(cometPlan))
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
-        val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
-        assert(0 == countSparkProjectExec(cometPlan))
+    // Disable the JVM codegen dispatcher so InitCap exercises the serde-level incompatible
+    // fallback path under test here. With the dispatcher enabled (the default), InitCap is routed
+    // natively through Spark's own codegen regardless of the allowIncompat config, which is
+    // covered separately.
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(Seq(0, 1, 2).map(n => (n.toString, n.toString)), "tbl") {
+        val sql = "select initcap(_1) from tbl"
+        val (_, cometPlan) = checkSparkAnswer(sql)
+        assert(1 == countSparkProjectExec(cometPlan))
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
+          assert(0 == countSparkProjectExec(cometPlan))
+        }
       }
     }
   }
