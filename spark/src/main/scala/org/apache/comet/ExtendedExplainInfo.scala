@@ -50,15 +50,17 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   }
 
   def getFallbackReasons(plan: SparkPlan): Seq[String] = {
-    extensionInfo(plan).toSeq.sorted
+    fallbackReasons(plan).toSeq.sorted
   }
 
-  private[comet] def extensionInfo(node: TreeNode[_]): Set[String] = {
+  private[comet] def fallbackReasons(node: TreeNode[_]): Set[String] = {
     var info = mutable.Seq[String]()
     val sorted = sortup(node)
     sorted.foreach { p =>
       val all: Set[String] =
-        getActualPlan(p).getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+        getActualPlan(p)
+          .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+          .getOrElse(Set.empty[String])
       for (s <- all) {
         info = info :+ s
       }
@@ -120,7 +122,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       outString.append(if (lastChildren.last) "+- " else ":- ")
     }
 
-    val tagValue = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
+    val tagValue = node.getTagValue(CometExplainInfo.FALLBACK_REASONS)
     val str = if (tagValue.nonEmpty) {
       s" ${node.nodeName} [COMET: ${tagValue.get.mkString(", ")}]"
     } else {
@@ -212,7 +214,7 @@ object CometCoverageStats {
 }
 
 object CometExplainInfo {
-  val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
+  val FALLBACK_REASONS = new TreeNodeTag[Set[String]]("CometFallbackReasons")
 
   def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
     node match {

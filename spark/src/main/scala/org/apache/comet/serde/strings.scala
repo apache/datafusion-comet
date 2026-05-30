@@ -26,10 +26,10 @@ import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -47,7 +47,7 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
     val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
     val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
     val optExpr = scalarFunctionExprToProto("repeat", leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, leftCast, rightCast)
+    optExprWithFallbackReason(optExpr, expr, leftCast, rightCast)
   }
 }
 
@@ -118,11 +118,11 @@ object CometSubstring extends CometExpressionSerde[Substring] {
             builder.setLen(len.asInstanceOf[Int])
             Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
           case None =>
-            withInfo(expr, expr.str)
+            withFallbackReason(expr, expr.str)
             None
         }
       case _ =>
-        withInfo(expr, "Substring pos and len must be literals")
+        withFallbackReason(expr, "Substring pos and len must be literals")
         None
     }
   }
@@ -140,7 +140,7 @@ object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
     val countExpr = exprToProtoInternal(countCast, inputs, binding)
     val optExpr =
       scalarFunctionExprToProto("substring_index", strExpr, delimExpr, countExpr)
-    optExprWithInfo(optExpr, expr, expr.strExpr, expr.delimExpr, expr.countExpr)
+    optExprWithFallbackReason(optExpr, expr, expr.strExpr, expr.delimExpr, expr.countExpr)
   }
 }
 
@@ -161,11 +161,11 @@ object CometLeft extends CometExpressionSerde[Left] {
             builder.setLen(lenValue.asInstanceOf[Int])
             Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
           case None =>
-            withInfo(expr, expr.str)
+            withFallbackReason(expr, expr.str)
             None
         }
       case _ =>
-        withInfo(expr, "LEFT len must be a literal")
+        withFallbackReason(expr, "LEFT len must be a literal")
         None
     }
   }
@@ -203,12 +203,12 @@ object CometRight extends CometExpressionSerde[Right] {
               builder.setLen(lenInt)
               Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
             case None =>
-              withInfo(expr, expr.str)
+              withFallbackReason(expr, expr.str)
               None
           }
         }
       case _ =>
-        withInfo(expr, "RIGHT len must be a literal")
+        withFallbackReason(expr, "RIGHT len must be a literal")
         None
     }
   }
@@ -248,7 +248,7 @@ object CometConcatWs extends CometExpressionSerde[ConcatWs] {
 
       case _ if expr.children.forall(_.foldable) =>
         // Fall back to Spark for all-literal args so ConstantFolding can handle it
-        withInfo(expr, "all arguments are foldable")
+        withFallbackReason(expr, "all arguments are foldable")
         None
 
       case _ =>
@@ -270,7 +270,9 @@ object CometLike extends CometExpressionSerde[Like] {
         binding,
         (builder, binaryExpr) => builder.setLike(binaryExpr))
     } else {
-      withInfo(expr, s"custom escape character ${expr.escapeChar} not supported in LIKE")
+      withFallbackReason(
+        expr,
+        s"custom escape character ${expr.escapeChar} not supported in LIKE")
       None
     }
   }
@@ -286,7 +288,7 @@ object CometRLike extends CometExpressionSerde[RLike] {
       case Literal(pattern, DataTypes.StringType) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
           !CometConf.isExprAllowIncompat("regexp")) {
-          withInfo(
+          withFallbackReason(
             expr,
             s"Regexp pattern $pattern is not compatible with Spark. " +
               s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
@@ -302,7 +304,7 @@ object CometRLike extends CometExpressionSerde[RLike] {
             (builder, binaryExpr) => builder.setRlike(binaryExpr))
         }
       case _ =>
-        withInfo(expr, "Only scalar regexp patterns are supported")
+        withFallbackReason(expr, "Only scalar regexp patterns are supported")
         None
     }
   }
@@ -375,7 +377,7 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
   override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
     if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
       !CometConf.isExprAllowIncompat("regexp")) {
-      withInfo(
+      withFallbackReason(
         expr,
         s"Regexp pattern ${expr.regexp} is not compatible with Spark. " +
           s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
@@ -405,7 +407,7 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       patternExpr,
       replacementExpr,
       flagsExpr)
-    optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
+    optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
   }
 }
 
@@ -436,7 +438,7 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
       strExpr,
       regexExpr,
       limitExpr)
-    optExprWithInfo(optExpr, expr, expr.str, expr.regex, expr.limit)
+    optExprWithFallbackReason(optExpr, expr, expr.str, expr.regex, expr.limit)
   }
 }
 
@@ -463,7 +465,7 @@ object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
       false,
       jsonExpr,
       pathExpr)
-    optExprWithInfo(optExpr, expr, expr.json, expr.path)
+    optExprWithFallbackReason(optExpr, expr, expr.json, expr.path)
   }
 }
 
@@ -485,11 +487,11 @@ trait CommonStringExprs {
         if (binExpr.isDefined) {
           CometCast.castToProto(expr, None, DataTypes.StringType, binExpr.get, CometEvalMode.TRY)
         } else {
-          withInfo(expr, bin)
+          withFallbackReason(expr, bin)
           None
         }
       case _ =>
-        withInfo(expr, "Comet only supports decoding with 'utf-8'.")
+        withFallbackReason(expr, "Comet only supports decoding with 'utf-8'.")
         None
     }
   }
