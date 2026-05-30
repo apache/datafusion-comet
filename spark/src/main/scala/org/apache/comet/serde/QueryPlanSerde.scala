@@ -21,6 +21,7 @@ package org.apache.comet.serde
 
 import java.util.concurrent.atomic.AtomicLong
 
+import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
@@ -877,20 +878,34 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Flatten an associative binary chain into its leaf operands. `matches` identifies the same
-   * operator (e.g. `case _: And => true`) and `children` extracts its two operands. Used to
-   * rebalance deep `And`/`Or` chains before serialization (see [[createBalancedBinaryExpr]]).
+   * Flatten an associative binary chain into its leaf operands, in left-to-right order. `matches`
+   * identifies the same operator (e.g. `case _: And => true`) and `children` extracts its two
+   * operands. Used to rebalance deep `And`/`Or` chains before serialization (see
+   * [[createBalancedBinaryExpr]]).
+   *
+   * Implemented with an explicit work stack and an accumulating buffer rather than recursion: the
+   * chains that trigger this are left-deep and `O(n)` deep, so a recursive walk could itself
+   * overflow the JVM stack, and `++`-accumulating the results would be `O(n^2)`.
    */
   def flattenAssociative(
       expr: Expression,
       matches: Expression => Boolean,
       children: Expression => (Expression, Expression)): Seq[Expression] = {
-    if (matches(expr)) {
-      val (l, r) = children(expr)
-      flattenAssociative(l, matches, children) ++ flattenAssociative(r, matches, children)
-    } else {
-      Seq(expr)
+    val operands = ArrayBuffer.empty[Expression]
+    var stack: List[Expression] = expr :: Nil
+    while (stack.nonEmpty) {
+      val current = stack.head
+      stack = stack.tail
+      if (matches(current)) {
+        val (l, r) = children(current)
+        // Push right before left so the left subtree is popped (and emitted) first, preserving
+        // the original left-to-right operand order.
+        stack = l :: r :: stack
+      } else {
+        operands += current
+      }
     }
+    operands.toSeq
   }
 
   def scalarFunctionExprToProtoWithReturnType(
