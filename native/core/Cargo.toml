@@ -69,6 +69,9 @@ aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 parking_lot = "0.12.5"
 datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true, default-features = false, features = ["hdfs"] }
+# Optional Delta Lake contrib (enabled by the `contrib-delta` feature). Source lives
+# under `contrib/delta/native/` so non-Delta committers can ignore it.
+comet-contrib-delta = { path = "../../contrib/delta/native", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
 object_store_opendal = { version = "0.56.0", optional = true }
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
@@ -100,6 +103,10 @@ default = ["hdfs-opendal"]
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
+# Delta Lake integration. When enabled, links the `comet-contrib-delta` crate
+# into `libcomet` and activates the `OpStruct::DeltaScan` dispatcher arm.
+# Default builds carry zero Delta surface.
+contrib-delta = ["dep:comet-contrib-delta"]
 
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]

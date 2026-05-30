@@ -53,6 +53,10 @@ message Operator {
     Explode explode = 114;
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
+    // Delta Lake scan. Wire format used by `contrib/delta/`. Only decoded when
+    // core is built with `--features contrib-delta`; in default builds the
+    // dispatcher arm is `#[cfg]`-stubbed out so the contrib has zero runtime cost.
+    DeltaScan delta_scan = 117;
   }
 }
 
@@ -275,6 +279,165 @@ message IcebergDeleteFile {
 
   // // Total file size from the manifest entry, used to skip stat/HEAD calls
   uint64 file_size_in_bytes = 5;
+}
+
+// =====================================================================================
+// Delta Lake scan messages -- consumed by the optional `contrib/delta/` integration.
+// Field numbers must remain stable; older serialised plans encode them on the wire.
+// =====================================================================================
+
+// Per-scan invariants. Lives at the head of every Delta scan operator payload.
+message DeltaScanCommon {
+  // Required schema (projection applied to data schema).
+  repeated SparkStructField required_schema = 1;
+  // Full data schema of the table (on-disk parquet schema).
+  repeated SparkStructField data_schema = 2;
+  // Partition columns (stored in add actions, not in file paths).
+  repeated SparkStructField partition_schema = 3;
+  // Pushed-down data filters (Catalyst translated).
+  repeated spark.spark_expression.Expr data_filters = 4;
+  // Column projection indices into (data_schema ++ partition_schema).
+  repeated int64 projection_vector = 5;
+  string session_timezone = 6;
+  bool case_sensitive = 7;
+  // Cloud storage credentials / options, keyed by Hadoop-style names.
+  map<string, string> object_store_options = 8;
+  // Root path of the Delta table (file:// or s3://...).
+  string table_root = 9;
+  // Optional snapshot version; unset = latest.
+  optional uint64 snapshot_version = 10;
+  // Per-file parallelism knob within a single Spark task.
+  uint32 data_file_concurrency_limit = 11;
+  // Informational label for debug output.
+  string source = 12;
+  // Logical->physical column mapping (column_mapping_mode = id or name).
+  repeated DeltaColumnMapping column_mappings = 13;
+  optional string materialized_row_id_column_name = 14;
+  optional string materialized_row_commit_version_column_name = 15;
+  // When true the DataSourceExec swallows object-store NotFound errors as empty
+  // streams; matches Spark's `spark.sql.files.ignoreMissingFiles=true` semantics.
+  bool ignore_missing_files = 16;
+  // When true the native parquet reader matches Spark schema fields to parquet
+  // file fields by `PARQUET:field_id` metadata rather than by name. Used by
+  // Delta tables with `delta.columnMapping.mode = id` (the contrib copies
+  // `delta.columnMapping.id` to `PARQUET:field_id` on each schema field).
+  bool use_field_id = 17;
+  // Delta synthetic columns to append to the scan output via
+  // `DeltaSyntheticColumnsExec`. The corresponding columns must NOT appear in
+  // `data_schema` or `required_schema` -- they're synthesised at exec time
+  // from row positions / DV bitmaps and inserted after the parquet read.
+  bool emit_row_index = 18;
+  bool emit_is_row_deleted = 19;
+  // Row-tracking synthesis (row_id = baseRowId + physical_row_index,
+  // row_commit_version = defaultRowCommitVersion). Per-task baseRowId /
+  // defaultRowCommitVersion travel on `DeltaScanTask` (fields 6 + 7).
+  bool emit_row_id = 20;
+  bool emit_row_commit_version = 21;
+  // When synthetic columns aren't a contiguous suffix of `required_schema`, this
+  // sequence tells the native dispatcher how to project the final output. Each
+  // entry is an index into [parquet_output, appended_synthetics] -- positive
+  // means a column from the (stripped) parquet read at that index; the synthetic
+  // tail comes after, in the canonical row_index, is_row_deleted, row_id,
+  // row_commit_version order. Empty = synthetics are already a suffix; no
+  // reorder needed.
+  repeated int32 final_output_indices = 22;
+  // Override for the row_index column name. Defaults to "__delta_internal_row_index"
+  // when empty. Delta plans that read `_metadata.row_index` from row-tracking-enabled
+  // tables expose the row index as `_tmp_metadata_row_index` (the Delta-internal
+  // physical name from `DeltaParquetFileFormat.TMP_METADATA_ROW_INDEX_COLUMN_NAME`)
+  // rather than the canonical `__delta_internal_row_index`. Setting this lets the
+  // contrib produce a column with the alternate name from the same native synthesis.
+  string row_index_column_alias = 23;
+  // Spark `_metadata.*` virtual columns the scan must surface. Delta's
+  // `PreprocessTableWithDVs` strategy and the row-tracking projection both inject
+  // these into the FileScan output: `file_path`, `file_name`, `file_size`,
+  // `file_block_start`, `file_block_length`, `file_modification_time`. Each
+  // appears as a flat top-level column in the scan's output schema. Native
+  // synthesizes them per-task from `DeltaScanTask` data (file_path, file_size,
+  // modification_time) and per-batch derivations. Empty list = no metadata
+  // columns to emit. Names are emitted in the order given, appended AFTER
+  // synthetic columns (row_index / is_row_deleted / row_id / row_commit_version)
+  // unless `final_output_indices` reorders them.
+  repeated string metadata_column_names = 24;
+}
+
+// Operator payload for a Delta scan.
+message DeltaScan {
+  DeltaScanCommon common = 1;
+  repeated DeltaScanTask tasks = 2;
+  // Absolute URL of the Delta table root, used by the executor to resolve relative
+  // ("u" storage-type) DV paths via kernel's `absolute_path` -- kernel joins
+  // `_delta_log/deletion_vectors/<uuid>` onto this, so it MUST end with `/` (the
+  // driver normalises before sending). Empty for tables with no DVs (executor
+  // simply never decodes), but populate it whenever known.
+  string table_root = 3;
+}
+
+message DeltaScanTask {
+  string file_path = 1;
+  uint64 file_size = 2;
+  optional uint64 record_count = 3;
+  repeated DeltaPartitionValue partition_values = 4;
+  // Field 5 (repeated uint64 deleted_row_indexes) removed in the Iceberg-style DV refactor:
+  // the driver used to materialise the FULL deletion-vector bitmap to a Vec<u64> here, which
+  // could reach ~1 GB for a single DV with ~99 M deleted rows (DELETE/MERGE on huge tables).
+  // The executor now resolves the DV itself via the `dv` field below -- matches the contrib's
+  // own Iceberg integration (IcebergScanCommon.delete_files_pool + IcebergFileScanTask.delete_files_idx).
+  reserved 5;
+  reserved "deleted_row_indexes";
+  optional int64 base_row_id = 6;
+  optional int64 default_row_commit_version = 7;
+  // File-splitting byte range. Both unset = read whole file.
+  optional uint64 byte_range_start = 8;
+  optional uint64 byte_range_end = 9;
+  // File modification time in epoch milliseconds. Surfaced through Spark's
+  // `_metadata.file_modification_time` column when emit_metadata_columns
+  // includes "file_modification_time". Unset = 0 (rare; AddFile usually
+  // carries one).
+  optional int64 modification_time = 10;
+  // Deletion-vector descriptor for this file (absent = no DV applies). Mirrors
+  // delta_kernel::actions::deletion_vector::DeletionVectorDescriptor. The executor reads
+  // the actual DV bitmap on-task via dv_reader::read_dv_indexes -- the driver only ships
+  // the path/offset/size, so the per-scan-exec heap stays KB-scale regardless of DV size.
+  optional DeltaDvDescriptor dv = 11;
+}
+
+// Mirrors delta_kernel::actions::deletion_vector::DeletionVectorDescriptor. Carries everything
+// an executor needs to read + decode the DV bitmap, without materialising it on the driver.
+message DeltaDvDescriptor {
+  // "u" (UUID-named, relative to <table_root>/_delta_log/deletion_vectors/)
+  // "p" (absolute URI in path_or_inline_dv)
+  // "i" (inline -- bytes carried in inline_bytes)
+  string storage_type = 1;
+  // For "u": Delta-encoded UUID path component. For "p": absolute URI. For "i": empty.
+  string path_or_inline_dv = 2;
+  // Byte offset within the DV file ("u"/"p" only). Absent ≡ 0.
+  optional uint64 offset = 3;
+  // Size in bytes of the serialised RoaringBitmap entry.
+  uint64 size_in_bytes = 4;
+  // Number of deleted rows (descriptor metadata; the executor doesn't need to count).
+  uint64 cardinality = 5;
+  // Inline-DV bytes (storage_type="i" only). Empty for "u"/"p".
+  bytes inline_bytes = 6;
+}
+
+message DeltaPartitionValue {
+  string name = 1;
+  optional string value = 2;
+}
+
+// JNI return value from planDeltaScan -- the list of tasks for a given snapshot.
+message DeltaScanTaskList {
+  uint64 snapshot_version = 1;
+  string table_root = 2;
+  repeated DeltaScanTask tasks = 3;
+  repeated string unsupported_features = 4;
+  repeated DeltaColumnMapping column_mappings = 5;
+}
+
+message DeltaColumnMapping {
+  string logical_name = 1;
+  string physical_name = 2;
 }
 
 message Projection {

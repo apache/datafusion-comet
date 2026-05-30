@@ -21,6 +21,15 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+// Glue that wires the optional Delta integration into core's plan-tree builder.
+// Compiled only under `--features contrib-delta`; default builds carry zero Delta
+// surface. The bulk of the Delta logic lives in the `comet-contrib-delta` crate --
+// this module is just the bridge that reaches into core's `pub(crate)` planner
+// helpers (`create_expr`, `init_datasource_exec`, `prepare_object_store_with_configs`)
+// and calls into that crate.
+#[cfg(feature = "contrib-delta")]
+mod delta_scan;
+
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
@@ -1509,6 +1518,27 @@ impl PhysicalPlanner {
                         vec![],
                     )),
                 ))
+            }
+            OpStruct::DeltaScan(scan) => {
+                // Delta Lake scan -- handled by the optional `contrib/delta/` integration.
+                // The dispatcher arm exists unconditionally so a default build that receives
+                // a Delta-shaped plan from a misconfigured driver gets a clear error instead
+                // of a "no match" decode failure.
+                #[cfg(not(feature = "contrib-delta"))]
+                {
+                    let _ = scan;
+                    Err(GeneralError(
+                        "Received a DeltaScan operator but core was built without the \
+                         `contrib-delta` Cargo feature. Rebuild with both \
+                         `-Pcontrib-delta` (Maven) and `--features contrib-delta` (Cargo) \
+                         to enable Delta Lake support."
+                            .into(),
+                    ))
+                }
+                #[cfg(feature = "contrib-delta")]
+                {
+                    delta_scan::plan_delta_scan(self, spark_plan, scan)
+                }
             }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
@@ -3102,7 +3132,13 @@ pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnu
     }
 }
 
-fn convert_spark_types_to_arrow_schema(
+/// Convert Comet's `SparkStructField` protos to an Arrow [`SchemaRef`].
+///
+/// `pub(crate)` so the optional `contrib-delta` scan module
+/// (`planner/delta_scan.rs`) can reuse the exact same Spark→Arrow schema
+/// mapping that the core scan path uses, keeping the two in lockstep. Kept
+/// crate-private — it is not part of any public API.
+pub(crate) fn convert_spark_types_to_arrow_schema(
     spark_types: &[spark_operator::SparkStructField],
 ) -> SchemaRef {
     let arrow_fields = spark_types
