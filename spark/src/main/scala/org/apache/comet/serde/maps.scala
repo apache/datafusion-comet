@@ -134,6 +134,10 @@ object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
 }
 
 object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from_entries") {
+  // The codegen dispatcher does not yet correctly evaluate map-typed outputs, so keep the
+  // Incompatible (BinaryType key/value) case falling back to Spark rather than routing it.
+  override def allowIncompatCodegenDispatch: Boolean = false
+
   val keyUnsupportedReason =
     "`BinaryType` is not supported as a map key in `map_from_entries`"
   val valueUnsupportedReason =

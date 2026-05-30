@@ -737,13 +737,26 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             }
             handler.convert(expr, inputs, binding)
           } else {
-            val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
-            withFallbackReason(
-              expr,
-              s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
-                s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
-                s"${CometConf.COMPAT_GUIDE}.")
-            None
+            // The native path diverges from Spark for this expression. Rather than fall back to
+            // Spark for the whole projection, prefer routing the expression through the JVM
+            // codegen dispatcher so it evaluates correctly inside the Comet pipeline. Only fall
+            // back when the dispatcher cannot handle it (or is disabled), or when the expression
+            // opts out of this routing.
+            val dispatched =
+              if (handler.allowIncompatCodegenDispatch) {
+                CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+              } else {
+                None
+              }
+            dispatched.orElse {
+              val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+              withFallbackReason(
+                expr,
+                s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
+                  s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
+                  s"${CometConf.COMPAT_GUIDE}.")
+              None
+            }
           }
         case Compatible(notes) =>
           if (notes.isDefined) {

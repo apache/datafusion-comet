@@ -368,6 +368,10 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 }
 
 object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
+  // Spark-compatible regexp behavior is delivered by separate work; do not pre-empt it by routing
+  // the Incompatible result through the JVM codegen dispatcher.
+  override def allowIncompatCodegenDispatch: Boolean = false
+
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Regexp pattern may not be compatible with Spark")
 
@@ -418,6 +422,10 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
  */
 object CometStringSplit extends CometExpressionSerde[StringSplit] {
 
+  // Spark-compatible regexp behavior is delivered by separate work; do not pre-empt it by routing
+  // the Incompatible result through the JVM codegen dispatcher.
+  override def allowIncompatCodegenDispatch: Boolean = false
+
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Regex engine differences between Java and Rust")
 
@@ -443,6 +451,10 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 }
 
 object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
+
+  // Spark-compatible json behavior is delivered by separate work; do not pre-empt it by routing
+  // the Incompatible result through the JVM codegen dispatcher.
+  override def allowIncompatCodegenDispatch: Boolean = false
 
   private val incompatReason =
     "Spark allows single-quoted JSON and unescaped control characters which Comet does not" +
