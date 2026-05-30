@@ -26,8 +26,9 @@ configuration entry:
 - `java` (default): routes evaluation through Comet's Arrow-direct codegen
   dispatcher so Spark's own `doGenCode` for the expression runs inside the Comet
   pipeline. Byte-exact compatibility with Spark, at the cost of a JNI roundtrip
-  per batch. Requires `spark.comet.exec.scalaUDF.codegen.enabled=true`; otherwise
-  the operator falls back to Spark.
+  per batch. This rides the codegen dispatcher
+  (`spark.comet.exec.scalaUDF.codegen.enabled`, enabled by default). If the
+  dispatcher is disabled, the operator falls back to Spark.
 - `rust`: native DataFusion implementation. Faster, but has known compatibility
   gaps with Spark on certain inputs. An expression or input case with no native
   implementation falls back to the `java` engine.
