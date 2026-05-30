@@ -72,7 +72,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Flatten] -> CometFlatten,
     classOf[GetArrayItem] -> CometGetArrayItem,
     classOf[Size] -> CometSize,
-    classOf[ArraysZip] -> CometArraysZip)
+    classOf[ArraysZip] -> CometArraysZip,
+    classOf[Sequence] -> CometSequence)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -142,7 +143,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[UnaryMinus] -> CometUnaryMinus,
     classOf[Unhex] -> CometUnhex,
     classOf[Abs] -> CometAbs,
-    classOf[Bin] -> CometScalarFunction("bin"))
+    classOf[Bin] -> CometScalarFunction("bin"),
+    classOf[Hypot] -> CometHypot,
+    classOf[NaNvl] -> CometNaNvl,
+    classOf[BRound] -> CometBRound,
+    classOf[Conv] -> CometConv,
+    classOf[Log1p] -> CometLog1p,
+    classOf[Pmod] -> CometPmod,
+    classOf[WidthBucket] -> CometWidthBucket,
+    classOf[UnaryPositive] -> CometUnaryPositive)
 
   private[comet] val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[GetMapValue] -> CometMapExtract,
@@ -183,6 +192,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[GetJsonObject] -> CometGetJsonObject,
       classOf[InitCap] -> CometInitCap,
       classOf[Length] -> CometLength,
+      classOf[Levenshtein] -> CometLevenshtein,
       classOf[Like] -> CometLike,
       classOf[Lower] -> CometLower,
       classOf[OctetLength] -> CometScalarFunction("octet_length"),
@@ -206,7 +216,17 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Right] -> CometRight,
       classOf[Substring] -> CometSubstring,
       classOf[SubstringIndex] -> CometSubstringIndex,
-      classOf[Upper] -> CometUpper)
+      classOf[Upper] -> CometUpper,
+      classOf[Elt] -> CometElt,
+      classOf[FindInSet] -> CometFindInSet,
+      classOf[FormatNumber] -> CometFormatNumber,
+      classOf[FormatString] -> CometFormatString,
+      classOf[Overlay] -> CometOverlay,
+      classOf[SoundEx] -> CometSoundEx,
+      classOf[StringLocate] -> CometStringLocate,
+      classOf[UnBase64] -> CometUnBase64,
+      classOf[ToCharacter] -> CometToCharacter,
+      classOf[ToNumber] -> CometToNumber)
 
   private val bitwiseExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[BitwiseAnd] -> CometBitwiseAnd,
