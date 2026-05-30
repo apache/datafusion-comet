@@ -171,6 +171,8 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case DateType => classOf[DateDayVector].getName
     case TimestampType => classOf[TimeStampMicroTZVector].getName
     case TimestampNTZType => classOf[TimeStampMicroVector].getName
+    case _: YearMonthIntervalType => classOf[IntervalYearVector].getName
+    case _: DayTimeIntervalType => classOf[DurationVector].getName
     case _: ArrayType => classOf[ListVector].getName
     case _: StructType => classOf[StructVector].getName
     case _: MapType => classOf[MapVector].getName
@@ -196,8 +198,10 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case BooleanType =>
       OutputEmit("", s"$targetVec.set($idx, $source ? 1 : 0);")
     case ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType | DateType |
-        TimestampType | TimestampNTZType =>
+        TimestampType | TimestampNTZType | _: YearMonthIntervalType | _: DayTimeIntervalType =>
       // Spark codegen emits the matching primitive Java type; Arrow `set` overloads accept it.
+      // YearMonthIntervalType -> IntervalYearVector.set(int, int months);
+      // DayTimeIntervalType -> DurationVector.set(int, long micros).
       OutputEmit("", s"$targetVec.set($idx, $source);")
     case dt: DecimalType =>
       // DecimalOutputShortFastPath: precision <= 18 fits in a signed long, so pass the unscaled
