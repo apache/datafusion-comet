@@ -198,19 +198,20 @@
 
 ### conversion_funcs
 
-- [ ] bigint
-- [ ] binary
-- [ ] boolean
+- [x] bigint
+- [x] binary
+- [x] boolean
 - [x] cast
-- [ ] date
-- [ ] decimal
-- [ ] double
-- [ ] float
-- [ ] int
-- [ ] smallint
-- [ ] string
-- [ ] timestamp
-- [ ] tinyint
+  - Spark registers the type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `decimal`, `double`, `float`, `int`, `smallint`, `string`, `timestamp`, `tinyint`) as cast aliases. Each lowers to the same `Cast` node, so Comet handles it via the `cast` implementation with the same compatibility profile.
+- [x] date
+- [x] decimal
+- [x] double
+- [x] float
+- [x] int
+- [x] smallint
+- [x] string
+- [x] timestamp
+- [x] tinyint
 
 ### csv_funcs
 
@@ -304,12 +305,16 @@
 
 ### generator_funcs
 
-- [ ] explode
+- [x] explode
+  - Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
 - [ ] explode_outer
+  - Same `CometExplodeExec` path as `explode`, but the `outer=true` case is `Incompatible` (empty arrays are not preserved as null outputs) and falls back unless `spark.comet.expr.allowIncompatible=true` ([datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
 - [ ] inline
 - [ ] inline_outer
-- [ ] posexplode
+- [x] posexplode
+  - Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), like `explode`. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
 - [ ] posexplode_outer
+  - Same `CometExplodeExec` path as `posexplode`, but the `outer=true` case is `Incompatible` and falls back unless `spark.comet.expr.allowIncompatible=true` ([datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
 - [ ] stack
 
 ### hash_funcs
