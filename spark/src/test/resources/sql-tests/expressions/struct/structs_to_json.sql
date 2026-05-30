@@ -15,6 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.json.engine=rust
 -- ConfigMatrix: spark.sql.jsonGenerator.ignoreNullFields=false,true
 
 statement
@@ -30,8 +31,10 @@ SELECT to_json(named_struct('a', a, 'b', b, 'f', f, 'd', d)) FROM test_to_json
 query
 SELECT to_json(named_struct('a', 1, 'b', 'hello'))
 
-query expect_fallback(StructsToJson with options is not supported)
+-- to_json with options and with array fields are not supported by the native (rust) path, so they
+-- route to the codegen (java) engine, which runs Spark's own implementation inside Comet.
+query
 SELECT to_json(named_struct('a', a, 'b', b), map('timestampFormat', 'dd/MM/yyyy')) FROM test_to_json
 
-query expect_fallback(Struct type: StructType(StructField(a,IntegerType,true),StructField(b,ArrayType(StringType,true),false)) contains unsupported types)
+query
 SELECT to_json(named_struct('a', a, 'b', array(b))) FROM test_to_json

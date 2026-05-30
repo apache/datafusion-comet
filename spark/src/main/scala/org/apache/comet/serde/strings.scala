@@ -442,7 +442,13 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
   }
 }
 
-object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
+/**
+ * `get_json_object` runs on the native (rust) engine when selected, where it is incompatible with
+ * Spark for single-quoted JSON and unescaped control characters. Otherwise it rides the codegen
+ * dispatcher (the default `java` engine) via [[CometCodegenDispatch]], which runs Spark's own
+ * implementation for byte-exact results.
+ */
+object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
 
   private val incompatReason =
     "Spark allows single-quoted JSON and unescaped control characters which Comet does not" +
@@ -450,33 +456,26 @@ object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
-  override def getSupportLevel(expr: GetJsonObject): SupportLevel = {
-    JsonRoute.choose("get_json_object") match {
-      case JsonRoute.Native => Incompatible(Some(incompatReason))
-      case JsonRoute.JvmCodegen => Compatible(None)
-      case JsonRoute.Fallback(reason) => Unsupported(Some(reason))
-    }
-  }
+  override def getSupportLevel(expr: GetJsonObject): SupportLevel =
+    if (JsonEngine.nativeSelected) Incompatible(Some(incompatReason))
+    else super.getSupportLevel(expr)
 
   override def convert(
       expr: GetJsonObject,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] =
-    JsonRoute.choose("get_json_object") match {
-      case JsonRoute.Native =>
-        val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
-        val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
-        val optExpr = scalarFunctionExprToProtoWithReturnType(
-          "get_json_object",
-          expr.dataType,
-          false,
-          jsonExpr,
-          pathExpr)
-        optExprWithFallbackReason(optExpr, expr, expr.json, expr.path)
-      case JsonRoute.JvmCodegen => CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
-      case JsonRoute.Fallback(reason) =>
-        withFallbackReason(expr, reason)
-        None
+    if (JsonEngine.nativeSelected) {
+      val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
+      val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
+      val optExpr = scalarFunctionExprToProtoWithReturnType(
+        "get_json_object",
+        expr.dataType,
+        false,
+        jsonExpr,
+        pathExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.json, expr.path)
+    } else {
+      super.convert(expr, inputs, binding)
     }
 }
 

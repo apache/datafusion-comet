@@ -32,47 +32,13 @@ import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 /**
- * Routing decision for a JSON expression. Each JSON serde delegates to [[JsonRoute.choose]] to
- * pick between the native Rust path and the Arrow-direct codegen dispatcher (which
- * Janino-compiles Spark's own `doGenCode` for the expression).
+ * Whether the native (rust) JSON engine is selected. When it is not, or when a JSON expression
+ * has no native implementation for a given case, the serde falls through to the codegen
+ * dispatcher (the default `java` engine) via [[CometCodegenDispatch]].
  */
-private[serde] sealed trait JsonRoute
-private[serde] object JsonRoute {
-
-  /** Run the native DataFusion JSON implementation. */
-  case object Native extends JsonRoute
-
-  /**
-   * Route through the codegen dispatcher. Spark's `doGenCode` for the expression compiles into a
-   * per-batch kernel, so semantics match Spark exactly.
-   */
-  case object JvmCodegen extends JsonRoute
-
-  /** Decline to run natively; the operator falls back to Spark with the given reason. */
-  case class Fallback(reason: String) extends JsonRoute
-
-  /**
-   * Pick a route given the user's config. `engine=rust` (default) runs the native path.
-   * `engine=java` routes through the codegen dispatcher when
-   * [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] is true; otherwise Spark fallback.
-   */
-  def choose(exprName: String): JsonRoute = {
-    val engine = CometConf.COMET_JSON_ENGINE.get()
-    val codegenEnabled = CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()
-    engine match {
-      case CometConf.JSON_ENGINE_RUST => Native
-      case CometConf.JSON_ENGINE_JAVA =>
-        if (codegenEnabled) {
-          JvmCodegen
-        } else {
-          Fallback(
-            s"$exprName requires ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true when " +
-              s"${CometConf.COMET_JSON_ENGINE.key}=${CometConf.JSON_ENGINE_JAVA}. " +
-              "The codegen dispatcher is experimental and disabled by default.")
-        }
-      case other => Fallback(s"Unknown ${CometConf.COMET_JSON_ENGINE.key}=$other")
-    }
-  }
+private[serde] object JsonEngine {
+  def nativeSelected: Boolean =
+    CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_RUST
 }
 
 object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
@@ -158,62 +124,45 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
   }
 }
 
-object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
+/**
+ * `to_json` runs on the native (rust) engine when selected and the child is a struct of supported
+ * types with no options. Any other case (unsupported types, options, or the default `java`
+ * engine) falls through to the codegen dispatcher via [[CometCodegenDispatch]], which runs
+ * Spark's own implementation.
+ */
+object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
 
-  override def getSupportLevel(expr: StructsToJson): SupportLevel = {
-    JsonRoute.choose("to_json") match {
-      case JsonRoute.JvmCodegen =>
-        expr.child.dataType match {
-          case s: StructType if s.fields.forall(f => isSupportedType(f.dataType)) =>
-            Compatible(None)
-          case _ =>
-            Unsupported(Some("to_json: only StructType with supported fields is supported"))
-        }
-      case JsonRoute.Native =>
-        if (expr.options.nonEmpty) {
-          return Unsupported(Some("StructsToJson with options is not supported"))
-        }
-        val dataType = expr.child.dataType
-        if (!isSupportedType(dataType)) {
-          return Unsupported(Some(s"Struct type: $dataType contains unsupported types"))
-        }
-        Compatible()
-      case JsonRoute.Fallback(reason) => Unsupported(Some(reason))
-    }
-  }
+  private def nativeSupported(expr: StructsToJson): Boolean =
+    JsonEngine.nativeSelected && expr.options.isEmpty && isSupportedType(expr.child.dataType)
+
+  override def getSupportLevel(expr: StructsToJson): SupportLevel =
+    if (nativeSupported(expr)) Compatible() else super.getSupportLevel(expr)
 
   override def convert(
       expr: StructsToJson,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] =
-    JsonRoute.choose("to_json") match {
-      case JsonRoute.JvmCodegen => CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
-      case JsonRoute.Fallback(reason) =>
-        withFallbackReason(expr, reason)
-        None
-      case JsonRoute.Native =>
-        if (expr.options.nonEmpty) {
-          withFallbackReason(expr, "StructsToJson with options is not supported")
-          return None
-        }
-        val ignoreNullFields = SQLConf.get.jsonGeneratorIgnoreNullFields
-        exprToProtoInternal(expr.child, inputs, binding) match {
-          case Some(p) =>
-            val toJson = ExprOuterClass.ToJson
+    if (nativeSupported(expr)) {
+      val ignoreNullFields = SQLConf.get.jsonGeneratorIgnoreNullFields
+      exprToProtoInternal(expr.child, inputs, binding) match {
+        case Some(p) =>
+          val toJson = ExprOuterClass.ToJson
+            .newBuilder()
+            .setChild(p)
+            .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+            .setIgnoreNullFields(ignoreNullFields)
+            .build()
+          Some(
+            ExprOuterClass.Expr
               .newBuilder()
-              .setChild(p)
-              .setTimezone(expr.timeZoneId.getOrElse("UTC"))
-              .setIgnoreNullFields(ignoreNullFields)
-              .build()
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setToJson(toJson)
-                .build())
-          case _ =>
-            withFallbackReason(expr, expr.child)
-            None
-        }
+              .setToJson(toJson)
+              .build())
+        case _ =>
+          withFallbackReason(expr, expr.child)
+          None
+      }
+    } else {
+      super.convert(expr, inputs, binding)
     }
 
   def isSupportedType(dt: DataType): Boolean = {
@@ -236,26 +185,27 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
   }
 }
 
-object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
+/**
+ * `from_json` runs on the native (rust) engine when selected and the target schema is one the
+ * native path supports, where it is incompatible (partially implemented). Any other case (a
+ * schema the native path does not support, or the default `java` engine) falls through to the
+ * codegen dispatcher via [[CometCodegenDispatch]], which runs Spark's own implementation.
+ */
+object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Partially implemented and not comprehensively tested")
+    "The native (rust) engine is partially implemented and not comprehensively tested")
 
-  override def getUnsupportedReasons(): Seq[String] = Seq("Requires an explicit schema")
+  private def nativeSupported(expr: JsonToStructs): Boolean =
+    JsonEngine.nativeSelected && expr.schema != null && isSupportedSchema(expr.schema)
 
-  override def getSupportLevel(expr: JsonToStructs): SupportLevel = {
-    JsonRoute.choose("from_json") match {
-      case JsonRoute.JvmCodegen =>
-        expr.schema match {
-          case s: StructType if isSupportedSchema(s) => Compatible(None)
-          case _ => Unsupported(Some("from_json: only StructType schemas are supported"))
-        }
-      case JsonRoute.Native =>
-        // this feature is partially implemented and not comprehensively tested yet
-        Incompatible()
-      case JsonRoute.Fallback(reason) => Unsupported(Some(reason))
+  override def getSupportLevel(expr: JsonToStructs): SupportLevel =
+    if (nativeSupported(expr)) {
+      // the native path is partially implemented and not comprehensively tested yet
+      Incompatible()
+    } else {
+      super.getSupportLevel(expr)
     }
-  }
 
   override def convert(
       expr: JsonToStructs,
@@ -267,46 +217,38 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
       return None
     }
 
-    JsonRoute.choose("from_json") match {
-      case JsonRoute.JvmCodegen => CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
-      case JsonRoute.Fallback(reason) =>
-        withFallbackReason(expr, reason)
-        None
-      case JsonRoute.Native =>
-        if (!isSupportedSchema(expr.schema)) {
-          withFallbackReason(expr, "from_json: Unsupported schema type")
-          return None
-        }
+    if (!nativeSupported(expr)) {
+      return super.convert(expr, inputs, binding)
+    }
 
-        val options = expr.options
-        if (options.nonEmpty) {
-          val mode = options.getOrElse("mode", "PERMISSIVE")
-          if (mode != "PERMISSIVE") {
-            withFallbackReason(expr, s"from_json: Only PERMISSIVE mode supported, got: $mode")
-            return None
-          }
-          val knownOptions = Set("mode")
-          val unknownOpts = options.keySet -- knownOptions
-          if (unknownOpts.nonEmpty) {
-            withFallbackReason(
-              expr,
-              s"from_json: Ignoring unsupported options: ${unknownOpts.mkString(", ")}")
-          }
-        }
+    val options = expr.options
+    if (options.nonEmpty) {
+      val mode = options.getOrElse("mode", "PERMISSIVE")
+      if (mode != "PERMISSIVE") {
+        withFallbackReason(expr, s"from_json: Only PERMISSIVE mode supported, got: $mode")
+        return None
+      }
+      val knownOptions = Set("mode")
+      val unknownOpts = options.keySet -- knownOptions
+      if (unknownOpts.nonEmpty) {
+        withFallbackReason(
+          expr,
+          s"from_json: Ignoring unsupported options: ${unknownOpts.mkString(", ")}")
+      }
+    }
 
-        // Convert child expression and schema to protobuf
-        for {
-          childProto <- exprToProtoInternal(expr.child, inputs, binding)
-          schemaProto <- serializeDataType(expr.schema)
-        } yield {
-          val fromJson = ExprOuterClass.FromJson
-            .newBuilder()
-            .setChild(childProto)
-            .setSchema(schemaProto)
-            .setTimezone(expr.timeZoneId.getOrElse("UTC"))
-            .build()
-          ExprOuterClass.Expr.newBuilder().setFromJson(fromJson).build()
-        }
+    // Convert child expression and schema to protobuf
+    for {
+      childProto <- exprToProtoInternal(expr.child, inputs, binding)
+      schemaProto <- serializeDataType(expr.schema)
+    } yield {
+      val fromJson = ExprOuterClass.FromJson
+        .newBuilder()
+        .setChild(childProto)
+        .setSchema(schemaProto)
+        .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+        .build()
+      ExprOuterClass.Expr.newBuilder().setFromJson(fromJson).build()
     }
   }
 

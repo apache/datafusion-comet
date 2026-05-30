@@ -19,16 +19,18 @@ under the License.
 
 # JSON Compatibility
 
-Comet supports two engines for evaluating JSON expressions, selected by the
-`spark.comet.exec.json.engine` configuration entry:
+Comet supports two engines for evaluating JSON expressions (`get_json_object`,
+`from_json`, `to_json`), selected by the `spark.comet.exec.json.engine`
+configuration entry:
 
-- `rust` (default): native DataFusion implementation. Fast, but has known
-  compatibility gaps with Spark on certain inputs.
-- `java` (experimental): routes evaluation through Comet's Arrow-direct codegen
+- `java` (default): routes evaluation through Comet's Arrow-direct codegen
   dispatcher so Spark's own `doGenCode` for the expression runs inside the Comet
-  pipeline. Byte-exact compatibility, at the cost of a JNI roundtrip per batch.
-  Requires `spark.comet.exec.scalaUDF.codegen.enabled=true`; otherwise the
-  operator falls back to Spark.
+  pipeline. Byte-exact compatibility with Spark, at the cost of a JNI roundtrip
+  per batch. Requires `spark.comet.exec.scalaUDF.codegen.enabled=true`; otherwise
+  the operator falls back to Spark.
+- `rust`: native DataFusion implementation. Faster, but has known compatibility
+  gaps with Spark on certain inputs. An expression or input case with no native
+  implementation falls back to the `java` engine.
 
 ## Expression coverage
 
@@ -38,8 +40,13 @@ Comet supports two engines for evaluating JSON expressions, selected by the
 | `from_json`       | Supported with restrictions (PERMISSIVE mode only, simple schema types only) | Compatible    |
 | `to_json`         | Supported for struct inputs only, no options                                 | Compatible    |
 
-## When to use the `java` engine
+When the `rust` engine is selected but an expression or input case has no native
+implementation (for example `to_json` with map or array inputs, or `from_json`
+with an unsupported schema), Comet falls back to the `java` engine for that case.
 
-- You hit a compatibility gap in the `rust` engine and need exact Spark output.
-- You can absorb the JNI overhead. Typically negligible relative to JSON parse
-  cost, but verify with your own benchmarks.
+## When to use the `rust` engine
+
+- You want the faster native path and your inputs avoid the known compatibility
+  gaps above.
+- Enable it with `spark.comet.exec.json.engine=rust`. Cases the native path does
+  not cover still fall back to the `java` engine.

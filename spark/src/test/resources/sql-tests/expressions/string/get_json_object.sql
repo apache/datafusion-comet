@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Config: spark.comet.expression.GetJsonObject.allowIncompatible=true
+-- Config: spark.comet.exec.json.engine=rust
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement

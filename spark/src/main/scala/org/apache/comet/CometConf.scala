@@ -368,17 +368,18 @@ object CometConf extends ShimCometConf {
   val COMET_JSON_ENGINE: ConfigEntry[String] =
     conf("spark.comet.exec.json.engine")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Selects the engine used to evaluate supported JSON expressions. " +
-          s"`$JSON_ENGINE_RUST` uses the native DataFusion JSON implementation. " +
-          s"`$JSON_ENGINE_JAVA` is experimental and routes through a JVM-side UDF " +
-          "that delegates to Spark's expression classes for byte-exact compatibility, " +
-          "at the cost of JNI roundtrips per batch. Expressions routed when set to java: " +
-          "get_json_object, from_json, to_json.")
+      .doc("Selects the engine used to evaluate supported JSON expressions " +
+        "(get_json_object, from_json, to_json). " +
+        s"`$JSON_ENGINE_JAVA` (default) routes through the codegen dispatcher, which runs " +
+        "Spark's own expression code inside the Comet pipeline for byte-exact compatibility, " +
+        "at the cost of JNI roundtrips per batch. " +
+        s"`$JSON_ENGINE_RUST` uses the native DataFusion JSON implementation, which is faster " +
+        "but has known compatibility gaps; an expression or case with no native " +
+        s"implementation falls back to the `$JSON_ENGINE_JAVA` engine.")
       .stringConf
       .transform(_.toLowerCase(Locale.ROOT))
       .checkValues(Set(JSON_ENGINE_RUST, JSON_ENGINE_JAVA))
-      .createWithDefault(JSON_ENGINE_RUST)
+      .createWithDefault(JSON_ENGINE_JAVA)
 
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
