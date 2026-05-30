@@ -83,7 +83,7 @@ under the License.
     <semanticdb.version>4.13.6</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
-    <testcontainers.version>1.21.0</testcontainers.version>
+    <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
@@ -474,6 +474,23 @@ under the License.
         <groupId>org.testcontainers</groupId>
         <artifactId>minio</artifactId>
         <version>${testcontainers.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <!--
+        Override docker-java transitive (testcontainers 1.21.x pins 3.4.2, which speaks Docker
+        API 1.32 max). Modern daemons (Colima, OrbStack, recent Docker Desktop) require API
+        >= 1.40. docker-java 3.7.0+ defaults to API 1.44.
+      -->
+      <dependency>
+        <groupId>com.github.docker-java</groupId>
+        <artifactId>docker-java-api</artifactId>
+        <version>3.7.1</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.github.docker-java</groupId>
+        <artifactId>docker-java-transport-zerodep</artifactId>
+        <version>3.7.1</version>
         <scope>test</scope>
       </dependency>
       <!--
