@@ -1945,15 +1945,18 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
     Some(CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED)
   }
 
-  private val unmatchedDuplicationReason =
-    "BNLJ with preserved-build side (LeftOuter+BuildLeft, RightOuter+BuildRight, FullOuter)" +
-      " duplicates unmatched rows across partitions because the broadcast side is replicated"
+  private val broadcastBuildReplicationReason =
+    "BNLJ combinations that emit per-build-row results need a cross-partition merge that" +
+      " DataFusion's NestedLoopJoinExec does not provide. Affects: LeftOuter+BuildLeft," +
+      " RightOuter+BuildRight, FullOuter, LeftSemi+BuildLeft, LeftAnti+BuildLeft."
 
   override def getSupportLevel(op: BroadcastNestedLoopJoinExec): SupportLevel =
     (op.joinType, op.buildSide) match {
-      case (LeftOuter, BuildLeft) => Unsupported(Some(unmatchedDuplicationReason))
-      case (RightOuter, BuildRight) => Unsupported(Some(unmatchedDuplicationReason))
-      case (FullOuter, _) => Unsupported(Some(unmatchedDuplicationReason))
+      case (LeftOuter, BuildLeft) => Unsupported(Some(broadcastBuildReplicationReason))
+      case (RightOuter, BuildRight) => Unsupported(Some(broadcastBuildReplicationReason))
+      case (FullOuter, _) => Unsupported(Some(broadcastBuildReplicationReason))
+      case (LeftSemi, BuildLeft) => Unsupported(Some(broadcastBuildReplicationReason))
+      case (LeftAnti, BuildLeft) => Unsupported(Some(broadcastBuildReplicationReason))
       case _ => Compatible(None)
     }
 
