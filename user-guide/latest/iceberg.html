@@ -657,12 +657,12 @@ partitioning.</p></li>
 (<code class="docutils literal notranslate"><span class="pre">INT_ORDERED_BYTES</span></code>, <code class="docutils literal notranslate"><span class="pre">LONG_ORDERED_BYTES</span></code>, …, <code class="docutils literal notranslate"><span class="pre">INTERLEAVE_BYTES</span></code>) over the sort key columns
 during compaction.</p></li>
 </ul>
-<p>By default these UDFs cause the enclosing operator to fall back to Spark, which forces a
-columnar-to-row roundtrip and demotes the surrounding shuffle from <code class="docutils literal notranslate"><span class="pre">CometExchange</span></code> to
-<code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code>. Enabling the experimental
-<a class="reference internal" href="scala_java_udfs.html"><span class="std std-doc">Scala UDF and Java UDF Support</span></a> feature
-(<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=true</span></code>) routes these UDFs through native execution so
-the project, exchange, and sort operators around them stay on the Comet path end-to-end.</p>
+<p><a class="reference internal" href="scala_java_udfs.html"><span class="std std-doc">Scala UDF and Java UDF Support</span></a> is enabled by default
+(<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=true</span></code>), so these UDFs run through native execution and
+the project, exchange, and sort operators around them stay on the Comet path end-to-end. Setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=false</span></code> causes the enclosing operator to fall back to
+Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuffle from
+<code class="docutils literal notranslate"><span class="pre">CometExchange</span></code> to <code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code>.</p>
 </section>
 <section id="task-input-metrics">
 <h3>Task input metrics<a class="headerlink" href="#task-input-metrics" title="Link to this heading">#</a></h3>

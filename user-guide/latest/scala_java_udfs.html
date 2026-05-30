@@ -527,7 +527,7 @@ under the License.
 <h1>Scala UDF and Java UDF Support<a class="headerlink" href="#scala-udf-and-java-udf-support" title="Link to this heading">#</a></h1>
 <p>Comet executes Spark’s Scala and Java <a class="reference external" href="https://spark.apache.org/docs/latest/sql-ref-functions-udf-scalar.html">scalar user-defined functions (UDFs)</a> on the native Comet path. The presence of a UDF does not force the enclosing operator off the native path; surrounding native operators stay native.</p>
 <p>This page covers Spark’s <code class="docutils literal notranslate"><span class="pre">ScalaUDF</span></code> (Scala <code class="docutils literal notranslate"><span class="pre">udf(...)</span></code>, <code class="docutils literal notranslate"><span class="pre">spark.udf.register(...)</span></code> over Scala or Java functional interfaces, and SQL <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">FUNCTION</span> <span class="pre">...</span> <span class="pre">AS</span> <span class="pre">'com.example.MyUDF'</span></code>). Other UDF kinds (Python / Pandas, Hive, aggregate) are out of scope and continue to fall back to Spark.</p>
-<p>This feature is experimental and disabled by default.</p>
+<p>This feature is enabled by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> to route plans containing a <code class="docutils literal notranslate"><span class="pre">ScalaUDF</span></code> back to Spark for the enclosing operator.</p>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -539,7 +539,7 @@ under the License.
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 <td><p>When <code class="docutils literal notranslate"><span class="pre">true</span></code>, eligible <code class="docutils literal notranslate"><span class="pre">ScalaUDF</span></code>s run on the Comet path. When <code class="docutils literal notranslate"><span class="pre">false</span></code>, the enclosing operator falls back to Spark.</p></td>
 </tr>
 </tbody>
