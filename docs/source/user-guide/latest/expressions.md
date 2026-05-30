@@ -218,16 +218,17 @@ of expressions that be disabled.
 
 ## Bitwise Expressions
 
-| Expression   | SQL  |
-| ------------ | ---- |
-| BitwiseAnd   | `&`  |
-| BitwiseCount |      |
-| BitwiseGet   |      |
-| BitwiseOr    | `\|` |
-| BitwiseNot   | `~`  |
-| BitwiseXor   | `^`  |
-| ShiftLeft    | `<<` |
-| ShiftRight   | `>>` |
+| Expression         | SQL   |
+| ------------------ | ----- |
+| BitwiseAnd         | `&`   |
+| BitwiseCount       |       |
+| BitwiseGet         |       |
+| BitwiseOr          | `\|`  |
+| BitwiseNot         | `~`   |
+| BitwiseXor         | `^`   |
+| ShiftLeft          | `<<`  |
+| ShiftRight         | `>>`  |
+| ShiftRightUnsigned | `>>>` |
 
 ## Aggregate Expressions
 
