@@ -523,44 +523,49 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
                     }
                 }
             }
-            // Typed file-read errors (corrupt/truncated/deleted parquet, object_store, IO) raised
-            // by the native scan. Classified by DataFusionError variant -- not message text -- and
-            // surfaced as FAILED_READ_FILE via the structured SparkError channel.
-            CometError::DataFusion { msg: _, source }
-                if try_classify_file_read_error(source).is_some() =>
-            {
-                let spark_error = try_classify_file_read_error(source).unwrap();
-                throw_spark_error_as_json(env, &spark_error)
+            // Typed file-read errors (corrupt/truncated parquet, object_store) raised by the native
+            // scan -- classified by DataFusionError variant, not message text -- surfaced as
+            // FAILED_READ_FILE / FileNotFound via the structured SparkError channel. Anything else
+            // falls back to generic handling.
+            CometError::DataFusion { msg: _, source } => {
+                if let Some(spark_error) = try_classify_file_read_error(source) {
+                    throw_spark_error_as_json(env, &spark_error)
+                } else {
+                    throw_generic_exception(env, error, backtrace)
+                }
             }
             // Handle direct SparkError - serialize to JSON
             CometError::Spark(spark_error) => throw_spark_error_as_json(env, spark_error),
-            _ => {
-                let error_msg = error.to_string();
-                // Check for file-not-found errors that may arrive through other wrapping paths
-                if error_msg.contains("not found")
-                    && error_msg.contains("No such file or directory")
-                {
-                    let spark_error = SparkError::FileNotFound { message: error_msg };
-                    throw_spark_error_as_json(env, &spark_error)
-                } else if let Some(spark_error) = try_convert_duplicate_field_error(&error_msg) {
-                    throw_spark_error_as_json(env, &spark_error)
-                } else {
-                    let exception = error.to_exception();
-                    match backtrace {
-                        Some(backtrace_string) => env.throw_new(
-                            JNIString::new(exception.class),
-                            JNIString::new(
-                                to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
-                            ),
-                        ),
-                        _ => env.throw_new(
-                            JNIString::new(exception.class),
-                            JNIString::new(exception.msg),
-                        ),
-                    }
-                }
-            }
+            _ => throw_generic_exception(env, error, backtrace),
         };
+    }
+}
+
+/// Generic fallback throw for an error that isn't a structured `SparkError`. Recognises a
+/// file-not-found arriving through non-typed wrapping paths and duplicate-field errors; otherwise
+/// throws the error's natural JVM exception (with the captured backtrace when available).
+fn throw_generic_exception(
+    env: &mut Env,
+    error: &CometError,
+    backtrace: Option<String>,
+) -> jni::errors::Result<()> {
+    let error_msg = error.to_string();
+    // A file-not-found that arrived through a non-typed wrapping path (the typed classification
+    // is handled by `try_classify_file_read_error`).
+    if error_msg.contains("not found") && error_msg.contains("No such file or directory") {
+        let spark_error = SparkError::FileNotFound { message: error_msg };
+        throw_spark_error_as_json(env, &spark_error)
+    } else if let Some(spark_error) = try_convert_duplicate_field_error(&error_msg) {
+        throw_spark_error_as_json(env, &spark_error)
+    } else {
+        let exception = error.to_exception();
+        match backtrace {
+            Some(backtrace_string) => env.throw_new(
+                JNIString::new(exception.class),
+                JNIString::new(to_stacktrace_string(exception.msg, backtrace_string).unwrap()),
+            ),
+            _ => env.throw_new(JNIString::new(exception.class), JNIString::new(exception.msg)),
+        }
     }
 }
 
@@ -612,7 +617,7 @@ fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
         // non-scan paths (spill, shuffle), which must not be relabelled FAILED_READ_FILE.
         DFE::ParquetError(_) => Some(SparkError::CannotReadFile {
             file_path: String::new(),
-            message: error.to_string(),
+            message: cannot_read_file_message(error),
         }),
         DFE::ObjectStore(e) => match e.as_ref() {
             datafusion::object_store::Error::NotFound { .. } => Some(SparkError::FileNotFound {
@@ -620,7 +625,7 @@ fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
             }),
             _ => Some(SparkError::CannotReadFile {
                 file_path: String::new(),
-                message: error.to_string(),
+                message: cannot_read_file_message(error),
             }),
         },
         // The parquet reader sometimes surfaces a failure as ArrowError::ParquetError.
@@ -632,7 +637,7 @@ fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
             }
             ArrowError::ParquetError(_) => Some(SparkError::CannotReadFile {
                 file_path: String::new(),
-                message: error.to_string(),
+                message: cannot_read_file_message(error),
             }),
             _ => None,
         },
@@ -659,6 +664,21 @@ fn source_chain_has_object_store_not_found(err: &(dyn std::error::Error + 'stati
         current = e.source();
     }
     false
+}
+
+/// Build the message for a `CannotReadFile` error. parquet-rs reports a bad magic / unreadable
+/// footer as `"Invalid Parquet file. Corrupt footer"`, whereas Spark's own reader (and Spark's
+/// `ParquetQuerySuite`) phrase it as `"<file> is not a Parquet file"`. Append Spark's phrasing so
+/// the cause carries it; the outer `cannotReadFilesError` wrapper ("Encountered error while reading
+/// file …") is unchanged, so this composes with Spark's tests without changing the FAILED_READ_FILE
+/// wrapping. Other read failures (corrupt pages, EOF, IO) keep their native message verbatim.
+fn cannot_read_file_message(error: &DataFusionError) -> String {
+    let msg = error.to_string();
+    if msg.contains("Invalid Parquet file") && !msg.contains("is not a Parquet file") {
+        format!("{msg} (file is not a Parquet file)")
+    } else {
+        msg
+    }
 }
 
 /// Try to convert a DataFusion "Unable to get field named" error into a SparkError.
@@ -1278,6 +1298,39 @@ mod tests {
         match try_classify_file_read_error(&e) {
             Some(SparkError::CannotReadFile { .. }) => {}
             other => panic!("expected CannotReadFile for a corrupt parquet error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_invalid_parquet_file_carries_spark_wording() {
+        // parquet-rs reports a bad magic / unreadable footer as "Invalid Parquet file. Corrupt
+        // footer"; Spark's ParquetQuerySuite asserts the cause says "is not a Parquet file". The
+        // CannotReadFile message must carry that phrasing.
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "Invalid Parquet file. Corrupt footer".to_string(),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::CannotReadFile { message, .. }) => assert!(
+                message.contains("is not a Parquet file"),
+                "message was: {message}"
+            ),
+            other => panic!("expected CannotReadFile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_other_parquet_error_keeps_native_message() {
+        // A non-magic parquet failure (e.g. corrupt page data) keeps its native message verbatim
+        // -- the "is not a Parquet file" phrasing is only added for the magic/footer case.
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "could not decode page header".to_string(),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::CannotReadFile { message, .. }) => assert!(
+                !message.contains("is not a Parquet file"),
+                "message should not be augmented: {message}"
+            ),
+            other => panic!("expected CannotReadFile, got {other:?}"),
         }
     }
 
