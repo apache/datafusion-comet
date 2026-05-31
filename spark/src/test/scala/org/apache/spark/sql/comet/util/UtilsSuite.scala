@@ -20,6 +20,8 @@
 package org.apache.spark.sql.comet.util
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
+import org.apache.spark.sql.types.IntegerType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 class UtilsSuite extends CometTestBase {
@@ -50,5 +52,37 @@ class UtilsSuite extends CometTestBase {
 
     val decoded = coalesced.iterator.flatMap(b => Utils.decodeBatches(b, "test")).toSeq
     assert(decoded.map(_.numRows()).sum == expected)
+  }
+
+  test("serializeBatches materializes ConstantColumnVector columns") {
+    // Spark wraps file-source partition columns and other per-batch constants in
+    // ConstantColumnVector. When such a batch reaches Comet's serialization/export path
+    // (getBatchFieldVectors), it must be materialized to an Arrow vector rather than
+    // rejected with "Comet execution only takes Arrow Arrays".
+    val numRows = 4
+
+    val valueCol = new ConstantColumnVector(numRows, IntegerType)
+    valueCol.setInt(42)
+    val nullCol = new ConstantColumnVector(numRows, IntegerType)
+    nullCol.setNull()
+    val batch = new ColumnarBatch(Array[ColumnVector](valueCol, nullCol), numRows)
+
+    val (rowCount, buf) = Utils.serializeBatches(Iterator(batch)).next()
+    assert(rowCount == numRows)
+
+    // Read the decoded values eagerly: ArrowReaderIterator releases a batch's buffers once the
+    // iterator advances past it (hasNext closes the previous batch), so values must be read from
+    // the current batch before calling hasNext/next again.
+    val it = Utils.decodeBatches(buf, "test")
+    assert(it.hasNext)
+    val out = it.next()
+    assert(out.numCols() == 2)
+    assert(out.numRows() == numRows)
+    val values = (0 until numRows).map(i => out.column(0).getInt(i))
+    val nulls = (0 until numRows).map(i => out.column(1).isNullAt(i))
+    assert(!it.hasNext)
+
+    assert(values.forall(_ == 42), s"expected all 42, got $values")
+    assert(nulls.forall(identity), s"expected all null, got $nulls")
   }
 }
