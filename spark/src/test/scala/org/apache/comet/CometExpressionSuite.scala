@@ -938,7 +938,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("withInfo") {
+  test("withFallbackReason") {
     val table = "with_info"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -947,14 +947,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val (_, cometPlan) = checkSparkAnswerAndOperator(query)
       val project = stripAQEPlan(cometPlan).collectFirst { case p: CometProjectExec => p }.get
       val id = project.expressions.head
-      CometSparkSessionExtensions.withInfo(id, "reason 1")
-      CometSparkSessionExtensions.withInfo(project, "reason 2")
-      CometSparkSessionExtensions.withInfo(project, "reason 3", id)
-      CometSparkSessionExtensions.withInfo(project, id)
-      CometSparkSessionExtensions.withInfo(project, "reason 4")
-      CometSparkSessionExtensions.withInfo(project, "reason 5", id)
-      CometSparkSessionExtensions.withInfo(project, id)
-      CometSparkSessionExtensions.withInfo(project, "reason 6")
+      CometSparkSessionExtensions.withFallbackReason(id, "reason 1")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 2")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 3", id)
+      CometSparkSessionExtensions.withFallbackReason(project, id)
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 4")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 5", id)
+      CometSparkSessionExtensions.withFallbackReason(project, id)
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 6")
       val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
       for (i <- 1 until 7) {
         assert(explain.contains(s"reason $i"))
@@ -1452,13 +1452,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         true
       }.length
     }
-    withParquetTable(Seq(0, 1, 2).map(n => (n.toString, n.toString)), "tbl") {
-      val sql = "select initcap(_1) from tbl"
-      val (_, cometPlan) = checkSparkAnswer(sql)
-      assert(1 == countSparkProjectExec(cometPlan))
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
-        val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
-        assert(0 == countSparkProjectExec(cometPlan))
+    // Disable the JVM codegen dispatcher so InitCap exercises the serde-level incompatible
+    // fallback path under test here. With the dispatcher enabled (the default), InitCap is routed
+    // natively through Spark's own codegen regardless of the allowIncompat config, which is
+    // covered separately.
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(Seq(0, 1, 2).map(n => (n.toString, n.toString)), "tbl") {
+        val sql = "select initcap(_1) from tbl"
+        val (_, cometPlan) = checkSparkAnswer(sql)
+        assert(1 == countSparkProjectExec(cometPlan))
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
+          assert(0 == countSparkProjectExec(cometPlan))
+        }
       }
     }
   }

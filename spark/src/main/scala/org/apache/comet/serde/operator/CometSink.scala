@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.ConfigEntry
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -53,7 +53,7 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
       op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
 
     if (!supportedTypes) {
-      withInfo(op, "Unsupported data type")
+      withFallbackReason(op, "Unsupported data type")
       return None
     }
 
@@ -80,7 +80,7 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
       Some(builder.setScan(scanBuilder).build())
     } else {
       // There are unsupported scan type
-      withInfo(
+      withFallbackReason(
         op,
         s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
       None
@@ -123,7 +123,7 @@ object CometExchangeSink extends CometSink[SparkPlan] {
       op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
 
     if (!supportedTypes) {
-      withInfo(op, "Unsupported data type for shuffle direct read")
+      withFallbackReason(op, "Unsupported data type for shuffle direct read")
       return None
     }
 
@@ -144,7 +144,7 @@ object CometExchangeSink extends CometSink[SparkPlan] {
       builder.clearChildren()
       Some(builder.setShuffleScan(scanBuilder).build())
     } else {
-      withInfo(op, s"unsupported data types in ${op.nodeName} for shuffle direct read")
+      withFallbackReason(op, s"unsupported data types in ${op.nodeName} for shuffle direct read")
       None
     }
   }
