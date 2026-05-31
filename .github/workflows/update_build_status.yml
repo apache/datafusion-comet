@@ -21,7 +21,7 @@ name: Update build status workflow
 
 on:
   schedule:
-  - cron: "*/1 * * * *"
+  - cron: "*/5 * * * *"
 
 jobs:
   update:
@@ -32,7 +32,7 @@ jobs:
       checks: write
     steps:
       - name: "Update build status"
-        uses: actions/github-script@v6
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |

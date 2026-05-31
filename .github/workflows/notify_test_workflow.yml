@@ -35,7 +35,7 @@ jobs:
       checks: write
     steps:
       - name: "Notify test workflow"
-        uses: actions/github-script@v6
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
