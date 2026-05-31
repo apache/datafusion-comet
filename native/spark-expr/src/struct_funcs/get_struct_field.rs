@@ -97,7 +97,15 @@ impl PhysicalExpr for GetStructField {
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
-        Ok(self.child_field(input_schema)?.is_nullable())
+        // A field extracted from a struct is nullable if EITHER the field itself is declared
+        // nullable OR the parent struct can be null -- a field of a null struct is null (Spark
+        // semantics, enforced by `project_field` unioning the parent null mask). Reporting only
+        // the field's own nullability under-declares: a non-nullable field of a nullable struct
+        // then carries the parent's nulls while claiming non-nullable, which fails Arrow's
+        // RecordBatch validation downstream with "declared as non-nullable but contains null
+        // values" (e.g. once the projected column reaches a shuffle/sort). Mirrors Spark's
+        // `GetStructField.nullable = child.nullable || field.nullable`.
+        Ok(self.child.nullable(input_schema)? || self.child_field(input_schema)?.is_nullable())
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
@@ -183,5 +191,44 @@ mod tests {
         assert!(out.is_null(1), "field of a null struct must be null");
         assert!(!out.is_null(2) && out.value(2) == 30);
         assert!(out.is_null(3), "field of a null struct must be null");
+    }
+
+    // A NON-nullable field of a NULLABLE struct must report `nullable() == true`: `project_field`
+    // unions the parent struct's null mask, so the projected column carries nulls wherever the
+    // struct is null. Reporting the field's own (non-nullable) flag would make the output schema
+    // lie, failing Arrow RecordBatch validation downstream with "declared as non-nullable but
+    // contains null values" once the column reaches a shuffle/sort.
+    #[test]
+    fn non_nullable_field_of_nullable_struct_is_nullable() {
+        // `size` is declared non-nullable, but the enclosing struct is nullable.
+        let inner: Fields = Fields::from(vec![Field::new("size", DataType::Int64, false)]);
+        let schema = Schema::new(vec![Field::new(
+            "add",
+            DataType::Struct(inner),
+            /* struct nullable */ true,
+        )]);
+
+        let expr = GetStructField::new(Arc::new(Column::new("add", 0)), 0);
+        assert!(
+            expr.nullable(&schema).unwrap(),
+            "a field of a nullable struct must be nullable even if the field itself is non-nullable"
+        );
+    }
+
+    // A non-nullable field of a NON-nullable struct stays non-nullable (no over-declaring).
+    #[test]
+    fn non_nullable_field_of_non_nullable_struct_stays_non_nullable() {
+        let inner: Fields = Fields::from(vec![Field::new("size", DataType::Int64, false)]);
+        let schema = Schema::new(vec![Field::new(
+            "add",
+            DataType::Struct(inner),
+            /* struct nullable */ false,
+        )]);
+
+        let expr = GetStructField::new(Arc::new(Column::new("add", 0)), 0);
+        assert!(
+            !expr.nullable(&schema).unwrap(),
+            "a non-nullable field of a non-nullable struct must remain non-nullable"
+        );
     }
 }
