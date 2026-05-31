@@ -35,6 +35,12 @@ concurrency:
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      force_all:
+        description: 'Force-enable every gated job (used by fork-CI so the full matrix runs regardless of which paths changed).'
+        required: false
+        type: boolean
+        default: false
   # pull_request:
   #   types: [opened, synchronize, reopened, labeled]
   # push:
@@ -126,9 +132,10 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_AFTER:  ${{ github.sha }}
+          FORCE_ALL:   ${{ inputs.force_all }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$FORCE_ALL" == "true" ]]; then
             for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10; do
               echo "${key}=true" >> "$GITHUB_OUTPUT"
             done
