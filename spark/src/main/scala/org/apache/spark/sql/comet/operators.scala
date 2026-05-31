@@ -2003,7 +2003,7 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
         case LeftAnti => JoinType.LeftAnti
         case _ =>
           // Spark doesn't support other join types
-          withInfo(op, s"Unsupported join type $join")
+          withFallbackReason(op, s"Unsupported join type $join")
           return None
       }
     }
@@ -2011,7 +2011,7 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
     val joinCondition = op.condition.map({ cond =>
       val condProto = exprToProto(cond, op.left.output ++ op.right.output)
       if (condProto.isEmpty) {
-        withInfo(op, cond)
+        withFallbackReason(op, cond)
         return None
       }
       condProto.get
