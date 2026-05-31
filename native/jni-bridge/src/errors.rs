@@ -606,7 +606,11 @@ fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
                 message: error.to_string(),
             })
         }
-        DFE::ParquetError(_) | DFE::IoError(_) => Some(SparkError::CannotReadFile {
+        // NB: only ParquetError / ObjectStore / ArrowError(ParquetError) are treated as file reads.
+        // A bare `IoError` is intentionally NOT classified here: a scan surfaces read failures as a
+        // typed ParquetError or ObjectStore error, whereas an `IoError` can also originate from
+        // non-scan paths (spill, shuffle), which must not be relabelled FAILED_READ_FILE.
+        DFE::ParquetError(_) => Some(SparkError::CannotReadFile {
             file_path: String::new(),
             message: error.to_string(),
         }),
@@ -1278,9 +1282,11 @@ mod tests {
     }
 
     #[test]
-    fn classify_io_error_is_file_read() {
+    fn classify_bare_io_error_is_not_file_read() {
+        // A bare IoError is not a scan read failure (scans surface ParquetError/ObjectStore); it
+        // can come from spill/shuffle, so it must NOT be classified as FAILED_READ_FILE.
         let e = DataFusionError::IoError(io::Error::new(io::ErrorKind::UnexpectedEof, "eof"));
-        assert!(try_classify_file_read_error(&e).is_some());
+        assert!(try_classify_file_read_error(&e).is_none());
     }
 
     #[test]

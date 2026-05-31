@@ -34,7 +34,10 @@ class SparkErrorConverterSuite extends AnyFunSuite {
         Array.empty,
         null)
       .getOrElse(fail("Expected CannotReadFile to be converted to a Spark exception"))
-    assert(ex.getMessage.contains("FAILED_READ_FILE"))
+    // `cannotReadFilesError` IS the FAILED_READ_FILE path. Assert on the version-stable message
+    // ("Encountered error while reading file ...") rather than the `FAILED_READ_FILE` literal,
+    // which only Spark 4.x prepends to getMessage as the error-class tag (3.4/3.5 do not).
+    assert(ex.getMessage.contains("Encountered error while reading file"))
     assert(ex.getMessage.contains("part-0.parquet"))
   }
 
@@ -47,15 +50,16 @@ class SparkErrorConverterSuite extends AnyFunSuite {
     val ex = SparkErrorConverter.convertToSparkException(
       new org.apache.comet.exceptions.CometQueryExecutionException(json),
       taskFilePaths = Seq("file:/tmp/data/part-7.parquet"))
-    assert(ex.getMessage.contains("FAILED_READ_FILE"))
+    // Version-stable assertion (see above): only Spark 4.x renders the FAILED_READ_FILE class tag.
+    assert(ex.getMessage.contains("Encountered error while reading file"))
     assert(ex.getMessage.contains("part-7.parquet"))
   }
 
   test("CannotReadFile prefers the native path over the per-task file list") {
-    // When object_store supplied the path (NotFound), keep it rather than the fallback list.
+    // When the native error supplied a path, keep it rather than the fallback list.
     val json =
       """{"errorType":"CannotReadFile","errorClass":"",""" +
-        """"params":{"filePath":"file:/tmp/data/native.parquet","message":"Object at location ... not found"}}"""
+        """"params":{"filePath":"file:/tmp/data/native.parquet","message":"Parquet error: corrupt footer"}}"""
     val ex = SparkErrorConverter.convertToSparkException(
       new org.apache.comet.exceptions.CometQueryExecutionException(json),
       taskFilePaths = Seq("file:/tmp/data/fallback.parquet"))
