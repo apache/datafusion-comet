@@ -424,7 +424,7 @@
 - [x] datepart
 - [x] day
 - [x] dayname
-  - Spark 4.0+. Has no native lowering; routed through the codegen dispatcher (runs Spark's own `doGenCode`), gated by `spark.comet.exec.scalaUDF.codegen.enabled` (default true).
+  - Spark 4.0+. Implemented natively: maps a `DateType` value to a fixed US-English abbreviated day name (`DayOfWeek.getDisplayName(TextStyle.SHORT, Locale.US)`), with no session-locale or timezone dependence.
 - [x] dayofmonth
 - [x] dayofweek
 - [x] dayofyear
@@ -449,7 +449,7 @@
 - [x] minute
 - [x] month
 - [x] monthname
-  - Spark 4.0+. Has no native lowering; routed through the codegen dispatcher (runs Spark's own `doGenCode`), gated by `spark.comet.exec.scalaUDF.codegen.enabled` (default true).
+  - Spark 4.0+. Implemented natively: maps a `DateType` value to a fixed US-English abbreviated month name (`Month.getDisplayName(TextStyle.SHORT, Locale.US)`), with no session-locale or timezone dependence.
 - [x] months_between
 - [x] next_day
 - [ ] now
