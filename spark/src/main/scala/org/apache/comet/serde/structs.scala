@@ -26,7 +26,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, 
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
@@ -62,7 +62,7 @@ object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
           .setCreateNamedStruct(structBuilder)
           .build())
     } else {
-      withInfo(expr, "unsupported arguments for CreateNamedStruct", expr.valExprs: _*)
+      withFallbackReason(expr, "unsupported arguments for CreateNamedStruct", expr.valExprs: _*)
       None
     }
 
@@ -107,7 +107,7 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
           .setGetArrayStructFields(arrayStructFieldsBuilder)
           .build())
     } else {
-      withInfo(expr, "unsupported arguments for GetArrayStructFields", expr.child)
+      withFallbackReason(expr, "unsupported arguments for GetArrayStructFields", expr.child)
       None
     }
   }
@@ -145,7 +145,7 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
             .setToJson(toJson)
             .build())
       case _ =>
-        withInfo(expr, expr.child)
+        withFallbackReason(expr, expr.child)
         None
     }
   }
@@ -188,7 +188,7 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
     if (expr.schema == null) {
-      withInfo(expr, "from_json requires explicit schema")
+      withFallbackReason(expr, "from_json requires explicit schema")
       return None
     }
 
@@ -205,7 +205,7 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
 
     val schemaType = expr.schema
     if (!isSupportedType(schemaType)) {
-      withInfo(expr, "from_json: Unsupported schema type")
+      withFallbackReason(expr, "from_json: Unsupported schema type")
       return None
     }
 
@@ -213,13 +213,15 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
     if (options.nonEmpty) {
       val mode = options.getOrElse("mode", "PERMISSIVE")
       if (mode != "PERMISSIVE") {
-        withInfo(expr, s"from_json: Only PERMISSIVE mode supported, got: $mode")
+        withFallbackReason(expr, s"from_json: Only PERMISSIVE mode supported, got: $mode")
         return None
       }
       val knownOptions = Set("mode")
       val unknownOpts = options.keySet -- knownOptions
       if (unknownOpts.nonEmpty) {
-        withInfo(expr, s"from_json: Ignoring unsupported options: ${unknownOpts.mkString(", ")}")
+        withFallbackReason(
+          expr,
+          s"from_json: Ignoring unsupported options: ${unknownOpts.mkString(", ")}")
       }
     }
 

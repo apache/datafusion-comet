@@ -23,11 +23,11 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.types.DataTypes
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -75,7 +75,7 @@ trait CometExprShim extends CommonStringExprs {
                   .setToPrettyString(toPrettyString)
                   .build())
             case _ =>
-              withInfo(expr, child)
+              withFallbackReason(expr, child)
               None
           }
         } else {
@@ -85,7 +85,7 @@ trait CometExprShim extends CommonStringExprs {
       case wb: WidthBucket =>
         val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
         val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
-        optExprWithInfo(optExpr, wb, wb.children: _*)
+        optExprWithFallbackReason(optExpr, wb, wb.children: _*)
 
       case _ => None
     }
