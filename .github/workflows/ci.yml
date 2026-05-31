@@ -22,13 +22,19 @@
 name: CI
 
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  # Use github.ref (branch ref) instead of github.sha for the push-event fallback
+  # so consecutive pushes to the same branch cancel each other; sha would make
+  # every push a new group and stack runs up.
+  group: ${{ github.repository }}-${{ github.head_ref || github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
 
-# CI DISABLED 2026-05-31 — auto-triggers commented out, only manual workflow_dispatch remains.
+# CI DISABLED 2026-05-31 — auto-triggers commented out. Active triggers:
+#   * workflow_dispatch — manual runs
+#   * workflow_call     — invoked by build_and_test.yml on contributor forks
 # To rollback: restore the commented `pull_request` and `push` blocks below.
 on:
   workflow_dispatch:
+  workflow_call:
   # pull_request:
   #   types: [opened, synchronize, reopened, labeled]
   # push:
@@ -45,7 +51,7 @@ jobs:
   # ---------------------------------------------------------------------------
   preflight:
     name: Preflight
-    runs-on: ubuntu-slim
+    runs-on: ${{ github.repository == 'apache/datafusion-comet' && 'ubuntu-slim' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -91,7 +97,7 @@ jobs:
   changes:
     name: Detect changes
     needs: preflight
-    runs-on: ubuntu-slim
+    runs-on: ${{ github.repository == 'apache/datafusion-comet' && 'ubuntu-slim' || 'ubuntu-24.04' }}
     outputs:
       build_linux:  ${{ steps.compute.outputs.build_linux }}
       build_macos:  ${{ steps.compute.outputs.build_macos }}
