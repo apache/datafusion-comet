@@ -21,9 +21,12 @@ concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
 
+# CI DISABLED 2026-05-31 — auto-trigger commented out, only manual workflow_dispatch remains.
+# To rollback: remove `workflow_dispatch:` and restore the commented `pull_request` block below.
 on:
-  pull_request:
-    types: [opened, edited, reopened]
+  workflow_dispatch:
+  # pull_request:
+  #   types: [opened, edited, reopened]
 
 jobs:
   check-pr-title:

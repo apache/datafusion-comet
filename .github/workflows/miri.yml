@@ -21,10 +21,12 @@ concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
 
+# CI DISABLED 2026-05-31 — nightly schedule commented out, only manual workflow_dispatch remains.
+# To rollback: restore the commented `schedule` block below.
 on:
   # nightly safety check
-  schedule:
-    - cron: '0 4 * * *'
+  # schedule:
+  #   - cron: '0 4 * * *'
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:

@@ -1,0 +1,194 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Reusable workflow invoked by build_main.yml. Modelled on Apache Spark's
+# build_and_test.yml: the heavy work runs wherever the calling push lands,
+# i.e. on the contributor's fork. Currently runs only the sql_core-1 shard.
+
+name: Build and test
+
+on:
+  workflow_call:
+    inputs:
+      spark-short:
+        description: 'Spark minor version, e.g. 3.5'
+        required: false
+        type: string
+        default: '3.5'
+      spark-full:
+        description: 'Spark full version, e.g. 3.5.8'
+        required: false
+        type: string
+        default: '3.5.8'
+      java:
+        description: 'JDK major version'
+        required: false
+        type: number
+        default: 11
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
+
+jobs:
+  precondition:
+    name: Check changes
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    env:
+      GITHUB_PREV_SHA: ${{ github.event.before }}
+    outputs:
+      required: ${{ steps.set-outputs.outputs.required }}
+    steps:
+      - name: Checkout Apache DataFusion Comet repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          repository: apache/datafusion-comet
+          ref: ${{ inputs.branch }}
+      - name: Sync the current branch with the latest in Apache DataFusion Comet
+        if: github.repository != 'apache/datafusion-comet'
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          echo "APACHE_DF_COMET_REF=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          git fetch https://github.com/$GITHUB_REPOSITORY.git ${GITHUB_REF#refs/heads/}
+          git -c user.name='Apache DataFusion Comet Test Account' -c user.email='comettestacc@gmail.com' merge --no-commit --progress --squash FETCH_HEAD
+          git -c user.name='Apache DataFusion Comet Test Account' -c user.email='comettestacc@gmail.com' commit -m "Merged commit" --allow-empty
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+      - name: Upload native library
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-lib-linux
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+      - name: Save Cargo cache
+        uses: actions/cache/save@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+
+  sql_core-1:
+    needs: precondition
+    name: "Build modules: sql_core-1"
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-linux
+          path: native/target/release/
+      - name: Setup Spark
+        uses: ./.github/actions/setup-spark-builder
+        with:
+          spark-version: ${{ inputs.spark-full }}
+          spark-short-version: ${{ inputs.spark-short }}
+          skip-native-build: true
+      - name: Run Spark sql_core-1 tests
+        run: |
+          cd apache-spark
+          rm -rf /root/.m2/repository/org/apache/parquet
+          export SERIAL_SBT_TESTS=1
+          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true \
+            build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
+              'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
+              "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
+        env:
+          LC_ALL: "C.UTF-8"
+          SBT_MEM: "3072"
+      - name: Upload test results to report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-sql_core-1-spark${{ inputs.spark-short }}-jdk${{ inputs.java }}
+          path: "**/target/test-reports/*.xml"
+
+  sql_core-2:
+    needs: precondition
+    name: "Build modules: sql_core-2"
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-linux
+          path: native/target/release/
+      - name: Setup Spark
+        uses: ./.github/actions/setup-spark-builder
+        with:
+          spark-version: ${{ inputs.spark-full }}
+          spark-short-version: ${{ inputs.spark-short }}
+          skip-native-build: true
+      - name: Run Spark sql_core-2 tests
+        run: |
+          cd apache-spark
+          rm -rf /root/.m2/repository/org/apache/parquet
+          export SERIAL_SBT_TESTS=1
+          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true \
+            build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
+              'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
+              "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
+        env:
+          LC_ALL: "C.UTF-8"
+          SBT_MEM: "3072"
+      - name: Upload test results to report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-sql_core-2-spark${{ inputs.spark-short }}-jdk${{ inputs.java }}
+          path: "**/target/test-reports/*.xml"

@@ -22,13 +22,16 @@ concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
 
+# CI DISABLED 2026-05-31 — auto-triggers commented out, only manual workflow_dispatch remains.
+# To rollback: remove `workflow_dispatch:` and restore the commented `push`/`pull_request`/`schedule` blocks below.
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  schedule:
-    - cron: '16 4 * * 1'
+  workflow_dispatch:
+  # push:
+  #   branches: [ "main" ]
+  # pull_request:
+  #   branches: [ "main" ]
+  # schedule:
+  #   - cron: '16 4 * * 1'
 
 permissions:
   contents: read
