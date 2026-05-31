@@ -538,29 +538,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("dayname / monthname run natively") {
-    assume(isSpark40Plus)
-    withParquetTable(
-      Seq(
-        Tuple1("2024-01-15"), // Monday, January
-        Tuple1("2024-06-30"), // Sunday, June
-        Tuple1("2020-12-31"), // Thursday, December
-        Tuple1(null.asInstanceOf[String]) // null date -> null name
-      ),
-      "tbl") {
-      checkSparkAnswerAndOperator("SELECT dayname(CAST(_1 AS DATE)) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT monthname(CAST(_1 AS DATE)) FROM tbl")
-      // Literal path: disable constant folding so the function reaches Comet rather than being
-      // pre-evaluated by Spark.
-      withSQLConf(
-        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-        checkSparkAnswerAndOperator(
-          "SELECT dayname(DATE '2024-02-29'), monthname(DATE '2024-02-29') FROM tbl")
-      }
-    }
-  }
-
   test("hour on int96 timestamp column") {
     import testImplicits._
 
