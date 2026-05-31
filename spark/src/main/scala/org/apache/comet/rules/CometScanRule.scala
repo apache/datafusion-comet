@@ -216,10 +216,17 @@ case class CometScanRule(session: SparkSession)
     // (e.g. `hdfs`, or a test `fake`): those ARE natively readable through the libhdfs object_store
     // bridge, so they must NOT be declined here (regression guarded by
     // ParquetReadFromFakeHadoopFsSuite).
+    //
+    // The default mirrors the native side: when the config is unset, `is_hdfs_scheme`
+    // (native/core/src/parquet/parquet_support.rs) treats `hdfs` as natively readable, and
+    // `create_hdfs_object_store` is in the default build (`default = ["hdfs-opendal"]`). If we
+    // defaulted to an empty set here, a plain `hdfs://` V1 scan would be declined and fall back to
+    // Spark even though native can read it -- a silent regression for HDFS users in the default
+    // configuration. So default to `Set("hdfs")` to stay in lockstep with the native default.
     val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
       case Some(s) =>
         s.split(",").map(_.trim.toLowerCase(Locale.ROOT)).filter(_.nonEmpty).toSet
-      case None => Set.empty
+      case None => Set("hdfs")
     }
     val unsupportedFsSchemes = r.location.rootPaths
       .map(_.toUri)

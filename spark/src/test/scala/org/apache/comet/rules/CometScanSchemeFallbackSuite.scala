@@ -30,7 +30,7 @@ import org.apache.spark.sql.comet.CometScanExec
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 
 import org.apache.comet.CometConf
-import org.apache.comet.hadoop.fs.FakeHDFSFileSystem
+import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem}
 
 /**
  * Comet's native readers go through object_store, which only understands a fixed set of URL
@@ -50,8 +50,12 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
     conf.set("spark.hadoop.fs.fake.impl", "org.apache.comet.hadoop.fs.FakeHDFSFileSystem")
+    // Back the `hdfs` scheme with a local FS so we can exercise an `hdfs://` path without a live
+    // cluster. `hdfs` is natively readable by default, so this scan must be CLAIMED, not declined.
+    conf.set("spark.hadoop.fs.hdfs.impl", "org.apache.comet.hadoop.fs.FakeHdfsSchemeFileSystem")
     conf.set("spark.hadoop.fs.defaultFS", FakeHDFSFileSystem.PREFIX)
-    // Intentionally NOT setting CometConf.COMET_LIBHDFS_SCHEMES -- `fake` is not natively readable.
+    // Intentionally NOT setting CometConf.COMET_LIBHDFS_SCHEMES -- `fake` is not natively readable,
+    // and `hdfs` must still be claimed by default (mirrors the native `is_hdfs_scheme` default).
     conf
   }
 
@@ -93,6 +97,36 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
       assert(
         sparkScans.size == 1,
         s"expected the scan to remain a Spark FileSourceScanExec:\n$transformed")
+    }
+  }
+
+  test("native scan claims hdfs:// when libhdfs.schemes is unset (native-default lockstep)") {
+    // Native's `is_hdfs_scheme` treats `hdfs` as readable when `fs.comet.libhdfs.schemes` is unset,
+    // and `create_hdfs_object_store` is in the default build. The JVM gate must agree: with the
+    // config unset, an `hdfs://` scan must be CLAIMED by Comet, not declined to Spark. Guards the
+    // `case None => Set("hdfs")` default in CometScanRule against the silent-fallback regression
+    // Andy flagged in #4525.
+    val path = s"${FakeHdfsSchemeFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/hdfs-data"
+    spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
+
+    var sparkPlan: SparkPlan = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkPlan = spark.read.parquet(path).queryExecution.executedPlan
+    }
+
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      val transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
+
+      val cometScans = transformed.collect { case s: CometScanExec => s }
+      val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
+      assert(
+        cometScans.size == 1,
+        s"`hdfs://` is natively readable by default; Comet must claim the scan, " +
+          s"but it fell back to Spark:\n$transformed")
+      assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
     }
   }
 }
