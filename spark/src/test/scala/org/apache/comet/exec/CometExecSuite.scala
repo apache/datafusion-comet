@@ -3925,6 +3925,21 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("CometLocalTableScanExec handles NullType column") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = spark.sql("SELECT * FROM VALUES ('a', null), ('b', null) AS t(x, y)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("CometLocalTableScanExec handles NullType nested in struct/array/map") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT named_struct('a', 1, 'b', null) AS s, array(null, null) AS a, " +
+          "map('k', null) AS m FROM VALUES (1), (2) AS t(id)"))
+    }
+  }
+
   test("Native_datafusion reports correct files and bytes scanned") {
     val inputFiles = 2
 
