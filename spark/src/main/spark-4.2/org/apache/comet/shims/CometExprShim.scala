@@ -39,7 +39,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends CommonStringExprs with CometExprShim4x {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -214,22 +214,10 @@ trait CometExprShim extends CommonStringExprs {
           optExprWithFallbackReason(mapSortExpr, ms, ms.child)
         }
 
-      // dayname / monthname (Spark 4.0+) map a DateType value to a fixed US-English abbreviated
-      // name. Spark's DateTimeUtils.getDayName / getMonthName use DayOfWeek / Month
-      // getDisplayName(TextStyle.SHORT, Locale.US) (DateFormatter.defaultLocale is the constant
-      // Locale.US), so there is no session-locale or timezone dependence and they map directly to
-      // the native `dayname` / `monthname` scalar functions.
-      case d: DayName =>
-        val childExpr = exprToProtoInternal(d.child, inputs, binding)
-        val nameExpr =
-          scalarFunctionExprToProtoWithReturnType("dayname", d.dataType, false, childExpr)
-        optExprWithFallbackReason(nameExpr, d, d.child)
-
-      case m: MonthName =>
-        val childExpr = exprToProtoInternal(m.child, inputs, binding)
-        val nameExpr =
-          scalarFunctionExprToProtoWithReturnType("monthname", m.dataType, false, childExpr)
-        optExprWithFallbackReason(nameExpr, m, m.child)
+      // dayname / monthname (Spark 4.0+) are shared across all 4.x minor versions; see
+      // CometExprShim4x.convertDayMonthName.
+      case _: DayName | _: MonthName =>
+        convertDayMonthName(expr, inputs, binding)
 
       case _ => None
     }
