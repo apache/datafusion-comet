@@ -596,22 +596,36 @@ fn throw_spark_error_as_json(env: &mut Env, spark_error: &SparkError) -> jni::er
 fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
     use datafusion::common::DataFusionError as DFE;
     match error {
+        // A genuinely-missing file (object_store NotFound) is distinct from a corrupt/truncated
+        // one: Spark surfaces it as `readCurrentFileNotFoundError` ("It is possible the underlying
+        // files have been updated."), not `cannotReadFilesError`. The NotFound may arrive directly
+        // (`DFE::ObjectStore`) or wrapped by the parquet reader as `ParquetError::External(..)`, so
+        // inspect the source chain. Delta's CDC-after-VACUUM read depends on this distinction.
+        DFE::ParquetError(pe) if source_chain_has_object_store_not_found(pe.as_ref()) => {
+            Some(SparkError::FileNotFound {
+                message: error.to_string(),
+            })
+        }
         DFE::ParquetError(_) | DFE::IoError(_) => Some(SparkError::CannotReadFile {
             file_path: String::new(),
             message: error.to_string(),
         }),
-        DFE::ObjectStore(e) => {
-            let file_path = match e.as_ref() {
-                datafusion::object_store::Error::NotFound { path, .. } => path.clone(),
-                _ => String::new(),
-            };
-            Some(SparkError::CannotReadFile {
-                file_path,
+        DFE::ObjectStore(e) => match e.as_ref() {
+            datafusion::object_store::Error::NotFound { .. } => Some(SparkError::FileNotFound {
                 message: error.to_string(),
-            })
-        }
+            }),
+            _ => Some(SparkError::CannotReadFile {
+                file_path: String::new(),
+                message: error.to_string(),
+            }),
+        },
         // The parquet reader sometimes surfaces a failure as ArrowError::ParquetError.
         DFE::ArrowError(e, _) => match e.as_ref() {
+            ArrowError::ParquetError(_) if source_chain_has_object_store_not_found(e.as_ref()) => {
+                Some(SparkError::FileNotFound {
+                    message: error.to_string(),
+                })
+            }
             ArrowError::ParquetError(_) => Some(SparkError::CannotReadFile {
                 file_path: String::new(),
                 message: error.to_string(),
@@ -623,6 +637,24 @@ fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
         DFE::Shared(inner) => try_classify_file_read_error(inner),
         _ => None,
     }
+}
+
+/// True if `err` or any error in its `source()` chain is an `object_store` `NotFound` -- i.e. a
+/// genuinely-missing file. Used to tell a missing file apart from a corrupt/truncated one: the
+/// parquet reader wraps the object_store error as `ParquetError::External(..)`, so the typed
+/// `NotFound` is only reachable by walking the source chain (we match the typed variant, never the
+/// message text).
+fn source_chain_has_object_store_not_found(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if let Some(os) = e.downcast_ref::<datafusion::object_store::Error>() {
+            if matches!(os, datafusion::object_store::Error::NotFound { .. }) {
+                return true;
+            }
+        }
+        current = e.source();
+    }
+    false
 }
 
 /// Try to convert a DataFusion "Unable to get field named" error into a SparkError.
@@ -1196,14 +1228,53 @@ mod tests {
     }
 
     #[test]
-    fn classify_object_store_not_found_carries_path() {
+    fn classify_object_store_not_found_is_file_not_found() {
+        // A genuinely-missing file must classify as FileNotFound (-> readCurrentFileNotFoundError
+        // on the JVM side), NOT CannotReadFile (-> cannotReadFilesError). The path is carried in
+        // the message; the JVM shim extracts it.
         let e = DataFusionError::ObjectStore(Box::new(datafusion::object_store::Error::NotFound {
             path: "file:/tmp/data/part-3.parquet".to_string(),
             source: "missing".into(),
         }));
-        let classified =
-            try_classify_file_read_error(&e).expect("NotFound should classify as file-read");
-        assert_eq!(file_path_of(&classified), "file:/tmp/data/part-3.parquet");
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::FileNotFound { message }) => {
+                assert!(message.contains("part-3.parquet"), "message was: {message}")
+            }
+            other => panic!("expected FileNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_parquet_error_wrapping_not_found_is_file_not_found() {
+        // The parquet reader surfaces a missing data file as ParquetError::External wrapping an
+        // object_store NotFound (e.g. a Delta CDC file removed by VACUUM). The NotFound is only
+        // reachable through the source chain, but it must still classify as FileNotFound.
+        let os = datafusion::object_store::Error::NotFound {
+            path: "file:/tmp/t/_change_data/cdc.parquet".to_string(),
+            source: "missing".into(),
+        };
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::External(
+            Box::new(os),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::FileNotFound { .. }) => {}
+            other => {
+                panic!("expected FileNotFound for a NotFound-wrapping ParquetError, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn classify_corrupt_parquet_error_stays_cannot_read_file() {
+        // A corrupt/truncated file (no NotFound in the chain) must remain CannotReadFile
+        // (-> FAILED_READ_FILE), unchanged by the FileNotFound carve-out.
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "corrupt footer".to_string(),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::CannotReadFile { .. }) => {}
+            other => panic!("expected CannotReadFile for a corrupt parquet error, got {other:?}"),
+        }
     }
 
     #[test]

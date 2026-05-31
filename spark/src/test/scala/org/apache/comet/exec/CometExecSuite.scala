@@ -4000,12 +4000,48 @@ class CometExecSuite extends CometTestBase {
           .map(t => s"${t.getClass.getName}: ${t.getMessage}")
           .toList
         val chain = messages.mkString("\n  ")
+        // `cannotReadFilesError` is the FAILED_READ_FILE path. Its message is version-stable
+        // ("Encountered error while reading file ..."); only Spark 4.x prepends the
+        // `[FAILED_READ_FILE.NO_HINT]` error-class tag, so assert on the stable substring.
         assert(
-          messages.exists(m => m.contains("FAILED_READ_FILE")),
-          s"Expected a FAILED_READ_FILE exception in the cause chain, but got:\n  $chain")
+          messages.exists(m => m.contains("Encountered error while reading file")),
+          s"Expected a FAILED_READ_FILE (cannotReadFilesError) in the cause chain, but got:\n  $chain")
         assert(
           messages.exists(m => m.contains("corrupt.parquet")),
           s"Expected the offending file path in the cause chain, but got:\n  $chain")
+      }
+    }
+  }
+
+  test("native parquet read of a missing file surfaces readCurrentFileNotFoundError") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "missing.parquet")
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 1000)
+      val f = new java.io.File(new java.net.URI(path.toString))
+
+      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+        // Read the schema (footer) while the file exists, then delete it so it is MISSING at
+        // execution time -- mirroring a file vacuumed/removed between planning and the scan
+        // (e.g. Delta's CDC-after-VACUUM read). A missing file is distinct from a corrupt one:
+        // Spark surfaces it as `readCurrentFileNotFoundError` ("It is possible the underlying
+        // files have been updated."), NOT `cannotReadFilesError`/`FAILED_READ_FILE`. Comet's
+        // native scan must classify the object_store NotFound the same way.
+        val df = spark.read.parquet(path.toString)
+        df.queryExecution.executedPlan // force planning (footer read) before deletion
+        assert(f.delete(), s"failed to delete $f")
+
+        val e = intercept[Throwable] {
+          df.collect()
+        }
+        val messages = Iterator
+          .iterate(e: Throwable)(_.getCause)
+          .takeWhile(_ != null)
+          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
+          .toList
+        val chain = messages.mkString("\n  ")
+        assert(
+          messages.exists(m => m.contains("It is possible the underlying files have been updated")),
+          s"Expected readCurrentFileNotFoundError for a missing file, but got:\n  $chain")
       }
     }
   }
