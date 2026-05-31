@@ -113,23 +113,30 @@ jobs:
                 throw new Error('There was a new unsynced commit pushed. Please retrigger the workflow.');
               }
 
-              // Here we get check run ID to provide Check run view instead of Actions view
+              // Pick the entry-point check run for deep-linking. Display name
+              // is "Run / CI / Preflight" (build_main → build_and_test → ci.yml).
+              // Fall back to any "Run /…" entry to survive future job renames,
+              // then to the actions run URL if no check run is visible yet.
               const check_runs = await github.request(check_run_endpoint, check_run_params)
-              const check_run_head = check_runs.data.check_runs.filter(r => r.name === "Run / Check changes")[0]
-
-              if (check_run_head.head_sha != context.payload.pull_request.head.sha) {
-                throw new Error('There was a new unsynced commit pushed. Please retrigger the workflow.');
-              }
-
-              const check_run_url = 'https://github.com/'
-                + context.payload.pull_request.head.repo.full_name
-                + '/runs/'
-                + check_run_head.id
+              const check_run_head =
+                check_runs.data.check_runs.find(r => r.name === "Run / CI / Preflight")
+                || check_runs.data.check_runs.find(r => r.name && r.name.startsWith("Run /"))
 
               const actions_url = 'https://github.com/'
                 + context.payload.pull_request.head.repo.full_name
                 + '/actions/runs/'
                 + run_id
+
+              let check_run_url = actions_url
+              if (check_run_head) {
+                if (check_run_head.head_sha != context.payload.pull_request.head.sha) {
+                  throw new Error('There was a new unsynced commit pushed. Please retrigger the workflow.');
+                }
+                check_run_url = 'https://github.com/'
+                  + context.payload.pull_request.head.repo.full_name
+                  + '/runs/'
+                  + check_run_head.id
+              }
 
               github.rest.checks.create({
                 owner: context.repo.owner,
