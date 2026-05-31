@@ -185,13 +185,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
                 // not here on the kernel-driver path. Leave unset.
                 byte_range_start: None,
                 byte_range_end: None,
-                // kernel-driver path doesn't surface modification_time today; the
-                // BatchFileIndex path (`buildTaskListFromAddFiles` on the Scala side)
-                // does set it from AddFile.modificationTime. None here is fine for
-                // tables read via kernel log replay -- callers that need
-                // `_metadata.file_modification_time` get null (which is what Spark
-                // would produce for unknown modification time anyway).
-                modification_time: None,
+                // Surface the kernel-provided modification time (epoch millis) so
+                // `_metadata.file_modification_time` matches Spark on the kernel-driver
+                // path too. The value is already populated on `DeltaFileEntry` from the
+                // scan-file metadata; the BatchFileIndex path sets it from
+                // AddFile.modificationTime equivalently.
+                modification_time: Some(entry.modification_time),
             })
             .collect();
 
@@ -328,10 +327,10 @@ fn read_string_array(env: &mut Env, arr: &jni::objects::JObjectArray) -> CometRe
     let mut result = Vec::with_capacity(len);
     for i in 0..len {
         let obj = arr.get_element(env, i)?;
-        // SAFETY: get_element returns a valid local JObject reference that we
-        // immediately convert to JString. The array is String[], so the cast
-        // is valid. The env lifetime outlives this scope.
-        let jstr = unsafe { JString::from_raw(env, obj.into_raw()) };
+        // Checked downcast (matches `jmap_to_hashmap`): the array is declared
+        // `String[]`, but use the safe cast rather than `JString::from_raw` so an
+        // unexpected element type surfaces as a clean error instead of UB.
+        let jstr: JString = env.cast_local::<JString>(obj)?;
         result.push(jstr.try_to_string(env)?);
     }
     Ok(result)

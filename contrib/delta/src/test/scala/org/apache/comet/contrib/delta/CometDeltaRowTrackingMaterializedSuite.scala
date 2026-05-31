@@ -68,6 +68,12 @@ class CometDeltaRowTrackingMaterializedSuite extends CometDeltaTestBase {
       assert(before.size == 100)
       val changed = before.keys.filter(k => before(k) != after.getOrElse(k, -1L)).toSeq.sorted
       assert(changed.isEmpty, s"row IDs changed across OPTIMIZE for ${changed.size} rows")
+      // The before/after check above is native-vs-native; also gate on engagement +
+      // equality vs vanilla so a silent fallback or a consistent-but-wrong native
+      // row_id can't pass on stability alone.
+      assertDeltaNativeMatches(
+        tablePath,
+        _.select(col("v"), col("_metadata.row_id").as("rid")).orderBy("v"))
     }
   }
 
@@ -89,6 +95,10 @@ class CometDeltaRowTrackingMaterializedSuite extends CometDeltaTestBase {
         .filter(id => beforeById(id) != after.getOrElse(id, -1L)).toSeq.sorted
       assert(changed.isEmpty, s"row IDs changed across UPDATE for ${changed.size} ids: " +
         changed.take(5).map(id => s"$id: ${beforeById(id)} -> ${after.get(id)}").mkString(", "))
+      // Engagement + equality vs vanilla (the before/after check above is native-only).
+      assertDeltaNativeMatches(
+        tablePath,
+        _.select(col("id"), col("_metadata.row_id").as("rid")).orderBy("id"))
     }
   }
 

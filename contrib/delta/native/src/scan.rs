@@ -326,6 +326,18 @@ pub fn plan_delta_scan_with_predicate(
 ///      rewrite this to `file://` before parsing.
 ///   3. Bare local paths — canonicalized and turned into `file://` via
 ///      `Url::from_directory_path`.
+///
+/// NOTE: this intentionally does NOT reuse core's scan URL parsing
+/// (`prepare_object_store_with_configs` / `get_partitioned_files`). Those do a bare
+/// `Url::parse` on already-`file://`-formed, URL-encoded *data-file* paths Spark supplies.
+/// The Delta *table root* instead arrives from `DeltaReflection.extractTableRoot` as
+/// Hadoop's `Path.toUri.toString` (the single-slash `file:/...` form `Url::parse` rejects)
+/// -- hence the rewrite below -- and kernel additionally requires the trailing-slash
+/// invariant core has no reason to enforce. Percent-escapes in the path body are passed
+/// through verbatim (the rewrite only splices the `file:` prefix); kernel decodes them once,
+/// matching the double-encode applied in `DeltaReflection.pathToSingleEncodedUri`. The
+/// executor-side sibling `dv_reader::normalize_table_root` enforces the same trailing-slash
+/// invariant on an already-`file://`-formed root; keep the two in lock-step.
 pub(crate) fn normalize_url(url_str: &str) -> DeltaResult<Url> {
     // Hadoop's java.net.URI.toString emits `file:/path/to/t` (one slash)
     // for local files. Rewrite into the `file:///path` form that

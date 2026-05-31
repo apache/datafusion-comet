@@ -286,13 +286,25 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
       // Read at version 0 -- should only see the original 3 rows.
       val v0Native =
         ss.read.format("delta").option("versionAsOf", "0").load(tablePath)
+      // Materialise BEFORE inspecting the plan so AQE's query-stage prep rules
+      // (incl. Comet's) have fired (see CometDeltaTestBase plan-ordering note).
+      val nativeRows = v0Native.collect().toSeq.map(normalizeRow)
       val plan = v0Native.queryExecution.executedPlan
       assert(
         collect(plan) {
           case s: org.apache.spark.sql.comet.CometDeltaNativeScanExec => s
         }.nonEmpty,
         s"expected CometDeltaNativeScanExec in time-travel v0 plan:\n$plan")
-      assert(v0Native.count() === 3)
+      assert(nativeRows.size === 3)
+      // Compare CONTENT, not just count, against vanilla at the same pinned version,
+      // so a scan returning the right count from the wrong version is caught.
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        val vanillaRows = ss.read.format("delta").option("versionAsOf", "0")
+          .load(tablePath).collect().toSeq.map(normalizeRow)
+        assert(
+          nativeRows.sortBy(_.mkString("|")) == vanillaRows.sortBy(_.mkString("|")),
+          s"time-travel v0 native=$nativeRows vanilla=$vanillaRows")
+      }
     }
   }
 }

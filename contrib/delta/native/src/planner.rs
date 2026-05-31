@@ -250,7 +250,7 @@ pub fn parse_delta_partition_scalar(
                     ScalarValue::TimestampMillisecond(Some(micros / 1000), tz_opt.clone()),
                 ),
                 datafusion::arrow::datatypes::TimeUnit::Nanosecond => Ok(
-                    ScalarValue::TimestampNanosecond(Some(micros * 1000), tz_opt.clone()),
+                    ScalarValue::TimestampNanosecond(Some(micros.saturating_mul(1000)), tz_opt.clone()),
                 ),
                 datafusion::arrow::datatypes::TimeUnit::Second => Ok(
                     ScalarValue::TimestampSecond(Some(micros / 1_000_000), tz_opt.clone()),

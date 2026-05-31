@@ -456,23 +456,33 @@ class CometDeltaCoverageSuite extends CometDeltaTestBase {
         .save(tablePath)
       spark.sql(s"DELETE FROM delta.`$tablePath` WHERE id % 5 = 0")
       // `select("id")` and SUM go through assertDeltaNativeMatches (vanilla matches
-      // native in this configuration). The `where("id > 10")` variant trips the
-      // same Spark+Delta in-session DeltaLog cache-staleness we hit in
-      // CometDeltaColumnMappingSuite (vanilla returns rows the DV should have
-      // hidden because the cached pre-DELETE snapshot is reused), so we assert
-      // the accelerator engages without comparing to vanilla there.
+      // native in this configuration).
       assertDeltaNativeMatches(tablePath, _.select("id"))
       assertDeltaNativeMatches(tablePath, _.agg(sum("id").as("s"), min("id"), max("id")))
+      // The `where("id > 10")` variant previously skipped the vanilla comparison
+      // because Spark's in-session DeltaLog snapshot cache could serve the vanilla
+      // read a stale pre-DELETE snapshot (rows the DV should hide). The cache is
+      // process-global and keyed by path, so clearing it forces both reads to
+      // re-resolve the post-DELETE snapshot, restoring a real correctness comparison.
+      org.apache.spark.sql.delta.DeltaLog.clearCache()
       val df = spark.read.format("delta").load(tablePath)
         .where("id > 10").select("id", "name")
+      val nativeRows = df.collect().toSeq.map(normalizeRow)
       val plan = df.queryExecution.executedPlan
-      df.collect()
       val deltaScans = collect(plan) {
         case s: org.apache.spark.sql.comet.CometDeltaNativeScanExec => s
       }
       assert(
         deltaScans.nonEmpty,
         s"expected CometDeltaNativeScanExec on DV-bearing filtered read:\n$plan")
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        org.apache.spark.sql.delta.DeltaLog.clearCache()
+        val vanillaRows = spark.read.format("delta").load(tablePath)
+          .where("id > 10").select("id", "name").collect().toSeq.map(normalizeRow)
+        assert(
+          nativeRows.sortBy(_.mkString("|")) == vanillaRows.sortBy(_.mkString("|")),
+          s"DV filtered native=$nativeRows vanilla=$vanillaRows")
+      }
     }
   }
 

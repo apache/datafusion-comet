@@ -68,6 +68,29 @@ import org.apache.comet.serde.operator.schema2Proto
  */
 object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] with Logging {
 
+  // Single source of truth for the Spark `_metadata.*` file-level column names the native
+  // Delta scan synthesises. These were repeated verbatim across several scan-planning
+  // methods below; defined once here so the emit-name lists can't drift (a dropped name =>
+  // N-1 columns where Spark expected N -- the class of bug behind several CDC/row-tracking
+  // failures). Mirror the native `META_*` consts in contrib/delta/native/src/synthetic_columns.rs.
+  private[delta] val SparkFileMetadataNames: Set[String] = Set(
+    "file_path",
+    "file_name",
+    "file_size",
+    "file_block_start",
+    "file_block_length",
+    "file_modification_time")
+
+  // Per-file row-tracking metadata columns (present only on row-tracking-enabled tables).
+  // `default_row_commit_version` must accompany `base_row_id`, else row-tracking/CDC reads
+  // see N-1 columns where Spark expected N.
+  private[delta] val PerFileRowTrackingNames: Set[String] =
+    Set("base_row_id", "default_row_commit_version")
+
+  // All per-file metadata columns: Spark file metadata + row-tracking.
+  private[delta] val PerFileMetadataNames: Set[String] =
+    SparkFileMetadataNames ++ PerFileRowTrackingNames
+
   /**
    * `kind` string for the `ContribOp` envelope this serde produces. The native side's
    * `comet-contrib-delta` rlib registers `DeltaScanPlanner` under this same kind via
@@ -94,6 +117,19 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
   // plan emits one parquet file-group per file, so multiple files in one Spark partition would
   // drop the 2nd+ files' rows.
   /**
+   * True for Delta's MATERIALISED row-tracking column names
+   * (`_row-id-col-<uuid>` / `_row-commit-version-col-<uuid>`). These are real parquet
+   * columns persisted when a file is rewritten to keep row IDs stable, read from the
+   * file by name -- NOT synthesised. (Distinct from the logical `row_id` /
+   * `row_commit_version` synthetic columns, which ARE synthesised from baseRowId +
+   * row_index when no materialised column exists.)
+   */
+  private[delta] def isMaterializedRowTrackingName(name: String): Boolean = {
+    val lc = name.toLowerCase(Locale.ROOT)
+    lc.startsWith("_row-id-col-") || lc.startsWith("_row-commit-version-col-")
+  }
+
+  /**
    * Translate Delta's `delta.columnMapping.id` metadata key to Spark+parquet's standard
    * `parquet.field.id` key on every StructField at every level of nesting. Required for
    * column-mapping `id` mode: Delta writes parquet files with `PARQUET:field_id` metadata
@@ -107,19 +143,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
    * Fields without `delta.columnMapping.id` are passed through unchanged (e.g. partition
    * columns, synthetic row-index columns, struct-leaf fields the metadata strip elided).
    */
-  /**
-   * True for Delta's MATERIALISED row-tracking column names
-   * (`_row-id-col-<uuid>` / `_row-commit-version-col-<uuid>`). These are real parquet
-   * columns persisted when a file is rewritten to keep row IDs stable, read from the
-   * file by name -- NOT synthesised. (Distinct from the logical `row_id` /
-   * `row_commit_version` synthetic columns, which ARE synthesised from baseRowId +
-   * row_index when no materialised column exists.)
-   */
-  private[delta] def isMaterializedRowTrackingName(name: String): Boolean = {
-    val lc = name.toLowerCase(Locale.ROOT)
-    lc.startsWith("_row-id-col-") || lc.startsWith("_row-commit-version-col-")
-  }
-
   private[delta] def translateDeltaFieldIdToParquet(field: StructField): StructField = {
     val newDataType = translateDataTypeFieldIds(field.dataType)
     val newMetadata =
@@ -171,15 +194,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     val reqNames = scan.requiredSchema.fieldNames.map(_.toLowerCase(Locale.ROOT)).toSet
     // `_metadata.*` virtual columns + per-file row-tracking constants (these always force
     // per-file groups natively because each carries a per-file value).
-    val perFileMetadataNames = Set(
-      "file_path",
-      "file_name",
-      "file_size",
-      "file_block_start",
-      "file_block_length",
-      "file_modification_time",
-      "base_row_id",
-      "default_row_commit_version")
+    val perFileMetadataNames = PerFileMetadataNames
     // Synthesized columns (never physical): row index + is-row-deleted.
     val syntheticNames = Set(
       "__delta_internal_row_index",
@@ -832,13 +847,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // appear in scan.output but not scan.requiredSchema. They are synthesised natively
     // below (via metadataColumnNamesEmitted) and must appear in the wrapped exec
     // output schema for downstream attribute resolution.
-    val sparkMetadataNameSet = Set(
-      "file_path",
-      "file_name",
-      "file_size",
-      "file_block_start",
-      "file_block_length",
-      "file_modification_time")
+    val sparkMetadataNameSet = SparkFileMetadataNames
     def isExtraSyntheticName(name: String): Boolean = {
       val lc = name.toLowerCase(Locale.ROOT)
       // NOTE: materialised row-tracking columns (`_row-id-col-*` /
@@ -948,13 +957,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // that Delta's strategies inject. These are synthesised per-task in
     // `DeltaSyntheticColumnsExec`, so when any are required we need the synthetic-emit
     // path even without emit_row_index/is_row_deleted/row_id/row_commit_version set.
-    val sparkMetadataNames = Set(
-      "file_path",
-      "file_name",
-      "file_size",
-      "file_block_start",
-      "file_block_length",
-      "file_modification_time")
+    val sparkMetadataNames = SparkFileMetadataNames
     val requiredFieldNamesLower: Set[String] =
       scan.requiredSchema.fields.map(_.name.toLowerCase(Locale.ROOT)).toSet
     // Spark also appends `_metadata.*` columns to scan.output (not requiredSchema) when
@@ -962,21 +965,10 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // The wrapped exec's output schema must include them so attribute resolution works.
     val outputFieldNamesLower: Set[String] =
       scan.output.map(_.name.toLowerCase(Locale.ROOT)).toSet
-    val fixedMetadataNames = Set(
-      "file_path",
-      "file_name",
-      "file_size",
-      "file_block_start",
-      "file_block_length",
-      "file_modification_time",
-      "base_row_id",
-      // Delta row-tracking exposes `default_row_commit_version` as a per-file
-      // metadata column alongside `base_row_id`. Missing this here means the
-      // emit-name list passed to native drops the column, causing the
-      // upstream operator to see N-1 cols where Spark expected N (e.g. CDC
-      // reads on row-tracking-enabled tables, especially under
-      // coordinated-commits backfill where this code path is reached).
-      "default_row_commit_version")
+    // PerFileMetadataNames includes `default_row_commit_version` alongside `base_row_id`:
+    // dropping it makes the emit-name list short a column, so CDC / row-tracking reads see
+    // N-1 cols where Spark expected N (notably under coordinated-commits backfill).
+    val fixedMetadataNames = PerFileMetadataNames
     // The wrapped exec output is `parquet projection ++ row_index/is_row_deleted/...
     // ++ metadata_column_names` in the order metadata names are emitted. To make the
     // post-synthesis layout match scan.output WITHOUT a final reorder Project, walk

@@ -66,6 +66,15 @@ green "OK: cargo tree with contrib-delta correctly pulls comet-contrib-delta + d
 hdr "Maven: default profile excludes io.delta:* dependencies"
 cd "$ROOT"
 DEPS_DEFAULT="$(mvn -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
+# Guard against a vacuous pass: if mvn failed entirely (network/profile/OOM) the
+# capture is empty, the io.delta grep below finds nothing, and the gate would
+# "pass" without having proven anything. Assert a dependency we KNOW is always
+# present so a broken mvn run errors instead of silently passing.
+if ! echo "$DEPS_DEFAULT" | grep -qE 'org\.apache\.(spark|arrow):'; then
+  red "FAIL: default Maven dependency:list produced no org.apache.spark/arrow deps"
+  red "      (mvn likely failed; refusing to conclude 'zero io.delta' vacuously)"
+  exit 1
+fi
 if echo "$DEPS_DEFAULT" | grep -qE 'io\.delta:'; then
   red "FAIL: default Maven build pulls io.delta dependencies:"
   echo "$DEPS_DEFAULT" | grep -E 'io\.delta:'

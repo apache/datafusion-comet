@@ -135,21 +135,24 @@ fn proto_to_kernel_descriptor(p: &DeltaDvDescriptor) -> DeltaResult<DeletionVect
 /// synthetic-columns when the table emits `is_row_deleted`.)
 pub fn map_dv_error_to_datafusion(err: DeltaError, desc: &DeltaDvDescriptor) -> DataFusionError {
     let msg = err.to_string();
-    // Substring match over the lowercased Display of the chained error. This is the
-    // pragmatic option: the underlying error types differ across kernel + the three
-    // object_store backends (local FS, S3, Azure), and each wraps in its own enum
-    // (`std::io::Error`, `object_store::Error::NotFound`, AWS `NoSuchKey`, Azure
-    // `BlobNotFound`). A structural walk via `err.source()` chain would be cleaner but
-    // would require linking the object_store backends directly here. The strings below
-    // cover what we've seen surface in practice. False positives are very unlikely --
-    // a non-FNF error message containing one of these tokens would be malformed.
+    // Substring match over the lowercased Display of the error. `read_dv_indexes`
+    // flattens every failure into `DeltaError::Internal("DV read failed: {kernel Display}")`,
+    // so there is no typed source() chain to downcast (unlike `missing_file_tolerant.rs`,
+    // which sees the typed object_store error). Only `DeletionVectorDescriptor::read` errors
+    // reach here, and the only missing-file variants kernel produces are:
+    //   - kernel `Error::FileNotFound(path)`  -> Display "File not found: {path}"
+    //   - raw object_store NotFound (S3/Azure 404 normalised by object_store)
+    //                                          -> Display "...{path} not found: ..."
+    // Every other reachable error (corrupt/short bitmap, CRC mismatch, "missing data",
+    // bad URL, permission denied) contains NONE of the tokens below, and log-replay errors
+    // like "column/version/table not found" are produced on the driver, never on this
+    // executor DV-read path. The tokens are deliberately specific ("file not found" and the
+    // colon-qualified "not found:") rather than a bare "not found", so a future refactor that
+    // routed a planning error through here couldn't be silently misclassified as FileNotFound.
     let lower = msg.to_ascii_lowercase();
     let is_missing = lower.contains("file not found")
-        || lower.contains("no such file")
-        || lower.contains("notfound")    // object_store::Error::NotFound
-        || lower.contains("not found")   // generic
-        || lower.contains("nosuchkey")   // AWS S3
-        || lower.contains("blobnotfound"); // Azure Blob
+        || lower.contains("no such file")   // local FS errno text
+        || lower.contains("not found:"); // object_store NotFound ("...{path} not found: ...")
     if is_missing {
         let path = if desc.path_or_inline_dv.is_empty() {
             msg.clone()

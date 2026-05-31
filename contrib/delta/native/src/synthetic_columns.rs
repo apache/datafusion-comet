@@ -594,7 +594,8 @@ impl DeltaSyntheticColumnsStream {
                     // Delta stores modification time in epoch milliseconds; Spark's
                     // `_metadata.file_modification_time` is TimestampType with
                     // microsecond precision. Convert ms -> us.
-                    let micros = self.task_metadata.modification_time_millis.unwrap_or(0) * 1000;
+                    let micros =
+                        self.task_metadata.modification_time_millis.unwrap_or(0).saturating_mul(1000);
                     let mut arr =
                         TimestampMicrosecondArray::from(vec![micros; rows]);
                     arr = arr.with_timezone("UTC");

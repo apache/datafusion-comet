@@ -88,14 +88,6 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
-    def hasMetadataCol(plan: SparkPlan): Boolean = {
-      plan.expressions.exists(_.exists {
-        case a: Attribute =>
-          a.isMetadataCol
-        case _ => false
-      })
-    }
-
     def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
       // List of Iceberg metadata tables:
       // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
@@ -151,6 +143,14 @@ case class CometScanRule(session: SparkSession)
     }
   }
 
+  /** True when any expression in `plan` references a metadata column. */
+  private def hasMetadataCol(plan: SparkPlan): Boolean = {
+    plan.expressions.exists(_.exists {
+      case a: Attribute => a.isMetadataCol
+      case _ => false
+    })
+  }
+
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
 
     // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so
@@ -180,10 +180,7 @@ case class CometScanRule(session: SparkSession)
         // Metadata-col bailout moved here so V1 contribs (Delta) get first crack
         // at scans with synthetic metadata columns before generic Comet rejects
         // them. For non-contrib V1 scans this is equivalent to the outer check.
-        if (scanExec.expressions.exists(_.exists {
-            case a: Attribute => a.isMetadataCol
-            case _ => false
-          })) {
+        if (hasMetadataCol(scanExec)) {
           return withFallbackReason(scanExec, "Metadata column is not supported")
         }
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {

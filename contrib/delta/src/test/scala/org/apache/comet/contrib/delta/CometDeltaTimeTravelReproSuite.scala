@@ -48,6 +48,22 @@ class CometDeltaTimeTravelReproSuite extends CometDeltaTestBase {
         rows == (1 to 10).toSet,
         s"versionAsOf=0 must return v0's 10 rows, got ${rows.toList.sorted}")
 
+      // Guard that the NATIVE scan actually served this time-travel read -- without
+      // this, the test would pass identically if Comet silently fell back to Spark
+      // (vanilla returns the pinned version too). Inspect after collect() so AQE has
+      // finalized the plan.
+      assert(
+        v0.queryExecution.executedPlan.collect {
+          case s: org.apache.spark.sql.comet.CometDeltaNativeScanExec => s
+        }.nonEmpty,
+        s"expected CometDeltaNativeScanExec for versionAsOf=0, got:\n" +
+          s"${v0.queryExecution.executedPlan}")
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        val vanilla = spark.read.format("delta").option("versionAsOf", "0")
+          .load(tablePath).collect().map(_.getInt(0)).toSet
+        assert(rows == vanilla, s"native=$rows vanilla=$vanilla")
+      }
+
       // Sanity: head still returns 20.
       val head = spark.read.format("delta").load(tablePath)
       assert(head.count() == 20, s"head must return 20 rows, got ${head.count()}")

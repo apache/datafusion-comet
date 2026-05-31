@@ -404,8 +404,16 @@ object DeltaScanRule {
         }
       }
     }
+    // Mirror EXACTLY the scheme arms of `create_object_store`
+    // (contrib/delta/native/src/engine.rs): the Delta native path uses delta-kernel's
+    // object_store built with only the `aws` + `azure` features (contrib Cargo.toml),
+    // NOT Comet core's wider object_store/libhdfs layer -- so this is intentionally NOT
+    // routed through `NativeBase.isObjectStoreSchemeSupported`, which would wrongly claim
+    // gcs/hdfs support the Delta crate lacks. Any scheme outside this set fails at
+    // execution with `DeltaError::UnsupportedScheme`, so decline here and let Spark read it.
+    // (Dropped gs/gcs/wasb/wasbs/oss -- the crate rejects them; added az/azure -- it reads them.)
     val supportedSchemes =
-      Set("file", "s3", "s3a", "gs", "gcs", "abfss", "abfs", "wasbs", "wasb", "oss")
+      Set("file", "s3", "s3a", "az", "azure", "abfs", "abfss")
     val rootPaths = scanExec.relation.location.rootPaths
     if (rootPaths.nonEmpty) {
       val schemes = rootPaths.map(p => p.toUri.getScheme).filter(_ != null).toSet

@@ -52,10 +52,6 @@ class CometDeltaCdcSuite extends CometDeltaTestBase {
         .option("startingVersion", "0")
         .load(tablePath)
 
-      // Just collecting the rows is enough to reproduce the column-count
-      // mismatch; if the native scan claims a 5-column schema (id, v,
-      // _change_type, _commit_version, _commit_timestamp) but produces only
-      // 2 batches' worth of columns, native execution throws.
       val rows = df.collect()
       assert(rows.nonEmpty, "CDC read returned no rows")
       val schema = df.schema.fieldNames.toSet
@@ -65,6 +61,30 @@ class CometDeltaCdcSuite extends CometDeltaTestBase {
         s"CDC schema missing _commit_version: ${df.schema.fieldNames.mkString(",")}")
       assert(schema.contains("_commit_timestamp"),
         s"CDC schema missing _commit_timestamp: ${df.schema.fieldNames.mkString(",")}")
+
+      // CDC augments the scan with _change_type/_commit_version/_commit_timestamp;
+      // the native scan is unaware of these, so DeltaScanRule must DECLINE and let
+      // Spark handle it. Inspect the plan only after collect() so AQE has finalized
+      // it (see CometDeltaTestBase.assertDeltaNativeMatches doc on plan ordering).
+      val nativeScans = df.queryExecution.executedPlan.collect {
+        case s: org.apache.spark.sql.comet.CometDeltaNativeScanExec => s
+      }
+      assert(nativeScans.isEmpty,
+        s"CDC read must fall back to Spark, but Comet claimed it:\n" +
+          s"${df.queryExecution.executedPlan}")
+
+      // Correctness: the result with the native config ON must match vanilla Spark.
+      // _commit_timestamp is wall-clock and nondeterministic, so drop it first.
+      val cdcRead = () => spark.read.format("delta")
+        .option("readChangeFeed", "true").option("startingVersion", "0")
+        .load(tablePath).drop("_commit_timestamp")
+      val nativeRows = cdcRead().collect().toSeq.map(normalizeRow)
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        val vanillaRows = cdcRead().collect().toSeq.map(normalizeRow)
+        assert(
+          nativeRows.sortBy(_.mkString("|")) == vanillaRows.sortBy(_.mkString("|")),
+          s"CDC native=$nativeRows vanilla=$vanillaRows")
+      }
     }
   }
 
@@ -94,11 +114,33 @@ class CometDeltaCdcSuite extends CometDeltaTestBase {
         .orderBy("_commit_version", "_change_type")
         .select(col("_commit_version"), col("_change_type"),
           unix_timestamp(col("_commit_timestamp")))
-      // Print plan so we can see whether CometDeltaNativeScanExec is selected
-      // and which columns it claims to produce.
-      df.explain(true)
       val rows = df.collect()
       assert(rows.nonEmpty)
+
+      // CDC must fall back (the native scan can't produce the CDC metadata columns).
+      // Inspect after collect() so AQE has finalized the plan.
+      val plan = df.queryExecution.executedPlan
+      assert(
+        plan.collect {
+          case s: org.apache.spark.sql.comet.CometDeltaNativeScanExec => s
+        }.isEmpty,
+        s"CDC read must fall back to Spark, but Comet claimed it:\n$plan")
+
+      // Compare the deterministic CDC columns native-on vs vanilla (the
+      // unix_timestamp(_commit_timestamp) projection above is wall-clock-derived
+      // and nondeterministic, so it's excluded from the comparison).
+      val detRead = () => spark.read.format("delta")
+        .option("readChangeFeed", "true").option("startingVersion", "0")
+        .option("endingVersion", "10").table(tblName)
+        .orderBy("_commit_version", "_change_type")
+        .select(col("_commit_version"), col("_change_type"))
+      val nativeRows = detRead().collect().toSeq.map(normalizeRow)
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        val vanillaRows = detRead().collect().toSeq.map(normalizeRow)
+        assert(
+          nativeRows.sortBy(_.mkString("|")) == vanillaRows.sortBy(_.mkString("|")),
+          s"CDC native=$nativeRows vanilla=$vanillaRows")
+      }
     } finally {
       spark.sql(s"DROP TABLE IF EXISTS $tblName")
     }

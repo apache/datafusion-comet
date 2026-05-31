@@ -248,11 +248,22 @@ class CometDeltaFeaturesSuite extends CometDeltaTestBase {
         .format("delta")
         .option("timestampAsOf", midTimestamp.toString)
         .load(tablePath)
+      // Materialise before inspecting the plan so AQE has finalized it.
+      val nativeRows = df.collect().toSeq.map(normalizeRow)
       val plan = df.queryExecution.executedPlan
       assert(
         collect(plan) { case s: CometDeltaNativeScanExec => s }.nonEmpty,
         s"expected Comet native scan in timestamp time-travel plan:\n$plan")
-      assert(df.count() === 5)
+      assert(nativeRows.size === 5)
+      // Compare content against vanilla at the same pinned timestamp.
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        val vanillaRows = spark.read.format("delta")
+          .option("timestampAsOf", midTimestamp.toString)
+          .load(tablePath).collect().toSeq.map(normalizeRow)
+        assert(
+          nativeRows.sortBy(_.mkString("|")) == vanillaRows.sortBy(_.mkString("|")),
+          s"timestamp time-travel native=$nativeRows vanilla=$vanillaRows")
+      }
     }
   }
 }

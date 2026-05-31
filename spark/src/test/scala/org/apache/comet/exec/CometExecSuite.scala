@@ -4040,7 +4040,8 @@ class CometExecSuite extends CometTestBase {
           .toList
         val chain = messages.mkString("\n  ")
         assert(
-          messages.exists(m => m.contains("It is possible the underlying files have been updated")),
+          messages.exists(m =>
+            m.contains("It is possible the underlying files have been updated")),
           s"Expected readCurrentFileNotFoundError for a missing file, but got:\n  $chain")
       }
     }

@@ -63,7 +63,8 @@ class CometDeltaEdgeCaseRegressionSuite extends CometDeltaTestBase {
   // `[FAILED_READ_FILE.NO_HINT]` SparkException. Comet's native reader instead
   // throws `CometNativeException: ... Requested range was invalid`. Expected:
   // the error is the Spark-compatible one (so user-facing error handling and the
-  // Delta test pass). Repro asserts the message contains the Spark marker.
+  // Delta test pass). Repro asserts the version-stable Spark wording (the
+  // FAILED_READ_FILE class tag is Spark-4.x-only; see assertion below).
 
   test("F6: reading a corrupted file surfaces a Spark-compatible error (SC-8810)") {
     assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
@@ -88,9 +89,14 @@ class CometDeltaEdgeCaseRegressionSuite extends CometDeltaTestBase {
       }
       val msg = Option(ex.getMessage).getOrElse("") +
         Option(ex.getCause).map(c => Option(c.getMessage).getOrElse("")).getOrElse("")
+      // Assert on the version-stable wording, not the `FAILED_READ_FILE` error-class
+      // literal: Spark's `cannotReadFilesError` only prepends `[FAILED_READ_FILE.NO_HINT]`
+      // to getMessage on Spark 4.x; on Spark 3.4/3.5 the message is just
+      // "Encountered error while reading file ...". (Same version-stability fix applied
+      // to SparkErrorConverterSuite / CometExecSuite in #4536.)
       assert(
-        msg.contains("FAILED_READ_FILE"),
-        s"expected a Spark-compatible FAILED_READ_FILE error, got: $msg")
+        msg.contains("Encountered error while reading file"),
+        s"expected a Spark-compatible cannotReadFilesError, got: $msg")
     }
   }
 }

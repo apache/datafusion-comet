@@ -448,16 +448,25 @@ pub(crate) fn plan_delta_scan(
     let with_rename: Arc<dyn datafusion::physical_plan::ExecutionPlan> =
         if !common.final_output_indices.is_empty() {
             let wrapped_schema = after_synthetics.schema();
+            let n = wrapped_schema.fields().len();
             let projections: Vec<(Arc<dyn PhysicalExpr>, String)> = common
                 .final_output_indices
                 .iter()
                 .map(|idx| {
+                    // `final_output_indices` is wire data (int32); a negative or
+                    // out-of-range value would otherwise panic in `Schema::field`.
+                    if *idx < 0 || (*idx as usize) >= n {
+                        return Err(GeneralError(format!(
+                            "final_output_indices entry {idx} out of range \
+                             (wrapped schema has {n} fields)"
+                        )));
+                    }
                     let i = *idx as usize;
                     let field = wrapped_schema.field(i);
                     let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), i));
-                    (col, field.name().clone())
+                    Ok((col, field.name().clone()))
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             Arc::new(
                 ProjectionExec::try_new(projections, after_synthetics)
                     .map_err(|e| GeneralError(format!("final reorder ProjectionExec: {e}")))?,

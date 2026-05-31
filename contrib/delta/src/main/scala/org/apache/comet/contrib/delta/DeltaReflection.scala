@@ -633,13 +633,18 @@ object DeltaReflection extends Logging {
     if (dvDescriptor == null) return None
     try {
       val cls = dvDescriptor.getClass
-      // `storageType` is a String field on the case class -- read it directly.
-      val storageType = cls.getMethod("storageType").invoke(dvDescriptor).asInstanceOf[String]
+      // Per-DV-file no-arg case-class accessors; route through the cached lookup so we don't
+      // re-resolve `getMethod` on every AddFile (5 lookups/file on DV-heavy tables).
+      val storageType =
+        lookupNoArgMethod(cls, "storageType").invoke(dvDescriptor).asInstanceOf[String]
       val pathOrInline =
-        cls.getMethod("pathOrInlineDv").invoke(dvDescriptor).asInstanceOf[String]
-      val sizeInBytes = cls.getMethod("sizeInBytes").invoke(dvDescriptor).asInstanceOf[Int]
-      val cardinality = cls.getMethod("cardinality").invoke(dvDescriptor).asInstanceOf[Long]
-      val offsetOpt = cls.getMethod("offset").invoke(dvDescriptor).asInstanceOf[Option[Int]]
+        lookupNoArgMethod(cls, "pathOrInlineDv").invoke(dvDescriptor).asInstanceOf[String]
+      val sizeInBytes =
+        lookupNoArgMethod(cls, "sizeInBytes").invoke(dvDescriptor).asInstanceOf[Int]
+      val cardinality =
+        lookupNoArgMethod(cls, "cardinality").invoke(dvDescriptor).asInstanceOf[Long]
+      val offsetOpt =
+        lookupNoArgMethod(cls, "offset").invoke(dvDescriptor).asInstanceOf[Option[Int]]
 
       val b = OperatorOuterClass.DeltaDvDescriptor.newBuilder()
       // For "u" (UUID-relative) storage we PRE-RESOLVE the absolute path via Delta's own
@@ -697,7 +702,8 @@ object DeltaReflection extends Logging {
           // ReflectiveOperationException catch below. `getDeclaredMethod` is safe across
           // the supported Delta versions (3.3.2 / 4.0.0 / 4.1.0) because the
           // `absolutePath(Path): Path` signature is stable.
-          val absMethod = cls.getDeclaredMethod("absolutePath", classOf[org.apache.hadoop.fs.Path])
+          val absMethod =
+            lookupMethod(cls, "absolutePath", Seq(classOf[org.apache.hadoop.fs.Path]))
           val abs = absMethod.invoke(dvDescriptor, tablePath)
             .asInstanceOf[org.apache.hadoop.fs.Path]
           // Use Hadoop's URI form (which Delta itself uses for "p" descriptors via
@@ -730,6 +736,15 @@ object DeltaReflection extends Logging {
         logWarning(
           s"addFileDvToProto: missing method on DeletionVectorDescriptor " +
             s"(class=${dvDescriptor.getClass.getName}): ${e.getMessage}")
+        None
+      // The cached `lookupNoArgMethod`/`lookupMethod` return null (not throw) when a method
+      // is absent, so a version-drift miss surfaces here as an NPE on `null.invoke(...)`
+      // rather than NoSuchMethodException. Treat it identically: log + decline so the scan
+      // falls back to vanilla Delta instead of crashing planning.
+      case e: NullPointerException =>
+        logWarning(
+          s"addFileDvToProto: reflective method not found (cache miss) on " +
+            s"DeletionVectorDescriptor (class=${dvDescriptor.getClass.getName}): ${e.getMessage}")
         None
       case e: IllegalAccessException =>
         logWarning(
@@ -910,10 +925,8 @@ object DeltaReflection extends Logging {
         .flatMap(ps => findAccessor(ps, Seq("scannedSnapshot")))
         .orNull
       if (snapshot == null) return None
-      val filesForScanMethod = snapshot.getClass.getMethods.find { m =>
-        m.getName == "filesForScan" && m.getParameterCount == 2 &&
-        m.getParameterTypes()(1) == classOf[Boolean]
-      }.orNull
+      val filesForScanMethod =
+        lookupMethod(snapshot.getClass, "filesForScan", Seq(null, classOf[Boolean]))
       if (filesForScanMethod == null) return None
       // Pass through the scan's partition filters so the snapshot does its own
       // file-skipping. Without this, the refreshed list is the FULL table --
@@ -941,9 +954,7 @@ object DeltaReflection extends Logging {
       // Method.matchingFiles has two parameters of type `Seq[Expression]`; we
       // can pass Nil for both. We find the method by name + arity to keep the
       // lookup tolerant of Scala's generic-erasure bridging.
-      val candidate = location.getClass.getMethods.find { m =>
-        m.getName == "matchingFiles" && m.getParameterCount == 2
-      }
+      val candidate = Option(lookupMethod(location.getClass, "matchingFiles", Seq(null, null)))
       candidate.flatMap { m =>
         val nil = scala.collection.immutable.Nil
         try Option(m.invoke(location, nil, nil))
@@ -988,6 +999,36 @@ object DeltaReflection extends Logging {
         case _: NoSuchMethodException => null
       }
     noArgMethodCache.putIfAbsent(key, if (resolved == null) MISSING else resolved)
+    resolved
+  }
+
+  private val argMethodCache =
+    new java.util.concurrent.ConcurrentHashMap[
+      (Class[_], String, Seq[Class[_]]),
+      java.lang.reflect.Method]()
+
+  /**
+   * Companion to `lookupNoArgMethod` for arg-typed lookups it can't express. Caches a Method
+   * handle by (class, name, parameter types), matching name + parameter count + each supplied
+   * param type via `getMethods` (public methods only); a `null` in `argTypes` leaves that
+   * position unconstrained. Negative lookups cache the MISSING sentinel so repeat misses don't
+   * re-scan the method table. Returns null on no match.
+   */
+  private def lookupMethod(
+      cls: Class[_],
+      name: String,
+      argTypes: Seq[Class[_]]): java.lang.reflect.Method = {
+    val key = (cls, name, argTypes)
+    val cached = argMethodCache.get(key)
+    if (cached ne null) return if (cached eq MISSING) null else cached
+    val resolved = cls.getMethods
+      .find { m =>
+        m.getName == name &&
+        m.getParameterCount == argTypes.length &&
+        argTypes.indices.forall(i => argTypes(i) == null || m.getParameterTypes()(i) == argTypes(i))
+      }
+      .orNull
+    argMethodCache.putIfAbsent(key, if (resolved == null) MISSING else resolved)
     resolved
   }
 

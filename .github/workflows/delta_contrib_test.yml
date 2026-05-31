@@ -22,10 +22,11 @@
 # Three jobs:
 #   1. build-native           -- builds libcomet.so once with --features
 #                                contrib-delta, uploads as an artifact.
-#   2. delta-contrib-scala    -- matrix over (Spark 3.5 + Delta 3.3.2) and
+#   2. delta-contrib-scala    -- matrix over (Spark 3.5 + Delta 3.3.2),
+#                                (Spark 4.0 + Delta 4.0.0) and
 #                                (Spark 4.1 + Delta 4.1.0), downloads the
-#                                native lib, runs all four contrib Scala
-#                                suites (49 tests total per matrix cell).
+#                                native lib, runs all 25 contrib Scala
+#                                suites per matrix cell.
 #   3. delta-build-gate       -- cheap independent job; runs
 #                                dev/verify-contrib-delta-gate.sh which
 #                                proves default cargo / mvn / dylib carry
@@ -135,9 +136,9 @@ jobs:
           path: native/target/ci/libcomet.so
           retention-days: 1
 
-  # Run all four contrib Scala suites across both (Spark, Delta) version
-  # pairs. The matrix asserts feature parity: same 49 tests must pass on
-  # Spark 3.5 + Delta 3.3.2 AND Spark 4.1 + Delta 4.1.0.
+  # Run all 25 contrib Scala suites across every (Spark, Delta) version
+  # pair. The matrix asserts feature parity: the same suites must pass on
+  # Spark 3.5 + Delta 3.3.2, Spark 4.0 + Delta 4.0.0 AND Spark 4.1 + Delta 4.1.0.
   delta-contrib-scala:
     needs: build-native
     strategy:
