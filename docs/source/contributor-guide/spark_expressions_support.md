@@ -407,13 +407,10 @@
 
 - [x] add_months
 - [x] convert_timezone
-- [x] curdate
-  - Alias of `current_date`; constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
-- [x] current_date
-  - Constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
+- [ ] curdate
+- [ ] current_date
 - [ ] current_time
-- [x] current_timestamp
-  - Constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
+- [ ] current_timestamp
 - [x] current_timezone
 - [x] date_add
 - [x] date_diff
@@ -446,18 +443,16 @@
 - [ ] make_interval
 - [ ] make_time
 - [x] make_timestamp
-- [x] make_timestamp_ltz
-  - The 6-argument form rewrites to `MakeTimestamp` and runs via the codegen dispatcher. The 2-argument `(date, time)` form requires the Spark 4.1 TIME type and falls back.
-- [x] make_timestamp_ntz
-  - The 6-argument form rewrites to `MakeTimestamp` and runs via the codegen dispatcher. The 2-argument `(date, time)` form requires the Spark 4.1 TIME type and falls back.
+- [ ] make_timestamp_ltz
+- [ ] make_timestamp_ntz
 - [ ] make_ym_interval
 - [x] minute
 - [x] month
-- [ ] monthname
+- [x] monthname
+  - Spark 4.0+. Has no native lowering; routed through the codegen dispatcher (runs Spark's own `doGenCode`), gated by `spark.comet.exec.scalaUDF.codegen.enabled` (default true).
 - [x] months_between
 - [x] next_day
-- [x] now
-  - Alias of `current_timestamp`; constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
+- [ ] now
 - [x] quarter
 - [x] second
 - [ ] session_window
@@ -466,15 +461,11 @@
 - [x] timestamp_micros
 - [x] timestamp_millis
 - [x] timestamp_seconds
-- [x] to_date
-  - Rewrites to `Cast` (no format, native) or `Cast(GetTimestamp(...))` (with format, via the codegen dispatcher) before Comet sees the plan.
+- [ ] to_date
 - [ ] to_time
-- [x] to_timestamp
-  - Rewrites to `Cast` (no format, native) or `GetTimestamp` (with format, via the codegen dispatcher) before Comet sees the plan.
-- [x] to_timestamp_ltz
-  - Rewrites to `to_timestamp` with `TimestampType`; same support as `to_timestamp`.
-- [x] to_timestamp_ntz
-  - Rewrites to `to_timestamp` with `TimestampNTZType`; same support as `to_timestamp`.
+- [ ] to_timestamp
+- [ ] to_timestamp_ltz
+- [ ] to_timestamp_ntz
 - [x] to_unix_timestamp
 - [x] to_utc_timestamp
   - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
