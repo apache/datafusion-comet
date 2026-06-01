@@ -36,19 +36,17 @@ Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enab
 
 ## Status legend
 
-| Status                 | Meaning                                                                                                                                                                                 |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ✅ Supported           | Native or codegen path; compatible with Spark by default.                                                                                                                               |
-| ⚠️ Supported (caveats) | Works, but may diverge from Spark in some cases: incompatible, flag-gated (`allowIncompatible`), or restricted to certain types. See the [Compatibility Guide](compatibility/index.md). |
-| 🔜 Planned             | Intended; tracked by an open issue or pull request.                                                                                                                                     |
-| 🚫 Out of scope        | Deliberately not planned.                                                                                                                                                               |
+| Status                   | Meaning                                                                                                                                                                                 |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ✅ Supported             | Native or codegen path; compatible with Spark by default.                                                                                                                               |
+| ⚠️ Supported (caveats)   | Works, but may diverge from Spark in some cases: incompatible, flag-gated (`allowIncompatible`), or restricted to certain types. See the [Compatibility Guide](compatibility/index.md). |
+| 🔜 Planned               | Intended; tracked by an open issue or pull request.                                                                                                                                     |
+| 💤 Not currently planned | Not on the current roadmap; falls back to Spark and may be reconsidered later.                                                                                                          |
 
-## Out of scope
+## Not currently planned
 
 Comet focuses acceleration on mainstream relational, string, datetime, math, and collection
-expressions. Some Spark function families are **out of scope**: specialized functionality with
-narrow real-world analytics use and high implementation cost. These will fall back to Spark and
-are not on the roadmap:
+expressions. The following function families are **not currently planned** for native acceleration (they are not on the 1.0 roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:
 
 - **Probabilistic sketches and approximate top-k** (`kll_sketch_*`, `hll_*`, `theta_*`, `count_min_sketch`, `bitmap_*`, `approx_top_k*`): specialized data structures with exact-correctness traps.
 - **XML / XPath** (`from_xml`, `to_xml`, `schema_of_xml`, `xpath*`): legacy text format, rare in accelerated workloads.
@@ -58,10 +56,9 @@ are not on the roadmap:
 - **CSV functions** (`from_csv`, `to_csv`, `schema_of_csv`): row-level CSV parsing and formatting in expressions is niche and better handled at the data source layer.
 - **UTF-8 validation** (`is_valid_utf8`, `make_valid_utf8`, `validate_utf8`, `try_validate_utf8`): niche Spark 4.x string-validation helpers.
 - **File metadata** (`input_file_name`, `input_file_block_start`, `input_file_block_length`): require scan-internal per-row file information, outside the expression layer.
-- **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`, `uuid`): low-value or specialized functions with little benefit from native acceleration.
+- **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`): low-value or specialized functions with little benefit from native acceleration.
 
-Note that `approx_count_distinct`, `approx_percentile` / `percentile_approx`, `median`, and `mode`
-are _not_ out of scope: although approximate, they are mainstream and are planned.
+Note that `approx_count_distinct`, `median`, and `mode` are planned: they are mainstream (`median` and `mode` are exact aggregates). `approx_percentile` / `percentile_approx` are not currently planned because their approximate results cannot be made bit-identical to Spark.
 
 The tables below list every Spark built-in expression with its current status.
 
@@ -72,7 +69,6 @@ The tables below list every Spark built-in expression with its current status.
 | `any`                   | ✅     |                                                                  |
 | `any_value`             | ✅     |                                                                  |
 | `approx_count_distinct` | 🔜     | tracking #4098                                                   |
-| `approx_percentile`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)  |
 | `array_agg`             | 🔜     | Array aggregate (related to `collect_list`, #2524)               |
 | `avg`                   | ⚠️     | Interval types (YearMonth, DayTime) fall back                    |
 | `bit_and`               | ✅     |                                                                  |
@@ -104,7 +100,6 @@ The tables below list every Spark built-in expression with its current status.
 | `min_by`                | 🔜     | [#3841](https://github.com/apache/datafusion-comet/issues/3841)  |
 | `mode`                  | 🔜     | [#3970](https://github.com/apache/datafusion-comet/issues/3970)  |
 | `percentile`            | 🔜     | #4542                                                            |
-| `percentile_approx`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)  |
 | `percentile_cont`       | 🔜     | Percentile aggregate                                             |
 | `percentile_disc`       | 🔜     | Percentile aggregate                                             |
 | `regr_avgx`             | ✅     | Native: Spark rewrites to `Average` (tests in #4551)             |
@@ -492,6 +487,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `try_variant_get`             | 🔜     | tracking #4098                                                                   |
 | `typeof`                      | ✅     | Foldable; resolved to a literal before Comet sees the plan                       |
 | `user`                        | ✅     | Resolved to a literal by the Spark analyzer before reaching Comet                |
+| `uuid`                        | 🔜     | Nondeterministic random UUID                                                     |
 | `variant_get`                 | 🔜     | tracking #4098                                                                   |
 
 ---
@@ -639,16 +635,6 @@ fall back to Spark.
 | `row_number`   | 🔜     | Window function; tracked by #2721 |
 
 ---
-
-## Out-of-scope function list
-
-The following functions are out of scope and fall back to Spark. See [Out of scope](#out-of-scope) above for the rationale.
-
-- **agg_funcs:** `approx_top_k`, `approx_top_k_accumulate`, `approx_top_k_combine`, `count_min_sketch`, `histogram_numeric`, `hll_sketch_agg`, `hll_union_agg`, `kll_sketch_agg_bigint`, `kll_sketch_agg_double`, `kll_sketch_agg_float`, `kll_sketch_get_n_bigint`, `kll_sketch_get_n_double`, `kll_sketch_get_n_float`, `kll_sketch_get_quantile_bigint`, `kll_sketch_get_quantile_double`, `kll_sketch_get_quantile_float`, `kll_sketch_get_rank_bigint`, `kll_sketch_get_rank_double`, `kll_sketch_get_rank_float`, `kll_sketch_merge_bigint`, `kll_sketch_merge_double`, `kll_sketch_merge_float`, `kll_sketch_to_string_bigint`, `kll_sketch_to_string_double`, `kll_sketch_to_string_float`, `theta_intersection_agg`, `theta_sketch_agg`, `theta_union_agg`
-- **csv_funcs:** `from_csv`, `schema_of_csv`, `to_csv`
-- **misc_funcs:** `approx_top_k_estimate`, `bitmap_and_agg`, `bitmap_bit_position`, `bitmap_bucket_number`, `bitmap_construct_agg`, `bitmap_count`, `bitmap_or_agg`, `from_avro`, `from_protobuf`, `hll_sketch_estimate`, `hll_union`, `input_file_block_length`, `input_file_block_start`, `input_file_name`, `java_method`, `reflect`, `schema_of_avro`, `st_asbinary`, `st_geogfromwkb`, `st_geomfromwkb`, `st_setsrid`, `st_srid`, `theta_difference`, `theta_intersection`, `theta_sketch_estimate`, `theta_union`, `to_avro`, `to_protobuf`, `try_reflect`, `uuid`, `version`
-- **string_funcs:** `is_valid_utf8`, `make_valid_utf8`, `quote`, `sentences`, `try_validate_utf8`, `validate_utf8`
-- **xml_funcs:** `from_xml`, `schema_of_xml`, `to_xml`, `xpath`, `xpath_boolean`, `xpath_double`, `xpath_float`, `xpath_int`, `xpath_long`, `xpath_number`, `xpath_short`, `xpath_string`
 
 ## Beyond SQL functions
 
