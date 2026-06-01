@@ -42,7 +42,6 @@ Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enab
 | ⚠️ Supported (caveats) | Works, but may diverge from Spark in some cases: incompatible, flag-gated (`allowIncompatible`), or restricted to certain types. See the [Compatibility Guide](compatibility/index.md). |
 | 🔜 Planned             | Intended; tracked by an open issue or pull request.                                                                                                                                     |
 | 🚫 Out of scope        | Deliberately not planned.                                                                                                                                                               |
-| ❓ Not yet supported   | Falls back to Spark today; support is to be determined (not yet evaluated).                                                                                                             |
 
 ## Out of scope
 
