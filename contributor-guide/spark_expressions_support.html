@@ -527,8 +527,14 @@ under the License.
 <section id="how-to-read-this-document">
 <h2>How to Read This Document<a class="headerlink" href="#how-to-read-this-document" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>A function marked with <code class="docutils literal notranslate"><span class="pre">[x]</span></code> has a native implementation in Comet and does not fall back to Spark by default.</p></li>
-<li><p>A function marked with <code class="docutils literal notranslate"><span class="pre">[</span> <span class="pre">]</span></code> has no native Comet implementation and falls back to Spark.</p></li>
+<li><p>A function marked with <code class="docutils literal notranslate"><span class="pre">[x]</span></code> is implemented in Comet and can be evaluated without falling back to Spark. Comet serves such a function through one of two paths:</p>
+<ul>
+<li><p><strong>Native:</strong> a Rust/DataFusion implementation that runs entirely in native execution. This is the path used for most functions.</p></li>
+<li><p><strong>Codegen dispatch:</strong> a JVM kernel that runs Spark’s own generated code over Arrow batches, used for some functions that do not have a native implementation. This path is gated by <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code>; when it is disabled, the enclosing operator falls back to Spark.</p></li>
+<li><p>A few entries (such as <code class="docutils literal notranslate"><span class="pre">explode</span></code> / <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>) are instead handled at the operator level rather than as expressions; these are annotated inline.</p></li>
+</ul>
+</li>
+<li><p>A function marked with <code class="docutils literal notranslate"><span class="pre">[</span> <span class="pre">]</span></code> has no Comet implementation and always falls back to Spark.</p></li>
 </ul>
 <blockquote>
 <div><p><strong>Note:</strong> Some functions listed as supported may still be incompatible with Spark in
@@ -1025,9 +1031,9 @@ per-function details are documented in the
 <section id="conversion-funcs">
 <h3>conversion_funcs<a class="headerlink" href="#conversion-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> bigint</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> binary</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> boolean</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> bigint</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> binary</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> boolean</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cast</p>
 <ul>
 <li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8 modulo <code class="docutils literal notranslate"><span class="pre">Cast.canUpCast</span></code> refactored to delegate to <code class="docutils literal notranslate"><span class="pre">UpCastRule.canUpCast</span></code>.</p></li>
@@ -1044,17 +1050,18 @@ per-function details are documented in the
 <li><p><code class="docutils literal notranslate"><span class="pre">CAST(&lt;float|double&gt;</span> <span class="pre">AS</span> <span class="pre">DECIMAL)</span></code> rounding may differ from Spark (<code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>, gated by <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible</span></code>, tracked at https://github.com/apache/datafusion-comet/issues/1371).</p></li>
 </ul>
 </li>
+<li><p>Spark registers the type-name conversion functions (<code class="docutils literal notranslate"><span class="pre">bigint</span></code>, <code class="docutils literal notranslate"><span class="pre">binary</span></code>, <code class="docutils literal notranslate"><span class="pre">boolean</span></code>, <code class="docutils literal notranslate"><span class="pre">date</span></code>, <code class="docutils literal notranslate"><span class="pre">decimal</span></code>, <code class="docutils literal notranslate"><span class="pre">double</span></code>, <code class="docutils literal notranslate"><span class="pre">float</span></code>, <code class="docutils literal notranslate"><span class="pre">int</span></code>, <code class="docutils literal notranslate"><span class="pre">smallint</span></code>, <code class="docutils literal notranslate"><span class="pre">string</span></code>, <code class="docutils literal notranslate"><span class="pre">timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">tinyint</span></code>) as cast aliases. Each lowers to the same <code class="docutils literal notranslate"><span class="pre">Cast</span></code> node, so Comet handles it via the <code class="docutils literal notranslate"><span class="pre">cast</span></code> implementation with the same compatibility profile.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> date</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> decimal</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> double</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> float</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> int</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> smallint</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> string</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> timestamp</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> tinyint</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> date</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> decimal</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> double</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> float</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> int</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> smallint</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> string</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> timestamp</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> tinyint</p></li>
 </ul>
 </section>
 <section id="csv-funcs">
@@ -1070,10 +1077,22 @@ per-function details are documented in the
 <ul class="contains-task-list simple">
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> add_months</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> convert_timezone</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> curdate</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> current_date</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> curdate</p>
+<ul>
+<li><p>Alias of <code class="docutils literal notranslate"><span class="pre">current_date</span></code>; constant-folded to a literal by Spark’s <code class="docutils literal notranslate"><span class="pre">ComputeCurrentTime</span></code> rule before Comet sees the plan.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> current_date</p>
+<ul>
+<li><p>Constant-folded to a literal by Spark’s <code class="docutils literal notranslate"><span class="pre">ComputeCurrentTime</span></code> rule before Comet sees the plan.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> current_time</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> current_timestamp</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> current_timestamp</p>
+<ul>
+<li><p>Constant-folded to a literal by Spark’s <code class="docutils literal notranslate"><span class="pre">ComputeCurrentTime</span></code> rule before Comet sees the plan.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> current_timezone</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> date_add</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> date_diff</p></li>
@@ -1108,15 +1127,27 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> make_interval</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> make_time</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> make_timestamp</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> make_timestamp_ltz</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> make_timestamp_ntz</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> make_timestamp_ltz</p>
+<ul>
+<li><p>The 6-argument form rewrites to <code class="docutils literal notranslate"><span class="pre">MakeTimestamp</span></code> and runs via the codegen dispatcher. The 2-argument <code class="docutils literal notranslate"><span class="pre">(date,</span> <span class="pre">time)</span></code> form requires the Spark 4.1 TIME type and falls back.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> make_timestamp_ntz</p>
+<ul>
+<li><p>The 6-argument form rewrites to <code class="docutils literal notranslate"><span class="pre">MakeTimestamp</span></code> and runs via the codegen dispatcher. The 2-argument <code class="docutils literal notranslate"><span class="pre">(date,</span> <span class="pre">time)</span></code> form requires the Spark 4.1 TIME type and falls back.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> make_ym_interval</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> minute</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> month</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> monthname</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> months_between</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> next_day</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> now</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> now</p>
+<ul>
+<li><p>Alias of <code class="docutils literal notranslate"><span class="pre">current_timestamp</span></code>; constant-folded to a literal by Spark’s <code class="docutils literal notranslate"><span class="pre">ComputeCurrentTime</span></code> rule before Comet sees the plan.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> quarter</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> second</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> session_window</p></li>
@@ -1125,11 +1156,27 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> timestamp_micros</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> timestamp_millis</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> timestamp_seconds</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_date</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> to_date</p>
+<ul>
+<li><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code> (no format, native) or <code class="docutils literal notranslate"><span class="pre">Cast(GetTimestamp(...))</span></code> (with format, via the codegen dispatcher) before Comet sees the plan.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_time</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_timestamp</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_timestamp_ltz</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_timestamp_ntz</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> to_timestamp</p>
+<ul>
+<li><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code> (no format, native) or <code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> (with format, via the codegen dispatcher) before Comet sees the plan.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> to_timestamp_ltz</p>
+<ul>
+<li><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code> with <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code>; same support as <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> to_timestamp_ntz</p>
+<ul>
+<li><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code> with <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code>; same support as <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> to_unix_timestamp</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> to_utc_timestamp</p>
 <ul>
@@ -1160,12 +1207,28 @@ per-function details are documented in the
 <section id="generator-funcs">
 <h3>generator_funcs<a class="headerlink" href="#generator-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> explode</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> explode_outer</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> explode</p>
+<ul>
+<li><p>Handled at the operator level as a <code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code> (<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code>), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array inputs; map inputs fall back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2837">#2837</a>).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> explode_outer</p>
+<ul>
+<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">explode</span></code>, but the <code class="docutils literal notranslate"><span class="pre">outer=true</span></code> case is <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> (empty arrays are not preserved as null outputs) and falls back unless <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.allowIncompatible=true</span></code> (<a class="reference external" href="https://github.com/apache/datafusion/issues/19053">datafusion#19053</a>).</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> inline</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> inline_outer</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> posexplode</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> posexplode_outer</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> posexplode</p>
+<ul>
+<li><p>Handled at the operator level as a <code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code> (<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code>), like <code class="docutils literal notranslate"><span class="pre">explode</span></code>. Compatible for array inputs; map inputs fall back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2837">#2837</a>).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> posexplode_outer</p>
+<ul>
+<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>, but the <code class="docutils literal notranslate"><span class="pre">outer=true</span></code> case is <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> and falls back unless <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.allowIncompatible=true</span></code> (<a class="reference external" href="https://github.com/apache/datafusion/issues/19053">datafusion#19053</a>).</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> stack</p></li>
 </ul>
 </section>

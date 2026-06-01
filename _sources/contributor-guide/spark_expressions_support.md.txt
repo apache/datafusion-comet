@@ -21,8 +21,11 @@
 
 ## How to Read This Document
 
-- A function marked with `[x]` has a native implementation in Comet and does not fall back to Spark by default.
-- A function marked with `[ ]` has no native Comet implementation and falls back to Spark.
+- A function marked with `[x]` is implemented in Comet and can be evaluated without falling back to Spark. Comet serves such a function through one of two paths:
+  - **Native:** a Rust/DataFusion implementation that runs entirely in native execution. This is the path used for most functions.
+  - **Codegen dispatch:** a JVM kernel that runs Spark's own generated code over Arrow batches, used for some functions that do not have a native implementation. This path is gated by `spark.comet.exec.scalaUDF.codegen.enabled`; when it is disabled, the enclosing operator falls back to Spark.
+  - A few entries (such as `explode` / `posexplode`) are instead handled at the operator level rather than as expressions; these are annotated inline.
+- A function marked with `[ ]` has no Comet implementation and always falls back to Spark.
 
 > **Note:** Some functions listed as supported may still be incompatible with Spark in
 > certain cases (data types, modes, edge values) and fall back to Spark at runtime. Full
@@ -372,9 +375,9 @@
 
 ### conversion_funcs
 
-- [ ] bigint
-- [ ] binary
-- [ ] boolean
+- [x] bigint
+- [x] binary
+- [x] boolean
 - [x] cast
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8 modulo `Cast.canUpCast` refactored to delegate to `UpCastRule.canUpCast`.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `Cast(child, dataType, timeZoneId, evalMode)`; eval modes are `LEGACY`, `ANSI`, `TRY`. The legacy `Cast.canCast` matrix and the `Cast.canAnsiCast` matrix decide acceptance per type pair. Comet routes via `CometCast` (`spark/src/main/scala/org/apache/comet/expressions/CometCast.scala`) using a per-source-type support matrix that returns `Compatible`, `Incompatible(reason)`, or `Unsupported(reason)`; literal children are short-circuited to `Compatible()` so `CometLiteral` validates them. The serialized `Cast` proto carries `datatype`, `evalMode`, `timezone` (default `UTC`), `allowIncompat` (from `spark.comet.expression.Cast.allowIncompatible`), and `isSpark4Plus`. The native side (`native/spark-expr/src/conversion_funcs/cast.rs`) implements explicit per-eval-mode branches for narrowing numeric casts that match Spark's overflow exceptions, and falls through to DataFusion `cast_with_options(safe = !ANSI)` for the rest.
@@ -387,15 +390,16 @@
     - `CAST(<map> AS <map>)` falls back to Spark even though native `cast_map_to_map` exists (https://github.com/apache/datafusion-comet/issues/4491).
     - `spark.sql.legacy.castComplexTypesToString.enabled=true` is not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4492).
     - `CAST(<float|double> AS DECIMAL)` rounding may differ from Spark (`Incompatible`, gated by `spark.comet.expression.Cast.allowIncompatible`, tracked at https://github.com/apache/datafusion-comet/issues/1371).
-- [ ] date
-- [ ] decimal
-- [ ] double
-- [ ] float
-- [ ] int
-- [ ] smallint
-- [ ] string
-- [ ] timestamp
-- [ ] tinyint
+  - Spark registers the type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `decimal`, `double`, `float`, `int`, `smallint`, `string`, `timestamp`, `tinyint`) as cast aliases. Each lowers to the same `Cast` node, so Comet handles it via the `cast` implementation with the same compatibility profile.
+- [x] date
+- [x] decimal
+- [x] double
+- [x] float
+- [x] int
+- [x] smallint
+- [x] string
+- [x] timestamp
+- [x] tinyint
 
 ### csv_funcs
 
@@ -407,10 +411,13 @@
 
 - [x] add_months
 - [x] convert_timezone
-- [ ] curdate
-- [ ] current_date
+- [x] curdate
+  - Alias of `current_date`; constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
+- [x] current_date
+  - Constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
 - [ ] current_time
-- [ ] current_timestamp
+- [x] current_timestamp
+  - Constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
 - [x] current_timezone
 - [x] date_add
 - [x] date_diff
@@ -442,15 +449,18 @@
 - [ ] make_interval
 - [ ] make_time
 - [x] make_timestamp
-- [ ] make_timestamp_ltz
-- [ ] make_timestamp_ntz
+- [x] make_timestamp_ltz
+  - The 6-argument form rewrites to `MakeTimestamp` and runs via the codegen dispatcher. The 2-argument `(date, time)` form requires the Spark 4.1 TIME type and falls back.
+- [x] make_timestamp_ntz
+  - The 6-argument form rewrites to `MakeTimestamp` and runs via the codegen dispatcher. The 2-argument `(date, time)` form requires the Spark 4.1 TIME type and falls back.
 - [ ] make_ym_interval
 - [x] minute
 - [x] month
 - [ ] monthname
 - [x] months_between
 - [x] next_day
-- [ ] now
+- [x] now
+  - Alias of `current_timestamp`; constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
 - [x] quarter
 - [x] second
 - [ ] session_window
@@ -459,11 +469,15 @@
 - [x] timestamp_micros
 - [x] timestamp_millis
 - [x] timestamp_seconds
-- [ ] to_date
+- [x] to_date
+  - Rewrites to `Cast` (no format, native) or `Cast(GetTimestamp(...))` (with format, via the codegen dispatcher) before Comet sees the plan.
 - [ ] to_time
-- [ ] to_timestamp
-- [ ] to_timestamp_ltz
-- [ ] to_timestamp_ntz
+- [x] to_timestamp
+  - Rewrites to `Cast` (no format, native) or `GetTimestamp` (with format, via the codegen dispatcher) before Comet sees the plan.
+- [x] to_timestamp_ltz
+  - Rewrites to `to_timestamp` with `TimestampType`; same support as `to_timestamp`.
+- [x] to_timestamp_ntz
+  - Rewrites to `to_timestamp` with `TimestampNTZType`; same support as `to_timestamp`.
 - [x] to_unix_timestamp
 - [x] to_utc_timestamp
   - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
@@ -489,12 +503,16 @@
 
 ### generator_funcs
 
-- [ ] explode
+- [x] explode
+  - Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
 - [ ] explode_outer
+  - Same `CometExplodeExec` path as `explode`, but the `outer=true` case is `Incompatible` (empty arrays are not preserved as null outputs) and falls back unless `spark.comet.expr.allowIncompatible=true` ([datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
 - [ ] inline
 - [ ] inline_outer
-- [ ] posexplode
+- [x] posexplode
+  - Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), like `explode`. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
 - [ ] posexplode_outer
+  - Same `CometExplodeExec` path as `posexplode`, but the `outer=true` case is `Incompatible` and falls back unless `spark.comet.expr.allowIncompatible=true` ([datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
 - [ ] stack
 
 ### hash_funcs
