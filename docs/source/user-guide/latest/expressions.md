@@ -495,38 +495,38 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 > 🚫 Out of scope: JVM reflection functions (`java_method`, `reflect`, `try_reflect`). See [Out of scope](#out-of-scope).
 
-| Function                      | Status | Notes                                                             |
-| ----------------------------- | ------ | ----------------------------------------------------------------- |
-| `aes_decrypt`                 | 🔜     | Codegen-dispatch candidate (RuntimeReplaceable to `StaticInvoke`) |
-| `aes_encrypt`                 | 🔜     | Codegen-dispatch candidate; nondeterministic IV by default        |
-| `assert_true`                 | ❓     |                                                                   |
-| `current_catalog`             | ❓     |                                                                   |
-| `current_database`            | ❓     |                                                                   |
-| `current_schema`              | ❓     |                                                                   |
-| `current_user`                | ❓     |                                                                   |
-| `equal_null`                  | ❓     |                                                                   |
-| `input_file_block_length`     | ❓     |                                                                   |
-| `input_file_block_start`      | ❓     |                                                                   |
-| `input_file_name`             | ❓     |                                                                   |
-| `is_variant_null`             | 🔜     | tracking #4098                                                    |
-| `monotonically_increasing_id` | ✅     |                                                                   |
-| `parse_json`                  | 🔜     | tracking #4098                                                    |
-| `raise_error`                 | ❓     |                                                                   |
-| `rand`                        | ✅     | Seed must be a literal                                            |
-| `randn`                       | ✅     | Seed must be a literal                                            |
-| `schema_of_variant`           | 🔜     | tracking #4098                                                    |
-| `schema_of_variant_agg`       | 🔜     | tracking #4098                                                    |
-| `session_user`                | ❓     |                                                                   |
-| `spark_partition_id`          | ✅     |                                                                   |
-| `to_variant_object`           | 🔜     | tracking #4098                                                    |
-| `try_aes_decrypt`             | 🔜     | Codegen-dispatch candidate (RuntimeReplaceable to `StaticInvoke`) |
-| `try_parse_json`              | 🔜     | tracking #4098                                                    |
-| `try_variant_get`             | 🔜     | tracking #4098                                                    |
-| `typeof`                      | ❓     |                                                                   |
-| `user`                        | ✅     | Resolved to a literal by the Spark analyzer before reaching Comet |
-| `uuid`                        | ❓     |                                                                   |
-| `variant_get`                 | 🔜     | tracking #4098                                                    |
-| `version`                     | ❓     |                                                                   |
+| Function                      | Status | Notes                                                                            |
+| ----------------------------- | ------ | -------------------------------------------------------------------------------- |
+| `aes_decrypt`                 | 🔜     | Falls back; `StaticInvoke` not allowlisted; planned via codegen dispatch (#4558) |
+| `aes_encrypt`                 | 🔜     | Falls back; planned via codegen dispatch (#4558); nondeterministic IV by default |
+| `assert_true`                 | ❓     |                                                                                  |
+| `current_catalog`             | ❓     |                                                                                  |
+| `current_database`            | ❓     |                                                                                  |
+| `current_schema`              | ❓     |                                                                                  |
+| `current_user`                | ❓     |                                                                                  |
+| `equal_null`                  | ❓     |                                                                                  |
+| `input_file_block_length`     | ❓     |                                                                                  |
+| `input_file_block_start`      | ❓     |                                                                                  |
+| `input_file_name`             | ❓     |                                                                                  |
+| `is_variant_null`             | 🔜     | tracking #4098                                                                   |
+| `monotonically_increasing_id` | ✅     |                                                                                  |
+| `parse_json`                  | 🔜     | tracking #4098                                                                   |
+| `raise_error`                 | ❓     |                                                                                  |
+| `rand`                        | ✅     | Seed must be a literal                                                           |
+| `randn`                       | ✅     | Seed must be a literal                                                           |
+| `schema_of_variant`           | 🔜     | tracking #4098                                                                   |
+| `schema_of_variant_agg`       | 🔜     | tracking #4098                                                                   |
+| `session_user`                | ❓     |                                                                                  |
+| `spark_partition_id`          | ✅     |                                                                                  |
+| `to_variant_object`           | 🔜     | tracking #4098                                                                   |
+| `try_aes_decrypt`             | 🔜     | Falls back; planned via codegen dispatch (#4558)                                 |
+| `try_parse_json`              | 🔜     | tracking #4098                                                                   |
+| `try_variant_get`             | 🔜     | tracking #4098                                                                   |
+| `typeof`                      | ❓     |                                                                                  |
+| `user`                        | ✅     | Resolved to a literal by the Spark analyzer before reaching Comet                |
+| `uuid`                        | ❓     |                                                                                  |
+| `variant_get`                 | 🔜     | tracking #4098                                                                   |
+| `version`                     | ❓     |                                                                                  |
 
 ---
 
@@ -560,80 +560,80 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## string_funcs
 
-| Function             | Status | Notes          |
-| -------------------- | ------ | -------------- |
-| `ascii`              | ✅     |                |
-| `base64`             | ❓     |                |
-| `bit_length`         | ✅     |                |
-| `btrim`              | ✅     |                |
-| `char`               | ✅     |                |
-| `char_length`        | ✅     |                |
-| `character_length`   | ✅     |                |
-| `chr`                | ✅     |                |
-| `collate`            | ❓     |                |
-| `collation`          | ❓     |                |
-| `concat_ws`          | ✅     |                |
-| `contains`           | ✅     |                |
-| `decode`             | ✅     |                |
-| `elt`                | 🔜     | #4538          |
-| `encode`             | ❓     |                |
-| `endswith`           | ✅     |                |
-| `find_in_set`        | 🔜     | #4538          |
-| `format_number`      | 🔜     | #4538          |
-| `format_string`      | 🔜     | #4538          |
-| `initcap`            | ✅     |                |
-| `instr`              | ✅     |                |
-| `is_valid_utf8`      | ❓     |                |
-| `lcase`              | ✅     |                |
-| `left`               | ✅     |                |
-| `len`                | ✅     |                |
-| `length`             | ✅     |                |
-| `levenshtein`        | 🔜     | #4538          |
-| `locate`             | 🔜     | #4538          |
-| `lower`              | ✅     |                |
-| `lpad`               | ✅     |                |
-| `ltrim`              | ✅     |                |
-| `luhn_check`         | ❓     |                |
-| `make_valid_utf8`    | ❓     |                |
-| `mask`               | ❓     |                |
-| `octet_length`       | ✅     |                |
-| `overlay`            | 🔜     | #4538          |
-| `position`           | 🔜     | #4538          |
-| `printf`             | 🔜     | #4538          |
-| `quote`              | ❓     |                |
-| `regexp_count`       | 🔜     | tracking #4098 |
-| `regexp_extract`     | 🔜     | tracking #4098 |
-| `regexp_extract_all` | 🔜     | tracking #4098 |
-| `regexp_instr`       | 🔜     | tracking #4098 |
-| `regexp_replace`     | ✅     |                |
-| `regexp_substr`      | 🔜     | tracking #4098 |
-| `repeat`             | ✅     |                |
-| `replace`            | ✅     |                |
-| `right`              | ✅     |                |
-| `rpad`               | ✅     |                |
-| `rtrim`              | ✅     |                |
-| `sentences`          | ❓     |                |
-| `soundex`            | 🔜     | #4538          |
-| `space`              | ✅     |                |
-| `split`              | ✅     |                |
-| `split_part`         | ❓     |                |
-| `startswith`         | ✅     |                |
-| `substr`             | ✅     |                |
-| `substring`          | ✅     |                |
-| `substring_index`    | ✅     |                |
-| `to_binary`          | ❓     |                |
-| `to_char`            | 🔜     | #4538          |
-| `to_number`          | 🔜     | #4538          |
-| `to_varchar`         | 🔜     | #4538          |
-| `translate`          | ✅     |                |
-| `trim`               | ✅     |                |
-| `try_to_binary`      | ❓     |                |
-| `try_to_number`      | ❓     |                |
-| `try_validate_utf8`  | ❓     |                |
-| `ucase`              | ✅     |                |
-| `unbase64`           | 🔜     | #4538          |
-| `upper`              | ✅     |                |
-| `validate_utf8`      | ❓     |                |
+| Function             | Status | Notes                                             |
+| -------------------- | ------ | ------------------------------------------------- |
+| `ascii`              | ✅     |                                                   |
+| `base64`             | ❓     |                                                   |
+| `bit_length`         | ✅     |                                                   |
+| `btrim`              | ✅     |                                                   |
+| `char`               | ✅     |                                                   |
+| `char_length`        | ✅     |                                                   |
+| `character_length`   | ✅     |                                                   |
+| `chr`                | ✅     |                                                   |
+| `collate`            | ❓     |                                                   |
+| `collation`          | ❓     |                                                   |
+| `concat_ws`          | ✅     |                                                   |
+| `contains`           | ✅     |                                                   |
+| `decode`             | ✅     |                                                   |
+| `elt`                | 🔜     | #4538                                             |
+| `encode`             | ❓     |                                                   |
+| `endswith`           | ✅     |                                                   |
+| `find_in_set`        | 🔜     | #4538                                             |
+| `format_number`      | 🔜     | #4538                                             |
+| `format_string`      | 🔜     | #4538                                             |
+| `initcap`            | ✅     |                                                   |
+| `instr`              | ✅     |                                                   |
+| `is_valid_utf8`      | ❓     |                                                   |
+| `lcase`              | ✅     |                                                   |
+| `left`               | ✅     |                                                   |
+| `len`                | ✅     |                                                   |
+| `length`             | ✅     |                                                   |
+| `levenshtein`        | 🔜     | #4538                                             |
+| `locate`             | 🔜     | #4538                                             |
+| `lower`              | ✅     |                                                   |
+| `lpad`               | ✅     |                                                   |
+| `ltrim`              | ✅     |                                                   |
+| `luhn_check`         | ✅     | Native via `StaticInvoke` (tests: luhn_check.sql) |
+| `make_valid_utf8`    | ❓     |                                                   |
+| `mask`               | ❓     |                                                   |
+| `octet_length`       | ✅     |                                                   |
+| `overlay`            | 🔜     | #4538                                             |
+| `position`           | 🔜     | #4538                                             |
+| `printf`             | 🔜     | #4538                                             |
+| `quote`              | ❓     |                                                   |
+| `regexp_count`       | 🔜     | tracking #4098                                    |
+| `regexp_extract`     | 🔜     | tracking #4098                                    |
+| `regexp_extract_all` | 🔜     | tracking #4098                                    |
+| `regexp_instr`       | 🔜     | tracking #4098                                    |
+| `regexp_replace`     | ✅     |                                                   |
+| `regexp_substr`      | 🔜     | tracking #4098                                    |
+| `repeat`             | ✅     |                                                   |
+| `replace`            | ✅     |                                                   |
+| `right`              | ✅     |                                                   |
+| `rpad`               | ✅     |                                                   |
+| `rtrim`              | ✅     |                                                   |
+| `sentences`          | ❓     |                                                   |
+| `soundex`            | 🔜     | #4538                                             |
+| `space`              | ✅     |                                                   |
+| `split`              | ✅     |                                                   |
+| `split_part`         | ❓     |                                                   |
+| `startswith`         | ✅     |                                                   |
+| `substr`             | ✅     |                                                   |
+| `substring`          | ✅     |                                                   |
+| `substring_index`    | ✅     |                                                   |
+| `to_binary`          | ❓     |                                                   |
+| `to_char`            | 🔜     | #4538                                             |
+| `to_number`          | 🔜     | #4538                                             |
+| `to_varchar`         | 🔜     | #4538                                             |
+| `translate`          | ✅     |                                                   |
+| `trim`               | ✅     |                                                   |
+| `try_to_binary`      | ❓     |                                                   |
+| `try_to_number`      | ❓     |                                                   |
+| `try_validate_utf8`  | ❓     |                                                   |
+| `ucase`              | ✅     |                                                   |
+| `unbase64`           | 🔜     | #4538                                             |
+| `upper`              | ✅     |                                                   |
+| `validate_utf8`      | ❓     |                                                   |
 
 ---
 
