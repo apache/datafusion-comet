@@ -62,34 +62,6 @@ are *not* out of scope: although approximate, they are mainstream and are planne
 
 The tables below list every Spark built-in expression with its current status.
 
-## Coverage by category
-
-| Category | Supported | Notes |
-| -------- | --------- | ----- |
-| conversion_funcs | 1 / 13 | Cast and cast aliases |
-| hash_funcs | 7 / 7 | Fully supported |
-| struct_funcs | 2 / 2 | Fully supported |
-| url_funcs | 4 / 4 | Fully supported |
-| math_funcs | 60 / 70 | Mostly supported |
-| bitwise_funcs | 11 / 12 | Mostly supported |
-| predicate_funcs | 19 / 21 | Mostly supported |
-| array_funcs | 21 / 25 | Mostly supported |
-| datetime_funcs | 45 / 73 | Mostly supported |
-| conditional_funcs | 7 / 10 | Mostly supported |
-| string_funcs | 37 / 72 | Mostly supported; regexp tail planned |
-| map_funcs | 8 / 11 | Mostly supported |
-| collection_funcs | 3 / 5 | |
-| json_funcs | 1 / 7 | Core supported; remainder planned |
-| agg_funcs | 31 / 88 | Sketch aggregates out of scope |
-| generator_funcs | 4 / 7 | explode/posexplode via operator |
-| window_funcs | 2 / 9 | Run via CometWindowExec (operator) |
-| lambda_funcs | 0 / 12 | Higher-order functions planned |
-| misc_funcs | 5 / 56 | Many niche/environment functions |
-| csv_funcs | 0 / 3 | Not yet evaluated |
-| xml_funcs | 0 / 12 | Out of scope |
-
----
-
 ## agg_funcs
 
 > 🚫 Out of scope: probabilistic sketch aggregates (`kll_sketch_*`, `hll_sketch_agg`, `hll_union_agg`, `theta_intersection_agg`, `theta_sketch_agg`, `theta_union_agg`, `count_min_sketch`, `approx_top_k`, `approx_top_k_accumulate`, `approx_top_k_combine`). See [Scope policy](#scope-policy).
