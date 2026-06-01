@@ -685,7 +685,8 @@
   - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `UnaryMathExpression(math.toDegrees, "DEGREES")` unchanged across versions.
 - [x] div
   - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `IntegralDivide(left, right, evalMode)`. Non-decimal operands are cast to `DecimalType(19, 0)`; result is recomputed per `IntegralDivide.resultDecimalType`, wrapped in `CheckOverflow`, then cast to `Long`. ANSI overflow for `Long.MinValue div -1` and decimal-overflow ANSI cases are covered by existing tests.
-- [ ] e
+- [x] e
+  - Foldable; rewritten to a literal by ConstantFolding (like `pi`).
 - [x] exp
   - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `UnaryMathExpression(StrictMath.exp, "EXP")` unchanged. ULP-level differences vs DataFusion `exp` are possible but unflagged.
 - [x] expm1
@@ -786,10 +787,14 @@
 - [ ] bitmap_construct_agg
 - [ ] bitmap_count
 - [ ] bitmap_or_agg
-- [ ] current_catalog
-- [ ] current_database
-- [ ] current_schema
-- [ ] current_user
+- [x] current_catalog
+  - Resolved to a literal by the analyzer (`ReplaceCurrentLike`).
+- [x] current_database
+  - Resolved to a literal by the analyzer (`ReplaceCurrentLike`).
+- [x] current_schema
+  - Alias of `current_database`; resolved to a literal by the analyzer.
+- [x] current_user
+  - Resolved to a literal by the analyzer; same as `user`.
 - [x] equal_null
 - [ ] from_avro
 - [ ] from_protobuf
@@ -823,7 +828,8 @@
 - [ ] schema_of_avro
 - [ ] schema_of_variant
 - [ ] schema_of_variant_agg
-- [ ] session_user
+- [x] session_user
+  - Alias of `current_user`; resolved to a literal by the analyzer.
 - [x] spark_partition_id
   - Spark 3.4.3 (audited 2026-05-27): byte-for-byte identical to 4.1.1. `SparkPartitionID() extends LeafExpression with Nondeterministic`; returns the integer index of the partition being processed. Comet emits an empty `SparkPartitionId` proto.
   - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
@@ -845,7 +851,8 @@
 - [ ] try_parse_json
 - [ ] try_reflect
 - [ ] try_variant_get
-- [ ] typeof
+- [x] typeof
+  - Foldable; resolved to a literal before Comet sees the plan.
 - [x] user
   - Spark 3.4.3 (audited 2026-05-27): `CurrentUser() extends LeafExpression with Unevaluable`; the analyzer's `ResolveCurrentLike` rule replaces it with a `StringType` literal of the current user name before Comet sees the plan. No Comet serde needed; the literal flows through `CometLiteral`.
   - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.

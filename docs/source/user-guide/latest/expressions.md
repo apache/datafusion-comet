@@ -57,6 +57,9 @@ are not on the roadmap:
 - **Avro / Protobuf codecs** (`from_avro`, `to_avro`, `from_protobuf`, `to_protobuf`, `schema_of_avro`): format conversion belongs at the IO layer, not expression evaluation.
 - **JVM reflection** (`java_method`, `reflect`): niche, and they invoke arbitrary JVM methods (a security concern).
 - **CSV functions** (`from_csv`, `to_csv`, `schema_of_csv`): row-level CSV parsing and formatting in expressions is niche and better handled at the data source layer.
+- **UTF-8 validation** (`is_valid_utf8`, `make_valid_utf8`, `validate_utf8`, `try_validate_utf8`): niche Spark 4.x string-validation helpers.
+- **File metadata** (`input_file_name`, `input_file_block_start`, `input_file_block_length`): require scan-internal per-row file information, outside the expression layer.
+- **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`, `uuid`): low-value or specialized functions with little benefit from native acceleration.
 
 Note that `approx_count_distinct`, `approx_percentile` / `percentile_approx`, `median`, and `mode`
 are _not_ out of scope: although approximate, they are mainstream and are planned.
@@ -67,69 +70,69 @@ The tables below list every Spark built-in expression with its current status.
 
 > 🚫 Out of scope: probabilistic sketch aggregates (`kll_sketch_*`, `hll_sketch_agg`, `hll_union_agg`, `theta_intersection_agg`, `theta_sketch_agg`, `theta_union_agg`, `count_min_sketch`, `approx_top_k`, `approx_top_k_accumulate`, `approx_top_k_combine`). See [Out of scope](#out-of-scope).
 
-| Function                | Status | Notes                                                            |
-| ----------------------- | ------ | ---------------------------------------------------------------- |
-| `any`                   | ✅     |                                                                  |
-| `any_value`             | ✅     |                                                                  |
-| `approx_count_distinct` | 🔜     | tracking #4098                                                   |
-| `approx_percentile`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)  |
-| `array_agg`             | ❓     |                                                                  |
-| `avg`                   | ⚠️     | Interval types (YearMonth, DayTime) fall back                    |
-| `bit_and`               | ✅     |                                                                  |
-| `bit_or`                | ✅     |                                                                  |
-| `bit_xor`               | ✅     |                                                                  |
-| `bool_and`              | ✅     |                                                                  |
-| `bool_or`               | ✅     |                                                                  |
-| `collect_list`          | 🔜     | [#2524](https://github.com/apache/datafusion-comet/issues/2524)  |
-| `collect_set`           | ✅     |                                                                  |
-| `corr`                  | ✅     |                                                                  |
-| `count`                 | ✅     |                                                                  |
-| `count_if`              | ✅     |                                                                  |
-| `covar_pop`             | ✅     |                                                                  |
-| `covar_samp`            | ✅     |                                                                  |
-| `every`                 | ✅     |                                                                  |
-| `first`                 | ✅     |                                                                  |
-| `first_value`           | ✅     |                                                                  |
-| `grouping`              | ❓     |                                                                  |
-| `grouping_id`           | ❓     |                                                                  |
-| `histogram_numeric`     | ❓     |                                                                  |
-| `kurtosis`              | 🔜     | tracking #4098                                                   |
-| `last`                  | ✅     |                                                                  |
-| `last_value`            | ✅     |                                                                  |
-| `listagg`               | ❓     |                                                                  |
-| `max`                   | ✅     |                                                                  |
-| `max_by`                | 🔜     | [#3841](https://github.com/apache/datafusion-comet/issues/3841)  |
-| `mean`                  | ✅     |                                                                  |
-| `median`                | 🔜     | tracking #4098                                                   |
-| `min`                   | ✅     |                                                                  |
-| `min_by`                | 🔜     | [#3841](https://github.com/apache/datafusion-comet/issues/3841)  |
-| `mode`                  | 🔜     | [#3970](https://github.com/apache/datafusion-comet/issues/3970)  |
-| `percentile`            | 🔜     | #4542                                                            |
-| `percentile_approx`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)  |
-| `percentile_cont`       | ❓     |                                                                  |
-| `percentile_disc`       | ❓     |                                                                  |
-| `regr_avgx`             | ✅     | Native: Spark rewrites to `Average` (tests in #4551)             |
-| `regr_avgy`             | ✅     | Native: Spark rewrites to `Average` (tests in #4551)             |
-| `regr_count`            | ✅     | Native: Spark rewrites to `Count` (tests in #4551)               |
-| `regr_intercept`        | 🔜     | Falls back; can reuse `covar_pop`/`var_pop` accumulators (#4552) |
-| `regr_r2`               | 🔜     | Falls back; can reuse the `corr` accumulator (#4552)             |
-| `regr_slope`            | 🔜     | Falls back; can reuse `covar_pop`/`var_pop` accumulators (#4552) |
-| `regr_sxx`              | 🔜     | Falls back; can reuse `var_pop` accumulator (#4552)              |
-| `regr_sxy`              | 🔜     | Falls back; can reuse `covar_pop` accumulator (#4552)            |
-| `regr_syy`              | 🔜     | Falls back; can reuse `var_pop` accumulator (#4552)              |
-| `skewness`              | 🔜     | tracking #4098                                                   |
-| `some`                  | ✅     |                                                                  |
-| `std`                   | ✅     |                                                                  |
-| `stddev`                | ✅     |                                                                  |
-| `stddev_pop`            | ✅     |                                                                  |
-| `stddev_samp`           | ✅     |                                                                  |
-| `string_agg`            | ❓     |                                                                  |
-| `sum`                   | ✅     |                                                                  |
-| `try_avg`               | 🔜     | tracking #4098                                                   |
-| `try_sum`               | 🔜     | tracking #4098                                                   |
-| `var_pop`               | ✅     |                                                                  |
-| `var_samp`              | ✅     |                                                                  |
-| `variance`              | ✅     |                                                                  |
+| Function                | Status | Notes                                                                  |
+| ----------------------- | ------ | ---------------------------------------------------------------------- |
+| `any`                   | ✅     |                                                                        |
+| `any_value`             | ✅     |                                                                        |
+| `approx_count_distinct` | 🔜     | tracking #4098                                                         |
+| `approx_percentile`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)        |
+| `array_agg`             | 🔜     | Array aggregate (related to `collect_list`, #2524)                     |
+| `avg`                   | ⚠️     | Interval types (YearMonth, DayTime) fall back                          |
+| `bit_and`               | ✅     |                                                                        |
+| `bit_or`                | ✅     |                                                                        |
+| `bit_xor`               | ✅     |                                                                        |
+| `bool_and`              | ✅     |                                                                        |
+| `bool_or`               | ✅     |                                                                        |
+| `collect_list`          | 🔜     | [#2524](https://github.com/apache/datafusion-comet/issues/2524)        |
+| `collect_set`           | ✅     |                                                                        |
+| `corr`                  | ✅     |                                                                        |
+| `count`                 | ✅     |                                                                        |
+| `count_if`              | ✅     |                                                                        |
+| `covar_pop`             | ✅     |                                                                        |
+| `covar_samp`            | ✅     |                                                                        |
+| `every`                 | ✅     |                                                                        |
+| `first`                 | ✅     |                                                                        |
+| `first_value`           | ✅     |                                                                        |
+| `grouping`              | 🔜     | Grouping indicator for ROLLUP/CUBE/GROUPING SETS                       |
+| `grouping_id`           | 🔜     | Grouping indicator for ROLLUP/CUBE/GROUPING SETS                       |
+| `histogram_numeric`     | 🚫     | Approximate histogram aggregate (out of scope, like sketch aggregates) |
+| `kurtosis`              | 🔜     | tracking #4098                                                         |
+| `last`                  | ✅     |                                                                        |
+| `last_value`            | ✅     |                                                                        |
+| `listagg`               | 🔜     | String aggregation                                                     |
+| `max`                   | ✅     |                                                                        |
+| `max_by`                | 🔜     | [#3841](https://github.com/apache/datafusion-comet/issues/3841)        |
+| `mean`                  | ✅     |                                                                        |
+| `median`                | 🔜     | tracking #4098                                                         |
+| `min`                   | ✅     |                                                                        |
+| `min_by`                | 🔜     | [#3841](https://github.com/apache/datafusion-comet/issues/3841)        |
+| `mode`                  | 🔜     | [#3970](https://github.com/apache/datafusion-comet/issues/3970)        |
+| `percentile`            | 🔜     | #4542                                                                  |
+| `percentile_approx`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)        |
+| `percentile_cont`       | 🔜     | Percentile aggregate                                                   |
+| `percentile_disc`       | 🔜     | Percentile aggregate                                                   |
+| `regr_avgx`             | ✅     | Native: Spark rewrites to `Average` (tests in #4551)                   |
+| `regr_avgy`             | ✅     | Native: Spark rewrites to `Average` (tests in #4551)                   |
+| `regr_count`            | ✅     | Native: Spark rewrites to `Count` (tests in #4551)                     |
+| `regr_intercept`        | 🔜     | Falls back; can reuse `covar_pop`/`var_pop` accumulators (#4552)       |
+| `regr_r2`               | 🔜     | Falls back; can reuse the `corr` accumulator (#4552)                   |
+| `regr_slope`            | 🔜     | Falls back; can reuse `covar_pop`/`var_pop` accumulators (#4552)       |
+| `regr_sxx`              | 🔜     | Falls back; can reuse `var_pop` accumulator (#4552)                    |
+| `regr_sxy`              | 🔜     | Falls back; can reuse `covar_pop` accumulator (#4552)                  |
+| `regr_syy`              | 🔜     | Falls back; can reuse `var_pop` accumulator (#4552)                    |
+| `skewness`              | 🔜     | tracking #4098                                                         |
+| `some`                  | ✅     |                                                                        |
+| `std`                   | ✅     |                                                                        |
+| `stddev`                | ✅     |                                                                        |
+| `stddev_pop`            | ✅     |                                                                        |
+| `stddev_samp`           | ✅     |                                                                        |
+| `string_agg`            | 🔜     | String aggregation (alias of `listagg`)                                |
+| `sum`                   | ✅     |                                                                        |
+| `try_avg`               | 🔜     | tracking #4098                                                         |
+| `try_sum`               | 🔜     | tracking #4098                                                         |
+| `var_pop`               | ✅     |                                                                        |
+| `var_samp`              | ✅     |                                                                        |
+| `variance`              | ✅     |                                                                        |
 
 ---
 
@@ -149,7 +152,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_max`       | ⚠️     | NaN ordering may differ for float/double ([#4482](https://github.com/apache/datafusion-comet/issues/4482))                |
 | `array_min`       | ⚠️     | NaN ordering may differ for float/double ([#4482](https://github.com/apache/datafusion-comet/issues/4482))                |
 | `array_position`  | ⚠️     | Falls back for binary/struct/map/null element types                                                                       |
-| `array_prepend`   | ❓     |                                                                                                                           |
+| `array_prepend`   | 🔜     | Sibling of `array_append`                                                                                                 |
 | `array_remove`    | ✅     |                                                                                                                           |
 | `array_repeat`    | ✅     |                                                                                                                           |
 | `array_union`     | ⚠️     | NaN/signed-zero canonicalization may differ ([#4481](https://github.com/apache/datafusion-comet/issues/4481))             |
@@ -159,7 +162,7 @@ The tables below list every Spark built-in expression with its current status.
 | `flatten`         | ⚠️     | Falls back for binary/struct/map child element types                                                                      |
 | `get`             | ✅     |                                                                                                                           |
 | `sequence`        | 🔜     | #4538                                                                                                                     |
-| `shuffle`         | ❓     |                                                                                                                           |
+| `shuffle`         | 🔜     | Random array shuffle                                                                                                      |
 | `slice`           | ✅     | Native (#4149)                                                                                                            |
 | `sort_array`      | ⚠️     | Incompatible under strict floating-point; falls back for nested struct/null arrays                                        |
 
@@ -333,11 +336,11 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | ------------------ | ------ | ---------------------------------------------------- |
 | `explode`          | ✅     | via `CometExplodeExec`                               |
 | `explode_outer`    | ⚠️     | `outer=true` incompatible; needs `allowIncompatible` |
-| `inline`           | ❓     |                                                      |
-| `inline_outer`     | ❓     |                                                      |
+| `inline`           | 🔜     | Operator-level generator (like `explode`)            |
+| `inline_outer`     | 🔜     | Operator-level generator (like `explode`)            |
 | `posexplode`       | ✅     | via `CometExplodeExec`                               |
 | `posexplode_outer` | ⚠️     | `outer=true` incompatible; needs `allowIncompatible` |
-| `stack`            | ❓     |                                                      |
+| `stack`            | 🔜     | Operator-level generator                             |
 
 ---
 
@@ -395,8 +398,8 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | Function           | Status | Notes                                                        |
 | ------------------ | ------ | ------------------------------------------------------------ |
 | `element_at`       | ⚠️     | Only `ArrayType` input; `MapType` input falls back           |
-| `map`              | ❓     |                                                              |
-| `map_concat`       | ❓     |                                                              |
+| `map`              | 🔜     | Constructs a map                                             |
+| `map_concat`       | 🔜     | Concatenates maps                                            |
 | `map_contains_key` | ✅     |                                                              |
 | `map_entries`      | ✅     |                                                              |
 | `map_from_arrays`  | ✅     |                                                              |
@@ -437,7 +440,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `csc`          | ✅     |                                                                                                                    |
 | `degrees`      | ✅     |                                                                                                                    |
 | `div`          | ✅     |                                                                                                                    |
-| `e`            | ❓     |                                                                                                                    |
+| `e`            | ✅     | Folds to a literal (like `pi`)                                                                                     |
 | `exp`          | ✅     |                                                                                                                    |
 | `expm1`        | ✅     |                                                                                                                    |
 | `factorial`    | ✅     |                                                                                                                    |
@@ -462,7 +465,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `rand`         | ✅     |                                                                                                                    |
 | `randn`        | ✅     |                                                                                                                    |
 | `random`       | ✅     | Alias for `rand` (Spark 4.0+); seed must be a literal                                                              |
-| `randstr`      | ❓     |                                                                                                                    |
+| `randstr`      | 🔜     | Random string (Spark 4.0+)                                                                                         |
 | `rint`         | ✅     |                                                                                                                    |
 | `round`        | ⚠️     | Float/Double inputs always fall back; integer/decimal HALF_UP supported                                            |
 | `sec`          | ✅     |                                                                                                                    |
@@ -476,7 +479,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `tanh`         | ✅     |                                                                                                                    |
 | `try_add`      | ⚠️     | Datetime/interval form falls back; numeric form supported                                                          |
 | `try_divide`   | ✅     |                                                                                                                    |
-| `try_mod`      | ❓     | Lowers to `Remainder` with TRY eval mode, which falls back (#4484)                                                 |
+| `try_mod`      | 🔜     | Lowers to `Remainder` with TRY eval mode, which falls back (#4484)                                                 |
 | `try_multiply` | ✅     |                                                                                                                    |
 | `try_subtract` | ✅     |                                                                                                                    |
 | `unhex`        | ✅     |                                                                                                                    |
@@ -499,34 +502,34 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | ----------------------------- | ------ | -------------------------------------------------------------------------------- |
 | `aes_decrypt`                 | 🔜     | Falls back; `StaticInvoke` not allowlisted; planned via codegen dispatch (#4558) |
 | `aes_encrypt`                 | 🔜     | Falls back; planned via codegen dispatch (#4558); nondeterministic IV by default |
-| `assert_true`                 | ❓     | Lowers to `RaiseError`, which falls back                                         |
-| `current_catalog`             | ❓     |                                                                                  |
-| `current_database`            | ❓     |                                                                                  |
-| `current_schema`              | ❓     |                                                                                  |
-| `current_user`                | ❓     |                                                                                  |
+| `assert_true`                 | 🔜     | Lowers to `RaiseError`, which falls back                                         |
+| `current_catalog`             | ✅     | Resolved to a literal by the analyzer (`ReplaceCurrentLike`)                     |
+| `current_database`            | ✅     | Resolved to a literal by the analyzer (`ReplaceCurrentLike`)                     |
+| `current_schema`              | ✅     | Alias of `current_database`; resolved to a literal by the analyzer               |
+| `current_user`                | ✅     | Resolved to a literal by the analyzer; same as `user`                            |
 | `equal_null`                  | ✅     | Lowers to `<=>` (`EqualNullSafe`)                                                |
-| `input_file_block_length`     | ❓     |                                                                                  |
-| `input_file_block_start`      | ❓     |                                                                                  |
-| `input_file_name`             | ❓     |                                                                                  |
+| `input_file_block_length`     | 🚫     | Requires scan-internal file metadata (out of scope)                              |
+| `input_file_block_start`      | 🚫     | Requires scan-internal file metadata (out of scope)                              |
+| `input_file_name`             | 🚫     | Requires scan-internal file metadata (out of scope)                              |
 | `is_variant_null`             | 🔜     | tracking #4098                                                                   |
 | `monotonically_increasing_id` | ✅     |                                                                                  |
 | `parse_json`                  | 🔜     | tracking #4098                                                                   |
-| `raise_error`                 | ❓     |                                                                                  |
+| `raise_error`                 | 🔜     | Raises a runtime error                                                           |
 | `rand`                        | ✅     | Seed must be a literal                                                           |
 | `randn`                       | ✅     | Seed must be a literal                                                           |
 | `schema_of_variant`           | 🔜     | tracking #4098                                                                   |
 | `schema_of_variant_agg`       | 🔜     | tracking #4098                                                                   |
-| `session_user`                | ❓     |                                                                                  |
+| `session_user`                | ✅     | Alias of `current_user`; resolved to a literal by the analyzer                   |
 | `spark_partition_id`          | ✅     |                                                                                  |
 | `to_variant_object`           | 🔜     | tracking #4098                                                                   |
 | `try_aes_decrypt`             | 🔜     | Falls back; planned via codegen dispatch (#4558)                                 |
 | `try_parse_json`              | 🔜     | tracking #4098                                                                   |
 | `try_variant_get`             | 🔜     | tracking #4098                                                                   |
-| `typeof`                      | ❓     |                                                                                  |
+| `typeof`                      | ✅     | Foldable; resolved to a literal before Comet sees the plan                       |
 | `user`                        | ✅     | Resolved to a literal by the Spark analyzer before reaching Comet                |
-| `uuid`                        | ❓     |                                                                                  |
+| `uuid`                        | 🚫     | Nondeterministic random UUID (out of scope)                                      |
 | `variant_get`                 | 🔜     | tracking #4098                                                                   |
-| `version`                     | ❓     | Lowers to `StaticInvoke(getSparkVersion)`, which falls back                      |
+| `version`                     | 🚫     | Returns the Spark version string (out of scope)                                  |
 
 ---
 
@@ -563,27 +566,27 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | Function             | Status | Notes                                                                            |
 | -------------------- | ------ | -------------------------------------------------------------------------------- |
 | `ascii`              | ✅     |                                                                                  |
-| `base64`             | ❓     | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back                   |
+| `base64`             | 🔜     | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back                   |
 | `bit_length`         | ✅     |                                                                                  |
 | `btrim`              | ✅     |                                                                                  |
 | `char`               | ✅     |                                                                                  |
 | `char_length`        | ✅     |                                                                                  |
 | `character_length`   | ✅     |                                                                                  |
 | `chr`                | ✅     |                                                                                  |
-| `collate`            | ❓     |                                                                                  |
+| `collate`            | 🔜     | Spark collation (umbrella #2190)                                                 |
 | `collation`          | ✅     | Constant-folded to a literal (Spark 4.0+)                                        |
 | `concat_ws`          | ✅     |                                                                                  |
 | `contains`           | ✅     |                                                                                  |
 | `decode`             | ✅     |                                                                                  |
 | `elt`                | 🔜     | #4538                                                                            |
-| `encode`             | ❓     | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back                   |
+| `encode`             | 🔜     | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back                   |
 | `endswith`           | ✅     |                                                                                  |
 | `find_in_set`        | 🔜     | #4538                                                                            |
 | `format_number`      | 🔜     | #4538                                                                            |
 | `format_string`      | 🔜     | #4538                                                                            |
 | `initcap`            | ✅     |                                                                                  |
 | `instr`              | ✅     |                                                                                  |
-| `is_valid_utf8`      | ❓     | Lowers to `Invoke`, which falls back (Spark 4.0+)                                |
+| `is_valid_utf8`      | 🚫     | UTF-8 validation (out of scope)                                                  |
 | `lcase`              | ✅     |                                                                                  |
 | `left`               | ✅     |                                                                                  |
 | `len`                | ✅     |                                                                                  |
@@ -594,13 +597,13 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `lpad`               | ✅     |                                                                                  |
 | `ltrim`              | ✅     |                                                                                  |
 | `luhn_check`         | ✅     | Native via `StaticInvoke` (tests: luhn_check.sql)                                |
-| `make_valid_utf8`    | ❓     | Lowers to `Invoke`, which falls back (Spark 4.0+)                                |
-| `mask`               | ❓     |                                                                                  |
+| `make_valid_utf8`    | 🚫     | UTF-8 validation (out of scope)                                                  |
+| `mask`               | 🔜     | Data masking                                                                     |
 | `octet_length`       | ✅     |                                                                                  |
 | `overlay`            | 🔜     | #4538                                                                            |
 | `position`           | 🔜     | #4538                                                                            |
 | `printf`             | 🔜     | #4538                                                                            |
-| `quote`              | ❓     | Lowers to `StaticInvoke`, which falls back (Spark 4.1+)                          |
+| `quote`              | 🚫     | Quotes a string as a SQL literal (out of scope)                                  |
 | `regexp_count`       | 🔜     | tracking #4098                                                                   |
 | `regexp_extract`     | 🔜     | tracking #4098                                                                   |
 | `regexp_extract_all` | 🔜     | tracking #4098                                                                   |
@@ -612,11 +615,11 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `right`              | ✅     |                                                                                  |
 | `rpad`               | ✅     |                                                                                  |
 | `rtrim`              | ✅     |                                                                                  |
-| `sentences`          | ❓     | Lowers to `StaticInvoke(getSentences)`, which falls back                         |
+| `sentences`          | 🚫     | Locale-aware sentence/word splitting (out of scope)                              |
 | `soundex`            | 🔜     | #4538                                                                            |
 | `space`              | ✅     |                                                                                  |
 | `split`              | ✅     |                                                                                  |
-| `split_part`         | ❓     | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back (#4561) |
+| `split_part`         | 🔜     | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back (#4561) |
 | `startswith`         | ✅     |                                                                                  |
 | `substr`             | ✅     |                                                                                  |
 | `substring`          | ✅     |                                                                                  |
@@ -627,13 +630,13 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `to_varchar`         | 🔜     | #4538                                                                            |
 | `translate`          | ✅     |                                                                                  |
 | `trim`               | ✅     |                                                                                  |
-| `try_to_binary`      | ❓     | Lowers to `TryEval(...)`, which falls back                                       |
-| `try_to_number`      | ❓     |                                                                                  |
-| `try_validate_utf8`  | ❓     | Lowers to `StaticInvoke`, which falls back (Spark 4.0+)                          |
+| `try_to_binary`      | 🔜     | Lowers to `TryEval(...)`, which falls back                                       |
+| `try_to_number`      | 🔜     | TRY variant of `to_number`                                                       |
+| `try_validate_utf8`  | 🚫     | UTF-8 validation (out of scope)                                                  |
 | `ucase`              | ✅     |                                                                                  |
 | `unbase64`           | 🔜     | #4538                                                                            |
 | `upper`              | ✅     |                                                                                  |
-| `validate_utf8`      | ❓     | Lowers to `StaticInvoke`, which falls back (Spark 4.0+)                          |
+| `validate_utf8`      | 🚫     | UTF-8 validation (out of scope)                                                  |
 
 ---
 
@@ -666,17 +669,17 @@ When enabled, `lag` and `lead` are explicitly wired; aggregate window functions 
 `ntile`, `percent_rank`, `cume_dist`, `nth_value`) are not yet wired in the window serde and
 fall back to Spark.
 
-| Function       | Status | Notes                         |
-| -------------- | ------ | ----------------------------- |
-| `cume_dist`    | ❓     | Not yet wired in window serde |
-| `dense_rank`   | ❓     | Not yet wired in window serde |
-| `lag`          | ✅     | via `CometWindowExec`         |
-| `lead`         | ✅     | via `CometWindowExec`         |
-| `nth_value`    | ❓     | Not yet wired in window serde |
-| `ntile`        | ❓     | Not yet wired in window serde |
-| `percent_rank` | ❓     | Not yet wired in window serde |
-| `rank`         | ❓     | Not yet wired in window serde |
-| `row_number`   | ❓     | Not yet wired in window serde |
+| Function       | Status | Notes                             |
+| -------------- | ------ | --------------------------------- |
+| `cume_dist`    | 🔜     | Window function; tracked by #2721 |
+| `dense_rank`   | 🔜     | Window function; tracked by #2721 |
+| `lag`          | ✅     | via `CometWindowExec`             |
+| `lead`         | ✅     | via `CometWindowExec`             |
+| `nth_value`    | 🔜     | Window function; tracked by #2721 |
+| `ntile`        | 🔜     | Window function; tracked by #2721 |
+| `percent_rank` | 🔜     | Window function; tracked by #2721 |
+| `rank`         | 🔜     | Window function; tracked by #2721 |
+| `row_number`   | 🔜     | Window function; tracked by #2721 |
 
 ---
 
