@@ -73,7 +73,7 @@ Either way, query execution stays in the Comet pipeline without falling back to 
   map, JSON, hash, and predicate categories
 - **Aggregations**: hash aggregate with support for `FILTER (WHERE ...)` clauses
 - **Joins**: hash join, sort-merge join, and broadcast join
-- **Scala/Java UDFs**: experimental support for keeping Scala/Java scalar UDFs in the Comet pipeline
+- **Scala/Java UDFs**: support for keeping Scala/Java scalar UDFs in the Comet pipeline
   via Spark's whole-stage codegen (see the
   [Scala UDF guide](https://datafusion.apache.org/comet/user-guide/scala_java_udfs.html))
 
