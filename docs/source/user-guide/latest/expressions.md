@@ -107,15 +107,15 @@ The tables below list every Spark built-in expression with its current status.
 | `percentile_approx` | 🔜 | [#3189](https://github.com/apache/datafusion-comet/issues/3189) |
 | `percentile_cont` | ❓ | |
 | `percentile_disc` | ❓ | |
-| `regr_avgx` | 🔜 | tracking #4098 |
-| `regr_avgy` | 🔜 | tracking #4098 |
-| `regr_count` | 🔜 | tracking #4098 |
-| `regr_intercept` | 🔜 | tracking #4098 |
-| `regr_r2` | 🔜 | tracking #4098 |
-| `regr_slope` | 🔜 | tracking #4098 |
-| `regr_sxx` | 🔜 | tracking #4098 |
-| `regr_sxy` | 🔜 | tracking #4098 |
-| `regr_syy` | 🔜 | tracking #4098 |
+| `regr_avgx` | 🔜 | Rewrites to `Average`; reuses existing aggregates (#4098) |
+| `regr_avgy` | 🔜 | Rewrites to `Average`; reuses existing aggregates (#4098) |
+| `regr_count` | 🔜 | Rewrites to `Count`; reuses existing aggregates (#4098) |
+| `regr_intercept` | 🔜 | Builds on `covar_pop`/`var_pop` accumulators (#4098) |
+| `regr_r2` | 🔜 | Builds on the `corr` accumulator (#4098) |
+| `regr_slope` | 🔜 | Builds on `covar_pop`/`var_pop` accumulators (#4098) |
+| `regr_sxx` | 🔜 | Builds on `var_pop` accumulator (#4098) |
+| `regr_sxy` | 🔜 | Builds on `covar_pop` accumulator (#4098) |
+| `regr_syy` | 🔜 | Builds on `var_pop` accumulator (#4098) |
 | `skewness` | 🔜 | tracking #4098 |
 | `some` | ✅ | |
 | `std` | ✅ | |
