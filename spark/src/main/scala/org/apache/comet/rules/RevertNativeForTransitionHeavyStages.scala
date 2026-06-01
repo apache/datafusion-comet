@@ -34,7 +34,6 @@ import org.apache.comet.CometConf
  * Reverts a query stage to Spark row-based execution when it has too many columnar-to-row (C2R)
  * transitions. Each C2R indicates Comet could not keep execution columnar and had to fall back.
  * With columnar shuffle enabled, each C2R implies a corresponding R2C round-trip.
- *
  */
 case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     extends Rule[SparkPlan]
@@ -66,15 +65,16 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   }
 
   private def applyForNonAQE(plan: SparkPlan): SparkPlan = {
-    plan.transformUp {
-      case exchange: ShuffleExchangeLike =>
-        revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
-          .map(reverted => exchange.withNewChildren(Seq(reverted)))
-          .getOrElse(exchange)
+    plan.transformUp { case exchange: ShuffleExchangeLike =>
+      revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
+        .map(reverted => exchange.withNewChildren(Seq(reverted)))
+        .getOrElse(exchange)
     }
   }
 
-  /** Reverts the stage if C2R count exceeds threshold. Wraps in R2C if exchange needs columnar. */
+  /**
+   * Reverts the stage if C2R count exceeds threshold. Wraps in R2C if exchange needs columnar.
+   */
   private def revertStageIfNeeded(
       stagePlan: SparkPlan,
       outputColumnar: Boolean): Option[SparkPlan] = {
@@ -93,7 +93,6 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     }
     Some(result)
   }
-
 
   /** Counts C2R transitions within this stage, stopping at stage boundaries. */
   private[rules] def countTransitions(plan: SparkPlan): Int = {

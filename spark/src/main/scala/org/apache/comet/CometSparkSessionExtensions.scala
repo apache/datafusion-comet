@@ -107,9 +107,8 @@ class CometSparkSessionExtensions
     override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] = {
-      val rules = Seq(
-        EliminateRedundantTransitions(session),
-        RevertNativeForTransitionHeavyStages(session))
+      val rules =
+        Seq(EliminateRedundantTransitions(session), RevertNativeForTransitionHeavyStages(session))
       plan => rules.foldLeft(plan) { case (p, rule) => rule(p) }
     }
   }

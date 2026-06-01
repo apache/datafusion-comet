@@ -473,8 +473,10 @@ object CometConf extends ShimCometConf {
           "shuffle still requires at least one R2C at the shuffle boundary. " +
           "Only effective when spark.comet.exec.transitionRevert.enabled is true.")
       .intConf
-      .checkValue(_ >= 2, "Must be >= 2. A reverted stage still requires at least one " +
-        "R2C at the columnar shuffle boundary.")
+      .checkValue(
+        _ >= 2,
+        "Must be >= 2. A reverted stage still requires at least one " +
+          "R2C at the columnar shuffle boundary.")
       .createWithDefault(2)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =

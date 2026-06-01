@@ -19,13 +19,13 @@
 
 package org.apache.comet.rules
 
+import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 
 import org.apache.comet.CometConf
-import org.apache.spark.sql.CometTestBase
 
 class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
@@ -77,7 +77,8 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
       CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "10") {
       withTempView("test_data") {
         spark.range(10).toDF("id").createOrReplaceTempView("test_data")
-        val sparkPlan = createSparkPlan("SELECT id, id * 2 as doubled FROM test_data WHERE id > 5")
+        val sparkPlan =
+          createSparkPlan("SELECT id, id * 2 as doubled FROM test_data WHERE id > 5")
         val cometPlan = applyCometExecRule(sparkPlan)
 
         val rule = RevertNativeForTransitionHeavyStages(spark)
@@ -141,7 +142,8 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         val rule = RevertNativeForTransitionHeavyStages(spark)
         val reverted = rule.revertToSpark(cometPlan)
 
-        assert(countCometExecs(reverted) == 0,
+        assert(
+          countCometExecs(reverted) == 0,
           s"Should have no CometExec nodes after revert, plan:\n${reverted.treeString}")
       }
     }
@@ -162,7 +164,8 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         val reverted = rule.revertToSpark(cometPlan)
 
         // Reverted plan should have same output schema
-        assert(reverted.output.map(_.name) == cometPlan.output.map(_.name),
+        assert(
+          reverted.output.map(_.name) == cometPlan.output.map(_.name),
           "Output schema should be preserved after revert")
       }
     }
@@ -183,7 +186,8 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
         val rule = RevertNativeForTransitionHeavyStages(spark)
         val result = rule.revertToSpark(cometPlan)
-        assert(countCometExecs(result) == 0,
+        assert(
+          countCometExecs(result) == 0,
           s"All CometExec should be reverted. Plan:\n${result.treeString}")
       }
     }
@@ -205,14 +209,14 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         if (cometShuffles.nonEmpty) {
           val rule = RevertNativeForTransitionHeavyStages(spark)
           val reverted = rule.revertToSpark(cometPlan)
-          val remainingCometShuffles = reverted.collect {
-            case s: CometShuffleExchangeExec => s
+          val remainingCometShuffles = reverted.collect { case s: CometShuffleExchangeExec =>
+            s
           }
-          assert(remainingCometShuffles.isEmpty,
+          assert(
+            remainingCometShuffles.isEmpty,
             "CometShuffleExchangeExec should be reverted to ShuffleExchangeExec")
           val sparkShuffles = reverted.collect { case s: ShuffleExchangeExec => s }
-          assert(sparkShuffles.nonEmpty,
-            "Should have ShuffleExchangeExec after revert")
+          assert(sparkShuffles.nonEmpty, "Should have ShuffleExchangeExec after revert")
         }
       }
     }
@@ -228,17 +232,17 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
       "spark.sql.adaptive.enabled" -> "false") {
 
       withTempView("test_data") {
-        spark.range(10).selectExpr("id", "id % 3 as grp")
+        spark
+          .range(10)
+          .selectExpr("id", "id % 3 as grp")
           .createOrReplaceTempView("test_data")
-        val sparkPlan = createSparkPlan(
-          "SELECT grp, count(*) FROM test_data GROUP BY grp")
+        val sparkPlan = createSparkPlan("SELECT grp, count(*) FROM test_data GROUP BY grp")
         val cometPlan = applyCometExecRule(sparkPlan)
 
         // With high threshold, the non-AQE path should not revert anything
         val rule = RevertNativeForTransitionHeavyStages(spark)
         val result = rule.apply(cometPlan)
-        assert(result eq cometPlan,
-          "Non-AQE path should not revert when below threshold")
+        assert(result eq cometPlan, "Non-AQE path should not revert when below threshold")
       }
     }
   }
@@ -259,10 +263,12 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         val pairs = rule.countTransitions(cometPlan)
         val result = rule.apply(cometPlan)
         if (pairs <= 2) {
-          assert(result eq cometPlan,
+          assert(
+            result eq cometPlan,
             s"Plan with $pairs pairs should NOT be reverted at threshold 2")
         } else {
-          assert(countCometExecs(result) == 0,
+          assert(
+            countCometExecs(result) == 0,
             s"Plan with $pairs pairs should be reverted at threshold 2")
         }
       }
