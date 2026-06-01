@@ -159,7 +159,7 @@ The tables below list every Spark built-in expression with its current status.
 | `get` | ✅ | |
 | `sequence` | 🔜 | #4538 |
 | `shuffle` | ❓ | |
-| `slice` | ❓ | |
+| `slice` | ✅ | Native (#4149) |
 | `sort_array` | ⚠️ | Incompatible under strict floating-point; falls back for nested struct/null arrays |
 
 ---
