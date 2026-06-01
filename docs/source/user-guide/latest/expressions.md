@@ -67,71 +67,68 @@ The tables below list every Spark built-in expression with its current status.
 
 ## agg_funcs
 
-> 🚫 Out of scope: probabilistic sketch aggregates (`kll_sketch_*`, `hll_sketch_agg`, `hll_union_agg`, `theta_intersection_agg`, `theta_sketch_agg`, `theta_union_agg`, `count_min_sketch`, `approx_top_k`, `approx_top_k_accumulate`, `approx_top_k_combine`). See [Out of scope](#out-of-scope).
-
-| Function                | Status | Notes                                                                  |
-| ----------------------- | ------ | ---------------------------------------------------------------------- |
-| `any`                   | ✅     |                                                                        |
-| `any_value`             | ✅     |                                                                        |
-| `approx_count_distinct` | 🔜     | tracking #4098                                                         |
-| `approx_percentile`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)        |
-| `array_agg`             | 🔜     | Array aggregate (related to `collect_list`, #2524)                     |
-| `avg`                   | ⚠️     | Interval types (YearMonth, DayTime) fall back                          |
-| `bit_and`               | ✅     |                                                                        |
-| `bit_or`                | ✅     |                                                                        |
-| `bit_xor`               | ✅     |                                                                        |
-| `bool_and`              | ✅     |                                                                        |
-| `bool_or`               | ✅     |                                                                        |
-| `collect_list`          | 🔜     | [#2524](https://github.com/apache/datafusion-comet/issues/2524)        |
-| `collect_set`           | ✅     |                                                                        |
-| `corr`                  | ✅     |                                                                        |
-| `count`                 | ✅     |                                                                        |
-| `count_if`              | ✅     |                                                                        |
-| `covar_pop`             | ✅     |                                                                        |
-| `covar_samp`            | ✅     |                                                                        |
-| `every`                 | ✅     |                                                                        |
-| `first`                 | ✅     |                                                                        |
-| `first_value`           | ✅     |                                                                        |
-| `grouping`              | 🔜     | Grouping indicator for ROLLUP/CUBE/GROUPING SETS                       |
-| `grouping_id`           | 🔜     | Grouping indicator for ROLLUP/CUBE/GROUPING SETS                       |
-| `histogram_numeric`     | 🚫     | Approximate histogram aggregate (out of scope, like sketch aggregates) |
-| `kurtosis`              | 🔜     | tracking #4098                                                         |
-| `last`                  | ✅     |                                                                        |
-| `last_value`            | ✅     |                                                                        |
-| `listagg`               | 🔜     | String aggregation                                                     |
-| `max`                   | ✅     |                                                                        |
-| `max_by`                | 🔜     | [#3841](https://github.com/apache/datafusion-comet/issues/3841)        |
-| `mean`                  | ✅     |                                                                        |
-| `median`                | 🔜     | tracking #4098                                                         |
-| `min`                   | ✅     |                                                                        |
-| `min_by`                | 🔜     | [#3841](https://github.com/apache/datafusion-comet/issues/3841)        |
-| `mode`                  | 🔜     | [#3970](https://github.com/apache/datafusion-comet/issues/3970)        |
-| `percentile`            | 🔜     | #4542                                                                  |
-| `percentile_approx`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)        |
-| `percentile_cont`       | 🔜     | Percentile aggregate                                                   |
-| `percentile_disc`       | 🔜     | Percentile aggregate                                                   |
-| `regr_avgx`             | ✅     | Native: Spark rewrites to `Average` (tests in #4551)                   |
-| `regr_avgy`             | ✅     | Native: Spark rewrites to `Average` (tests in #4551)                   |
-| `regr_count`            | ✅     | Native: Spark rewrites to `Count` (tests in #4551)                     |
-| `regr_intercept`        | 🔜     | Falls back; can reuse `covar_pop`/`var_pop` accumulators (#4552)       |
-| `regr_r2`               | 🔜     | Falls back; can reuse the `corr` accumulator (#4552)                   |
-| `regr_slope`            | 🔜     | Falls back; can reuse `covar_pop`/`var_pop` accumulators (#4552)       |
-| `regr_sxx`              | 🔜     | Falls back; can reuse `var_pop` accumulator (#4552)                    |
-| `regr_sxy`              | 🔜     | Falls back; can reuse `covar_pop` accumulator (#4552)                  |
-| `regr_syy`              | 🔜     | Falls back; can reuse `var_pop` accumulator (#4552)                    |
-| `skewness`              | 🔜     | tracking #4098                                                         |
-| `some`                  | ✅     |                                                                        |
-| `std`                   | ✅     |                                                                        |
-| `stddev`                | ✅     |                                                                        |
-| `stddev_pop`            | ✅     |                                                                        |
-| `stddev_samp`           | ✅     |                                                                        |
-| `string_agg`            | 🔜     | String aggregation (alias of `listagg`)                                |
-| `sum`                   | ✅     |                                                                        |
-| `try_avg`               | 🔜     | tracking #4098                                                         |
-| `try_sum`               | 🔜     | tracking #4098                                                         |
-| `var_pop`               | ✅     |                                                                        |
-| `var_samp`              | ✅     |                                                                        |
-| `variance`              | ✅     |                                                                        |
+| Function                | Status | Notes                                                            |
+| ----------------------- | ------ | ---------------------------------------------------------------- |
+| `any`                   | ✅     |                                                                  |
+| `any_value`             | ✅     |                                                                  |
+| `approx_count_distinct` | 🔜     | tracking #4098                                                   |
+| `approx_percentile`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)  |
+| `array_agg`             | 🔜     | Array aggregate (related to `collect_list`, #2524)               |
+| `avg`                   | ⚠️     | Interval types (YearMonth, DayTime) fall back                    |
+| `bit_and`               | ✅     |                                                                  |
+| `bit_or`                | ✅     |                                                                  |
+| `bit_xor`               | ✅     |                                                                  |
+| `bool_and`              | ✅     |                                                                  |
+| `bool_or`               | ✅     |                                                                  |
+| `collect_list`          | 🔜     | [#2524](https://github.com/apache/datafusion-comet/issues/2524)  |
+| `collect_set`           | ✅     |                                                                  |
+| `corr`                  | ✅     |                                                                  |
+| `count`                 | ✅     |                                                                  |
+| `count_if`              | ✅     |                                                                  |
+| `covar_pop`             | ✅     |                                                                  |
+| `covar_samp`            | ✅     |                                                                  |
+| `every`                 | ✅     |                                                                  |
+| `first`                 | ✅     |                                                                  |
+| `first_value`           | ✅     |                                                                  |
+| `grouping`              | 🔜     | Grouping indicator for ROLLUP/CUBE/GROUPING SETS                 |
+| `grouping_id`           | 🔜     | Grouping indicator for ROLLUP/CUBE/GROUPING SETS                 |
+| `kurtosis`              | 🔜     | tracking #4098                                                   |
+| `last`                  | ✅     |                                                                  |
+| `last_value`            | ✅     |                                                                  |
+| `listagg`               | 🔜     | String aggregation                                               |
+| `max`                   | ✅     |                                                                  |
+| `max_by`                | 🔜     | [#3841](https://github.com/apache/datafusion-comet/issues/3841)  |
+| `mean`                  | ✅     |                                                                  |
+| `median`                | 🔜     | tracking #4098                                                   |
+| `min`                   | ✅     |                                                                  |
+| `min_by`                | 🔜     | [#3841](https://github.com/apache/datafusion-comet/issues/3841)  |
+| `mode`                  | 🔜     | [#3970](https://github.com/apache/datafusion-comet/issues/3970)  |
+| `percentile`            | 🔜     | #4542                                                            |
+| `percentile_approx`     | 🔜     | [#3189](https://github.com/apache/datafusion-comet/issues/3189)  |
+| `percentile_cont`       | 🔜     | Percentile aggregate                                             |
+| `percentile_disc`       | 🔜     | Percentile aggregate                                             |
+| `regr_avgx`             | ✅     | Native: Spark rewrites to `Average` (tests in #4551)             |
+| `regr_avgy`             | ✅     | Native: Spark rewrites to `Average` (tests in #4551)             |
+| `regr_count`            | ✅     | Native: Spark rewrites to `Count` (tests in #4551)               |
+| `regr_intercept`        | 🔜     | Falls back; can reuse `covar_pop`/`var_pop` accumulators (#4552) |
+| `regr_r2`               | 🔜     | Falls back; can reuse the `corr` accumulator (#4552)             |
+| `regr_slope`            | 🔜     | Falls back; can reuse `covar_pop`/`var_pop` accumulators (#4552) |
+| `regr_sxx`              | 🔜     | Falls back; can reuse `var_pop` accumulator (#4552)              |
+| `regr_sxy`              | 🔜     | Falls back; can reuse `covar_pop` accumulator (#4552)            |
+| `regr_syy`              | 🔜     | Falls back; can reuse `var_pop` accumulator (#4552)              |
+| `skewness`              | 🔜     | tracking #4098                                                   |
+| `some`                  | ✅     |                                                                  |
+| `std`                   | ✅     |                                                                  |
+| `stddev`                | ✅     |                                                                  |
+| `stddev_pop`            | ✅     |                                                                  |
+| `stddev_samp`           | ✅     |                                                                  |
+| `string_agg`            | 🔜     | String aggregation (alias of `listagg`)                          |
+| `sum`                   | ✅     |                                                                  |
+| `try_avg`               | 🔜     | tracking #4098                                                   |
+| `try_sum`               | 🔜     | tracking #4098                                                   |
+| `var_pop`               | ✅     |                                                                  |
+| `var_samp`              | ✅     |                                                                  |
+| `variance`              | ✅     |                                                                  |
 
 ---
 
@@ -236,12 +233,6 @@ serde but effectively fall through to the same cast path at runtime.
 | `string`    | ⚠️     | Alias for `CAST(... AS STRING)`; see `cast`                                                                        |
 | `timestamp` | ⚠️     | Alias for `CAST(... AS TIMESTAMP)`; see `cast`                                                                     |
 | `tinyint`   | ⚠️     | Alias for `CAST(... AS TINYINT)`; see `cast`                                                                       |
-
----
-
-## csv_funcs
-
-🚫 **Out of scope.** `from_csv`, `to_csv`, and `schema_of_csv` fall back to Spark. See [Out of scope](#out-of-scope).
 
 ---
 
@@ -489,14 +480,6 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## misc_funcs
 
-> 🚫 Out of scope: probabilistic sketch functions (`hll_sketch_estimate`, `hll_union`, `theta_difference`, `theta_intersection`, `theta_sketch_estimate`, `theta_union`, `bitmap_and_agg`, `bitmap_or_agg`, `bitmap_construct_agg`, `bitmap_count`, `bitmap_bucket_number`, `bitmap_bit_position`, `approx_top_k_estimate`). See [Out of scope](#out-of-scope).
-
-> 🚫 Out of scope: geospatial functions (`st_asbinary`, `st_geogfromwkb`, `st_geomfromwkb`, `st_setsrid`, `st_srid`). See [Out of scope](#out-of-scope).
-
-> 🚫 Out of scope: Avro/Protobuf codec functions (`from_avro`, `to_avro`, `schema_of_avro`, `from_protobuf`, `to_protobuf`). See [Out of scope](#out-of-scope).
-
-> 🚫 Out of scope: JVM reflection functions (`java_method`, `reflect`, `try_reflect`). See [Out of scope](#out-of-scope).
-
 | Function                      | Status | Notes                                                                            |
 | ----------------------------- | ------ | -------------------------------------------------------------------------------- |
 | `aes_decrypt`                 | 🔜     | Falls back; `StaticInvoke` not allowlisted; planned via codegen dispatch (#4558) |
@@ -507,9 +490,6 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `current_schema`              | ✅     | Alias of `current_database`; resolved to a literal by the analyzer               |
 | `current_user`                | ✅     | Resolved to a literal by the analyzer; same as `user`                            |
 | `equal_null`                  | ✅     | Lowers to `<=>` (`EqualNullSafe`)                                                |
-| `input_file_block_length`     | 🚫     | Requires scan-internal file metadata (out of scope)                              |
-| `input_file_block_start`      | 🚫     | Requires scan-internal file metadata (out of scope)                              |
-| `input_file_name`             | 🚫     | Requires scan-internal file metadata (out of scope)                              |
 | `is_variant_null`             | 🔜     | tracking #4098                                                                   |
 | `monotonically_increasing_id` | ✅     |                                                                                  |
 | `parse_json`                  | 🔜     | tracking #4098                                                                   |
@@ -526,9 +506,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `try_variant_get`             | 🔜     | tracking #4098                                                                   |
 | `typeof`                      | ✅     | Foldable; resolved to a literal before Comet sees the plan                       |
 | `user`                        | ✅     | Resolved to a literal by the Spark analyzer before reaching Comet                |
-| `uuid`                        | 🚫     | Nondeterministic random UUID (out of scope)                                      |
 | `variant_get`                 | 🔜     | tracking #4098                                                                   |
-| `version`                     | 🚫     | Returns the Spark version string (out of scope)                                  |
 
 ---
 
@@ -585,7 +563,6 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `format_string`      | 🔜     | #4538                                                                            |
 | `initcap`            | ✅     |                                                                                  |
 | `instr`              | ✅     |                                                                                  |
-| `is_valid_utf8`      | 🚫     | UTF-8 validation (out of scope)                                                  |
 | `lcase`              | ✅     |                                                                                  |
 | `left`               | ✅     |                                                                                  |
 | `len`                | ✅     |                                                                                  |
@@ -596,13 +573,11 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `lpad`               | ✅     |                                                                                  |
 | `ltrim`              | ✅     |                                                                                  |
 | `luhn_check`         | ✅     | Native via `StaticInvoke` (tests: luhn_check.sql)                                |
-| `make_valid_utf8`    | 🚫     | UTF-8 validation (out of scope)                                                  |
 | `mask`               | 🔜     | Data masking                                                                     |
 | `octet_length`       | ✅     |                                                                                  |
 | `overlay`            | 🔜     | #4538                                                                            |
 | `position`           | 🔜     | #4538                                                                            |
 | `printf`             | 🔜     | #4538                                                                            |
-| `quote`              | 🚫     | Quotes a string as a SQL literal (out of scope)                                  |
 | `regexp_count`       | 🔜     | tracking #4098                                                                   |
 | `regexp_extract`     | 🔜     | tracking #4098                                                                   |
 | `regexp_extract_all` | 🔜     | tracking #4098                                                                   |
@@ -614,7 +589,6 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `right`              | ✅     |                                                                                  |
 | `rpad`               | ✅     |                                                                                  |
 | `rtrim`              | ✅     |                                                                                  |
-| `sentences`          | 🚫     | Locale-aware sentence/word splitting (out of scope)                              |
 | `soundex`            | 🔜     | #4538                                                                            |
 | `space`              | ✅     |                                                                                  |
 | `split`              | ✅     |                                                                                  |
@@ -631,11 +605,9 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `trim`               | ✅     |                                                                                  |
 | `try_to_binary`      | 🔜     | Lowers to `TryEval(...)`, which falls back                                       |
 | `try_to_number`      | 🔜     | TRY variant of `to_number`                                                       |
-| `try_validate_utf8`  | 🚫     | UTF-8 validation (out of scope)                                                  |
 | `ucase`              | ✅     |                                                                                  |
 | `unbase64`           | 🔜     | #4538                                                                            |
 | `upper`              | ✅     |                                                                                  |
-| `validate_utf8`      | 🚫     | UTF-8 validation (out of scope)                                                  |
 
 ---
 
@@ -682,11 +654,15 @@ fall back to Spark.
 
 ---
 
-## xml_funcs
+## Out-of-scope function list
 
-🚫 **Out of scope.** `from_xml`, `to_xml`, `schema_of_xml`, and the `xpath*` family fall back to Spark. See [Out of scope](#out-of-scope).
+The following functions are out of scope and fall back to Spark. See [Out of scope](#out-of-scope) above for the rationale.
 
----
+- **agg_funcs:** `approx_top_k`, `approx_top_k_accumulate`, `approx_top_k_combine`, `count_min_sketch`, `histogram_numeric`, `hll_sketch_agg`, `hll_union_agg`, `kll_sketch_agg_bigint`, `kll_sketch_agg_double`, `kll_sketch_agg_float`, `kll_sketch_get_n_bigint`, `kll_sketch_get_n_double`, `kll_sketch_get_n_float`, `kll_sketch_get_quantile_bigint`, `kll_sketch_get_quantile_double`, `kll_sketch_get_quantile_float`, `kll_sketch_get_rank_bigint`, `kll_sketch_get_rank_double`, `kll_sketch_get_rank_float`, `kll_sketch_merge_bigint`, `kll_sketch_merge_double`, `kll_sketch_merge_float`, `kll_sketch_to_string_bigint`, `kll_sketch_to_string_double`, `kll_sketch_to_string_float`, `theta_intersection_agg`, `theta_sketch_agg`, `theta_union_agg`
+- **csv_funcs:** `from_csv`, `schema_of_csv`, `to_csv`
+- **misc_funcs:** `approx_top_k_estimate`, `bitmap_and_agg`, `bitmap_bit_position`, `bitmap_bucket_number`, `bitmap_construct_agg`, `bitmap_count`, `bitmap_or_agg`, `from_avro`, `from_protobuf`, `hll_sketch_estimate`, `hll_union`, `input_file_block_length`, `input_file_block_start`, `input_file_name`, `java_method`, `reflect`, `schema_of_avro`, `st_asbinary`, `st_geogfromwkb`, `st_geomfromwkb`, `st_setsrid`, `st_srid`, `theta_difference`, `theta_intersection`, `theta_sketch_estimate`, `theta_union`, `to_avro`, `to_protobuf`, `try_reflect`, `uuid`, `version`
+- **string_funcs:** `is_valid_utf8`, `make_valid_utf8`, `quote`, `sentences`, `try_validate_utf8`, `validate_utf8`
+- **xml_funcs:** `from_xml`, `schema_of_xml`, `to_xml`, `xpath`, `xpath_boolean`, `xpath_double`, `xpath_float`, `xpath_int`, `xpath_long`, `xpath_number`, `xpath_short`, `xpath_string`
 
 ## Beyond SQL functions
 
