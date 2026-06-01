@@ -188,7 +188,7 @@ The tables below list every Spark built-in expression with its current status.
 
 | Function      | Status | Notes                                                                                                                            |
 | ------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `array_size`  | ❓     |                                                                                                                                  |
+| `array_size`  | ⚠️     | Lowers to `size`; accelerated, but returns -1 instead of NULL for NULL input (bug)                                               |
 | `cardinality` | ⚠️     | Alias for `size`; `MapType` input falls back ([#4472](https://github.com/apache/datafusion-comet/issues/4472))                   |
 | `concat`      | ⚠️     | Only `StringType` children; `BinaryType`/`ArrayType` fall back ([#4471](https://github.com/apache/datafusion-comet/issues/4471)) |
 | `reverse`     | ⚠️     | Array with `BinaryType` elements is `Incompatible`, flag-gated ([#2763](https://github.com/apache/datafusion-comet/issues/2763)) |
@@ -198,18 +198,18 @@ The tables below list every Spark built-in expression with its current status.
 
 ## conditional_funcs
 
-| Function     | Status | Notes |
-| ------------ | ------ | ----- |
-| `coalesce`   | ✅     |       |
-| `if`         | ✅     |       |
-| `ifnull`     | ✅     |       |
-| `nanvl`      | 🔜     | #4538 |
-| `nullif`     | ✅     |       |
-| `nullifzero` | ❓     |       |
-| `nvl`        | ✅     |       |
-| `nvl2`       | ✅     |       |
-| `when`       | ✅     |       |
-| `zeroifnull` | ❓     |       |
+| Function     | Status | Notes                             |
+| ------------ | ------ | --------------------------------- |
+| `coalesce`   | ✅     |                                   |
+| `if`         | ✅     |                                   |
+| `ifnull`     | ✅     |                                   |
+| `nanvl`      | 🔜     | #4538                             |
+| `nullif`     | ✅     |                                   |
+| `nullifzero` | ✅     | Lowers to `if`/`=` (Spark 4.0+)   |
+| `nvl`        | ✅     |                                   |
+| `nvl2`       | ✅     |                                   |
+| `when`       | ✅     |                                   |
+| `zeroifnull` | ✅     | Lowers to `coalesce` (Spark 4.0+) |
 
 ---
 
@@ -404,7 +404,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `map_keys`         | ✅     |                                                              |
 | `map_values`       | ✅     |                                                              |
 | `str_to_map`       | ✅     |                                                              |
-| `try_element_at`   | ❓     |                                                              |
+| `try_element_at`   | ✅     | Lowers to `element_at`; array input (MapType falls back)     |
 
 ---
 
@@ -476,11 +476,11 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `tanh`         | ✅     |                                                                                                                    |
 | `try_add`      | ⚠️     | Datetime/interval form falls back; numeric form supported                                                          |
 | `try_divide`   | ✅     |                                                                                                                    |
-| `try_mod`      | ❓     |                                                                                                                    |
+| `try_mod`      | ❓     | Lowers to `Remainder` with TRY eval mode, which falls back (#4484)                                                 |
 | `try_multiply` | ✅     |                                                                                                                    |
 | `try_subtract` | ✅     |                                                                                                                    |
 | `unhex`        | ✅     |                                                                                                                    |
-| `uniform`      | ❓     |                                                                                                                    |
+| `uniform`      | ✅     | Constant-folded; literal arguments only (Spark 4.0+)                                                               |
 | `width_bucket` | ⚠️     | Wired via shim, bypasses support-level framework ([#4485](https://github.com/apache/datafusion-comet/issues/4485)) |
 
 ---
@@ -499,12 +499,12 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | ----------------------------- | ------ | -------------------------------------------------------------------------------- |
 | `aes_decrypt`                 | 🔜     | Falls back; `StaticInvoke` not allowlisted; planned via codegen dispatch (#4558) |
 | `aes_encrypt`                 | 🔜     | Falls back; planned via codegen dispatch (#4558); nondeterministic IV by default |
-| `assert_true`                 | ❓     |                                                                                  |
+| `assert_true`                 | ❓     | Lowers to `RaiseError`, which falls back                                         |
 | `current_catalog`             | ❓     |                                                                                  |
 | `current_database`            | ❓     |                                                                                  |
 | `current_schema`              | ❓     |                                                                                  |
 | `current_user`                | ❓     |                                                                                  |
-| `equal_null`                  | ❓     |                                                                                  |
+| `equal_null`                  | ✅     | Lowers to `<=>` (`EqualNullSafe`)                                                |
 | `input_file_block_length`     | ❓     |                                                                                  |
 | `input_file_block_start`      | ❓     |                                                                                  |
 | `input_file_name`             | ❓     |                                                                                  |
@@ -526,7 +526,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `user`                        | ✅     | Resolved to a literal by the Spark analyzer before reaching Comet                |
 | `uuid`                        | ❓     |                                                                                  |
 | `variant_get`                 | 🔜     | tracking #4098                                                                   |
-| `version`                     | ❓     |                                                                                  |
+| `version`                     | ❓     | Lowers to `StaticInvoke(getSparkVersion)`, which falls back                      |
 
 ---
 
@@ -560,80 +560,80 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## string_funcs
 
-| Function             | Status | Notes                                             |
-| -------------------- | ------ | ------------------------------------------------- |
-| `ascii`              | ✅     |                                                   |
-| `base64`             | ❓     |                                                   |
-| `bit_length`         | ✅     |                                                   |
-| `btrim`              | ✅     |                                                   |
-| `char`               | ✅     |                                                   |
-| `char_length`        | ✅     |                                                   |
-| `character_length`   | ✅     |                                                   |
-| `chr`                | ✅     |                                                   |
-| `collate`            | ❓     |                                                   |
-| `collation`          | ❓     |                                                   |
-| `concat_ws`          | ✅     |                                                   |
-| `contains`           | ✅     |                                                   |
-| `decode`             | ✅     |                                                   |
-| `elt`                | 🔜     | #4538                                             |
-| `encode`             | ❓     |                                                   |
-| `endswith`           | ✅     |                                                   |
-| `find_in_set`        | 🔜     | #4538                                             |
-| `format_number`      | 🔜     | #4538                                             |
-| `format_string`      | 🔜     | #4538                                             |
-| `initcap`            | ✅     |                                                   |
-| `instr`              | ✅     |                                                   |
-| `is_valid_utf8`      | ❓     |                                                   |
-| `lcase`              | ✅     |                                                   |
-| `left`               | ✅     |                                                   |
-| `len`                | ✅     |                                                   |
-| `length`             | ✅     |                                                   |
-| `levenshtein`        | 🔜     | #4538                                             |
-| `locate`             | 🔜     | #4538                                             |
-| `lower`              | ✅     |                                                   |
-| `lpad`               | ✅     |                                                   |
-| `ltrim`              | ✅     |                                                   |
-| `luhn_check`         | ✅     | Native via `StaticInvoke` (tests: luhn_check.sql) |
-| `make_valid_utf8`    | ❓     |                                                   |
-| `mask`               | ❓     |                                                   |
-| `octet_length`       | ✅     |                                                   |
-| `overlay`            | 🔜     | #4538                                             |
-| `position`           | 🔜     | #4538                                             |
-| `printf`             | 🔜     | #4538                                             |
-| `quote`              | ❓     |                                                   |
-| `regexp_count`       | 🔜     | tracking #4098                                    |
-| `regexp_extract`     | 🔜     | tracking #4098                                    |
-| `regexp_extract_all` | 🔜     | tracking #4098                                    |
-| `regexp_instr`       | 🔜     | tracking #4098                                    |
-| `regexp_replace`     | ✅     |                                                   |
-| `regexp_substr`      | 🔜     | tracking #4098                                    |
-| `repeat`             | ✅     |                                                   |
-| `replace`            | ✅     |                                                   |
-| `right`              | ✅     |                                                   |
-| `rpad`               | ✅     |                                                   |
-| `rtrim`              | ✅     |                                                   |
-| `sentences`          | ❓     |                                                   |
-| `soundex`            | 🔜     | #4538                                             |
-| `space`              | ✅     |                                                   |
-| `split`              | ✅     |                                                   |
-| `split_part`         | ❓     |                                                   |
-| `startswith`         | ✅     |                                                   |
-| `substr`             | ✅     |                                                   |
-| `substring`          | ✅     |                                                   |
-| `substring_index`    | ✅     |                                                   |
-| `to_binary`          | ❓     |                                                   |
-| `to_char`            | 🔜     | #4538                                             |
-| `to_number`          | 🔜     | #4538                                             |
-| `to_varchar`         | 🔜     | #4538                                             |
-| `translate`          | ✅     |                                                   |
-| `trim`               | ✅     |                                                   |
-| `try_to_binary`      | ❓     |                                                   |
-| `try_to_number`      | ❓     |                                                   |
-| `try_validate_utf8`  | ❓     |                                                   |
-| `ucase`              | ✅     |                                                   |
-| `unbase64`           | 🔜     | #4538                                             |
-| `upper`              | ✅     |                                                   |
-| `validate_utf8`      | ❓     |                                                   |
+| Function             | Status | Notes                                                                          |
+| -------------------- | ------ | ------------------------------------------------------------------------------ |
+| `ascii`              | ✅     |                                                                                |
+| `base64`             | ❓     | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back                 |
+| `bit_length`         | ✅     |                                                                                |
+| `btrim`              | ✅     |                                                                                |
+| `char`               | ✅     |                                                                                |
+| `char_length`        | ✅     |                                                                                |
+| `character_length`   | ✅     |                                                                                |
+| `chr`                | ✅     |                                                                                |
+| `collate`            | ❓     |                                                                                |
+| `collation`          | ✅     | Constant-folded to a literal (Spark 4.0+)                                      |
+| `concat_ws`          | ✅     |                                                                                |
+| `contains`           | ✅     |                                                                                |
+| `decode`             | ✅     |                                                                                |
+| `elt`                | 🔜     | #4538                                                                          |
+| `encode`             | ❓     | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back                 |
+| `endswith`           | ✅     |                                                                                |
+| `find_in_set`        | 🔜     | #4538                                                                          |
+| `format_number`      | 🔜     | #4538                                                                          |
+| `format_string`      | 🔜     | #4538                                                                          |
+| `initcap`            | ✅     |                                                                                |
+| `instr`              | ✅     |                                                                                |
+| `is_valid_utf8`      | ❓     | Lowers to `Invoke`, which falls back (Spark 4.0+)                              |
+| `lcase`              | ✅     |                                                                                |
+| `left`               | ✅     |                                                                                |
+| `len`                | ✅     |                                                                                |
+| `length`             | ✅     |                                                                                |
+| `levenshtein`        | 🔜     | #4538                                                                          |
+| `locate`             | 🔜     | #4538                                                                          |
+| `lower`              | ✅     |                                                                                |
+| `lpad`               | ✅     |                                                                                |
+| `ltrim`              | ✅     |                                                                                |
+| `luhn_check`         | ✅     | Native via `StaticInvoke` (tests: luhn_check.sql)                              |
+| `make_valid_utf8`    | ❓     | Lowers to `Invoke`, which falls back (Spark 4.0+)                              |
+| `mask`               | ❓     |                                                                                |
+| `octet_length`       | ✅     |                                                                                |
+| `overlay`            | 🔜     | #4538                                                                          |
+| `position`           | 🔜     | #4538                                                                          |
+| `printf`             | 🔜     | #4538                                                                          |
+| `quote`              | ❓     | Lowers to `StaticInvoke`, which falls back (Spark 4.1+)                        |
+| `regexp_count`       | 🔜     | tracking #4098                                                                 |
+| `regexp_extract`     | 🔜     | tracking #4098                                                                 |
+| `regexp_extract_all` | 🔜     | tracking #4098                                                                 |
+| `regexp_instr`       | 🔜     | tracking #4098                                                                 |
+| `regexp_replace`     | ✅     |                                                                                |
+| `regexp_substr`      | 🔜     | tracking #4098                                                                 |
+| `repeat`             | ✅     |                                                                                |
+| `replace`            | ✅     |                                                                                |
+| `right`              | ✅     |                                                                                |
+| `rpad`               | ✅     |                                                                                |
+| `rtrim`              | ✅     |                                                                                |
+| `sentences`          | ❓     | Lowers to `StaticInvoke(getSentences)`, which falls back                       |
+| `soundex`            | 🔜     | #4538                                                                          |
+| `space`              | ✅     |                                                                                |
+| `split`              | ✅     |                                                                                |
+| `split_part`         | ❓     | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back       |
+| `startswith`         | ✅     |                                                                                |
+| `substr`             | ✅     |                                                                                |
+| `substring`          | ✅     |                                                                                |
+| `substring_index`    | ✅     |                                                                                |
+| `to_binary`          | ⚠️     | Only the hex format is accelerated (lowers to `unhex`); UTF-8/base64 fall back |
+| `to_char`            | 🔜     | #4538                                                                          |
+| `to_number`          | 🔜     | #4538                                                                          |
+| `to_varchar`         | 🔜     | #4538                                                                          |
+| `translate`          | ✅     |                                                                                |
+| `trim`               | ✅     |                                                                                |
+| `try_to_binary`      | ❓     | Lowers to `TryEval(...)`, which falls back                                     |
+| `try_to_number`      | ❓     |                                                                                |
+| `try_validate_utf8`  | ❓     | Lowers to `StaticInvoke`, which falls back (Spark 4.0+)                        |
+| `ucase`              | ✅     |                                                                                |
+| `unbase64`           | 🔜     | #4538                                                                          |
+| `upper`              | ✅     |                                                                                |
+| `validate_utf8`      | ❓     | Lowers to `StaticInvoke`, which falls back (Spark 4.0+)                        |
 
 ---
 
