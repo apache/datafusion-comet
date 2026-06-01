@@ -214,25 +214,15 @@ The tables below list every Spark built-in expression with its current status.
 
 ## conversion_funcs
 
+The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `decimal`, `double`, `float`, `int`, `smallint`, `string`, `timestamp`, `tinyint`) are SQL aliases for `CAST(... AS <type>)` and share the support and caveats of `cast`.
+
 The type-alias keywords (`bigint`, `boolean`, `int`, etc.) are SQL syntax for `CAST`. `cast`
 itself is supported with caveats; the keyword aliases are not yet individually wired in Comet's
 serde but effectively fall through to the same cast path at runtime.
 
-| Function    | Status | Notes                                                                                                              |
-| ----------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
-| `bigint`    | ⚠️     | Alias for `CAST(... AS BIGINT)`; see `cast`                                                                        |
-| `binary`    | ⚠️     | Alias for `CAST(... AS BINARY)`; see `cast`                                                                        |
-| `boolean`   | ⚠️     | Alias for `CAST(... AS BOOLEAN)`; see `cast`                                                                       |
-| `cast`      | ⚠️     | Many type pairs supported; float-to-decimal rounding may differ; see [Compatibility Guide](compatibility/index.md) |
-| `date`      | ⚠️     | Alias for `CAST(... AS DATE)`; see `cast`                                                                          |
-| `decimal`   | ⚠️     | Alias for `CAST(... AS DECIMAL)`; see `cast`                                                                       |
-| `double`    | ⚠️     | Alias for `CAST(... AS DOUBLE)`; see `cast`                                                                        |
-| `float`     | ⚠️     | Alias for `CAST(... AS FLOAT)`; see `cast`                                                                         |
-| `int`       | ⚠️     | Alias for `CAST(... AS INT)`; see `cast`                                                                           |
-| `smallint`  | ⚠️     | Alias for `CAST(... AS SMALLINT)`; see `cast`                                                                      |
-| `string`    | ⚠️     | Alias for `CAST(... AS STRING)`; see `cast`                                                                        |
-| `timestamp` | ⚠️     | Alias for `CAST(... AS TIMESTAMP)`; see `cast`                                                                     |
-| `tinyint`   | ⚠️     | Alias for `CAST(... AS TINYINT)`; see `cast`                                                                       |
+| Function | Status | Notes                                                                                                              |
+| -------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
+| `cast`   | ⚠️     | Many type pairs supported; float-to-decimal rounding may differ; see [Compatibility Guide](compatibility/index.md) |
 
 ---
 
