@@ -146,7 +146,7 @@ fn metadata_field(name: &str) -> Field {
 /// asserts these are a suffix of `scan.requiredSchema` in the same order so the proto
 /// layout aligns with what Spark expects.
 #[allow(clippy::too_many_arguments)]
-fn build_output_schema(
+pub fn build_output_schema(
     input: &SchemaRef,
     emit_row_index: bool,
     emit_is_row_deleted: bool,

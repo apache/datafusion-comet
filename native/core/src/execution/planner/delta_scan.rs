@@ -101,14 +101,34 @@ pub(crate) fn plan_delta_scan(
         .map(|offset| *offset as usize)
         .collect();
 
-    // Empty-partition fast path.
+    // Empty-partition fast path. The EmptyExec must carry the SAME output schema a populated
+    // partition produces (synthetic columns appended + reordered), NOT the stripped
+    // `required_schema`. Otherwise, when DPP prunes all tasks from one partition slot while
+    // sibling slots retain data (buildPerPartitionBytes keeps the empty group to hold
+    // numPartitions stable), this partition would emit N-k columns while siblings emit N --
+    // a per-partition schema divergence within one RDD for any synthetic-emitting Delta scan.
     if scan.tasks.is_empty() {
+        let row_index_alias = if common.row_index_column_alias.is_empty() {
+            comet_contrib_delta::synthetic_columns::ROW_INDEX_COLUMN_NAME
+        } else {
+            common.row_index_column_alias.as_str()
+        };
+        let output_schema = empty_scan_output_schema(
+            &required_schema,
+            common.emit_row_index,
+            common.emit_is_row_deleted,
+            common.emit_row_id,
+            common.emit_row_commit_version,
+            row_index_alias,
+            &common.metadata_column_names,
+            &common.final_output_indices,
+        )?;
         return Ok((
             vec![],
             vec![],
             Arc::new(SparkPlan::new(
                 spark_plan.plan_id,
-                Arc::new(EmptyExec::new(required_schema)),
+                Arc::new(EmptyExec::new(output_schema)),
                 vec![],
             )),
         ));
@@ -480,4 +500,137 @@ pub(crate) fn plan_delta_scan(
         vec![],
         Arc::new(SparkPlan::new(spark_plan.plan_id, with_rename, vec![])),
     ))
+}
+
+/// Output schema a Delta scan partition produces: the (logical) `required_schema` with any
+/// synthetic columns appended -- via the SAME `build_output_schema` the populated path uses --
+/// then reordered by `final_output_indices`. The empty-partition fast path uses this so a
+/// DPP-pruned partition emits the same schema as its populated siblings (see the call site).
+#[allow(clippy::too_many_arguments)]
+fn empty_scan_output_schema(
+    required_schema: &SchemaRef,
+    emit_row_index: bool,
+    emit_is_row_deleted: bool,
+    emit_row_id: bool,
+    emit_row_commit_version: bool,
+    row_index_alias: &str,
+    metadata_column_names: &[String],
+    final_output_indices: &[i32],
+) -> Result<SchemaRef, ExecutionError> {
+    let need_synthetics = emit_row_index
+        || emit_is_row_deleted
+        || emit_row_id
+        || emit_row_commit_version
+        || !metadata_column_names.is_empty();
+    if !need_synthetics {
+        // No synthetics -> the populated path emits `required_schema` (no reorder), so the
+        // empty partition's stripped schema already matches. (final_output_indices is only
+        // set when synthetics break the required-schema suffix ordering.)
+        return Ok(Arc::clone(required_schema));
+    }
+    let post_synth = comet_contrib_delta::synthetic_columns::build_output_schema(
+        required_schema,
+        emit_row_index,
+        emit_is_row_deleted,
+        emit_row_id,
+        emit_row_commit_version,
+        row_index_alias,
+        metadata_column_names,
+    );
+    if final_output_indices.is_empty() {
+        return Ok(post_synth);
+    }
+    let n = post_synth.fields().len();
+    let mut fields: Vec<Arc<Field>> = Vec::with_capacity(final_output_indices.len());
+    for idx in final_output_indices {
+        if *idx < 0 || (*idx as usize) >= n {
+            return Err(GeneralError(format!(
+                "final_output_indices entry {idx} out of range \
+                 (post-synthesis schema has {n} fields)"
+            )));
+        }
+        fields.push(Arc::clone(&post_synth.fields()[*idx as usize]));
+    }
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use comet_contrib_delta::synthetic_columns::ROW_INDEX_COLUMN_NAME;
+    use datafusion::arrow::datatypes::DataType;
+
+    fn req(names: &[&str]) -> SchemaRef {
+        Arc::new(Schema::new(
+            names
+                .iter()
+                .map(|n| Field::new(*n, DataType::Int64, false))
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    // The empty-partition fast path must emit the synthetic columns a populated partition
+    // emits -- not the stripped required schema -- or a DPP-pruned partition slot would
+    // diverge from its siblings within one RDD.
+    #[test]
+    fn empty_scan_schema_appends_synthetics() {
+        let schema = empty_scan_output_schema(
+            &req(&["id", "name"]),
+            true, // emit_row_index
+            false,
+            false,
+            false,
+            ROW_INDEX_COLUMN_NAME,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["id", "name", ROW_INDEX_COLUMN_NAME],
+            "empty-partition schema must append the row_index synthetic"
+        );
+    }
+
+    #[test]
+    fn empty_scan_schema_without_synthetics_is_required() {
+        let schema =
+            empty_scan_output_schema(&req(&["id", "name"]), false, false, false, false, "x", &[], &[])
+                .unwrap();
+        assert_eq!(schema.fields().len(), 2);
+    }
+
+    #[test]
+    fn empty_scan_schema_applies_reorder() {
+        // post-synth = [id, row_index]; final_output_indices [1,0] -> [row_index, id].
+        let schema = empty_scan_output_schema(
+            &req(&["id"]),
+            true,
+            false,
+            false,
+            false,
+            ROW_INDEX_COLUMN_NAME,
+            &[],
+            &[1, 0],
+        )
+        .unwrap();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, vec![ROW_INDEX_COLUMN_NAME, "id"]);
+    }
+
+    #[test]
+    fn empty_scan_schema_rejects_out_of_range_reorder() {
+        let err = empty_scan_output_schema(
+            &req(&["id"]),
+            true,
+            false,
+            false,
+            false,
+            ROW_INDEX_COLUMN_NAME,
+            &[],
+            &[5],
+        );
+        assert!(err.is_err(), "out-of-range final_output_indices must error, not panic");
+    }
 }
