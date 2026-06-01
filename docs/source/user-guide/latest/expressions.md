@@ -306,10 +306,10 @@ serde but effectively fall through to the same cast path at runtime.
 | `to_utc_timestamp`    | ⚠️     | Legacy zone forms (`GMT+1`, `PST`) throw a native parse error                                          |
 | `trunc`               | ✅     |                                                                                                        |
 | `try_make_interval`   | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                     |
-| `try_make_timestamp`  | 🔜     | Rewrites to `make_timestamp`; likely accelerated, pending test                                         |
-| `try_to_date`         | 🔜     | Rewrites to `Cast`/`GetTimestamp`; likely accelerated, pending test                                    |
+| `try_make_timestamp`  | ⚠️     | Runs natively for valid inputs, but returns wrong values for invalid inputs instead of NULL (#4554)    |
+| `try_to_date`         | ❓     | Rewrites to `Cast`/`GetTimestamp`, but the rewritten form currently falls back (tests: #4555)          |
 | `try_to_time`         | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
-| `try_to_timestamp`    | 🔜     | Rewrites to `Cast`/`GetTimestamp`; likely accelerated, pending test                                    |
+| `try_to_timestamp`    | ❓     | Rewrites to `Cast`/`GetTimestamp`, but the rewritten form currently falls back (tests: #4555)          |
 | `unix_date`           | ✅     |                                                                                                        |
 | `unix_micros`         | ✅     |                                                                                                        |
 | `unix_millis`         | ✅     |                                                                                                        |
