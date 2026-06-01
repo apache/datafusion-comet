@@ -41,8 +41,7 @@ SELECT CAST(aes_decrypt(aes_encrypt(data, key, 'GCM'), key, 'GCM') AS STRING) FR
 query spark_answer_only
 SELECT CAST(aes_decrypt(aes_encrypt(data, key, 'ECB'), key, 'ECB') AS STRING) FROM test_aes
 
--- CBC mode is omitted: Spark added AES-CBC only in 3.5 (SPARK-43042), so it throws
--- UNSUPPORTED_FEATURE.AES_MODE on 3.4. GCM and ECB cover the modes here.
+-- CBC mode is covered separately in aes_cbc.sql (Spark added AES-CBC in 3.5).
 
 -- ECB direct: output is deterministic so we can compare directly to Spark
 query spark_answer_only
