@@ -26,8 +26,9 @@ transparently falls back to Spark for that part of the plan; results are unaffec
 
 Expressions marked ✅ Supported are enabled by default. Expressions marked ⚠️ Supported
 (caveats) include cases that are known to diverge from Spark; those cases fall back to Spark
-by default and must be opted into, either globally with `spark.comet.expr.allowIncompatible=true`
-or per expression with `spark.comet.expression.EXPRNAME.allowIncompatible=true`.
+by default and must be opted into per expression with
+`spark.comet.expression.EXPRNAME.allowIncompatible=true` (where `EXPRNAME` is the Spark
+expression class name, for example `Cast`). There is no global opt-in.
 
 Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enabled=false`, where
 `EXPRNAME` is the Spark expression class name (for example `Length` or `StartsWith`). See the
@@ -43,7 +44,7 @@ Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enab
 | 🚫 Out of scope        | Deliberately not planned.                                                                                                                                                               |
 | ❓ Not yet supported   | Falls back to Spark today; support is to be determined (not yet evaluated).                                                                                                             |
 
-## Scope policy
+## Out of scope
 
 Comet focuses acceleration on mainstream relational, string, datetime, math, and collection
 expressions. Some Spark function families are **out of scope**: specialized functionality with
@@ -54,8 +55,7 @@ are not on the roadmap:
 - **XML / XPath** (`from_xml`, `to_xml`, `schema_of_xml`, `xpath*`): legacy text format, rare in accelerated workloads.
 - **Geospatial** (`st_*`): brand-new Spark 4.1 functionality, specialized.
 - **Avro / Protobuf codecs** (`from_avro`, `to_avro`, `from_protobuf`, `to_protobuf`, `schema_of_avro`): format conversion belongs at the IO layer, not expression evaluation.
-- **JVM reflection** (`java_method`, `reflect`): cannot run in native code.
-- **Cryptographic functions** (`aes_encrypt`, `aes_decrypt`): niche, with correctness and security risk for marginal benefit.
+- **JVM reflection** (`java_method`, `reflect`): niche, and they invoke arbitrary JVM methods (a security concern).
 - **CSV functions** (`from_csv`, `to_csv`, `schema_of_csv`): row-level CSV parsing and formatting in expressions is niche and better handled at the data source layer.
 
 Note that `approx_count_distinct`, `approx_percentile` / `percentile_approx`, `median`, and `mode`
@@ -65,7 +65,7 @@ The tables below list every Spark built-in expression with its current status.
 
 ## agg_funcs
 
-> 🚫 Out of scope: probabilistic sketch aggregates (`kll_sketch_*`, `hll_sketch_agg`, `hll_union_agg`, `theta_intersection_agg`, `theta_sketch_agg`, `theta_union_agg`, `count_min_sketch`, `approx_top_k`, `approx_top_k_accumulate`, `approx_top_k_combine`). See [Scope policy](#scope-policy).
+> 🚫 Out of scope: probabilistic sketch aggregates (`kll_sketch_*`, `hll_sketch_agg`, `hll_union_agg`, `theta_intersection_agg`, `theta_sketch_agg`, `theta_union_agg`, `count_min_sketch`, `approx_top_k`, `approx_top_k_accumulate`, `approx_top_k_combine`). See [Out of scope](#out-of-scope).
 
 | Function                | Status | Notes                                                            |
 | ----------------------- | ------ | ---------------------------------------------------------------- |
@@ -239,7 +239,7 @@ serde but effectively fall through to the same cast path at runtime.
 
 ## csv_funcs
 
-🚫 **Out of scope.** `from_csv`, `to_csv`, and `schema_of_csv` fall back to Spark. See [Scope policy](#scope-policy).
+🚫 **Out of scope.** `from_csv`, `to_csv`, and `schema_of_csv` fall back to Spark. See [Out of scope](#out-of-scope).
 
 ---
 
@@ -487,16 +487,18 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## misc_funcs
 
-> 🚫 Out of scope: probabilistic sketch functions (`hll_sketch_estimate`, `hll_union`, `theta_difference`, `theta_intersection`, `theta_sketch_estimate`, `theta_union`, `bitmap_and_agg`, `bitmap_or_agg`, `bitmap_construct_agg`, `bitmap_count`, `bitmap_bucket_number`, `bitmap_bit_position`, `approx_top_k_estimate`). See [Scope policy](#scope-policy).
+> 🚫 Out of scope: probabilistic sketch functions (`hll_sketch_estimate`, `hll_union`, `theta_difference`, `theta_intersection`, `theta_sketch_estimate`, `theta_union`, `bitmap_and_agg`, `bitmap_or_agg`, `bitmap_construct_agg`, `bitmap_count`, `bitmap_bucket_number`, `bitmap_bit_position`, `approx_top_k_estimate`). See [Out of scope](#out-of-scope).
 
-> 🚫 Out of scope: geospatial functions (`st_asbinary`, `st_geogfromwkb`, `st_geomfromwkb`, `st_setsrid`, `st_srid`). See [Scope policy](#scope-policy).
+> 🚫 Out of scope: geospatial functions (`st_asbinary`, `st_geogfromwkb`, `st_geomfromwkb`, `st_setsrid`, `st_srid`). See [Out of scope](#out-of-scope).
 
-> 🚫 Out of scope: Avro/Protobuf codec functions (`from_avro`, `to_avro`, `schema_of_avro`, `from_protobuf`, `to_protobuf`). See [Scope policy](#scope-policy).
+> 🚫 Out of scope: Avro/Protobuf codec functions (`from_avro`, `to_avro`, `schema_of_avro`, `from_protobuf`, `to_protobuf`). See [Out of scope](#out-of-scope).
 
-> 🚫 Out of scope: JVM reflection and cryptographic functions (`java_method`, `reflect`, `try_reflect`, `aes_encrypt`, `aes_decrypt`, `try_aes_decrypt`). See [Scope policy](#scope-policy).
+> 🚫 Out of scope: JVM reflection functions (`java_method`, `reflect`, `try_reflect`). See [Out of scope](#out-of-scope).
 
 | Function                      | Status | Notes                                                             |
 | ----------------------------- | ------ | ----------------------------------------------------------------- |
+| `aes_decrypt`                 | 🔜     | Codegen-dispatch candidate (RuntimeReplaceable to `StaticInvoke`) |
+| `aes_encrypt`                 | 🔜     | Codegen-dispatch candidate; nondeterministic IV by default        |
 | `assert_true`                 | ❓     |                                                                   |
 | `current_catalog`             | ❓     |                                                                   |
 | `current_database`            | ❓     |                                                                   |
@@ -517,6 +519,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `session_user`                | ❓     |                                                                   |
 | `spark_partition_id`          | ✅     |                                                                   |
 | `to_variant_object`           | 🔜     | tracking #4098                                                    |
+| `try_aes_decrypt`             | 🔜     | Codegen-dispatch candidate (RuntimeReplaceable to `StaticInvoke`) |
 | `try_parse_json`              | 🔜     | tracking #4098                                                    |
 | `try_variant_get`             | 🔜     | tracking #4098                                                    |
 | `typeof`                      | ❓     |                                                                   |
@@ -679,7 +682,7 @@ fall back to Spark.
 
 ## xml_funcs
 
-🚫 **Out of scope.** `from_xml`, `to_xml`, `schema_of_xml`, and the `xpath*` family fall back to Spark. See [Scope policy](#scope-policy).
+🚫 **Out of scope.** `from_xml`, `to_xml`, `schema_of_xml`, and the `xpath*` family fall back to Spark. See [Out of scope](#out-of-scope).
 
 ---
 
