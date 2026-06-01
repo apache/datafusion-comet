@@ -88,7 +88,7 @@ The tables below list every Spark built-in expression with its current status.
 
 ## agg_funcs
 
-> 🚫 Out of scope: probabilistic sketch aggregates (`kll_sketch_*`, `hll_sketch_agg`, `hll_union_agg`, `theta_*_agg`, `count_min_sketch`, `bitmap_*_agg`, `approx_top_k*`). See [Scope policy](#scope-policy).
+> 🚫 Out of scope: probabilistic sketch aggregates (`kll_sketch_*`, `hll_sketch_agg`, `hll_union_agg`, `theta_intersection_agg`, `theta_sketch_agg`, `theta_union_agg`, `count_min_sketch`, `approx_top_k`, `approx_top_k_accumulate`, `approx_top_k_combine`). See [Scope policy](#scope-policy).
 
 | Function | Status | Notes |
 | -------- | ------ | ----- |
@@ -514,6 +514,8 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## misc_funcs
 
+> 🚫 Out of scope: probabilistic sketch functions (`hll_sketch_estimate`, `hll_union`, `theta_difference`, `theta_intersection`, `theta_sketch_estimate`, `theta_union`, `bitmap_and_agg`, `bitmap_or_agg`, `bitmap_construct_agg`, `bitmap_count`, `bitmap_bucket_number`, `bitmap_bit_position`, `approx_top_k_estimate`). See [Scope policy](#scope-policy).
+
 > 🚫 Out of scope: geospatial functions (`st_asbinary`, `st_geogfromwkb`, `st_geomfromwkb`, `st_setsrid`, `st_srid`). See [Scope policy](#scope-policy).
 
 > 🚫 Out of scope: Avro/Protobuf codec functions (`from_avro`, `to_avro`, `schema_of_avro`, `from_protobuf`, `to_protobuf`). See [Scope policy](#scope-policy).
@@ -522,15 +524,12 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 | Function | Status | Notes |
 | -------- | ------ | ----- |
-| `approx_top_k_estimate` | 🚫 | Out of scope; see [Scope policy](#scope-policy) |
 | `assert_true` | ⬜ | |
 | `current_catalog` | ⬜ | |
 | `current_database` | ⬜ | |
 | `current_schema` | ⬜ | |
 | `current_user` | ⬜ | |
 | `equal_null` | ⬜ | |
-| `hll_sketch_estimate` | 🚫 | Out of scope; see [Scope policy](#scope-policy) |
-| `hll_union` | 🚫 | Out of scope; see [Scope policy](#scope-policy) |
 | `input_file_block_length` | ⬜ | |
 | `input_file_block_start` | ⬜ | |
 | `input_file_name` | ⬜ | |
@@ -544,10 +543,6 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `schema_of_variant_agg` | 🚧 | tracking #4098 |
 | `session_user` | ⬜ | |
 | `spark_partition_id` | ✅ | |
-| `theta_difference` | 🚫 | Out of scope; see [Scope policy](#scope-policy) |
-| `theta_intersection` | 🚫 | Out of scope; see [Scope policy](#scope-policy) |
-| `theta_sketch_estimate` | 🚫 | Out of scope; see [Scope policy](#scope-policy) |
-| `theta_union` | 🚫 | Out of scope; see [Scope policy](#scope-policy) |
 | `to_variant_object` | 🚧 | tracking #4098 |
 | `try_parse_json` | 🚧 | tracking #4098 |
 | `try_variant_get` | 🚧 | tracking #4098 |
