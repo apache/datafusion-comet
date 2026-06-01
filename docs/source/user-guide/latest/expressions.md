@@ -24,10 +24,14 @@ expression. Comet accelerates expressions either with a native (Rust) implementa
 dispatching to a Spark-compatible codegen path. When an expression is not supported, Comet
 transparently falls back to Spark for that part of the plan; results are unaffected.
 
-All supported expressions are enabled by default. Most can be disabled with
-`spark.comet.expression.EXPRNAME.enabled=false`, where `EXPRNAME` is the Spark expression
-class name (for example `Length` or `StartsWith`). See the [Comet Configuration Guide](configs.md)
-for the full list.
+Expressions marked ✅ Supported are enabled by default. Expressions marked ⚠️ Supported
+(caveats) include cases that are known to diverge from Spark; those cases fall back to Spark
+by default and must be opted into, either globally with `spark.comet.expr.allowIncompatible=true`
+or per expression with `spark.comet.expression.EXPRNAME.allowIncompatible=true`.
+
+Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enabled=false`, where
+`EXPRNAME` is the Spark expression class name (for example `Length` or `StartsWith`). See the
+[Comet Configuration Guide](configs.md) for the full list.
 
 ## Status legend
 
