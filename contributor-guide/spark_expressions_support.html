@@ -1172,13 +1172,63 @@ per-function details are documented in the
 <section id="hash-funcs">
 <h3>hash_funcs<a class="headerlink" href="#hash-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> crc32</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> hash</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> md5</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sha</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sha1</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sha2</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> xxhash64</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> crc32</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Crc32(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(BinaryType)</span> <span class="pre">-&gt;</span> <span class="pre">LongType</span></code>. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;crc32&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged; <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> trait replaced by <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> override.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> hash</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Murmur3Hash(children,</span> <span class="pre">seed)</span> <span class="pre">extends</span> <span class="pre">HashExpression[Int]</span></code>; produces a Murmur3 hash with a configurable Int seed and <code class="docutils literal notranslate"><span class="pre">IntegerType</span></code> result. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometMurmur3Hash</span></code> to the native <code class="docutils literal notranslate"><span class="pre">murmur3_hash</span></code> UDF.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged; some inner helper refactors only.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known limitation: <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> children with precision &gt; 18 fall back because Spark hashes them through Java <code class="docutils literal notranslate"><span class="pre">BigDecimal</span></code>; <code class="docutils literal notranslate"><span class="pre">TimeType</span></code> (Spark 4.0+) is also unsupported. The same limitations apply to <code class="docutils literal notranslate"><span class="pre">xxhash64</span></code>, <code class="docutils literal notranslate"><span class="pre">sha1</span></code>, <code class="docutils literal notranslate"><span class="pre">sha2</span></code> through the shared <code class="docutils literal notranslate"><span class="pre">HashUtils</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> md5</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Md5(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(BinaryType)</span> <span class="pre">-&gt;</span> <span class="pre">StringType</span></code>. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;md5&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged; trait set gains <code class="docutils literal notranslate"><span class="pre">DefaultStringProducingExpression</span></code> and the <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sha</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): registry alias of <code class="docutils literal notranslate"><span class="pre">Sha1</span></code>. Same support as <code class="docutils literal notranslate"><span class="pre">sha1</span></code>.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sha1</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Sha1(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(BinaryType)</span> <span class="pre">-&gt;</span> <span class="pre">StringType</span></code>. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometSha1</span></code> to the native <code class="docutils literal notranslate"><span class="pre">sha1</span></code> UDF.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): trait set gains <code class="docutils literal notranslate"><span class="pre">DefaultStringProducingExpression</span></code> and <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> is replaced by <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code>. Runtime unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sha2</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Sha2(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">BinaryExpression</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(BinaryType,</span> <span class="pre">IntegerType)</span> <span class="pre">-&gt;</span> <span class="pre">StringType</span></code>. The <code class="docutils literal notranslate"><span class="pre">numBits</span></code> argument selects SHA-224/256/384/512 (0 is treated as 256); other values return NULL. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometSha2</span></code> to the native <code class="docutils literal notranslate"><span class="pre">sha2</span></code> UDF; non-foldable <code class="docutils literal notranslate"><span class="pre">numBits</span></code> falls back to Spark.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): trait set gains <code class="docutils literal notranslate"><span class="pre">DefaultStringProducingExpression</span></code> and the <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor. Runtime unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> xxhash64</p>
+<ul>
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">XxHash64(children,</span> <span class="pre">seed)</span> <span class="pre">extends</span> <span class="pre">HashExpression[Long]</span></code>; produces an xxHash64 hash with a configurable Long seed and <code class="docutils literal notranslate"><span class="pre">LongType</span></code> result. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometXxHash64</span></code> to the native <code class="docutils literal notranslate"><span class="pre">xxhash64</span></code> UDF.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</li>
 </ul>
 </section>
 <section id="json-funcs">
