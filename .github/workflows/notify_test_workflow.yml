@@ -29,7 +29,7 @@ on:
 jobs:
   notify:
     name: Notify test workflow
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-slim
     permissions:
       actions: read
       checks: write
@@ -40,7 +40,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const endpoint = 'GET /repos/:owner/:repo/actions/workflows/:id/runs?&branch=:branch'
-            const check_run_endpoint = 'GET /repos/:owner/:repo/commits/:ref/check-runs'
+            const check_run_endpoint = 'GET /repos/:owner/:repo/commits/:ref/check-runs?per_page=100'
 
             // TODO: Should use pull_request.user and pull_request.user.repos_url?
             // If a different person creates a commit to another forked repo,
@@ -91,8 +91,8 @@ jobs:
                   summary: `
             Unable to detect the workflow run for testing the changes in your PR.
 
-            1. If you did not enable GitHub Actions in your forked repository, please enable it by clicking the button as shown in the image below. See also [Disabling or limiting GitHub Actions for a repository](https://docs.github.com/en/github/administering-a-repository/disabling-or-limiting-github-actions-for-a-repository) for more details.
-            2. It is possible your branch is based on the old \`main\` branch in Apache DataFusion Comet, please sync your branch to the latest main branch. For example as below:
+            1. If you did not enable GitHub Actions in your forked repository, please enable it by clicking the button as shown in the image below. See also [Managing Github Actions Settings for a repository](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository) for more details.
+            2. It is possible your branch is based on the old \`main\` branch in Apache Datafusion Comet, please sync your branch to the latest main branch. For example as below:
                 \`\`\`bash
                 git fetch upstream
                 git rebase upstream/main
@@ -101,7 +101,7 @@ jobs:
                   images: [
                     {
                       alt: 'enabling workflows button',
-                      image_url: 'https://raw.githubusercontent.com/apache/spark/master/.github/workflows/images/workflow-enable-button.png'
+                      image_url: 'https://raw.githubusercontent.com/apache/datafusion-comet/main/.github/workflows/images/workflow-enable-button.png'
                     }
                   ]
                 }
@@ -113,30 +113,39 @@ jobs:
                 throw new Error('There was a new unsynced commit pushed. Please retrigger the workflow.');
               }
 
-              // Pick the entry-point check run for deep-linking. Display name
-              // is "Run / CI / Preflight" (build_main → build_and_test → ci.yml).
-              // Fall back to any "Run /…" entry to survive future job renames,
-              // then to the actions run URL if no check run is visible yet.
-              const check_runs = await github.request(check_run_endpoint, check_run_params)
-              const check_run_head =
-                check_runs.data.check_runs.find(r => r.name === "Run / CI / Preflight")
-                || check_runs.data.check_runs.find(r => r.name && r.name.startsWith("Run /"))
+              // Here we get check run ID to provide Check run view instead of Actions view, see also SPARK-37879.
+              let retryCount = 0;
+              let check_run_head;
+              while (retryCount < 3) {
+                const check_runs = await github.request(check_run_endpoint, check_run_params);
+                check_run_head = check_runs.data.check_runs.find(r => r.name === "Run / CI / Preflight");
+                if (check_run_head) {
+                  break;
+                }
+                retryCount++;
+                if (retryCount < 3) {
+                  await new Promise(resolve => setTimeout(resolve, 3000));
+                }
+              }
+              if (!check_run_head) {
+                throw new Error('Failed to retrieve check_run_head after 3 attempts');
+              }
+
+              if (check_run_head.head_sha != context.payload.pull_request.head.sha) {
+                throw new Error('There was a new unsynced commit pushed. Please retrigger the workflow.');
+              }
+
+              const check_run_url = 'https://github.com/'
+                + context.payload.pull_request.head.repo.full_name
+                + '/runs/'
+                + check_run_head.id
+              console.log('Check run URL: ' + check_run_url)
 
               const actions_url = 'https://github.com/'
                 + context.payload.pull_request.head.repo.full_name
                 + '/actions/runs/'
                 + run_id
-
-              let check_run_url = actions_url
-              if (check_run_head) {
-                if (check_run_head.head_sha != context.payload.pull_request.head.sha) {
-                  throw new Error('There was a new unsynced commit pushed. Please retrigger the workflow.');
-                }
-                check_run_url = 'https://github.com/'
-                  + context.payload.pull_request.head.repo.full_name
-                  + '/runs/'
-                  + check_run_head.id
-              }
+              console.log('Actions URL: ' + actions_url)
 
               github.rest.checks.create({
                 owner: context.repo.owner,
@@ -146,7 +155,11 @@ jobs:
                 status: status,
                 output: {
                   title: 'Test results',
-                  summary: '[See test results](' + check_run_url + ')',
+                  summary: '[See test results](' + check_run_url + ')\n\n'
+                    + 'If the tests fail for reasons unrelated to this pull request, '
+                    + 'please rerun the workflow in your forked repository.\n'
+                    + 'If the failures are related to this pull request, '
+                    + 'please investigate them and push follow-up changes.',
                   text: JSON.stringify({
                     owner: context.payload.pull_request.head.repo.owner.login,
                     repo: context.payload.pull_request.head.repo.name,
