@@ -245,81 +245,81 @@ serde but effectively fall through to the same cast path at runtime.
 
 ## datetime_funcs
 
-| Function              | Status | Notes                                                                                                          |
-| --------------------- | ------ | -------------------------------------------------------------------------------------------------------------- |
-| `add_months`          | ✅     |                                                                                                                |
-| `convert_timezone`    | ✅     |                                                                                                                |
-| `curdate`             | ✅     | Constant-folded to a literal (alias of `current_date`)                                                         |
-| `current_date`        | ✅     | Constant-folded to a literal before Comet sees the plan                                                        |
-| `current_time`        | ❓     | Constant-folded to a literal, but of the Spark 4.1 `TIME` type, which Comet does not support, so it falls back |
-| `current_timestamp`   | ✅     | Constant-folded to a literal before Comet sees the plan                                                        |
-| `current_timezone`    | ✅     |                                                                                                                |
-| `date_add`            | ✅     |                                                                                                                |
-| `date_diff`           | ✅     |                                                                                                                |
-| `date_format`         | ✅     |                                                                                                                |
-| `date_from_unix_date` | ✅     |                                                                                                                |
-| `date_part`           | ✅     |                                                                                                                |
-| `date_sub`            | ✅     |                                                                                                                |
-| `date_trunc`          | ✅     |                                                                                                                |
-| `dateadd`             | ✅     |                                                                                                                |
-| `datediff`            | ✅     |                                                                                                                |
-| `datepart`            | ✅     |                                                                                                                |
-| `day`                 | ✅     |                                                                                                                |
-| `dayname`             | 🔜     | #4544                                                                                                          |
-| `dayofmonth`          | ✅     |                                                                                                                |
-| `dayofweek`           | ✅     |                                                                                                                |
-| `dayofyear`           | ✅     |                                                                                                                |
-| `extract`             | ✅     |                                                                                                                |
-| `from_unixtime`       | ✅     |                                                                                                                |
-| `from_utc_timestamp`  | ⚠️     | Legacy zone forms (`GMT+1`, `PST`) throw a native parse error                                                  |
-| `hour`                | ✅     |                                                                                                                |
-| `last_day`            | ✅     |                                                                                                                |
-| `localtimestamp`      | ✅     |                                                                                                                |
-| `make_date`           | ✅     |                                                                                                                |
-| `make_dt_interval`    | 🔜     | #4541                                                                                                          |
-| `make_interval`       | ❓     |                                                                                                                |
-| `make_time`           | ❓     |                                                                                                                |
-| `make_timestamp`      | ✅     |                                                                                                                |
-| `make_timestamp_ltz`  | ⚠️     | 6-arg form runs via the codegen dispatcher; 2-arg `(date, time)` form (Spark 4.1 TIME type) falls back         |
-| `make_timestamp_ntz`  | ⚠️     | 6-arg form runs via the codegen dispatcher; 2-arg `(date, time)` form (Spark 4.1 TIME type) falls back         |
-| `make_ym_interval`    | 🔜     | #4541                                                                                                          |
-| `minute`              | ✅     |                                                                                                                |
-| `month`               | ✅     |                                                                                                                |
-| `monthname`           | 🔜     | #4544                                                                                                          |
-| `months_between`      | ✅     |                                                                                                                |
-| `next_day`            | ✅     |                                                                                                                |
-| `now`                 | ✅     | Constant-folded to a literal (alias of `current_timestamp`)                                                    |
-| `quarter`             | ✅     |                                                                                                                |
-| `second`              | ✅     |                                                                                                                |
-| `session_window`      | ❓     |                                                                                                                |
-| `time_diff`           | ❓     |                                                                                                                |
-| `time_trunc`          | ❓     |                                                                                                                |
-| `timestamp_micros`    | ✅     |                                                                                                                |
-| `timestamp_millis`    | ✅     |                                                                                                                |
-| `timestamp_seconds`   | ✅     |                                                                                                                |
-| `to_date`             | ✅     | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan                          |
-| `to_time`             | ❓     |                                                                                                                |
-| `to_timestamp`        | ✅     | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan                                |
-| `to_timestamp_ltz`    | ✅     | Rewrites to `to_timestamp` (`TimestampType`)                                                                   |
-| `to_timestamp_ntz`    | ✅     | Rewrites to `to_timestamp` (`TimestampNTZType`)                                                                |
-| `to_unix_timestamp`   | ✅     |                                                                                                                |
-| `to_utc_timestamp`    | ⚠️     | Legacy zone forms (`GMT+1`, `PST`) throw a native parse error                                                  |
-| `trunc`               | ✅     |                                                                                                                |
-| `try_make_interval`   | ❓     |                                                                                                                |
-| `try_make_timestamp`  | ❓     |                                                                                                                |
-| `try_to_date`         | ❓     |                                                                                                                |
-| `try_to_time`         | ❓     |                                                                                                                |
-| `try_to_timestamp`    | ❓     |                                                                                                                |
-| `unix_date`           | ✅     |                                                                                                                |
-| `unix_micros`         | ✅     |                                                                                                                |
-| `unix_millis`         | ✅     |                                                                                                                |
-| `unix_seconds`        | ✅     |                                                                                                                |
-| `unix_timestamp`      | ✅     |                                                                                                                |
-| `weekday`             | ✅     |                                                                                                                |
-| `weekofyear`          | ✅     |                                                                                                                |
-| `window`              | ❓     |                                                                                                                |
-| `window_time`         | ❓     |                                                                                                                |
-| `year`                | ✅     |                                                                                                                |
+| Function              | Status | Notes                                                                                                  |
+| --------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
+| `add_months`          | ✅     |                                                                                                        |
+| `convert_timezone`    | ✅     |                                                                                                        |
+| `curdate`             | ✅     | Constant-folded to a literal (alias of `current_date`)                                                 |
+| `current_date`        | ✅     | Constant-folded to a literal before Comet sees the plan                                                |
+| `current_time`        | 🔜     | Blocked on Spark 4.1 TIME type support (#4288)                                                         |
+| `current_timestamp`   | ✅     | Constant-folded to a literal before Comet sees the plan                                                |
+| `current_timezone`    | ✅     |                                                                                                        |
+| `date_add`            | ✅     |                                                                                                        |
+| `date_diff`           | ✅     |                                                                                                        |
+| `date_format`         | ✅     |                                                                                                        |
+| `date_from_unix_date` | ✅     |                                                                                                        |
+| `date_part`           | ✅     |                                                                                                        |
+| `date_sub`            | ✅     |                                                                                                        |
+| `date_trunc`          | ✅     |                                                                                                        |
+| `dateadd`             | ✅     |                                                                                                        |
+| `datediff`            | ✅     |                                                                                                        |
+| `datepart`            | ✅     |                                                                                                        |
+| `day`                 | ✅     |                                                                                                        |
+| `dayname`             | 🔜     | #4544                                                                                                  |
+| `dayofmonth`          | ✅     |                                                                                                        |
+| `dayofweek`           | ✅     |                                                                                                        |
+| `dayofyear`           | ✅     |                                                                                                        |
+| `extract`             | ✅     |                                                                                                        |
+| `from_unixtime`       | ✅     |                                                                                                        |
+| `from_utc_timestamp`  | ⚠️     | Legacy zone forms (`GMT+1`, `PST`) throw a native parse error                                          |
+| `hour`                | ✅     |                                                                                                        |
+| `last_day`            | ✅     |                                                                                                        |
+| `localtimestamp`      | ✅     |                                                                                                        |
+| `make_date`           | ✅     |                                                                                                        |
+| `make_dt_interval`    | 🔜     | #4541                                                                                                  |
+| `make_interval`       | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                     |
+| `make_time`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
+| `make_timestamp`      | ✅     |                                                                                                        |
+| `make_timestamp_ltz`  | ⚠️     | 6-arg form runs via the codegen dispatcher; 2-arg `(date, time)` form (Spark 4.1 TIME type) falls back |
+| `make_timestamp_ntz`  | ⚠️     | 6-arg form runs via the codegen dispatcher; 2-arg `(date, time)` form (Spark 4.1 TIME type) falls back |
+| `make_ym_interval`    | 🔜     | #4541                                                                                                  |
+| `minute`              | ✅     |                                                                                                        |
+| `month`               | ✅     |                                                                                                        |
+| `monthname`           | 🔜     | #4544                                                                                                  |
+| `months_between`      | ✅     |                                                                                                        |
+| `next_day`            | ✅     |                                                                                                        |
+| `now`                 | ✅     | Constant-folded to a literal (alias of `current_timestamp`)                                            |
+| `quarter`             | ✅     |                                                                                                        |
+| `second`              | ✅     |                                                                                                        |
+| `session_window`      | 🔜     | Time-window grouping; tracked by #4553                                                                 |
+| `time_diff`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
+| `time_trunc`          | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
+| `timestamp_micros`    | ✅     |                                                                                                        |
+| `timestamp_millis`    | ✅     |                                                                                                        |
+| `timestamp_seconds`   | ✅     |                                                                                                        |
+| `to_date`             | ✅     | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan                  |
+| `to_time`             | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
+| `to_timestamp`        | ✅     | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan                        |
+| `to_timestamp_ltz`    | ✅     | Rewrites to `to_timestamp` (`TimestampType`)                                                           |
+| `to_timestamp_ntz`    | ✅     | Rewrites to `to_timestamp` (`TimestampNTZType`)                                                        |
+| `to_unix_timestamp`   | ✅     |                                                                                                        |
+| `to_utc_timestamp`    | ⚠️     | Legacy zone forms (`GMT+1`, `PST`) throw a native parse error                                          |
+| `trunc`               | ✅     |                                                                                                        |
+| `try_make_interval`   | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                     |
+| `try_make_timestamp`  | 🔜     | Rewrites to `make_timestamp`; likely accelerated, pending test                                         |
+| `try_to_date`         | 🔜     | Rewrites to `Cast`/`GetTimestamp`; likely accelerated, pending test                                    |
+| `try_to_time`         | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
+| `try_to_timestamp`    | 🔜     | Rewrites to `Cast`/`GetTimestamp`; likely accelerated, pending test                                    |
+| `unix_date`           | ✅     |                                                                                                        |
+| `unix_micros`         | ✅     |                                                                                                        |
+| `unix_millis`         | ✅     |                                                                                                        |
+| `unix_seconds`        | ✅     |                                                                                                        |
+| `unix_timestamp`      | ✅     |                                                                                                        |
+| `weekday`             | ✅     |                                                                                                        |
+| `weekofyear`          | ✅     |                                                                                                        |
+| `window`              | 🔜     | Time-window grouping; tracked by #4553                                                                 |
+| `window_time`         | 🔜     | Time-window grouping; tracked by #4553                                                                 |
+| `year`                | ✅     |                                                                                                        |
 
 ---
 
@@ -682,6 +682,18 @@ fall back to Spark.
 🚫 **Out of scope.** `from_xml`, `to_xml`, `schema_of_xml`, and the `xpath*` family fall back to Spark. See [Scope policy](#scope-policy).
 
 ---
+
+## Beyond SQL functions
+
+Comet also accelerates a number of Catalyst expressions that have no Spark SQL function name and therefore do not appear in the tables above. These arise from the DataFrame API, from SQL syntax other than function calls, or from the query optimizer. They include:
+
+- **Operator and optimizer-injected expressions:** runtime bloom-filter join probes (`BloomFilterMightContain`, `BloomFilterAggregate`), optimized `IN` sets (`InSet`), scalar subqueries (`ScalarSubquery`), and floating-point normalization (`KnownFloatingPointNormalized`).
+- **Accessor expressions (subscript and field access, not functions):** struct field access (`col.field`), array element access (`arr[i]`), and map value access (`map[key]`).
+- **Internal decimal arithmetic:** `CheckOverflow`, `MakeDecimal`, and `UnscaledValue`, which the analyzer inserts around decimal operations.
+- **User-defined functions:** Scala UDFs registered through the DataFrame or SQL API.
+- **Structural expressions:** aliases, attribute references, literals, sort orders, and `CASE WHEN`.
+
+This list is illustrative, not exhaustive: the per-function tables are not the complete set of expressions Comet can accelerate.
 
 ## See also
 
