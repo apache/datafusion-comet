@@ -62,7 +62,7 @@ See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contribut
 
 Comet replaces Spark operators and expressions with implementations that consume and produce Apache Arrow
 batches. Most run as native Rust code on top of Apache DataFusion; some run as JVM code over Arrow batches.
-Either way the work stays in the Comet pipeline without falling back to Spark's row-based engine.
+Either way, query execution stays in the Comet pipeline without falling back to Spark's row-based engine.
 
 - **Parquet scans**: native Parquet reader integrated with Spark's query planner
 - **Apache Iceberg**: accelerated Parquet scans when reading Iceberg tables from Spark
