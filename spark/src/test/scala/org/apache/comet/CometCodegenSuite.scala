@@ -23,10 +23,14 @@ import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
+import org.apache.spark.sql.catalyst.expressions.{CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
+import org.apache.comet.vector.CometVector
 
 /**
  * End-to-end correctness for the Arrow-direct codegen dispatcher. Covers the scalar and complex
@@ -1019,6 +1023,98 @@ class CometCodegenSuite
         checkSparkAnswerAndOperator(sql("SELECT tagValues(m) FROM t"))
       }
     }
+  }
+
+  /**
+   * Compiles `expr` (no input columns), runs one batch through the kernel, and hands the row-0
+   * output to `read` via the production `CometVector` Arrow reader. Drives the dispatcher's
+   * output writer directly, without a full Comet query plan, so it can exercise native
+   * complex-output expressions the serde registry does not route through dispatch today. The
+   * vector is closed after `read` returns, so `read` must not retain it.
+   */
+  private def runKernelRow0[T](expr: Expression)(read: CometVector => T): T = {
+    val kernel = CometBatchKernelCodegen.compile(expr, IndexedSeq.empty).newInstance()
+    val field = CometBatchKernelCodegen.toFfiArrowField("out", expr.dataType, nullable = true)
+    val out = CometBatchKernelCodegen.allocateOutput(field, 1, 0)
+    try {
+      kernel.init(0)
+      kernel.process(Array.empty[ValueVector], out, 1)
+      out.setValueCount(1)
+      read(CometVector.getVector(out, null))
+    } finally {
+      out.close()
+    }
+  }
+
+  private def kernelMapIntString(expr: Expression): Map[Int, String] =
+    runKernelRow0(expr) { v =>
+      val map = v.getMap(0)
+      val keys = map.keyArray()
+      val values = map.valueArray()
+      (0 until map.numElements())
+        .map(i => keys.getInt(i) -> values.getUTF8String(i).toString)
+        .toMap
+    }
+
+  test("constant-folded map_concat output round-trips every key through the kernel (#4539)") {
+    // map_concat(map(1,'a',2,'b'), map(3,'c')) is all-literal, so Spark's optimizer constant-folds
+    // it to a Literal(MapType) holding an ArrayBasedMapData. The MapType output writer must marshal
+    // every entry into the Arrow MapVector; the reported bug corrupts the last key (3 -> 0).
+    def s(str: String): Literal = Literal(UTF8String.fromString(str), StringType)
+    val map1 =
+      CreateMap(Seq(Literal(1), s("a"), Literal(2), s("b")), useStringTypeWhenEmpty = false)
+    val map2 = CreateMap(Seq(Literal(3), s("c")), useStringTypeWhenEmpty = false)
+    val folded =
+      Literal.create(MapConcat(Seq(map1, map2)).eval(null), MapType(IntegerType, StringType))
+    assert(kernelMapIntString(folded) === Map(1 -> "a", 2 -> "b", 3 -> "c"))
+  }
+
+  test("constant-folded array output writes every element past the pre-sized child (#4539)") {
+    // A single-row array with far more elements than the list child's numRows-derived initial
+    // capacity. The element child is written at a cumulative index, so a bare `set` overflows the
+    // pre-sized buffer once the row's element count exceeds it; `setSafe` grows it. Sibling of the
+    // map_concat case for ArrayType.
+    val n = 16
+    val elems = (0 until n).map(i => Literal(i * 10, IntegerType))
+    val folded =
+      Literal.create(CreateArray(elems).eval(null), ArrayType(IntegerType, containsNull = false))
+
+    val got = runKernelRow0(folded) { v =>
+      val arr = v.getArray(0)
+      (0 until arr.numElements()).map(arr.getInt)
+    }
+    assert(got === (0 until n).map(_ * 10))
+  }
+
+  test(
+    "constant-folded Array<Struct<Int, String>> writes struct fields past the pre-sized child " +
+      "(#4539)") {
+    // The struct sits inside an array, so its fields inherit the array's cumulative index. The
+    // fixed-width Int field would overflow with a bare `set`; propagating `nested` into the struct
+    // branch makes it `setSafe`. Guards the struct-nested-in-collection path.
+    val n = 16
+    def structAt(i: Int): Expression =
+      CreateNamedStruct(
+        Seq(
+          Literal("a"),
+          Literal(i, IntegerType),
+          Literal("b"),
+          Literal(UTF8String.fromString(s"v$i"), StringType)))
+    val structType = new StructType()
+      .add("a", IntegerType, nullable = false)
+      .add("b", StringType, nullable = false)
+    val folded = Literal.create(
+      CreateArray((0 until n).map(structAt)).eval(null),
+      ArrayType(structType, containsNull = false))
+
+    val got = runKernelRow0(folded) { v =>
+      val arr = v.getArray(0)
+      (0 until arr.numElements()).map { i =>
+        val r = arr.getStruct(i, 2)
+        r.getInt(0) -> r.getUTF8String(1).toString
+      }
+    }
+    assert(got === (0 until n).map(i => i -> s"v$i"))
   }
 
   test("array_distinct on Array<Struct<Int, String>> retains element identity across hash set") {
