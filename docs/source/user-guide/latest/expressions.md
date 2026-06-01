@@ -77,8 +77,8 @@ The tables below list every Spark built-in expression with its current status.
 | collection_funcs | 3 / 5 | |
 | json_funcs | 1 / 7 | Core supported; remainder planned |
 | agg_funcs | 31 / 88 | Sketch aggregates out of scope |
-| generator_funcs | 0 / 7 | explode/posexplode via operator |
-| window_funcs | 0 / 9 | Run via CometWindowExec (operator) |
+| generator_funcs | 4 / 7 | explode/posexplode via operator |
+| window_funcs | 2 / 9 | Run via CometWindowExec (operator) |
 | lambda_funcs | 0 / 12 | Higher-order functions planned |
 | misc_funcs | 5 / 56 | Many niche/environment functions |
 | csv_funcs | 0 / 3 | Not yet evaluated |
@@ -127,7 +127,7 @@ The tables below list every Spark built-in expression with its current status.
 | `min` | ✅ | |
 | `min_by` | 🚧 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
 | `mode` | 🚧 | [#3970](https://github.com/apache/datafusion-comet/issues/3970) |
-| `percentile` | ⬜ | |
+| `percentile` | 🚧 | #4542 |
 | `percentile_approx` | 🚧 | [#3189](https://github.com/apache/datafusion-comet/issues/3189) |
 | `percentile_cont` | ⬜ | |
 | `percentile_disc` | ⬜ | |
@@ -181,7 +181,7 @@ The tables below list every Spark built-in expression with its current status.
 | `element_at` | ⚠️ | Only `ArrayType` input; `MapType` input falls back |
 | `flatten` | ⚠️ | Falls back for binary/struct/map child element types |
 | `get` | ✅ | |
-| `sequence` | ⬜ | |
+| `sequence` | 🚧 | #4538 |
 | `shuffle` | ⬜ | |
 | `slice` | ⬜ | |
 | `sort_array` | ⚠️ | Incompatible under strict floating-point; falls back for nested struct/null arrays |
@@ -226,7 +226,7 @@ The tables below list every Spark built-in expression with its current status.
 | `coalesce` | ✅ | |
 | `if` | ✅ | |
 | `ifnull` | ✅ | |
-| `nanvl` | ⬜ | |
+| `nanvl` | 🚧 | #4538 |
 | `nullif` | ✅ | |
 | `nullifzero` | ⬜ | |
 | `nvl` | ✅ | |
@@ -292,7 +292,7 @@ serde but effectively fall through to the same cast path at runtime.
 | `datediff` | ✅ | |
 | `datepart` | ✅ | |
 | `day` | ✅ | |
-| `dayname` | ⬜ | |
+| `dayname` | 🚧 | #4544 |
 | `dayofmonth` | ✅ | |
 | `dayofweek` | ✅ | |
 | `dayofyear` | ✅ | |
@@ -303,16 +303,16 @@ serde but effectively fall through to the same cast path at runtime.
 | `last_day` | ✅ | |
 | `localtimestamp` | ✅ | |
 | `make_date` | ✅ | |
-| `make_dt_interval` | ⬜ | |
+| `make_dt_interval` | 🚧 | #4541 |
 | `make_interval` | ⬜ | |
 | `make_time` | ⬜ | |
 | `make_timestamp` | ✅ | |
 | `make_timestamp_ltz` | ⬜ | |
 | `make_timestamp_ntz` | ⬜ | |
-| `make_ym_interval` | ⬜ | |
+| `make_ym_interval` | 🚧 | #4541 |
 | `minute` | ✅ | |
 | `month` | ✅ | |
-| `monthname` | ⬜ | |
+| `monthname` | 🚧 | #4544 |
 | `months_between` | ✅ | |
 | `next_day` | ✅ | |
 | `now` | ⬜ | |
@@ -453,11 +453,11 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `atan2` | ✅ | |
 | `atanh` | ✅ | |
 | `bin` | ✅ | |
-| `bround` | ⬜ | |
+| `bround` | 🚧 | #4538 |
 | `cbrt` | ✅ | |
 | `ceil` | ⚠️ | Two-arg `ceil(expr, scale)` form falls back |
 | `ceiling` | ✅ | |
-| `conv` | ⬜ | |
+| `conv` | 🚧 | #4538 |
 | `cos` | ✅ | |
 | `cosh` | ✅ | |
 | `cot` | ✅ | |
@@ -471,17 +471,17 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `floor` | ⚠️ | Two-arg `floor(expr, scale)` form falls back |
 | `greatest` | ✅ | |
 | `hex` | ✅ | |
-| `hypot` | ⬜ | |
+| `hypot` | 🚧 | #4538 |
 | `least` | ✅ | |
 | `ln` | ✅ | |
 | `log` | ✅ | |
 | `log10` | ✅ | |
-| `log1p` | ⬜ | |
+| `log1p` | 🚧 | #4538 |
 | `log2` | ✅ | |
 | `mod` | ✅ | |
 | `negative` | ✅ | |
 | `pi` | ✅ | |
-| `pmod` | ⬜ | |
+| `pmod` | 🚧 | #4538 |
 | `positive` | ✅ | |
 | `pow` | ✅ | |
 | `power` | ✅ | |
@@ -599,12 +599,12 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `concat_ws` | ✅ | |
 | `contains` | ✅ | |
 | `decode` | ✅ | |
-| `elt` | ⬜ | |
+| `elt` | 🚧 | #4538 |
 | `encode` | ⬜ | |
 | `endswith` | ✅ | |
-| `find_in_set` | ⬜ | |
-| `format_number` | ⬜ | |
-| `format_string` | ⬜ | |
+| `find_in_set` | 🚧 | #4538 |
+| `format_number` | 🚧 | #4538 |
+| `format_string` | 🚧 | #4538 |
 | `initcap` | ✅ | |
 | `instr` | ✅ | |
 | `is_valid_utf8` | ⬜ | |
@@ -612,8 +612,8 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `left` | ✅ | |
 | `len` | ✅ | |
 | `length` | ✅ | |
-| `levenshtein` | ⬜ | |
-| `locate` | ⬜ | |
+| `levenshtein` | 🚧 | #4538 |
+| `locate` | 🚧 | #4538 |
 | `lower` | ✅ | |
 | `lpad` | ✅ | |
 | `ltrim` | ✅ | |
@@ -621,9 +621,9 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `make_valid_utf8` | ⬜ | |
 | `mask` | ⬜ | |
 | `octet_length` | ✅ | |
-| `overlay` | ⬜ | |
-| `position` | ⬜ | |
-| `printf` | ⬜ | |
+| `overlay` | 🚧 | #4538 |
+| `position` | 🚧 | #4538 |
+| `printf` | 🚧 | #4538 |
 | `quote` | ⬜ | |
 | `regexp_count` | 🚧 | tracking #4098 |
 | `regexp_extract` | 🚧 | tracking #4098 |
@@ -637,7 +637,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `rpad` | ✅ | |
 | `rtrim` | ✅ | |
 | `sentences` | ⬜ | |
-| `soundex` | ⬜ | |
+| `soundex` | 🚧 | #4538 |
 | `space` | ✅ | |
 | `split` | ✅ | |
 | `split_part` | ⬜ | |
@@ -646,16 +646,16 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `substring` | ✅ | |
 | `substring_index` | ✅ | |
 | `to_binary` | ⬜ | |
-| `to_char` | ⬜ | |
-| `to_number` | ⬜ | |
-| `to_varchar` | ⬜ | |
+| `to_char` | 🚧 | #4538 |
+| `to_number` | 🚧 | #4538 |
+| `to_varchar` | 🚧 | #4538 |
 | `translate` | ✅ | |
 | `trim` | ✅ | |
 | `try_to_binary` | ⬜ | |
 | `try_to_number` | ⬜ | |
 | `try_validate_utf8` | ⬜ | |
 | `ucase` | ✅ | |
-| `unbase64` | ⬜ | |
+| `unbase64` | 🚧 | #4538 |
 | `upper` | ✅ | |
 | `validate_utf8` | ⬜ | |
 
