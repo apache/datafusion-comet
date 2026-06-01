@@ -56,6 +56,7 @@ are not on the roadmap:
 - **Avro / Protobuf codecs** (`from_avro`, `to_avro`, `from_protobuf`, `to_protobuf`, `schema_of_avro`): format conversion belongs at the IO layer, not expression evaluation.
 - **JVM reflection** (`java_method`, `reflect`): cannot run in native code.
 - **Cryptographic functions** (`aes_encrypt`, `aes_decrypt`): niche, with correctness and security risk for marginal benefit.
+- **CSV functions** (`from_csv`, `to_csv`, `schema_of_csv`): row-level CSV parsing and formatting in expressions is niche and better handled at the data source layer.
 
 Note that `approx_count_distinct`, `approx_percentile` / `percentile_approx`, `median`, and `mode`
 are *not* out of scope: although approximate, they are mainstream and are planned.
@@ -238,11 +239,7 @@ serde but effectively fall through to the same cast path at runtime.
 
 ## csv_funcs
 
-| Function | Status | Notes |
-| -------- | ------ | ----- |
-| `from_csv` | ❓ | |
-| `schema_of_csv` | ❓ | |
-| `to_csv` | ❓ | |
+🚫 **Out of scope.** `from_csv`, `to_csv`, and `schema_of_csv` fall back to Spark. See [Scope policy](#scope-policy).
 
 ---
 
@@ -254,7 +251,7 @@ serde but effectively fall through to the same cast path at runtime.
 | `convert_timezone` | ✅ | |
 | `curdate` | ✅ | Constant-folded to a literal (alias of `current_date`) |
 | `current_date` | ✅ | Constant-folded to a literal before Comet sees the plan |
-| `current_time` | ❓ | |
+| `current_time` | ❓ | Constant-folded to a literal, but of the Spark 4.1 `TIME` type, which Comet does not support, so it falls back |
 | `current_timestamp` | ✅ | Constant-folded to a literal before Comet sees the plan |
 | `current_timezone` | ✅ | |
 | `date_add` | ✅ | |
