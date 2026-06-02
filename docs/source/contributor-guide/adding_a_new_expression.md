@@ -27,6 +27,10 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](spark_expressions_support.md) to see which expressions are not yet supported.
 
+When you add or change an expression, update **both** the coverage checklist
+(`spark_expressions_support.md`) and the user-facing status in
+[Supported Spark Expressions](../user-guide/latest/expressions.md).
+
 ## Implementing the Expression
 
 Once you have the expression you'd like to add, you should take inventory of the following:
