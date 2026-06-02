@@ -16,8 +16,9 @@
 -- under the License.
 
 -- Tests for try_aes_decrypt, which returns NULL on invalid input instead of throwing.
--- Like aes_encrypt/aes_decrypt it falls back to Spark (StaticInvoke aesDecrypt is not a Comet
--- native expression). try_aes_decrypt was added in Spark 3.5, so this file is gated.
+-- try_aes_decrypt lowers to TryEval(StaticInvoke(aesDecrypt, ...)); Comet routes both the
+-- TryEval wrapper and the inner StaticInvoke through the JVM codegen dispatcher.
+-- try_aes_decrypt was added in Spark 3.5, so this file is gated.
 -- MinSparkVersion: 3.5
 
 statement
@@ -31,17 +32,17 @@ INSERT INTO test_aes_try VALUES
   (NULL, '1234567890abcdef')
 
 -- invalid ciphertext returns NULL instead of throwing
-query spark_answer_only
+query
 SELECT try_aes_decrypt(CAST('garbage' AS BINARY), key) FROM test_aes_try
 
 -- valid ciphertext decrypts correctly
-query spark_answer_only
+query
 SELECT CAST(try_aes_decrypt(aes_encrypt(data, key, 'ECB'), key, 'ECB') AS STRING) FROM test_aes_try
 
 -- literal invalid ciphertext
-query spark_answer_only
+query
 SELECT try_aes_decrypt(CAST('not_valid_ciphertext' AS BINARY), '1234567890abcdef')
 
 -- NULL data
-query spark_answer_only
+query
 SELECT try_aes_decrypt(NULL, '1234567890abcdef')

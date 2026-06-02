@@ -15,8 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Tests for aes_encrypt and aes_decrypt (available since Spark 3.3). Both fall back to Spark
--- because StaticInvoke (aesEncrypt/aesDecrypt) is not yet supported as a Comet native expression.
+-- Tests for aes_encrypt and aes_decrypt (available since Spark 3.3). They lower to a
+-- StaticInvoke of ExpressionImplUtils.aesEncrypt / aesDecrypt; Comet routes both methods
+-- through the JVM codegen dispatcher (no native lowering).
 -- try_aes_decrypt (Spark 3.5+) is covered in aes_try_decrypt.sql and AES-CBC (Spark 3.5+) in
 -- aes_cbc.sql, both gated with MinSparkVersion.
 
@@ -31,38 +32,38 @@ INSERT INTO test_aes VALUES
   (NULL, '1234567890abcdef')
 
 -- GCM round-trip (default mode, nondeterministic IV, test via round-trip)
-query spark_answer_only
+query
 SELECT CAST(aes_decrypt(aes_encrypt(data, key), key) AS STRING) FROM test_aes
 
 -- GCM round-trip with explicit mode
-query spark_answer_only
+query
 SELECT CAST(aes_decrypt(aes_encrypt(data, key, 'GCM'), key, 'GCM') AS STRING) FROM test_aes
 
 -- ECB round-trip (deterministic mode)
-query spark_answer_only
+query
 SELECT CAST(aes_decrypt(aes_encrypt(data, key, 'ECB'), key, 'ECB') AS STRING) FROM test_aes
 
 -- CBC mode is covered separately in aes_cbc.sql (Spark added AES-CBC in 3.5).
 
 -- ECB direct: output is deterministic so we can compare directly to Spark
-query spark_answer_only
+query
 SELECT aes_encrypt(data, key, 'ECB') FROM test_aes
 
 -- aes_decrypt on ECB-encrypted column
-query spark_answer_only
+query
 SELECT CAST(aes_decrypt(aes_encrypt(data, key, 'ECB'), key, 'ECB') AS STRING) FROM test_aes
 
 -- literal key and data (all literals, constant folding disabled in test suite)
-query spark_answer_only
+query
 SELECT CAST(aes_decrypt(aes_encrypt('hello', '1234567890abcdef', 'ECB'), '1234567890abcdef', 'ECB') AS STRING)
 
-query spark_answer_only
+query
 SELECT CAST(aes_decrypt(aes_encrypt(NULL, '1234567890abcdef', 'ECB'), '1234567890abcdef', 'ECB') AS STRING)
 
 -- 24-byte key
-query spark_answer_only
+query
 SELECT CAST(aes_decrypt(aes_encrypt(data, '1234567890abcdef12345678', 'ECB'), '1234567890abcdef12345678', 'ECB') AS STRING) FROM test_aes
 
 -- 32-byte key
-query spark_answer_only
+query
 SELECT CAST(aes_decrypt(aes_encrypt(data, '1234567890abcdef1234567890abcdef', 'ECB'), '1234567890abcdef1234567890abcdef', 'ECB') AS STRING) FROM test_aes

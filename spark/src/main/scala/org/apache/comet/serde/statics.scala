@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, UrlCodec}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, TryEval, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
@@ -38,7 +38,9 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
         "read_side_padding"),
       ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"),
       ("encode", UrlCodec.getClass) -> CometUrlEncodeStaticInvoke,
-      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke)
+      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke,
+      ("aesEncrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch,
+      ("aesDecrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch)
 
   override def convert(
       expr: StaticInvoke,
@@ -83,3 +85,21 @@ object CometUrlDecodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     optExprWithFallbackReason(optExpr, expr, expr.children: _*)
   }
 }
+
+/**
+ * Routes a [[StaticInvoke]] through the JVM codegen dispatcher. Spark's [[StaticInvoke]] has its
+ * own `doGenCode` that emits a typed call to the target Java method, so the dispatcher will
+ * compile that into the kernel and invoke the target method per row when
+ * [[org.apache.comet.CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] is enabled. Used for AES
+ * (`aes_encrypt`, `aes_decrypt`) where there is no native lowering.
+ */
+object CometStaticInvokeCodegenDispatch extends CometCodegenDispatch[StaticInvoke]
+
+/**
+ * Routes [[TryEval]] through the JVM codegen dispatcher. `TryEval` wraps its child in a try/catch
+ * in `doGenCode`, so dispatching the bound expression compiles the wrapped child into the kernel
+ * and yields NULL on any exception. Enables `try_aes_decrypt`, which lowers to
+ * `TryEval(StaticInvoke(aesDecrypt, ...))`, plus other `TryEval`-wrapped expressions
+ * (`try_to_binary`, `try_add` for non-numeric inputs, etc.).
+ */
+object CometTryEval extends CometCodegenDispatch[TryEval]

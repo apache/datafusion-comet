@@ -15,9 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- AES-CBC round-trip for aes_encrypt / aes_decrypt. Like the other AES modes these fall
--- back to Spark (StaticInvoke aesEncrypt/aesDecrypt is not a Comet native expression).
--- AES-CBC was added to Spark in 3.5 (SPARK-43042) and throws on 3.4, so this file is gated.
+-- AES-CBC round-trip for aes_encrypt / aes_decrypt. Comet routes the underlying StaticInvoke
+-- through the JVM codegen dispatcher. AES-CBC was added to Spark in 3.5 (SPARK-43042) and
+-- throws on 3.4, so this file is gated.
 -- MinSparkVersion: 3.5
 
 statement
@@ -31,5 +31,5 @@ INSERT INTO test_aes_cbc VALUES
   (NULL, '1234567890abcdef')
 
 -- CBC round-trip (nondeterministic IV, so compare via round-trip rather than raw ciphertext)
-query spark_answer_only
+query
 SELECT CAST(aes_decrypt(aes_encrypt(data, key, 'CBC'), key, 'CBC') AS STRING) FROM test_aes_cbc

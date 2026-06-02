@@ -284,6 +284,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[SortOrder] -> CometSortOrder,
     classOf[StaticInvoke] -> CometStaticInvoke,
+    classOf[TryEval] -> CometTryEval,
     classOf[UnscaledValue] -> CometUnscaledValue)
 
   /**
