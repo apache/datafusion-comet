@@ -32,6 +32,8 @@ import org.apache.comet.CometConf
 
 class CometCachedBatchSerializerSuite extends CometTestBase {
 
+  import testImplicits._
+
   // spark.sql.cache.serializer is a STATIC SQL config (cannot be set via withSQLConf at
   // runtime), so it must be set at session creation. This makes the whole suite use the Comet
   // cache serializer; the pure-unit tests construct a serializer directly and are unaffected.
@@ -273,9 +275,10 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
     spark.range(5000).selectExpr("id as k").createOrReplaceTempView("comet_cache_t8f")
     spark.catalog.cacheTable("comet_cache_t8f")
     try {
-      val df = spark.sql("SELECT k FROM comet_cache_t8f WHERE k >= 4990")
+      val df = spark.sql("SELECT k FROM comet_cache_t8f WHERE k >= 4990 ORDER BY k")
       checkSparkAnswer(df)
-      assert(df.count() == 10)
+      val actual = df.collect().map(_.getLong(0)).toSeq
+      assert(actual == (4990L until 5000L).toSeq)
     } finally {
       spark.catalog.uncacheTable("comet_cache_t8f")
     }
@@ -310,14 +313,25 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
   test("timestamp_ntz cached scan is correct") {
     // A Seq[LocalDateTime] maps to TimestampNTZType, which the Comet serializer supports.
     val data = (0 until 50).map(i => (i.toLong, LocalDateTime.of(2020, 1, 1, 0, 0, i % 60)))
-    import testImplicits._
     val df0 = data.toDF("id", "ts")
+    // Expected values from the uncached DataFrame (before caching).
+    val expected = df0
+      .where("id < 10")
+      .orderBy("id")
+      .collect()
+      .map(r => (r.getLong(0), r.getAs[java.time.LocalDateTime](1)))
+      .toSeq
     df0.createOrReplaceTempView("comet_cache_ntz")
     spark.catalog.cacheTable("comet_cache_ntz")
     try {
       val df = spark.sql("SELECT id, ts FROM comet_cache_ntz WHERE id < 10 ORDER BY id")
       checkSparkAnswer(df)
-      assert(df.count() == 10)
+      val actual = df
+        .collect()
+        .map(r => (r.getLong(0), r.getAs[java.time.LocalDateTime](1)))
+        .toSeq
+      assert(actual == expected)
+      assert(actual.size == 10)
     } finally {
       spark.catalog.uncacheTable("comet_cache_ntz")
     }
