@@ -547,10 +547,10 @@ expression class name, for example <code class="docutils literal notranslate"><s
 </thead>
 <tbody>
 <tr class="row-even"><td><p>✅ Supported</p></td>
-<td><p>Native or codegen path; compatible with Spark by default.</p></td>
+<td><p>Comet produces Spark-compatible results by default. Some inputs or forms may fall back to Spark, and any incompatible behavior is opt-in (off by default).</p></td>
 </tr>
-<tr class="row-odd"><td><p>⚠️ Supported (caveats)</p></td>
-<td><p>Works, but may diverge from Spark in some cases: incompatible, flag-gated (<code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code>), or restricted to certain types. See the <a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Compatibility Guide</span></a>.</p></td>
+<tr class="row-odd"><td><p>⚠️ Incorrect by default</p></td>
+<td><p>Comet runs natively by default but can return results that differ from Spark (a wrong value, or a native error on valid input). See the linked detail on each row.</p></td>
 </tr>
 <tr class="row-even"><td><p>🔜 Planned</p></td>
 <td><p>Intended; tracked by an open issue or pull request.</p></td>
@@ -607,8 +607,8 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>Array aggregate (related to <code class="docutils literal notranslate"><span class="pre">collect_list</span></code>, #2524)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">avg</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Interval types (YearMonth, DayTime) fall back</p></td>
+<td><p>✅</p></td>
+<td><p>Interval types fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bit_and</span></code></p></td>
 <td><p>✅</p></td>
@@ -842,48 +842,48 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_append</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>On Spark 4.0+ rewrites to <code class="docutils literal notranslate"><span class="pre">array_insert</span></code>; inherits its incompatibilities</p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_compact</span></code></p></td>
 <td><p>✅</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_contains</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>NaN-canonicalization may differ for float/double arrays (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4481">#4481</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>NaN/signed-zero handling may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_distinct</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>NaN/signed-zero canonicalization may differ (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4481">#4481</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>NaN/signed-zero handling may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_except</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Null handling and ordering may differ; <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>, flag-gated</p></td>
+<td><p>✅</p></td>
+<td><p>Incompatible; falls back by default (<a class="reference internal" href="compatibility/expressions/array.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_insert</span></code></p></td>
 <td><p>✅</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_intersect</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Result element order may differ when right array is longer than left</p></td>
+<td><p>✅</p></td>
+<td><p>Incompatible; falls back by default (<a class="reference internal" href="compatibility/expressions/array.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_join</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Null handling may differ (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3178">#3178</a>); <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>, flag-gated</p></td>
+<td><p>✅</p></td>
+<td><p>Incompatible; falls back by default (<a class="reference internal" href="compatibility/expressions/array.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_max</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>NaN ordering may differ for float/double (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4482">#4482</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>NaN ordering may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_min</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>NaN ordering may differ for float/double (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4482">#4482</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>NaN ordering may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_position</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Falls back for binary/struct/map/null element types</p></td>
+<td><p>✅</p></td>
+<td><p>Binary/struct/map/null elements fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_prepend</span></code></p></td>
 <td><p>🔜</p></td>
@@ -898,8 +898,8 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_union</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>NaN/signed-zero canonicalization may differ (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4481">#4481</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>NaN/signed-zero handling may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">arrays_overlap</span></code></p></td>
 <td><p>✅</p></td>
@@ -910,12 +910,12 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">element_at</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Only <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> input; <code class="docutils literal notranslate"><span class="pre">MapType</span></code> input falls back</p></td>
+<td><p>✅</p></td>
+<td><p>MapType input falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">flatten</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Falls back for binary/struct/map child element types</p></td>
+<td><p>✅</p></td>
+<td><p>Binary/struct/map elements fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">get</span></code></p></td>
 <td><p>✅</p></td>
@@ -934,8 +934,8 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>Native (#4149)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sort_array</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Incompatible under strict floating-point; falls back for nested struct/null arrays</p></td>
+<td><p>✅</p></td>
+<td><p>Nested struct/null arrays fall back</p></td>
 </tr>
 </tbody>
 </table>
@@ -1017,23 +1017,23 @@ expressions. The following function families are <strong>not currently planned</
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_size</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">size</span></code>; accelerated, but returns -1 instead of NULL for NULL input (#4560)</p></td>
+<td><p>Returns -1 instead of NULL for NULL input (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4560">#4560</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cardinality</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Alias for <code class="docutils literal notranslate"><span class="pre">size</span></code>; <code class="docutils literal notranslate"><span class="pre">MapType</span></code> input falls back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4472">#4472</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>MapType input falls back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">concat</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Only <code class="docutils literal notranslate"><span class="pre">StringType</span></code> children; <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code>/<code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> fall back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4471">#4471</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>Binary/array children fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reverse</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Array with <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> elements is <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>, flag-gated (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2763">#2763</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>Binary-element arrays fall back (Incompatible) (<a class="reference internal" href="compatibility/expressions/array.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">size</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">MapType</span></code> input falls back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4472">#4472</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>MapType input falls back</p></td>
 </tr>
 </tbody>
 </table>
@@ -1107,8 +1107,8 @@ expressions. The following function families are <strong>not currently planned</
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cast</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Many type pairs supported; float-to-decimal rounding may differ; see <a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Compatibility Guide</span></a></p></td>
+<td><p>✅</p></td>
+<td><p>Some casts fall back; float-to-decimal is opt-in (<a class="reference internal" href="compatibility/expressions/cast.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -1222,8 +1222,8 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">from_utc_timestamp</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Legacy zone forms (<code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">PST</span></code>) throw a native parse error</p></td>
+<td><p>✅</p></td>
+<td><p>Legacy zone forms fall back (Incompatible) (<a class="reference internal" href="compatibility/expressions/datetime.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hour</span></code></p></td>
 <td><p>✅</p></td>
@@ -1258,12 +1258,12 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_timestamp_ltz</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>6-arg form runs via the codegen dispatcher; 2-arg <code class="docutils literal notranslate"><span class="pre">(date,</span> <span class="pre">time)</span></code> form (Spark 4.1 TIME type) falls back</p></td>
+<td><p>✅</p></td>
+<td><p>2-arg TIME form falls back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_timestamp_ntz</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>6-arg form runs via the codegen dispatcher; 2-arg <code class="docutils literal notranslate"><span class="pre">(date,</span> <span class="pre">time)</span></code> form (Spark 4.1 TIME type) falls back</p></td>
+<td><p>✅</p></td>
+<td><p>2-arg TIME form falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_ym_interval</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1350,8 +1350,8 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_utc_timestamp</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Legacy zone forms (<code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">PST</span></code>) throw a native parse error</p></td>
+<td><p>✅</p></td>
+<td><p>Legacy zone forms fall back (Incompatible) (<a class="reference internal" href="compatibility/expressions/datetime.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
 <td><p>✅</p></td>
@@ -1363,7 +1363,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_timestamp</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>Runs natively for valid inputs, but returns wrong values for invalid inputs instead of NULL (#4554)</p></td>
+<td><p>Returns a wrong value instead of NULL for invalid inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4554">#4554</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_date</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1440,8 +1440,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explode_outer</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">outer=true</span></code> incompatible; needs <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>outer=true falls back (Incompatible) (<a class="reference internal" href="../../contributor-guide/expression-audits/generator_funcs.html#explode-outer"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">inline</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1456,8 +1456,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">posexplode_outer</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">outer=true</span></code> incompatible; needs <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>outer=true falls back (Incompatible) (<a class="reference internal" href="../../contributor-guide/expression-audits/generator_funcs.html#posexplode-outer"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stack</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1522,12 +1522,12 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">from_json</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Partial native support (requires explicit schema, marked <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>); fuller support via codegen dispatch (#4305)</p></td>
+<td><p>✅</p></td>
+<td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#from-json"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">get_json_object</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Single-quoted JSON and unescaped control chars require <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Some inputs need allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#get-json-object"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">json_array_length</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1546,8 +1546,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3163">#3163</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_json</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Partial native support (options and map/array inputs fall back); fuller support via codegen dispatch (#4305)</p></td>
+<td><p>✅</p></td>
+<td><p>Options and map/array inputs fall back (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#to-json"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -1629,8 +1629,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">element_at</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Only <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> input; <code class="docutils literal notranslate"><span class="pre">MapType</span></code> input falls back</p></td>
+<td><p>✅</p></td>
+<td><p>MapType input falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1653,8 +1653,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> key/value falls back unless <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>BinaryType key/value falls back (Incompatible) (<a class="reference internal" href="compatibility/expressions/map.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map_keys</span></code></p></td>
 <td><p>✅</p></td>
@@ -1688,11 +1688,11 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">try_mod</span></code> form (<code class="docutils literal notranslate"><span class="pre">EvalMode.TRY</span></code>) falls back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4484">#4484</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>try_mod (TRY mode) falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">*</span></code></p></td>
-<td><p>⚠️</p></td>
+<td><p>✅</p></td>
 <td><p>Interval multiplication falls back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">+</span></code></p></td>
@@ -1708,8 +1708,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">abs</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Interval types fall back; ANSI overflow for integer min value</p></td>
+<td><p>✅</p></td>
+<td><p>Interval types fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">acos</span></code></p></td>
 <td><p>✅</p></td>
@@ -1752,8 +1752,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ceil</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Two-arg <code class="docutils literal notranslate"><span class="pre">ceil(expr,</span> <span class="pre">scale)</span></code> form falls back</p></td>
+<td><p>✅</p></td>
+<td><p>Two-arg form falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ceiling</span></code></p></td>
 <td><p>✅</p></td>
@@ -1804,8 +1804,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">floor</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Two-arg <code class="docutils literal notranslate"><span class="pre">floor(expr,</span> <span class="pre">scale)</span></code> form falls back</p></td>
+<td><p>✅</p></td>
+<td><p>Two-arg form falls back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">greatest</span></code></p></td>
 <td><p>✅</p></td>
@@ -1896,8 +1896,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">round</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Float/Double inputs always fall back; integer/decimal HALF_UP supported</p></td>
+<td><p>✅</p></td>
+<td><p>Float/double inputs fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sec</span></code></p></td>
 <td><p>✅</p></td>
@@ -1936,8 +1936,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_add</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Datetime/interval form falls back; numeric form supported</p></td>
+<td><p>✅</p></td>
+<td><p>Datetime/interval form falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_divide</span></code></p></td>
 <td><p>✅</p></td>
@@ -1964,8 +1964,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p>Constant-folded; literal arguments only (Spark 4.0+)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">width_bucket</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Wired via shim, bypasses support-level framework (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4485">#4485</a>)</p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 </tbody>
 </table>
@@ -2174,16 +2174,16 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Alias for <code class="docutils literal notranslate"><span class="pre">rlike</span></code>; uses Rust <code class="docutils literal notranslate"><span class="pre">regex</span></code> crate, requires <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_like</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Alias for <code class="docutils literal notranslate"><span class="pre">rlike</span></code>; uses Rust <code class="docutils literal notranslate"><span class="pre">regex</span></code> crate, requires <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rlike</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Uses Rust <code class="docutils literal notranslate"><span class="pre">regex</span></code> crate; requires <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code>; results may differ from Java <code class="docutils literal notranslate"><span class="pre">Pattern</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -2421,8 +2421,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_binary</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Only the hex format is accelerated (lowers to <code class="docutils literal notranslate"><span class="pre">unhex</span></code>); UTF-8/base64 fall back</p></td>
+<td><p>✅</p></td>
+<td><p>Hex form accelerated; other formats fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_char</span></code></p></td>
 <td><p>🔜</p></td>
@@ -2480,8 +2480,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">named_struct</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Duplicate field names fall back to Spark</p></td>
+<td><p>✅</p></td>
+<td><p>Duplicate field names fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">struct</span></code></p></td>
 <td><p>✅</p></td>
@@ -2596,7 +2596,7 @@ fall back to Spark.</p>
 <h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Comet Compatibility Guide</span></a> - known incompatibilities and edge cases for ⚠️ expressions.</p></li>
-<li><p><a class="reference internal" href="../../contributor-guide/spark_expressions_support.html"><span class="std std-doc">Spark Expressions Support (contributor guide)</span></a> - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for each expression.</p></li>
+<li><p><a class="reference internal" href="../../contributor-guide/expression-audits/index.html"><span class="std std-doc">Expression Audits (contributor guide)</span></a> - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for audited expressions.</p></li>
 </ul>
 </section>
 </section>

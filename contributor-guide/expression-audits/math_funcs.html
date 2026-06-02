@@ -1,0 +1,988 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>math_funcs Expression Audits &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/expression-audits/math_funcs';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="misc_funcs Expression Audits" href="misc_funcs.html" />
+    <link rel="prev" title="map_funcs Expression Audits" href="map_funcs.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/versioning_policy.html">
+    Versioning Policy
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/versioning_policy.html">
+    Versioning Policy
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+  
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../contributing.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../development.html">Development Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Architecture</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../plugin_overview.html">Comet Plugin Architecture</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../ffi.html">Arrow FFI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../sql_error_propagation.html">ANSI Error Propagation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../s3-credential-provider-design.html">S3 Credential Provider Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Adding Functionality</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../adding_a_new_spark_version.html">Adding a New Spark Version</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../sql-file-tests.html">Comet SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Debugging and Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../debugging.html">Debugging Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../benchmarking.html">Benchmarking Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../benchmark-results/tpc-h.html">Apache DataFusion Comet: Benchmarks Derived From TPC-H</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../benchmark-results/tpc-ds.html">Apache DataFusion Comet: Benchmarks Derived From TPC-DS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../benchmarking_macos.html">Comet Benchmarking on macOS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../benchmarking_aws_ec2.html">Comet Benchmarking in EC2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../profiling.html">Profiling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tracing.html">Tracing</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">Expression Audits</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="agg_funcs.html">agg_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="array_funcs.html">array_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bitwise_funcs.html">bitwise_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="collection_funcs.html">collection_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="conditional_funcs.html">conditional_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="conversion_funcs.html">conversion_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime_funcs.html">datetime_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="generator_funcs.html">generator_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="hash_funcs.html">hash_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="json_funcs.html">json_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="map_funcs.html">map_funcs</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">math_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc_funcs.html">misc_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="predicate_funcs.html">predicate_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="struct_funcs.html">struct_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="url_funcs.html">url_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="window_funcs.html">window_funcs</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../spark_configs_support.html">Supported Spark Configurations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../release_process.html">Release Process</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../roadmap.html">Roadmap</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Expression Audits</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">math_funcs Expression Audits</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="math-funcs-expression-audits">
+<h1>math_funcs Expression Audits<a class="headerlink" href="#math-funcs-expression-audits" title="Link to this heading">#</a></h1>
+<blockquote>
+<div><p>Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide <a class="reference internal" href="../../user-guide/latest/expressions.html"><span class="std std-doc">Spark Expression Support</span></a> for current support status.</p>
+</div></blockquote>
+<section id="id1">
+<h2><code class="docutils literal notranslate"><span class="pre">%</span></code><a class="headerlink" href="#id1" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Remainder(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code> signature identical across versions. Native path uses Rust <code class="docutils literal notranslate"><span class="pre">spark_modulo</span></code> UDF; non-ANSI returns NULL on divide-by-zero, ANSI raises <code class="docutils literal notranslate"><span class="pre">DIVIDE_BY_ZERO</span></code> / <code class="docutils literal notranslate"><span class="pre">REMAINDER_BY_ZERO</span></code>. <code class="docutils literal notranslate"><span class="pre">CometRemainder</span></code> rejects <code class="docutils literal notranslate"><span class="pre">EvalMode.TRY</span></code>, so <code class="docutils literal notranslate"><span class="pre">try_mod</span></code> (Spark 4.0+) falls back to Spark (https://github.com/apache/datafusion-comet/issues/4484).</p></li>
+</ul>
+</section>
+<section id="id2">
+<h2><code class="docutils literal notranslate"><span class="pre">*</span></code><a class="headerlink" href="#id2" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Multiply(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code> signature identical. Decimal results exceeding <code class="docutils literal notranslate"><span class="pre">DECIMAL128_MAX_PRECISION</span></code> go through <code class="docutils literal notranslate"><span class="pre">WideDecimalBinaryExpr</span></code> (Decimal256 intermediate); smaller decimals and primitives use DataFusion <code class="docutils literal notranslate"><span class="pre">BinaryExpr</span></code>. ANSI integer overflow uses Rust <code class="docutils literal notranslate"><span class="pre">checked_mul</span></code>. Interval multiplication falls back.</p></li>
+</ul>
+</section>
+<section id="id3">
+<h2><code class="docutils literal notranslate"><span class="pre">+</span></code><a class="headerlink" href="#id3" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Add(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code> with the same Decimal / ANSI plumbing as <code class="docutils literal notranslate"><span class="pre">*</span></code>. <code class="docutils literal notranslate"><span class="pre">Date</span> <span class="pre">+</span> <span class="pre">Int8/16/32</span></code> dispatches to the Rust <code class="docutils literal notranslate"><span class="pre">date_add</span></code> UDF to work around DataFusion’s Date32 + Interval-only kernel.</p></li>
+</ul>
+</section>
+<section id="id4">
+<h2><code class="docutils literal notranslate"><span class="pre">-</span></code><a class="headerlink" href="#id4" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Subtract(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code> mirrors <code class="docutils literal notranslate"><span class="pre">+</span></code>. <code class="docutils literal notranslate"><span class="pre">Date</span> <span class="pre">-</span> <span class="pre">Int8/16/32</span></code> uses the Rust <code class="docutils literal notranslate"><span class="pre">date_sub</span></code> UDF.</p></li>
+</ul>
+</section>
+<section id="id5">
+<h2><code class="docutils literal notranslate"><span class="pre">/</span></code><a class="headerlink" href="#id5" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Divide(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code>. Non-ANSI mode wraps the divisor in <code class="docutils literal notranslate"><span class="pre">If(EqualTo(right,</span> <span class="pre">0),</span> <span class="pre">null,</span> <span class="pre">right)</span></code> so DataFusion never throws. Decimal output is wrapped in <code class="docutils literal notranslate"><span class="pre">CheckOverflow(failOnError</span> <span class="pre">=</span> <span class="pre">ANSI)</span></code>; ANSI surfaces <code class="docutils literal notranslate"><span class="pre">NUMERIC_VALUE_OUT_OF_RANGE</span></code>, non-ANSI returns NULL.</p></li>
+</ul>
+</section>
+<section id="abs">
+<h2>abs<a class="headerlink" href="#abs" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Abs(child,</span> <span class="pre">failOnError)</span></code> over <code class="docutils literal notranslate"><span class="pre">NumericType</span></code> plus the two interval types. <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> (ANSI) is propagated to the native <code class="docutils literal notranslate"><span class="pre">abs</span></code> UDF, which throws <code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> on <code class="docutils literal notranslate"><span class="pre">Int.MinValue</span></code> / <code class="docutils literal notranslate"><span class="pre">Long.MinValue</span></code> / Decimal MIN. <code class="docutils literal notranslate"><span class="pre">DayTimeIntervalType</span></code> and <code class="docutils literal notranslate"><span class="pre">YearMonthIntervalType</span></code> fall back to Spark. Spark 4.0 / 4.1 do the <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor; behaviour unchanged.</p></li>
+</ul>
+</section>
+<section id="acos">
+<h2>acos<a class="headerlink" href="#acos" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.acos,</span> <span class="pre">&quot;ACOS&quot;)</span></code> unchanged across versions; wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;acos&quot;)</span></code> to DataFusion’s <code class="docutils literal notranslate"><span class="pre">acos</span></code> UDF. NaN for <code class="docutils literal notranslate"><span class="pre">|x|</span> <span class="pre">&gt;</span> <span class="pre">1</span></code>.</p></li>
+</ul>
+</section>
+<section id="acosh">
+<h2>acosh<a class="headerlink" href="#acosh" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">StrictMath.log(x</span> <span class="pre">+</span> <span class="pre">sqrt(x*x</span> <span class="pre">-</span> <span class="pre">1))</span></code> unchanged across versions. NaN for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;</span> <span class="pre">1</span></code>. Routes to DataFusion’s <code class="docutils literal notranslate"><span class="pre">acosh</span></code>.</p></li>
+</ul>
+</section>
+<section id="asin">
+<h2>asin<a class="headerlink" href="#asin" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.asin,</span> <span class="pre">&quot;ASIN&quot;)</span></code> unchanged. NaN for <code class="docutils literal notranslate"><span class="pre">|x|</span> <span class="pre">&gt;</span> <span class="pre">1</span></code>.</p></li>
+</ul>
+</section>
+<section id="asinh">
+<h2>asinh<a class="headerlink" href="#asinh" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): special-cases <code class="docutils literal notranslate"><span class="pre">Double.NegativeInfinity</span></code> to avoid <code class="docutils literal notranslate"><span class="pre">log(NaN)</span></code>, otherwise <code class="docutils literal notranslate"><span class="pre">StrictMath.log(x</span> <span class="pre">+</span> <span class="pre">sqrt(x*x</span> <span class="pre">+</span> <span class="pre">1))</span></code>. Identical across versions.</p></li>
+</ul>
+</section>
+<section id="atan">
+<h2>atan<a class="headerlink" href="#atan" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.atan,</span> <span class="pre">&quot;ATAN&quot;)</span></code> unchanged.</p></li>
+</ul>
+</section>
+<section id="atan2">
+<h2>atan2<a class="headerlink" href="#atan2" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">BinaryMathExpression(math.atan2,</span> <span class="pre">&quot;ATAN2&quot;)</span></code> with both inputs adjusted by <code class="docutils literal notranslate"><span class="pre">+0.0</span></code> to flip <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> to <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>. <code class="docutils literal notranslate"><span class="pre">CometAtan2</span></code> reproduces this by wrapping each child in <code class="docutils literal notranslate"><span class="pre">Add(child,</span> <span class="pre">Literal.default(child.dataType))</span></code> before dispatching to DataFusion’s <code class="docutils literal notranslate"><span class="pre">atan2</span></code>.</p></li>
+</ul>
+</section>
+<section id="atanh">
+<h2>atanh<a class="headerlink" href="#atanh" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">0.5</span> <span class="pre">*</span> <span class="pre">(log1p(x)</span> <span class="pre">-</span> <span class="pre">log1p(-x))</span></code> (SPARK-28519). NaN for <code class="docutils literal notranslate"><span class="pre">|x|</span> <span class="pre">&gt;</span> <span class="pre">1</span></code>, +/-Infinity for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">=</span> <span class="pre">+/-1</span></code>.</p></li>
+</ul>
+</section>
+<section id="bin">
+<h2>bin<a class="headerlink" href="#bin" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Bin(child)</span></code> over <code class="docutils literal notranslate"><span class="pre">LongType</span> <span class="pre">-&gt;</span> <span class="pre">StringType</span></code>. Spark 4.x gains <code class="docutils literal notranslate"><span class="pre">DefaultStringProducingExpression</span></code> and the <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor; no behaviour change. Routes to datafusion-spark <code class="docutils literal notranslate"><span class="pre">SparkBin</span></code>.</p></li>
+</ul>
+</section>
+<section id="cbrt">
+<h2>cbrt<a class="headerlink" href="#cbrt" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): passthrough to DataFusion <code class="docutils literal notranslate"><span class="pre">cbrt</span></code>.</p></li>
+</ul>
+</section>
+<section id="ceil">
+<h2>ceil<a class="headerlink" href="#ceil" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): one-arg <code class="docutils literal notranslate"><span class="pre">ceil(expr)</span></code> supported (<code class="docutils literal notranslate"><span class="pre">LongType</span></code> / <code class="docutils literal notranslate"><span class="pre">DoubleType</span></code> / <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> with scale &gt;= 0). Decimal with negative scale falls back at convert time. The two-arg <code class="docutils literal notranslate"><span class="pre">ceil(expr,</span> <span class="pre">scale)</span></code> form (<code class="docutils literal notranslate"><span class="pre">RoundCeil</span></code>) is not wired and falls back to Spark.</p></li>
+</ul>
+</section>
+<section id="ceiling">
+<h2>ceiling<a class="headerlink" href="#ceiling" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Ceil</span></code>. Same support as <code class="docutils literal notranslate"><span class="pre">ceil</span></code>.</p></li>
+</ul>
+</section>
+<section id="cos">
+<h2>cos<a class="headerlink" href="#cos" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.cos,</span> <span class="pre">&quot;COS&quot;)</span></code> unchanged across versions.</p></li>
+</ul>
+</section>
+<section id="cosh">
+<h2>cosh<a class="headerlink" href="#cosh" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.cosh,</span> <span class="pre">&quot;COSH&quot;)</span></code> unchanged.</p></li>
+</ul>
+</section>
+<section id="cot">
+<h2>cot<a class="headerlink" href="#cot" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">/</span> <span class="pre">math.tan(x)</span></code>. DataFusion’s <code class="docutils literal notranslate"><span class="pre">cot</span></code> is also <code class="docutils literal notranslate"><span class="pre">1.0</span> <span class="pre">/</span> <span class="pre">tan(x)</span></code>, so the result matches.</p></li>
+</ul>
+</section>
+<section id="csc">
+<h2>csc<a class="headerlink" href="#csc" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">/</span> <span class="pre">math.sin(x)</span></code>. Routed to datafusion-spark’s <code class="docutils literal notranslate"><span class="pre">SparkCsc</span></code> (registered in <code class="docutils literal notranslate"><span class="pre">jni_api.rs</span></code>).</p></li>
+</ul>
+</section>
+<section id="degrees">
+<h2>degrees<a class="headerlink" href="#degrees" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.toDegrees,</span> <span class="pre">&quot;DEGREES&quot;)</span></code> unchanged across versions.</p></li>
+</ul>
+</section>
+<section id="div">
+<h2>div<a class="headerlink" href="#div" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">IntegralDivide(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code>. Non-decimal operands are cast to <code class="docutils literal notranslate"><span class="pre">DecimalType(19,</span> <span class="pre">0)</span></code>; result is recomputed per <code class="docutils literal notranslate"><span class="pre">IntegralDivide.resultDecimalType</span></code>, wrapped in <code class="docutils literal notranslate"><span class="pre">CheckOverflow</span></code>, then cast to <code class="docutils literal notranslate"><span class="pre">Long</span></code>. ANSI overflow for <code class="docutils literal notranslate"><span class="pre">Long.MinValue</span> <span class="pre">div</span> <span class="pre">-1</span></code> and decimal-overflow ANSI cases are covered by existing tests.</p></li>
+</ul>
+</section>
+<section id="e">
+<h2>e<a class="headerlink" href="#e" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Foldable; rewritten to a literal by ConstantFolding (like <code class="docutils literal notranslate"><span class="pre">pi</span></code>).</p></li>
+</ul>
+</section>
+<section id="exp">
+<h2>exp<a class="headerlink" href="#exp" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(StrictMath.exp,</span> <span class="pre">&quot;EXP&quot;)</span></code> unchanged. ULP-level differences vs DataFusion <code class="docutils literal notranslate"><span class="pre">exp</span></code> are possible but unflagged.</p></li>
+</ul>
+</section>
+<section id="expm1">
+<h2>expm1<a class="headerlink" href="#expm1" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(StrictMath.expm1,</span> <span class="pre">&quot;EXPM1&quot;)</span></code> unchanged.</p></li>
+</ul>
+</section>
+<section id="factorial">
+<h2>factorial<a class="headerlink" href="#factorial" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>3.4.3 (audited 2026-05-15): identical to v3.5.8.</p></li>
+<li><p>3.5.8 (audited 2026-05-15): canonical reference; <code class="docutils literal notranslate"><span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ImplicitCastInputTypes</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span></code>. Returns NULL for NULL input or values outside <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">20]</span></code>.</p></li>
+<li><p>4.0.1 (audited 2026-05-15): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> trait replaced by <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> method override; behavior unchanged.</p></li>
+<li><p>4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="floor">
+<h2>floor<a class="headerlink" href="#floor" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): mirror of <code class="docutils literal notranslate"><span class="pre">ceil</span></code>. Two-arg <code class="docutils literal notranslate"><span class="pre">floor(expr,</span> <span class="pre">scale)</span></code> form (<code class="docutils literal notranslate"><span class="pre">RoundFloor</span></code>) falls back to Spark.</p></li>
+</ul>
+</section>
+<section id="greatest">
+<h2>greatest<a class="headerlink" href="#greatest" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): NULL-skipping variadic. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;greatest&quot;)</span></code> to DataFusion’s <code class="docutils literal notranslate"><span class="pre">GreatestFunc</span></code>. Comet does not gate input types, so interval inputs and other Spark-only orderings rely on the native UDF accepting them; no explicit fallback path.</p></li>
+</ul>
+</section>
+<section id="hex">
+<h2>hex<a class="headerlink" href="#hex" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): accepts <code class="docutils literal notranslate"><span class="pre">LongType</span></code> / <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> / <code class="docutils literal notranslate"><span class="pre">StringType</span></code>. Spark 4.x widens <code class="docutils literal notranslate"><span class="pre">StringType</span></code> to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code> and preserves collation in <code class="docutils literal notranslate"><span class="pre">dataType</span></code>; <code class="docutils literal notranslate"><span class="pre">CometHex</span></code> passes <code class="docutils literal notranslate"><span class="pre">expr.dataType</span></code> to native <code class="docutils literal notranslate"><span class="pre">SparkHex</span></code>, which always returns <code class="docutils literal notranslate"><span class="pre">Utf8</span></code> – collation propagation may diverge on Spark 4.x.</p></li>
+</ul>
+</section>
+<section id="least">
+<h2>least<a class="headerlink" href="#least" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): mirror of <code class="docutils literal notranslate"><span class="pre">greatest</span></code>; same caveats. Spark 4.1.1 adds <code class="docutils literal notranslate"><span class="pre">contextIndependentFoldable</span></code> (no Comet impact).</p></li>
+</ul>
+</section>
+<section id="ln">
+<h2>ln<a class="headerlink" href="#ln" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Log</span></code>. Comet wires through <code class="docutils literal notranslate"><span class="pre">CometLog</span></code> to DataFusion <code class="docutils literal notranslate"><span class="pre">ln</span></code> with a <code class="docutils literal notranslate"><span class="pre">nullIfNegative</span></code> rewrite to match Spark’s NULL behaviour for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code>.</p></li>
+</ul>
+</section>
+<section id="log">
+<h2>log<a class="headerlink" href="#log" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): one-arg <code class="docutils literal notranslate"><span class="pre">log(x)</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">CometLog</span></code> (DataFusion <code class="docutils literal notranslate"><span class="pre">ln</span></code>); two-arg <code class="docutils literal notranslate"><span class="pre">log(base,</span> <span class="pre">x)</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">CometLogarithm</span></code> (custom <code class="docutils literal notranslate"><span class="pre">spark_log</span></code> UDF, returns NULL when <code class="docutils literal notranslate"><span class="pre">base</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code> or <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code> to match <code class="docutils literal notranslate"><span class="pre">Logarithm.nullSafeEval</span></code>).</p></li>
+</ul>
+</section>
+<section id="log10">
+<h2>log10<a class="headerlink" href="#log10" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryLogExpression(StrictMath.log10,</span> <span class="pre">&quot;LOG10&quot;)</span></code>; returns NULL for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code>. Possible ULP differences from <code class="docutils literal notranslate"><span class="pre">StrictMath</span></code>.</p></li>
+</ul>
+</section>
+<section id="log2">
+<h2>log2<a class="headerlink" href="#log2" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryLogExpression(StrictMath.log(x)</span> <span class="pre">/</span> <span class="pre">StrictMath.log(2),</span> <span class="pre">&quot;LOG2&quot;)</span></code>; returns NULL for <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code>.</p></li>
+</ul>
+</section>
+<section id="mod">
+<h2>mod<a class="headerlink" href="#mod" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Remainder</span></code>. Same support as <code class="docutils literal notranslate"><span class="pre">%</span></code>.</p></li>
+</ul>
+</section>
+<section id="negative">
+<h2>negative<a class="headerlink" href="#negative" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMinus(child,</span> <span class="pre">failOnError)</span></code> -&gt; Rust <code class="docutils literal notranslate"><span class="pre">NegativeExpr</span></code>. ANSI overflow is detected for <code class="docutils literal notranslate"><span class="pre">Int8/Int16/Int32/Int64</span></code> and <code class="docutils literal notranslate"><span class="pre">IntervalYearMonth/IntervalDayTime</span></code>. Float / Double / Decimal cannot overflow on negate. Spark 4.0 <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor; no impact.</p></li>
+</ul>
+</section>
+<section id="pi">
+<h2>pi<a class="headerlink" href="#pi" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">LeafMathExpression(math.Pi,</span> <span class="pre">&quot;PI&quot;)</span></code>; foldable, so Spark <code class="docutils literal notranslate"><span class="pre">ConstantFolding</span></code> rewrites it to a <code class="docutils literal notranslate"><span class="pre">Literal</span></code> before Comet sees the plan. The <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;pi&quot;)</span></code> registration is exercised only when <code class="docutils literal notranslate"><span class="pre">ConstantFolding</span></code> is excluded.</p></li>
+</ul>
+</section>
+<section id="positive">
+<h2>positive<a class="headerlink" href="#positive" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryPositive(child)</span></code> is a regular expression. There is no Comet serde for <code class="docutils literal notranslate"><span class="pre">UnaryPositive</span></code>, so projections containing <code class="docutils literal notranslate"><span class="pre">+col</span></code> silently disable Comet for the projection on 3.4/3.5.</p></li>
+<li><p>Spark 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryPositive</span></code> is <code class="docutils literal notranslate"><span class="pre">RuntimeReplaceable</span></code> with <code class="docutils literal notranslate"><span class="pre">replacement</span> <span class="pre">=</span> <span class="pre">child</span></code>; the optimizer removes it before Comet sees the plan, so the gap is transparent on 4.x.</p></li>
+</ul>
+</section>
+<section id="pow">
+<h2>pow<a class="headerlink" href="#pow" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Pow(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">BinaryMathExpression(StrictMath.pow,</span> <span class="pre">&quot;POWER&quot;)</span></code>; routes to DataFusion <code class="docutils literal notranslate"><span class="pre">pow</span></code>. ULP-level differences possible.</p></li>
+</ul>
+</section>
+<section id="power">
+<h2>power<a class="headerlink" href="#power" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Pow</span></code>. Same support as <code class="docutils literal notranslate"><span class="pre">pow</span></code>.</p></li>
+</ul>
+</section>
+<section id="radians">
+<h2>radians<a class="headerlink" href="#radians" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.toRadians,</span> <span class="pre">&quot;RADIANS&quot;)</span></code> unchanged across versions.</p></li>
+</ul>
+</section>
+<section id="rand">
+<h2>rand<a class="headerlink" href="#rand" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>See <code class="docutils literal notranslate"><span class="pre">misc_funcs</span> <span class="pre">/</span> <span class="pre">rand</span></code>.</p></li>
+</ul>
+</section>
+<section id="randn">
+<h2>randn<a class="headerlink" href="#randn" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>See <code class="docutils literal notranslate"><span class="pre">misc_funcs</span> <span class="pre">/</span> <span class="pre">randn</span></code>.</p></li>
+</ul>
+</section>
+<section id="rint">
+<h2>rint<a class="headerlink" href="#rint" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.rint,</span> <span class="pre">&quot;ROUND&quot;)</span></code> with <code class="docutils literal notranslate"><span class="pre">funcName</span> <span class="pre">=</span> <span class="pre">&quot;rint&quot;</span></code>. Passthrough to DataFusion <code class="docutils literal notranslate"><span class="pre">rint</span></code> (round-half-to-even).</p></li>
+</ul>
+</section>
+<section id="round">
+<h2>round<a class="headerlink" href="#round" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): HALF_UP rounding for integer / decimal. Float / Double child types always fall back to Spark because <code class="docutils literal notranslate"><span class="pre">BigDecimal</span></code>-via-<code class="docutils literal notranslate"><span class="pre">toString</span></code> rounding cannot be precisely matched (documented inline in <code class="docutils literal notranslate"><span class="pre">CometRound</span></code>). ANSI <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> is propagated for integer overflow. <code class="docutils literal notranslate"><span class="pre">BRound</span></code> (HALF_EVEN) is not wired.</p></li>
+</ul>
+</section>
+<section id="sec">
+<h2>sec<a class="headerlink" href="#sec" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): custom <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">/</span> <span class="pre">math.cos(x)</span></code>. Routed to datafusion-spark’s <code class="docutils literal notranslate"><span class="pre">SparkSec</span></code>.</p></li>
+</ul>
+</section>
+<section id="shiftleft">
+<h2>shiftleft<a class="headerlink" href="#shiftleft" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>See <code class="docutils literal notranslate"><span class="pre">bitwise_funcs</span> <span class="pre">/</span> <span class="pre">&lt;&lt;</span></code> (audited in PR #4479). Same support as the operator alias added in 4.0.</p></li>
+</ul>
+</section>
+<section id="sign">
+<h2>sign<a class="headerlink" href="#sign" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): registry alias for <code class="docutils literal notranslate"><span class="pre">Signum</span></code>. Same support as <code class="docutils literal notranslate"><span class="pre">signum</span></code>.</p></li>
+</ul>
+</section>
+<section id="signum">
+<h2>signum<a class="headerlink" href="#signum" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Signum(child)</span></code> over <code class="docutils literal notranslate"><span class="pre">DoubleType</span></code>. Spark also restricts to the two interval types via <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code>; Comet handles only the <code class="docutils literal notranslate"><span class="pre">Double</span></code> case via DataFusion <code class="docutils literal notranslate"><span class="pre">signum</span></code>.</p></li>
+</ul>
+</section>
+<section id="sin">
+<h2>sin<a class="headerlink" href="#sin" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.sin,</span> <span class="pre">&quot;SIN&quot;)</span></code> unchanged.</p></li>
+</ul>
+</section>
+<section id="sinh">
+<h2>sinh<a class="headerlink" href="#sinh" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.sinh,</span> <span class="pre">&quot;SINH&quot;)</span></code> unchanged.</p></li>
+</ul>
+</section>
+<section id="sqrt">
+<h2>sqrt<a class="headerlink" href="#sqrt" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.sqrt,</span> <span class="pre">&quot;SQRT&quot;)</span></code> unchanged.</p></li>
+</ul>
+</section>
+<section id="tan">
+<h2>tan<a class="headerlink" href="#tan" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.tan,</span> <span class="pre">&quot;TAN&quot;)</span></code> unchanged.</p></li>
+</ul>
+</section>
+<section id="tanh">
+<h2>tanh<a class="headerlink" href="#tanh" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(math.tanh,</span> <span class="pre">&quot;TANH&quot;)</span></code> unchanged.</p></li>
+</ul>
+</section>
+<section id="try-add">
+<h2>try_add<a class="headerlink" href="#try-add" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">TryAdd</span></code> is <code class="docutils literal notranslate"><span class="pre">RuntimeReplaceable</span></code> and rewrites to <code class="docutils literal notranslate"><span class="pre">Add(..,</span> <span class="pre">EvalMode.TRY)</span></code> for numeric inputs (datetime / interval go through <code class="docutils literal notranslate"><span class="pre">TryEval(Add(..,</span> <span class="pre">ANSI))</span></code> and fall back). Numeric path uses the Rust <code class="docutils literal notranslate"><span class="pre">checked_add</span></code> UDF, returning NULL on overflow. Decimal goes through <code class="docutils literal notranslate"><span class="pre">WideDecimalBinaryExpr</span></code> with <code class="docutils literal notranslate"><span class="pre">EvalMode.Try</span></code>.</p></li>
+</ul>
+</section>
+<section id="try-divide">
+<h2>try_divide<a class="headerlink" href="#try-divide" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">TryDivide</span></code> rewrites to <code class="docutils literal notranslate"><span class="pre">Divide(..,</span> <span class="pre">EvalMode.TRY)</span></code>. The <code class="docutils literal notranslate"><span class="pre">nullIfWhenPrimitive</span></code> wrapper swaps zero divisors to NULL; integer / float divide uses <code class="docutils literal notranslate"><span class="pre">checked_div</span></code>; decimal uses <code class="docutils literal notranslate"><span class="pre">decimal_div</span></code> + <code class="docutils literal notranslate"><span class="pre">CheckOverflow(failOnError</span> <span class="pre">=</span> <span class="pre">false)</span></code> returning NULL.</p></li>
+</ul>
+</section>
+<section id="try-multiply">
+<h2>try_multiply<a class="headerlink" href="#try-multiply" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): rewrites to <code class="docutils literal notranslate"><span class="pre">Multiply(..,</span> <span class="pre">EvalMode.TRY)</span></code>. Integer path uses <code class="docutils literal notranslate"><span class="pre">checked_mul</span></code>; decimal uses <code class="docutils literal notranslate"><span class="pre">WideDecimalBinaryExpr</span></code> with <code class="docutils literal notranslate"><span class="pre">EvalMode.Try</span></code>, returning NULL on overflow.</p></li>
+</ul>
+</section>
+<section id="try-subtract">
+<h2>try_subtract<a class="headerlink" href="#try-subtract" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): rewrites to <code class="docutils literal notranslate"><span class="pre">Subtract(..,</span> <span class="pre">EvalMode.TRY)</span></code>. Integer path uses <code class="docutils literal notranslate"><span class="pre">checked_sub</span></code>; decimal uses <code class="docutils literal notranslate"><span class="pre">WideDecimalBinaryExpr</span></code> as needed.</p></li>
+</ul>
+</section>
+<section id="unhex">
+<h2>unhex<a class="headerlink" href="#unhex" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Unhex(child,</span> <span class="pre">failOnError)</span></code>. Spark 4.x widens input to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code> and wraps the inner call in try/catch; Comet <code class="docutils literal notranslate"><span class="pre">CometUnhex</span></code> forwards <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> to native <code class="docutils literal notranslate"><span class="pre">spark_unhex</span></code> but does not gate on collation.</p></li>
+</ul>
+</section>
+<section id="width-bucket">
+<h2>width_bucket<a class="headerlink" href="#width-bucket" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.5.8 (audited 2026-05-27): introduced; not available in 3.4.3.</p></li>
+<li><p>Spark 4.0.1, 4.1.1 (audited 2026-05-27): same semantics; <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor.</p></li>
+<li><p>Known limitation: wired via per-version <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> rather than a <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde</span></code>, so it bypasses the support-level framework and the auto-generated compatibility doc (https://github.com/apache/datafusion-comet/issues/4485). Native path uses datafusion-spark <code class="docutils literal notranslate"><span class="pre">SparkWidthBucket</span></code>; interval input types are not exercised by Comet tests.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="map_funcs.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">map_funcs Expression Audits</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="misc_funcs.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">misc_funcs Expression Audits</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

@@ -1,0 +1,811 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>array_funcs Expression Audits &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/expression-audits/array_funcs';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="bitwise_funcs Expression Audits" href="bitwise_funcs.html" />
+    <link rel="prev" title="agg_funcs Expression Audits" href="agg_funcs.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/versioning_policy.html">
+    Versioning Policy
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/versioning_policy.html">
+    Versioning Policy
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+  
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../contributing.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../development.html">Development Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Architecture</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../plugin_overview.html">Comet Plugin Architecture</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../ffi.html">Arrow FFI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../sql_error_propagation.html">ANSI Error Propagation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../s3-credential-provider-design.html">S3 Credential Provider Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Adding Functionality</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../adding_a_new_spark_version.html">Adding a New Spark Version</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../sql-file-tests.html">Comet SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Debugging and Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../debugging.html">Debugging Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../benchmarking.html">Benchmarking Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../benchmark-results/tpc-h.html">Apache DataFusion Comet: Benchmarks Derived From TPC-H</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../benchmark-results/tpc-ds.html">Apache DataFusion Comet: Benchmarks Derived From TPC-DS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../benchmarking_macos.html">Comet Benchmarking on macOS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../benchmarking_aws_ec2.html">Comet Benchmarking in EC2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../profiling.html">Profiling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tracing.html">Tracing</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">Expression Audits</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="agg_funcs.html">agg_funcs</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">array_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bitwise_funcs.html">bitwise_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="collection_funcs.html">collection_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="conditional_funcs.html">conditional_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="conversion_funcs.html">conversion_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datetime_funcs.html">datetime_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="generator_funcs.html">generator_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="hash_funcs.html">hash_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="json_funcs.html">json_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="map_funcs.html">map_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="math_funcs.html">math_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="misc_funcs.html">misc_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="predicate_funcs.html">predicate_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="struct_funcs.html">struct_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="url_funcs.html">url_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="window_funcs.html">window_funcs</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../spark_configs_support.html">Supported Spark Configurations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../release_process.html">Release Process</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../roadmap.html">Roadmap</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Expression Audits</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">array_funcs Expression Audits</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="array-funcs-expression-audits">
+<h1>array_funcs Expression Audits<a class="headerlink" href="#array-funcs-expression-audits" title="Link to this heading">#</a></h1>
+<blockquote>
+<div><p>Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide <a class="reference internal" href="../../user-guide/latest/expressions.html"><span class="std std-doc">Spark Expression Support</span></a> for current support status.</p>
+</div></blockquote>
+<section id="array">
+<h2>array<a class="headerlink" href="#array" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">CreateArray(children,</span> <span class="pre">useStringTypeWhenEmpty)</span></code>; element type is the common type of children. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometCreateArray</span></code> (native <code class="docutils literal notranslate"><span class="pre">make_array</span></code>) and special-cases the empty-array case to dodge a known DataFusion <code class="docutils literal notranslate"><span class="pre">coerce_types</span></code> issue (#3338).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): adds <code class="docutils literal notranslate"><span class="pre">contextIndependentFoldable</span></code> override; runtime semantics unchanged.</p></li>
+</ul>
+</section>
+<section id="array-append">
+<h2>array_append<a class="headerlink" href="#array-append" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): standalone <code class="docutils literal notranslate"><span class="pre">BinaryExpression</span></code>, evaluated directly. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArrayAppend</span></code>.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): now <code class="docutils literal notranslate"><span class="pre">RuntimeReplaceable</span></code> and rewritten to <code class="docutils literal notranslate"><span class="pre">ArrayInsert(arr,</span> <span class="pre">Literal(-1),</span> <span class="pre">elem)</span></code>. <code class="docutils literal notranslate"><span class="pre">CometArrayAppend</span></code> is therefore unreachable; dispatch goes through <code class="docutils literal notranslate"><span class="pre">CometArrayInsert</span></code> (which carries its own <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> notes documented at the <code class="docutils literal notranslate"><span class="pre">array_insert</span></code> entry).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="array-compact">
+<h2>array_compact<a class="headerlink" href="#array-compact" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">RuntimeReplaceable</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">ArrayFilter(arr,</span> <span class="pre">IsNotNull(lambda))</span></code>. Comet receives the rewritten form, dispatches through <code class="docutils literal notranslate"><span class="pre">CometArrayFilter</span></code>, which delegates back to <code class="docutils literal notranslate"><span class="pre">CometArrayCompact.convert</span></code> for the actual proto emission. The native path uses Comet’s <code class="docutils literal notranslate"><span class="pre">spark_array_compact</span></code> UDF rather than DataFusion’s <code class="docutils literal notranslate"><span class="pre">array_remove_all</span></code> because DataFusion 53 changed <code class="docutils literal notranslate"><span class="pre">array_remove_all</span></code>’s NULL semantics.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): the replacement is wrapped in <code class="docutils literal notranslate"><span class="pre">KnownNotContainsNull(...)</span></code> (analysis-only hint, no semantic change).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="array-contains">
+<h2>array_contains<a class="headerlink" href="#array-contains" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayContains(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">BinaryExpression</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span> <span class="pre">with</span> <span class="pre">Predicate</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> uses <code class="docutils literal notranslate"><span class="pre">findWiderTypeWithoutStringPromotionForTwo</span></code>. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_contains&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> trait replaced by <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code>; <code class="docutils literal notranslate"><span class="pre">checkInputDataTypes</span></code> adopts <code class="docutils literal notranslate"><span class="pre">DataTypeUtils.sameType</span></code> (collation-aware in 4.x).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known limitation: no NaN-canonicalization guard in <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code>. For <code class="docutils literal notranslate"><span class="pre">Float</span></code>/<code class="docutils literal notranslate"><span class="pre">Double</span></code> arrays containing NaN, Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil</span></code> may produce different results than DataFusion’s IEEE comparison (https://github.com/apache/datafusion-comet/issues/4481).</p></li>
+</ul>
+</section>
+<section id="array-distinct">
+<h2>array_distinct<a class="headerlink" href="#array-distinct" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayDistinct(child)</span></code> over <code class="docutils literal notranslate"><span class="pre">ArraySetLike</span></code>; uses <code class="docutils literal notranslate"><span class="pre">SQLOpenHashSet</span></code> so NaN and <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>/<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> are canonicalized. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_distinct&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: DataFusion <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> uses hash-based equality without NaN/signed-zero canonicalization, so float/double arrays may produce different results (https://github.com/apache/datafusion-comet/issues/4481).</p></li>
+</ul>
+</section>
+<section id="array-except">
+<h2>array_except<a class="headerlink" href="#array-except" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayExcept(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">ArrayBinaryLike</span> <span class="pre">with</span> <span class="pre">ComplexTypeMergingExpression</span></code>; result preserves left-side first occurrences not present in right. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArrayExcept</span></code> and unconditionally flags <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> (“Null handling and ordering may differ from Spark”); also falls back for <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> / <code class="docutils literal notranslate"><span class="pre">StructType</span></code> element types.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span> <span class="pre">=</span> <span class="pre">true</span></code> moves into <code class="docutils literal notranslate"><span class="pre">ArrayBinaryLike</span></code>; the overflow path uses <code class="docutils literal notranslate"><span class="pre">arrayFunctionWithElementsExceedLimitError</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: same NaN/signed-zero canonicalization gap as <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> for float/double arrays (https://github.com/apache/datafusion-comet/issues/4481).</p></li>
+</ul>
+</section>
+<section id="array-insert">
+<h2>array_insert<a class="headerlink" href="#array-insert" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 audited 2026-04-02</p></li>
+<li><p>Spark 3.5.8 audited 2026-04-02</p></li>
+<li><p>Spark 4.0.1 audited 2026-04-02 (pos=0 error message differs from Spark)</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="array-intersect">
+<h2>array_intersect<a class="headerlink" href="#array-intersect" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 audited 2026-04-24 (result element order may differ from Spark when the right array is longer than the left; DataFusion probes the longer side)</p></li>
+<li><p>Spark 3.5.8 audited 2026-04-24 (same ordering incompatibility as 3.4.3)</p></li>
+<li><p>Spark 4.0.1 audited 2026-04-24 (ordering incompatibility as above; collated strings now fall back to Spark)</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="array-join">
+<h2>array_join<a class="headerlink" href="#array-join" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayJoin(array,</span> <span class="pre">delimiter,</span> <span class="pre">nullReplacement)</span></code>. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArrayJoin</span></code> to DataFusion’s <code class="docutils literal notranslate"><span class="pre">array_to_string</span></code> and is unconditionally flagged <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> (“Null handling may differ from Spark”, #3178).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">AbstractArrayType(StringTypeWithCollation(supportsTrimCollation</span> <span class="pre">=</span> <span class="pre">true))</span></code>; non-binary collations not propagated (https://github.com/apache/datafusion-comet/issues/2190).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): adds <code class="docutils literal notranslate"><span class="pre">contextIndependentFoldable</span></code> override; runtime unchanged.</p></li>
+</ul>
+</section>
+<section id="array-max">
+<h2>array_max<a class="headerlink" href="#array-max" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayMax(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ImplicitCastInputTypes</span></code>; skips NULL elements; for float/double Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil</span></code> treats NaN as greater than any non-NaN. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_max&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: DataFusion’s <code class="docutils literal notranslate"><span class="pre">array_max</span></code> uses Arrow <code class="docutils literal notranslate"><span class="pre">partial_cmp</span></code>-based ordering, so float/double arrays containing NaN may produce different results (https://github.com/apache/datafusion-comet/issues/4482).</p></li>
+</ul>
+</section>
+<section id="array-min">
+<h2>array_min<a class="headerlink" href="#array-min" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): mirror of <code class="docutils literal notranslate"><span class="pre">ArrayMax</span></code> with <code class="docutils literal notranslate"><span class="pre">evalInternal</span></code> returning the minimum. Same NULL-skip and NaN-ordering semantics. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_min&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): same trait refactor as <code class="docutils literal notranslate"><span class="pre">array_max</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: same NaN-handling gap as <code class="docutils literal notranslate"><span class="pre">array_max</span></code> (https://github.com/apache/datafusion-comet/issues/4482).</p></li>
+</ul>
+</section>
+<section id="array-position">
+<h2>array_position<a class="headerlink" href="#array-position" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayPosition(left,</span> <span class="pre">right)</span></code>; returns 1-based <code class="docutils literal notranslate"><span class="pre">LongType</span></code> position, 0 if not found, NULL if either input is NULL. <code class="docutils literal notranslate"><span class="pre">CometArrayPosition</span></code> falls back for all-foldable args (constant folding handles those) and for unsupported element types (binary/struct/map/null).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="array-remove">
+<h2>array_remove<a class="headerlink" href="#array-remove" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayRemove(left,</span> <span class="pre">right)</span></code>; removes all occurrences equal to <code class="docutils literal notranslate"><span class="pre">right</span></code>. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_remove&quot;)</span></code>. Falls back via <code class="docutils literal notranslate"><span class="pre">ArraysBase.isTypeSupported</span></code> for binary/struct/map/null child types.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="array-repeat">
+<h2>array_repeat<a class="headerlink" href="#array-repeat" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayRepeat(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">BinaryExpression</span> <span class="pre">with</span> <span class="pre">ExpectsInputTypes</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(AnyDataType,</span> <span class="pre">IntegerType)</span></code>. NULL count yields NULL; count &lt;= 0 yields empty array; count &gt; <code class="docutils literal notranslate"><span class="pre">MAX_ROUNDED_ARRAY_LENGTH</span></code> throws at runtime. Comet wraps the call in <code class="docutils literal notranslate"><span class="pre">CaseWhen(IsNotNull(right),</span> <span class="pre">array_repeat(...),</span> <span class="pre">null)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): error message uses <code class="docutils literal notranslate"><span class="pre">createArrayWithElementsExceedLimitError(prettyName,</span> <span class="pre">count)</span></code>; semantics unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="array-union">
+<h2>array_union<a class="headerlink" href="#array-union" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayUnion(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">ArrayBinaryLike</span> <span class="pre">with</span> <span class="pre">ComplexTypeMergingExpression</span></code>; result is left-side distinct elements followed by new right-side elements. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_union&quot;)</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span> <span class="pre">=</span> <span class="pre">true</span></code> moves into <code class="docutils literal notranslate"><span class="pre">ArrayBinaryLike</span></code>; overflow path uses <code class="docutils literal notranslate"><span class="pre">arrayFunctionWithElementsExceedLimitError</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Known divergence: same NaN/signed-zero canonicalization gap as <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> (https://github.com/apache/datafusion-comet/issues/4481). Result ordering versus DataFusion is also unverified; compare the <code class="docutils literal notranslate"><span class="pre">array_intersect</span></code> ordering caveat.</p></li>
+</ul>
+</section>
+<section id="arrays-overlap">
+<h2>arrays_overlap<a class="headerlink" href="#arrays-overlap" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArraysOverlap(left,</span> <span class="pre">right)</span></code>; three-valued logic (TRUE if any common non-null element, NULL if a null is present and no overlap is found in non-nulls, FALSE otherwise). Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArraysOverlap</span></code> to the native <code class="docutils literal notranslate"><span class="pre">spark_arrays_overlap</span></code> UDF, which implements the same three-valued logic.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="arrays-zip">
+<h2>arrays_zip<a class="headerlink" href="#arrays-zip" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArraysZip(children,</span> <span class="pre">names)</span></code>; returns an array of structs, padding shorter inputs with NULL. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArraysZip</span></code> and rejects unsupported child element types (anything outside primitives, decimals, dates/timestamps, strings, binary, and nested arrays/structs of those).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): the length-mismatch error switches from <code class="docutils literal notranslate"><span class="pre">IllegalArgumentException</span></code> to <code class="docutils literal notranslate"><span class="pre">SparkIllegalArgumentException(&quot;_LEGACY_ERROR_TEMP_3235&quot;)</span></code>; runtime unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="element-at">
+<h2>element_at<a class="headerlink" href="#element-at" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ElementAt(left,</span> <span class="pre">right,</span> <span class="pre">defaultValueOutOfBound,</span> <span class="pre">failOnError)</span></code>; group label <code class="docutils literal notranslate"><span class="pre">map_funcs</span></code>. Comet supports only <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> input; <code class="docutils literal notranslate"><span class="pre">MapType</span></code> input falls back.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor; group label changes to <code class="docutils literal notranslate"><span class="pre">collection_funcs</span></code>; ANSI default flips to <code class="docutils literal notranslate"><span class="pre">true</span></code> so out-of-bound throws by default. Comet wires <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> through to native <code class="docutils literal notranslate"><span class="pre">ListExtract</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="flatten">
+<h2>flatten<a class="headerlink" href="#flatten" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">Flatten(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span></code>; returns NULL if any inner sub-array is NULL. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometFlatten</span></code> and falls back for child types containing <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> / <code class="docutils literal notranslate"><span class="pre">StructType</span></code> / <code class="docutils literal notranslate"><span class="pre">MapType</span></code> (limitation of <code class="docutils literal notranslate"><span class="pre">ArraysBase.isTypeSupported</span></code>).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+<section id="get">
+<h2>get<a class="headerlink" href="#get" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">GetArrayItem(child,</span> <span class="pre">ordinal,</span> <span class="pre">failOnError)</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(AnyDataType,</span> <span class="pre">IntegralType)</span></code>. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometGetArrayItem</span></code>, wiring <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> through to the proto.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): semantics unchanged; ANSI default flips to <code class="docutils literal notranslate"><span class="pre">true</span></code>.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> tightened to <code class="docutils literal notranslate"><span class="pre">Seq(ArrayType,</span> <span class="pre">IntegralType)</span></code> (analysis-time only); runtime unchanged.</p></li>
+</ul>
+</section>
+<section id="sort-array">
+<h2>sort_array<a class="headerlink" href="#sort-array" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">SortArray(base,</span> <span class="pre">ascendingOrder)</span> <span class="pre">extends</span> <span class="pre">BinaryExpression</span> <span class="pre">with</span> <span class="pre">ArraySortLike</span></code>; the second arg must be a <code class="docutils literal notranslate"><span class="pre">Literal(_:</span> <span class="pre">Boolean,</span> <span class="pre">BooleanType)</span></code>. Comet <code class="docutils literal notranslate"><span class="pre">CometSortArray</span></code> flags <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> under strict floating-point and falls back for nested arrays whose innermost element is <code class="docutils literal notranslate"><span class="pre">Struct</span></code> or <code class="docutils literal notranslate"><span class="pre">Null</span></code>.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-05-27): trait set changes substantively: <code class="docutils literal notranslate"><span class="pre">ArraySortLike</span></code> and <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> are removed, <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span> <span class="pre">=</span> <span class="pre">true</span></code> becomes an override, and <code class="docutils literal notranslate"><span class="pre">ascendingOrder</span></code> is widened to accept any foldable boolean (not just <code class="docutils literal notranslate"><span class="pre">Literal</span></code>). Comet’s <code class="docutils literal notranslate"><span class="pre">CometSortArray</span></code> still requires a <code class="docutils literal notranslate"><span class="pre">Literal</span></code>, so the new foldable form falls back at convert time.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="agg_funcs.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">agg_funcs Expression Audits</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="bitwise_funcs.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">bitwise_funcs Expression Audits</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
