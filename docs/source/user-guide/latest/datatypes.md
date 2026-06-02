@@ -41,21 +41,21 @@ hash-aggregate group-key restrictions), see the [Compatibility Guide](compatibil
 | Type          | Status | Notes                                                                                                                                                     |
 | ------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ByteType`    | ✅     |                                                                                                                                                           |
-| `ShortType`   | ⚠️     | Parquet scans fall back by default to disambiguate signed `INT16` from unsigned `UINT_8`. See [Parquet Scan Compatibility](compatibility/scans.md).       |
+| `ShortType`   | ✅     |                                                                                                                                                           |
 | `IntegerType` | ✅     |                                                                                                                                                           |
 | `LongType`    | ✅     |                                                                                                                                                           |
-| `FloatType`   | ⚠️     | NaN and signed-zero handling can diverge from Spark in comparisons and aggregations. See [Floating-point Compatibility](compatibility/floating-point.md). |
-| `DoubleType`  | ⚠️     | NaN and signed-zero handling can diverge from Spark in comparisons and aggregations. See [Floating-point Compatibility](compatibility/floating-point.md). |
-| `DecimalType` | ⚠️     | Decimals encoded in Parquet binary format fall back at scan time. See [Parquet Scan Compatibility](compatibility/scans.md).                               |
+| `FloatType`   | ✅     | NaN and signed-zero handling can diverge from Spark in comparisons and aggregations. See [Floating-point Compatibility](compatibility/floating-point.md). |
+| `DoubleType`  | ✅     | NaN and signed-zero handling can diverge from Spark in comparisons and aggregations. See [Floating-point Compatibility](compatibility/floating-point.md). |
+| `DecimalType` | ✅     |                                                                                                                                                           |
 
 ## String and binary
 
-| Type          | Status | Notes                                                                                                                                                                                                                                                  |
-| ------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `StringType`  | ⚠️     | Default UTF-8 binary collation is supported. Non-default collations (Spark 4.0+) fall back ([#2190](https://github.com/apache/datafusion-comet/issues/2190)). Invalid UTF-8 bytes in Parquet `STRING` columns raise an error rather than falling back. |
-| `BinaryType`  | ✅     |                                                                                                                                                                                                                                                        |
-| `CharType`    | ⚠️     | Spark normalizes `CHAR(n)` to `StringType` for evaluation; same caveats apply.                                                                                                                                                                         |
-| `VarcharType` | ⚠️     | Spark normalizes `VARCHAR(n)` to `StringType` for evaluation; same caveats apply.                                                                                                                                                                      |
+| Type          | Status | Notes                                                                                                                                                         |
+| ------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `StringType`  | ✅     | Default UTF-8 binary collation is supported. Non-default collations (Spark 4.0+) fall back ([#2190](https://github.com/apache/datafusion-comet/issues/2190)). |
+| `BinaryType`  | ✅     |                                                                                                                                                               |
+| `CharType`    | ✅     | Spark normalizes `CHAR(n)` to `StringType` for evaluation; same caveats apply.                                                                                |
+| `VarcharType` | ✅     | Spark normalizes `VARCHAR(n)` to `StringType` for evaluation; same caveats apply.                                                                             |
 
 ## Boolean
 
@@ -65,12 +65,12 @@ hash-aggregate group-key restrictions), see the [Compatibility Guide](compatibil
 
 ## Datetime
 
-| Type               | Status | Notes                                                                                                                                                                                                                |
-| ------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DateType`         | ⚠️     | Datetime rebasing for dates written before October 15, 1582 is not applied at scan time. See [Parquet Scan Compatibility](compatibility/scans.md).                                                                   |
-| `TimestampType`    | ⚠️     | Datetime rebasing for timestamps written before Spark 3.0 is not applied at scan time. See [Parquet Scan Compatibility](compatibility/scans.md).                                                                     |
-| `TimestampNTZType` | ⚠️     | On Spark 3.x, reading Parquet `TimestampLTZ` as `TimestampNTZ` returns the raw UTC instant instead of raising an error. Spark 4.0+ matches Spark behavior. See [Parquet Scan Compatibility](compatibility/scans.md). |
-| `TimeType`         | ⚠️     | Spark 4.1+. Native serialization is in place; some operators (sort, shuffle, min/max) are still being wired up ([#4288](https://github.com/apache/datafusion-comet/issues/4288)).                                    |
+| Type               | Status | Notes                                                                                                                                                                             |
+| ------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DateType`         | ✅     |                                                                                                                                                                                   |
+| `TimestampType`    | ✅     |                                                                                                                                                                                   |
+| `TimestampNTZType` | ✅     |                                                                                                                                                                                   |
+| `TimeType`         | ⚠️     | Spark 4.1+. Native serialization is in place; some operators (sort, shuffle, min/max) are still being wired up ([#4288](https://github.com/apache/datafusion-comet/issues/4288)). |
 
 ## Interval
 
@@ -87,9 +87,9 @@ Interval types fall back to Spark today. Native acceleration is tracked by
 
 | Type         | Status | Notes                                                                                                                                                                                    |
 | ------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `StructType` | ⚠️     | Empty structs (no fields) fall back. Default values that are nested types fall back at scan time.                                                                                        |
+| `StructType` | ✅     | Empty structs (no fields) fall back.                                                                                                                                                     |
 | `ArrayType`  | ✅     |                                                                                                                                                                                          |
-| `MapType`    | ⚠️     | Hash aggregate group keys cannot contain a `MapType` (transitively): Arrow's row format used by DataFusion's grouped hash aggregate does not support `Map`, so such groupings fall back. |
+| `MapType`    | ✅     | Hash aggregate group keys cannot contain a `MapType` (transitively): Arrow's row format used by DataFusion's grouped hash aggregate does not support `Map`, so such groupings fall back. |
 
 ## Variant
 
