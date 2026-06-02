@@ -29,7 +29,7 @@ use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
-    arrow::{datatypes::SchemaRef, error::ArrowError},
+    arrow::datatypes::SchemaRef,
     error::Result,
     execution::context::TaskContext,
     physical_plan::{
@@ -38,7 +38,7 @@ use datafusion::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
     },
 };
-use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use std::{
     any::Any,
     fmt,
@@ -171,23 +171,23 @@ impl ExecutionPlan for ShuffleWriterExec {
         let input = self.input.execute(partition, Arc::clone(&context))?;
         let metrics = ShufflePartitionerMetrics::new(&self.metrics, 0);
 
+        // Propagate DataFusionError unchanged: the JNI bridge only downcasts a single
+        // `DataFusionError::External(SparkError)` layer, so any extra wrap here loses the
+        // typed exception (e.g. SparkArithmeticException on decimal overflow).
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            futures::stream::once(
-                external_shuffle(
-                    input,
-                    partition,
-                    self.output_data_file.clone(),
-                    self.output_index_file.clone(),
-                    self.partitioning.clone(),
-                    metrics,
-                    context,
-                    self.codec.clone(),
-                    self.tracing_enabled,
-                    self.write_buffer_size,
-                )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-            )
+            futures::stream::once(external_shuffle(
+                input,
+                partition,
+                self.output_data_file.clone(),
+                self.output_index_file.clone(),
+                self.partitioning.clone(),
+                metrics,
+                context,
+                self.codec.clone(),
+                self.tracing_enabled,
+                self.write_buffer_size,
+            ))
             .try_flatten(),
         )))
     }
