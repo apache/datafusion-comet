@@ -177,6 +177,7 @@ jobs:
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
+              org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
