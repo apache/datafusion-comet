@@ -226,6 +226,19 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CACHE_SERIALIZER_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.cache.serializer.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, Comet installs a CachedBatchSerializer that stores Spark's in-memory " +
+          "table cache as compressed Arrow IPC. Repeated scans of cached data are then read " +
+          "natively without a per-read conversion. Schemas Comet cannot handle transparently " +
+          "fall back to Spark's default cache serializer. This sets " +
+          "spark.sql.cache.serializer for the session unless that property is already set " +
+          "to a non-default value. Disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .category(CATEGORY_EXEC)
     .doc(
