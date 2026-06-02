@@ -579,16 +579,23 @@ After implementing tests, tell the user how to run them:
 
 ---
 
-## Step 8: Update the Expression Support Doc
+## Step 8: Record the Audit
 
-After completing the audit (whether or not tests were added), add sub-bullets under the expression's
-entry in `docs/source/contributor-guide/spark_expressions_support.md`.
+After completing the audit (whether or not tests were added), record the findings on the
+expression's category page under `docs/source/contributor-guide/expression-audits/`.
+The page is named after the Spark function-registry category (e.g. `agg_funcs.md`,
+`string_funcs.md`, `datetime_funcs.md`). If you are unsure of the category, match the one
+used for the expression in `docs/source/user-guide/latest/expressions.md`.
 
-Add one sub-bullet per Spark version checked, each including:
-
-- Spark version (e.g. 3.4.3, 3.5.8, 4.0.1)
-- Today's date
-- A brief note for any version-specific finding (behavioral difference, known incompatibility); omit if nothing notable
+- If the category page does not exist yet, create it with the ASF license header, a
+  `# <category> Expression Audits` title, and the standard intro blockquote used by the
+  other pages.
+- Add (or update) a `## <function_name>` section, keeping sections alphabetically ordered.
+- Under that heading, add one bullet per Spark version checked, each including:
+  - Spark version (e.g. 3.4.3, 3.5.8, 4.0.1)
+  - Today's date
+  - A brief note for any version-specific finding (behavioral difference, known
+    incompatibility); omit the note if nothing notable.
 
 ---
 
