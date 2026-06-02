@@ -69,7 +69,7 @@ under the License.
     <scala.plugin.version>4.9.6</scala.plugin.version>
     <scalatest.version>3.2.16</scalatest.version>
     <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
-    <spark.version>4.1.1</spark.version>
+    <spark.version>4.1.2</spark.version>
     <spark.version.short>4.1</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.25.5</protobuf.version>
@@ -83,7 +83,7 @@ under the License.
     <semanticdb.version>4.13.6</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
-    <testcontainers.version>1.21.0</testcontainers.version>
+    <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
@@ -477,6 +477,23 @@ under the License.
         <scope>test</scope>
       </dependency>
       <!--
+        Override docker-java transitive (testcontainers 1.21.x pins 3.4.2, which speaks Docker
+        API 1.32 max). Modern daemons (Colima, OrbStack, recent Docker Desktop) require API
+        >= 1.40. docker-java 3.7.0+ defaults to API 1.44.
+      -->
+      <dependency>
+        <groupId>com.github.docker-java</groupId>
+        <artifactId>docker-java-api</artifactId>
+        <version>3.7.1</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.github.docker-java</groupId>
+        <artifactId>docker-java-transport-zerodep</artifactId>
+        <version>3.7.1</version>
+        <scope>test</scope>
+      </dependency>
+      <!--
         AWS SDK modules for Iceberg REST catalog + S3 tests.
         iceberg-spark-runtime treats the AWS SDK as provided scope, so tests
         that exercise Iceberg's S3FileIO (via ResolvingFileIO) must supply these.
@@ -687,13 +704,13 @@ under the License.
     <profile>
       <id>spark-4.1</id>
       <properties>
-        <!-- Spark 4.1.1 is compiled against Scala 2.13.17 and emits calls into stdlib methods
+        <!-- Spark 4.1 is compiled against Scala 2.13.17 and emits calls into stdlib methods
              added in that release (e.g. MurmurHash3$.caseClassHash$default$2()). Comet must
              match to avoid runtime NoSuchMethodError. Note: semanticdb-scalac_2.13.17 is not
              yet published, so the -Psemanticdb / scalafix lint job is skipped for spark-4.1. -->
         <scala.version>2.13.17</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.1.1</spark.version>
+        <spark.version>4.1.2</spark.version>
         <spark.version.short>4.1</spark.version.short>
         <parquet.version>1.16.0</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>

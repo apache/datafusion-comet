@@ -146,6 +146,24 @@ The following scenarios will fall back to Spark's native Iceberg reader:
 - Dynamic Partition Pruning under Adaptive Query Execution (non-AQE DPP is supported);
   see [#3510](https://github.com/apache/datafusion-comet/issues/3510)
 
+### Iceberg UDFs
+
+Iceberg ships several `ScalaUDF`s that surface in user queries and maintenance actions:
+
+- `IcebergSpark.registerBucketUDF` and `registerTruncateUDF` register `bucket(N, col)` and
+  `truncate(W, col)` for use in `SELECT` / `JOIN` / `WHERE` predicates that align with hidden
+  partitioning.
+- `RewriteDataFiles` with `sort-strategy=zorder` builds a tree of per-type ordered-bytes UDFs
+  (`INT_ORDERED_BYTES`, `LONG_ORDERED_BYTES`, ..., `INTERLEAVE_BYTES`) over the sort key columns
+  during compaction.
+
+[Scala UDF and Java UDF Support](scala_java_udfs.md) is enabled by default
+(`spark.comet.exec.scalaUDF.codegen.enabled=true`), so these UDFs run through native execution and
+the project, exchange, and sort operators around them stay on the Comet path end-to-end. Setting
+`spark.comet.exec.scalaUDF.codegen.enabled=false` causes the enclosing operator to fall back to
+Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuffle from
+`CometExchange` to `CometColumnarExchange`.
+
 ### Task input metrics
 
 The native Iceberg reader populates Spark's task-level `inputMetrics.bytesRead` (visible in the Spark UI Stages tab) using the `bytes_read` counter from iceberg-rust's `ScanMetrics`. This counter includes bytes read from both data files and delete files.

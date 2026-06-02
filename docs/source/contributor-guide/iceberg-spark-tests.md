@@ -93,6 +93,8 @@ diff must be generated against its own tag.
 
 ## Running Tests in CI
 
-The `iceberg_spark_test.yml` workflow applies these diffs and runs the three Gradle targets above against
-each Iceberg version. The test matrix covers Spark 3.4 and 3.5 across Iceberg 1.8.1, 1.9.1, and 1.10.0
-with Java 11 and 17. The workflow runs on all pull requests and pushes to the main branch.
+The `iceberg_spark_test_<version>.yml` workflows apply these diffs and run the three Gradle targets above
+against each Iceberg version. Iceberg 1.8.1 runs against Spark 3.4.3 with Java 11; Iceberg 1.9.1 and 1.10.0
+run against Spark 3.5.8 with Java 17. The latest Iceberg version (1.10) runs on every pull request and on
+pushes to main; the older versions (1.8, 1.9) run only on pushes to main. All caller workflows delegate to
+`iceberg_spark_test_reusable.yml`, which holds the build and test job logic.

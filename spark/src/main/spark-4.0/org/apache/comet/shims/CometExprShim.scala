@@ -23,21 +23,22 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType}
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{Compatible, ExprOuterClass, Incompatible, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CometExprShimCommon {
+trait CometExprShim extends CometExprShimCommon with CometExprShim4x {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -74,7 +75,7 @@ trait CometExprShim extends CometExprShimCommon {
                   returnType,
                   false,
                   arrayExprProto)
-                optExprWithInfo(scalarExpr, knc, arrayChild)
+                optExprWithFallbackReason(scalarExpr, knc, arrayChild)
               case _ => exprToProtoInternal(knc.child, inputs, binding)
             }
           case _ => exprToProtoInternal(knc.child, inputs, binding)
@@ -121,7 +122,7 @@ trait CometExprShim extends CometExprShimCommon {
                   .setToPrettyString(toPrettyString)
                   .build())
             case _ =>
-              withInfo(expr, child)
+              withFallbackReason(expr, child)
               None
           }
         } else {
@@ -131,29 +132,42 @@ trait CometExprShim extends CometExprShimCommon {
       case wb: WidthBucket =>
         val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
         val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
-        optExprWithInfo(optExpr, wb, wb.children: _*)
+        optExprWithFallbackReason(optExpr, wb, wb.children: _*)
 
-      // In Spark 4.0, StructsToJson is a RuntimeReplaceable whose replacement is
-      // Invoke(Literal(StructsToJsonEvaluator), "evaluate", ...). Reconstruct the
-      // original StructsToJson and recurse so support-level checks apply.
+      // In Spark 4.x, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
+      // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression
+      // and recurse so support-level checks apply.
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
-            exprToProtoInternal(
-              StructsToJson(evaluator.options, child, evaluator.timeZoneId),
-              inputs,
-              binding)
+            val toJson = StructsToJson(evaluator.options, child, evaluator.timeZoneId)
+            val exprProto = exprToProtoInternal(toJson, inputs, binding)
+            if (exprProto.isEmpty) {
+              toJson
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
+            }
+            exprProto
+          case (Literal(evaluator: ParseUrlEvaluator, _), "evaluate", args) =>
+            val parseUrl = ParseUrl(args, evaluator.failOnError)
+            val result = exprToProtoInternal(parseUrl, inputs, binding)
+            if (result.isEmpty) {
+              parseUrl
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .foreach(reasons => i.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
+            }
+            result
           case _ => None
         }
 
       case ms: MapSort =>
         val keyType = ms.dataType.asInstanceOf[MapType].keyType
         if (!supportedScalarSortElementType(keyType)) {
-          withInfo(ms, s"MapSort on map with key type $keyType is not supported")
+          withFallbackReason(ms, s"MapSort on map with key type $keyType is not supported")
           None
         } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
           SupportLevel.containsFloatingPoint(keyType)) {
-          withInfo(
+          withFallbackReason(
             ms,
             "MapSort on floating-point key is not 100% compatible with Spark, and Comet is " +
               s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
@@ -166,8 +180,14 @@ trait CometExprShim extends CometExprShimCommon {
             ms.dataType,
             failOnError = false,
             childExpr)
-          optExprWithInfo(mapSortExpr, ms, ms.child)
+          optExprWithFallbackReason(mapSortExpr, ms, ms.child)
         }
+
+      // dayname / monthname (Spark 4.0+) are shared across all 4.x minor versions; see
+      // CometExprShim4x.convertDayMonthName.
+      case _: DayName | _: MonthName =>
+        convertDayMonthName(expr, inputs, binding)
+
       case _ => sparkExprToProto(expr, inputs, binding)
     }
   }

@@ -63,6 +63,7 @@ mod map_funcs;
 pub use map_funcs::spark_map_sort;
 mod math_funcs;
 mod nondetermenistic_funcs;
+pub mod url_funcs;
 
 pub use array_funcs::*;
 pub use conditional_funcs::*;
@@ -75,9 +76,9 @@ pub use comet_scalar_funcs::{
 };
 pub use csv_funcs::*;
 pub use datetime_funcs::{
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkHour, SparkHoursTransform,
-    SparkMakeDate, SparkMinute, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp,
-    TimestampTruncExpr,
+    spark_day_name, spark_month_name, spark_to_time, SparkDateDiff, SparkDateFromUnixDate,
+    SparkDateTrunc, SparkHour, SparkHoursTransform, SparkMakeDate, SparkMakeTime, SparkMinute,
+    SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp, TimestampTruncExpr,
 };
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;

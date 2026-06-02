@@ -59,6 +59,7 @@ message DataType {
     LIST = 14;
     MAP = 15;
     STRUCT = 16;
+    TIME = 17;
   }
   DataTypeId type_id = 1;
 

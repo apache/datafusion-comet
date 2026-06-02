@@ -61,11 +61,9 @@ Comet supports most standard storage systems, such as local file system and obje
 
 Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
 
-### Using experimental native DataFusion reader
+### Building Comet with HDFS support
 
-Unlike to native Comet reader the Datafusion reader fully supports nested types processing. This reader is currently experimental only
-
-To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed
+To build Comet with remote HDFS support it is required to have a JDK installed.
 
 Example:
 Build a Comet for `spark-4.1` provide a JDK path in `JAVA_HOME`
@@ -76,11 +74,10 @@ export JAVA_HOME="/opt/homebrew/opt/openjdk@17"
 make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
-Start Comet with experimental reader and HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
+Start Comet with HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
 and add additional parameters
 
 ```shell
---conf spark.comet.scan.impl=native_datafusion \
 --conf spark.hadoop.fs.defaultFS="hdfs://namenode:9000" \
 --conf spark.hadoop.dfs.client.use.datanode.hostname = true \
 --conf dfs.client.use.datanode.hostname = true
@@ -158,7 +155,6 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" COM
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
       "fs.defaultFS" -> "hdfs://namenode:9000",
       "dfs.client.use.datanode.hostname" -> "true") {
@@ -169,14 +165,15 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" COM
   }
 ```
 
-Or use `spark-shell` with HDFS support as described [above](#using-experimental-native-datafusion-reader)
+Or use `spark-shell` with HDFS support as described [above](#building-comet-with-hdfs-support)
 
 ## S3
 
-The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading
-to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and
-support configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to
-the `object_store` crate's format.
+Comet's Parquet scan completely offloads data loading to native code. It uses the
+[`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and supports
+configuring S3 access using standard
+[Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration)
+by translating them to the `object_store` crate's format.
 
 This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will
 continue to work as long as the configurations are supported and can be translated without loss of functionality.
@@ -210,8 +207,7 @@ Multiple credential providers can be specified in a comma-separated list using t
 
 ### Additional S3 Configuration Options
 
-Beyond credential providers, the `native_datafusion` and `native_iceberg_compat` implementations support additional
-S3 configuration options:
+Beyond credential providers, Comet's Parquet scan supports additional S3 configuration options:
 
 | Option                          | Description                                                                                        |
 | ------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -224,8 +220,7 @@ All configuration options support bucket-specific overrides using the pattern `f
 
 ### Examples
 
-The following examples demonstrate how to configure S3 access with the `native_datafusion` and `native_iceberg_compat`
-Parquet scan implementations using different authentication methods.
+The following examples demonstrate how to configure S3 access using different authentication methods.
 
 **Example 1: Simple Credentials**
 
@@ -234,7 +229,6 @@ This example shows how to access a private S3 bucket using an access key and sec
 ```shell
 $SPARK_HOME/bin/spark-shell \
 ...
---conf spark.comet.scan.impl=native_datafusion \
 --conf spark.hadoop.fs.s3a.access.key=my-access-key \
 --conf spark.hadoop.fs.s3a.secret.key=my-secret-key
 ...
@@ -247,7 +241,6 @@ This example demonstrates using an assumed role credential to access a private S
 ```shell
 $SPARK_HOME/bin/spark-shell \
 ...
---conf spark.comet.scan.impl=native_datafusion \
 --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider \
 --conf spark.hadoop.fs.s3a.assumed.role.arn=arn:aws:iam::123456789012:role/my-role \
 --conf spark.hadoop.fs.s3a.assumed.role.session.name=my-session \
@@ -257,7 +250,7 @@ $SPARK_HOME/bin/spark-shell \
 
 ### Limitations
 
-The S3 support of `native_datafusion` and `native_iceberg_compat` has the following limitations:
+Comet's S3 support has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 

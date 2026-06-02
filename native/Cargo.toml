@@ -56,10 +56,11 @@ regex = "1.12.3"
 thiserror = "2"
 object_store = { version = "0.13.1", features = ["gcp", "azure", "aws", "http"] }
 url = "2.2"
-aws-config = "1.8.16"
+aws-config = "1.8.17"
 aws-credential-types = "1.2.13"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "1ad4bfd" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "1ad4bfd", features = ["opendal-all"] }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "83b4595" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "83b4595", features = ["opendal-all"] }
+reqsign-core = "3"
 
 [profile.release]
 debug = true

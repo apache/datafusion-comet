@@ -32,7 +32,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
-import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isSpark35Plus, isSpark41Plus, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
@@ -41,20 +41,22 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 /**
- * Validation and serde logic for `native_datafusion` scans.
+ * Validation and serde logic for Comet's native Parquet scan.
  */
 object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
 
-    if (hasExplainInfo(scanExec)) {
+    if (hasFallbackReason(scanExec)) {
       // this node has already been tagged with fallback reasons
       return false
     }
 
     if (!COMET_EXEC_ENABLED.get()) {
-      withInfo(scanExec, s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
+      withFallbackReason(
+        scanExec,
+        s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
     }
 
     // AQE DPP (SubqueryAdaptiveBroadcastExec) is converted to CometSubqueryBroadcastExec
@@ -67,14 +69,14 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
     // rule can't run. CometScanRule.transformV1Scan rejects AQE DPP on 3.4, so this check
     // is a safety net: if the scan somehow reached here with AQE DPP on 3.4, reject it.
     if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
-      withInfo(scanExec, "Native DataFusion scan does not support AQE DPP on Spark 3.4")
+      withFallbackReason(scanExec, "Native DataFusion scan does not support AQE DPP on Spark 3.4")
     }
 
     if (SQLConf.get.ignoreCorruptFiles ||
       scanExec.relation.options
         .get("ignorecorruptfiles") // Spark sets this to lowercase.
         .contains("true")) {
-      withInfo(scanExec, "Full native scan disabled because ignoreCorruptFiles enabled")
+      withFallbackReason(scanExec, "Full native scan disabled because ignoreCorruptFiles enabled")
     }
 
     if (SQLConf.get.ignoreMissingFiles ||
@@ -82,11 +84,11 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         .get("ignoremissingfiles") // Spark sets this to lowercase.
         .contains("true")) {
 
-      withInfo(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
+      withFallbackReason(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
     }
 
     // the scan is supported if no fallback reasons were added to the node
-    !hasExplainInfo(scanExec)
+    !hasFallbackReason(scanExec)
   }
 
   /** Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP. */
@@ -211,6 +213,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.setIgnoreMissingFieldId(
         scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
 
+      commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
+
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState
         .newHadoopConfWithOptions(scan.relation.options)
@@ -232,7 +236,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
     } else {
       // There are unsupported scan type
-      withInfo(
+      withFallbackReason(
         scan,
         s"unsupported Comet operator: ${scan.nodeName}, due to unsupported data types above")
       None
