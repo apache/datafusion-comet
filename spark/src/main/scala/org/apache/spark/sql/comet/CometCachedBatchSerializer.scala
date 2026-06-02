@@ -70,6 +70,7 @@ class CometCacheColumnStats(attributes: Seq[Attribute]) {
   private val upper = new Array[Any](numCols)
   private val nulls = new Array[Int](numCols)
   private var rowCount = 0
+  private val tracksBounds: Array[Boolean] = attributes.map(a => ordered(a.dataType)).toArray
 
   /** Update column `ordinal` with one value. `value` is in Catalyst internal form (or null). */
   def update(ordinal: Int, dt: DataType, isNull: Boolean, value: Any): Unit = {
@@ -77,7 +78,7 @@ class CometCacheColumnStats(attributes: Seq[Attribute]) {
       nulls(ordinal) += 1
       return
     }
-    if (!ordered(dt)) return // leave bounds null for unsupported-stat types
+    if (!tracksBounds(ordinal)) return // leave bounds null for unsupported-stat types
     if (lower(ordinal) == null || compare(dt, value, lower(ordinal)) < 0) lower(ordinal) = value
     if (upper(ordinal) == null || compare(dt, value, upper(ordinal)) > 0) upper(ordinal) = value
   }
@@ -246,8 +247,9 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     if (!isCometSchema(schema.map(_.dataType))) {
       return fallback.convertColumnarBatchToCachedBatch(input, schema, storageLevel, conf)
     }
-    // Defensive: supportsColumnarInput returns false for Comet schemas so this is rarely
-    // called, but implement it correctly by converting each Spark batch to Arrow first.
+    // This branch is never reached for Comet schemas: supportsColumnarInput returns false for
+    // them, so Spark always takes the row path above. It is only reachable for delegated
+    // (non-Comet) schemas that somehow bypass the fallback guard, and is implemented defensively.
     val structType = toStructType(schema)
     val maxRecords = CometConf.COMET_BATCH_SIZE.get(conf)
     input.mapPartitions { batchIter =>
@@ -273,15 +275,8 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   }
 
   // True when `indices` selects every column in order: length == numCols and indices(i) == i.
-  private def isIdentityProjection(indices: Array[Int], numCols: Int): Boolean = {
-    if (indices.length != numCols) return false
-    var i = 0
-    while (i < indices.length) {
-      if (indices(i) != i) return false
-      i += 1
-    }
-    true
-  }
+  private def isIdentityProjection(indices: Array[Int], numCols: Int): Boolean =
+    indices.length == numCols && indices.indices.forall(i => indices(i) == i)
 
   // Decode one CometCachedBatch into a ColumnarBatch projected to the selected columns.
   private def decodeOne(b: CometCachedBatch, indices: Array[Int]): Iterator[ColumnarBatch] = {
@@ -305,6 +300,18 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
   }
 
+  private def decodeCometBatches(
+      input: RDD[CachedBatch],
+      indices: Array[Int]): RDD[ColumnarBatch] =
+    input.mapPartitions { batchIter =>
+      batchIter.flatMap {
+        case b: CometCachedBatch => decodeOne(b, indices)
+        case other =>
+          throw new IllegalStateException(
+            s"Expected CometCachedBatch but got ${other.getClass.getName}")
+      }
+    }
+
   override def convertCachedBatchToColumnarBatch(
       input: RDD[CachedBatch],
       cacheAttributes: Seq[Attribute],
@@ -317,15 +324,7 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         selectedAttributes,
         conf)
     }
-    val indices = selectedIndices(cacheAttributes, selectedAttributes)
-    input.mapPartitions { batchIter =>
-      batchIter.flatMap {
-        case b: CometCachedBatch => decodeOne(b, indices)
-        case other =>
-          throw new IllegalStateException(
-            s"Expected CometCachedBatch but got ${other.getClass.getName}")
-      }
-    }
+    decodeCometBatches(input, selectedIndices(cacheAttributes, selectedAttributes))
   }
 
   override def convertCachedBatchToInternalRow(
@@ -340,14 +339,7 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         selectedAttributes,
         conf)
     }
-    val indices = selectedIndices(cacheAttributes, selectedAttributes)
-    input.mapPartitions { batchIter =>
-      batchIter.flatMap {
-        case b: CometCachedBatch => decodeOne(b, indices).flatMap(rowsOf)
-        case other =>
-          throw new IllegalStateException(
-            s"Expected CometCachedBatch but got ${other.getClass.getName}")
-      }
-    }
+    decodeCometBatches(input, selectedIndices(cacheAttributes, selectedAttributes))
+      .flatMap(b => rowsOf(b))
   }
 }
