@@ -152,7 +152,7 @@ The tables below list every Spark built-in expression with its current status.
 | `element_at`      | ✅     | MapType input falls back                                                            |
 | `flatten`         | ✅     | Binary/struct/map elements fall back                                                |
 | `get`             | ✅     |                                                                                     |
-| `sequence`        | 🔜     | #4538                                                                               |
+| `sequence`        | ✅     |                                                                                     |
 | `shuffle`         | 🔜     | Random array shuffle                                                                |
 | `slice`           | ✅     | Native (#4149)                                                                      |
 | `sort_array`      | ✅     | Nested struct/null arrays fall back                                                 |
@@ -197,7 +197,7 @@ The tables below list every Spark built-in expression with its current status.
 | `coalesce`   | ✅     |                                   |
 | `if`         | ✅     |                                   |
 | `ifnull`     | ✅     |                                   |
-| `nanvl`      | 🔜     | #4538                             |
+| `nanvl`      | ✅     |                                   |
 | `nullif`     | ✅     |                                   |
 | `nullifzero` | ✅     | Lowers to `if`/`=` (Spark 4.0+)   |
 | `nvl`        | ✅     |                                   |
@@ -366,19 +366,19 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## map_funcs
 
-| Function           | Status | Notes                                                                                        |
-| ------------------ | ------ | -------------------------------------------------------------------------------------------- |
-| `element_at`       | ✅     | MapType input falls back                                                                     |
-| `map`              | 🔜     | Constructs a map                                                                             |
-| `map_concat`       | 🔜     | Concatenates maps                                                                            |
-| `map_contains_key` | ✅     |                                                                                              |
-| `map_entries`      | ✅     |                                                                                              |
-| `map_from_arrays`  | ✅     |                                                                                              |
-| `map_from_entries` | ✅     | BinaryType key/value falls back (Incompatible) ([details](compatibility/expressions/map.md)) |
-| `map_keys`         | ✅     |                                                                                              |
-| `map_values`       | ✅     |                                                                                              |
-| `str_to_map`       | ✅     |                                                                                              |
-| `try_element_at`   | ✅     | Lowers to `element_at`; array input (MapType falls back)                                     |
+| Function           | Status | Notes                                                    |
+| ------------------ | ------ | -------------------------------------------------------- |
+| `element_at`       | ✅     | MapType input falls back                                 |
+| `map`              | 🔜     | Constructs a map                                         |
+| `map_concat`       | ✅     | Concatenates maps                                        |
+| `map_contains_key` | ✅     |                                                          |
+| `map_entries`      | ✅     |                                                          |
+| `map_from_arrays`  | ✅     |                                                          |
+| `map_from_entries` | ✅     |                                                          |
+| `map_keys`         | ✅     |                                                          |
+| `map_values`       | ✅     |                                                          |
+| `str_to_map`       | ✅     |                                                          |
+| `try_element_at`   | ✅     | Lowers to `element_at`; array input (MapType falls back) |
 
 ---
 
@@ -400,11 +400,11 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `atan2`        | ✅     |                                                                    |
 | `atanh`        | ✅     |                                                                    |
 | `bin`          | ✅     |                                                                    |
-| `bround`       | 🔜     | #4538                                                              |
+| `bround`       | ✅     |                                                                    |
 | `cbrt`         | ✅     |                                                                    |
 | `ceil`         | ✅     | Two-arg form falls back                                            |
 | `ceiling`      | ✅     |                                                                    |
-| `conv`         | 🔜     | #4538                                                              |
+| `conv`         | ✅     |                                                                    |
 | `cos`          | ✅     |                                                                    |
 | `cosh`         | ✅     |                                                                    |
 | `cot`          | ✅     |                                                                    |
@@ -418,17 +418,17 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `floor`        | ✅     | Two-arg form falls back                                            |
 | `greatest`     | ✅     |                                                                    |
 | `hex`          | ✅     |                                                                    |
-| `hypot`        | 🔜     | #4538                                                              |
+| `hypot`        | ✅     |                                                                    |
 | `least`        | ✅     |                                                                    |
 | `ln`           | ✅     |                                                                    |
 | `log`          | ✅     |                                                                    |
 | `log10`        | ✅     |                                                                    |
-| `log1p`        | 🔜     | #4538                                                              |
+| `log1p`        | ✅     |                                                                    |
 | `log2`         | ✅     |                                                                    |
 | `mod`          | ✅     |                                                                    |
 | `negative`     | ✅     |                                                                    |
 | `pi`           | ✅     |                                                                    |
-| `pmod`         | 🔜     | #4538                                                              |
+| `pmod`         | ✅     |                                                                    |
 | `positive`     | ✅     |                                                                    |
 | `pow`          | ✅     |                                                                    |
 | `power`        | ✅     |                                                                    |
@@ -537,29 +537,29 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `concat_ws`          | ✅     |                                                                                  |
 | `contains`           | ✅     |                                                                                  |
 | `decode`             | ✅     |                                                                                  |
-| `elt`                | 🔜     | #4538                                                                            |
+| `elt`                | ✅     |                                                                                  |
 | `encode`             | 🔜     | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back                   |
 | `endswith`           | ✅     |                                                                                  |
-| `find_in_set`        | 🔜     | #4538                                                                            |
-| `format_number`      | 🔜     | #4538                                                                            |
-| `format_string`      | 🔜     | #4538                                                                            |
+| `find_in_set`        | ✅     |                                                                                  |
+| `format_number`      | ✅     |                                                                                  |
+| `format_string`      | ✅     |                                                                                  |
 | `initcap`            | ✅     |                                                                                  |
 | `instr`              | ✅     |                                                                                  |
 | `lcase`              | ✅     |                                                                                  |
 | `left`               | ✅     |                                                                                  |
 | `len`                | ✅     |                                                                                  |
 | `length`             | ✅     |                                                                                  |
-| `levenshtein`        | 🔜     | #4538                                                                            |
-| `locate`             | 🔜     | #4538                                                                            |
+| `levenshtein`        | ✅     |                                                                                  |
+| `locate`             | ✅     |                                                                                  |
 | `lower`              | ✅     |                                                                                  |
 | `lpad`               | ✅     |                                                                                  |
 | `ltrim`              | ✅     |                                                                                  |
 | `luhn_check`         | ✅     | Native via `StaticInvoke` (tests: luhn_check.sql)                                |
 | `mask`               | 🔜     | Data masking                                                                     |
 | `octet_length`       | ✅     |                                                                                  |
-| `overlay`            | 🔜     | #4538                                                                            |
-| `position`           | 🔜     | #4538                                                                            |
-| `printf`             | 🔜     | #4538                                                                            |
+| `overlay`            | ✅     |                                                                                  |
+| `position`           | ✅     |                                                                                  |
+| `printf`             | ✅     |                                                                                  |
 | `regexp_count`       | 🔜     | tracking #4098                                                                   |
 | `regexp_extract`     | 🔜     | tracking #4098                                                                   |
 | `regexp_extract_all` | 🔜     | tracking #4098                                                                   |
@@ -571,7 +571,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `right`              | ✅     |                                                                                  |
 | `rpad`               | ✅     |                                                                                  |
 | `rtrim`              | ✅     |                                                                                  |
-| `soundex`            | 🔜     | #4538                                                                            |
+| `soundex`            | ✅     |                                                                                  |
 | `space`              | ✅     |                                                                                  |
 | `split`              | ✅     |                                                                                  |
 | `split_part`         | 🔜     | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back (#4561) |
@@ -580,15 +580,15 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `substring`          | ✅     |                                                                                  |
 | `substring_index`    | ✅     |                                                                                  |
 | `to_binary`          | ✅     | Hex form accelerated; other formats fall back                                    |
-| `to_char`            | 🔜     | #4538                                                                            |
-| `to_number`          | 🔜     | #4538                                                                            |
-| `to_varchar`         | 🔜     | #4538                                                                            |
+| `to_char`            | ✅     |                                                                                  |
+| `to_number`          | ✅     |                                                                                  |
+| `to_varchar`         | ✅     |                                                                                  |
 | `translate`          | ✅     |                                                                                  |
 | `trim`               | ✅     |                                                                                  |
 | `try_to_binary`      | 🔜     | Lowers to `TryEval(...)`, which falls back                                       |
 | `try_to_number`      | 🔜     | TRY variant of `to_number`                                                       |
 | `ucase`              | ✅     |                                                                                  |
-| `unbase64`           | 🔜     | #4538                                                                            |
+| `unbase64`           | ✅     |                                                                                  |
 | `upper`              | ✅     |                                                                                  |
 
 ---
