@@ -26,20 +26,19 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.vector.NativeUtil
 
 /**
- * Convert Spark `InternalRow` / `ColumnarBatch` streams to a stream of independently-owned Arrow
- * `ColumnarBatch`es. Each emitted batch owns a fresh `VectorSchemaRoot` with newly allocated
- * buffers; the consumer is responsible for closing the batch.
+ * Convert a stream of Spark `InternalRow`s to a stream of independently-owned Arrow
+ * `ColumnarBatch`es: each emitted batch owns a fresh `VectorSchemaRoot` with newly allocated
+ * buffers and the consumer is responsible for closing it.
  *
- * Buffers are allocated from the caller-provided `BufferAllocator`. The caller owns the
- * allocator's lifecycle (typically a child allocator closed at task completion). When emitted
- * batches reach `ColumnarBatchArrowReader.loadNextBatch`, ownership of their buffers is
- * transferred (via `VectorUnloader` / `loadFieldBuffers`) to the reader's allocator, after which
- * the source batch is closed and the producer's allocator returns to zero outstanding bytes.
+ * This differs from [[RowArrowReader]], which reuses one stable `VectorSchemaRoot`
+ * (release-and-replace) so only one batch is valid at a time. Use this when multiple emitted
+ * batches must be alive simultaneously (e.g. tests that buffer several batches before consuming).
+ * Buffers come from the caller-provided `BufferAllocator`, whose lifecycle the caller owns.
  */
 object CometArrowConverters extends Logging {
 
@@ -70,49 +69,6 @@ object CometArrowConverters extends Logging {
           writer.write(rowIter.next())
           rowCount += 1
         }
-        writer.finish()
-        NativeUtil.rootAsBatch(root)
-      }
-    }
-  }
-
-  /**
-   * Slice a single Spark `ColumnarBatch` into one or more Arrow `ColumnarBatch`es of at most
-   * `maxRecordsPerBatch` rows each. Each emitted batch owns a fresh `VectorSchemaRoot`.
-   */
-  def columnarBatchToArrowBatchIter(
-      colBatch: ColumnarBatch,
-      schema: StructType,
-      maxRecordsPerBatch: Int,
-      timeZoneId: String,
-      allocator: BufferAllocator): Iterator[ColumnarBatch] = {
-    val arrowSchema: Schema = Utils.toArrowSchema(schema, timeZoneId)
-    val totalRows = colBatch.numRows()
-
-    new Iterator[ColumnarBatch] {
-      private var rowsProduced: Int = 0
-
-      override def hasNext: Boolean = rowsProduced < totalRows
-
-      override def next(): ColumnarBatch = {
-        val rowsToProduce =
-          if (maxRecordsPerBatch <= 0) totalRows - rowsProduced
-          else math.min(maxRecordsPerBatch, totalRows - rowsProduced)
-
-        val root = VectorSchemaRoot.create(arrowSchema, allocator)
-        val writer = ArrowWriter.create(root)
-
-        for (columnIndex <- 0 until colBatch.numCols()) {
-          val column = colBatch.column(columnIndex)
-          val columnArray = new ColumnarArray(column, rowsProduced, rowsToProduce)
-          if (column.hasNull) {
-            writer.writeCol(columnArray, columnIndex)
-          } else {
-            writer.writeColNoNull(columnArray, columnIndex)
-          }
-        }
-
-        rowsProduced += rowsToProduce
         writer.finish()
         NativeUtil.rootAsBatch(root)
       }
