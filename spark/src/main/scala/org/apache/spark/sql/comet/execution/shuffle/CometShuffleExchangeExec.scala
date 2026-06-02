@@ -689,7 +689,7 @@ object CometShuffleExchangeExec
       metrics: Map[String, SQLMetric]): ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
 
     val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
-    val scanTypes = outputAttributes.flatten { attr =>
+    val scanTypes = outputAttributes.flatMap { attr =>
       QueryPlanSerde.serializeDataType(attr.dataType)
     }
     if (scanTypes.length != outputAttributes.length) {
