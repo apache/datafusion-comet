@@ -461,34 +461,34 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## misc_funcs
 
-| Function                      | Status | Notes                                                                            |
-| ----------------------------- | ------ | -------------------------------------------------------------------------------- |
-| `aes_decrypt`                 | ✅     | Routed through the JVM codegen dispatcher                                        |
-| `aes_encrypt`                 | ✅     | Routed through the JVM codegen dispatcher; nondeterministic IV by default        |
-| `assert_true`                 | 🔜     | Lowers to `RaiseError`, which falls back                                         |
-| `current_catalog`             | ✅     | Resolved to a literal by the analyzer (`ReplaceCurrentLike`)                     |
-| `current_database`            | ✅     | Resolved to a literal by the analyzer (`ReplaceCurrentLike`)                     |
-| `current_schema`              | ✅     | Alias of `current_database`; resolved to a literal by the analyzer               |
-| `current_user`                | ✅     | Resolved to a literal by the analyzer; same as `user`                            |
-| `equal_null`                  | ✅     | Lowers to `<=>` (`EqualNullSafe`)                                                |
-| `is_variant_null`             | 🔜     | tracking #4098                                                                   |
-| `monotonically_increasing_id` | ✅     |                                                                                  |
-| `parse_json`                  | 🔜     | tracking #4098                                                                   |
-| `raise_error`                 | 🔜     | Raises a runtime error                                                           |
-| `rand`                        | ✅     | Seed must be a literal                                                           |
-| `randn`                       | ✅     | Seed must be a literal                                                           |
-| `schema_of_variant`           | 🔜     | tracking #4098                                                                   |
-| `schema_of_variant_agg`       | 🔜     | tracking #4098                                                                   |
-| `session_user`                | ✅     | Alias of `current_user`; resolved to a literal by the analyzer                   |
-| `spark_partition_id`          | ✅     |                                                                                  |
-| `to_variant_object`           | 🔜     | tracking #4098                                                                   |
-| `try_aes_decrypt`             | ✅     | Routed through the JVM codegen dispatcher                                        |
-| `try_parse_json`              | 🔜     | tracking #4098                                                                   |
-| `try_variant_get`             | 🔜     | tracking #4098                                                                   |
-| `typeof`                      | ✅     | Foldable; resolved to a literal before Comet sees the plan                       |
-| `user`                        | ✅     | Resolved to a literal by the Spark analyzer before reaching Comet                |
-| `uuid`                        | 🔜     | Nondeterministic random UUID                                                     |
-| `variant_get`                 | 🔜     | tracking #4098                                                                   |
+| Function                      | Status | Notes                                                                     |
+| ----------------------------- | ------ | ------------------------------------------------------------------------- |
+| `aes_decrypt`                 | ✅     | Routed through the JVM codegen dispatcher                                 |
+| `aes_encrypt`                 | ✅     | Routed through the JVM codegen dispatcher; nondeterministic IV by default |
+| `assert_true`                 | 🔜     | Lowers to `RaiseError`, which falls back                                  |
+| `current_catalog`             | ✅     | Resolved to a literal by the analyzer (`ReplaceCurrentLike`)              |
+| `current_database`            | ✅     | Resolved to a literal by the analyzer (`ReplaceCurrentLike`)              |
+| `current_schema`              | ✅     | Alias of `current_database`; resolved to a literal by the analyzer        |
+| `current_user`                | ✅     | Resolved to a literal by the analyzer; same as `user`                     |
+| `equal_null`                  | ✅     | Lowers to `<=>` (`EqualNullSafe`)                                         |
+| `is_variant_null`             | 🔜     | tracking #4098                                                            |
+| `monotonically_increasing_id` | ✅     |                                                                           |
+| `parse_json`                  | 🔜     | tracking #4098                                                            |
+| `raise_error`                 | 🔜     | Raises a runtime error                                                    |
+| `rand`                        | ✅     | Seed must be a literal                                                    |
+| `randn`                       | ✅     | Seed must be a literal                                                    |
+| `schema_of_variant`           | 🔜     | tracking #4098                                                            |
+| `schema_of_variant_agg`       | 🔜     | tracking #4098                                                            |
+| `session_user`                | ✅     | Alias of `current_user`; resolved to a literal by the analyzer            |
+| `spark_partition_id`          | ✅     |                                                                           |
+| `to_variant_object`           | 🔜     | tracking #4098                                                            |
+| `try_aes_decrypt`             | ✅     | Routed through the JVM codegen dispatcher                                 |
+| `try_parse_json`              | 🔜     | tracking #4098                                                            |
+| `try_variant_get`             | 🔜     | tracking #4098                                                            |
+| `typeof`                      | ✅     | Foldable; resolved to a literal before Comet sees the plan                |
+| `user`                        | ✅     | Resolved to a literal by the Spark analyzer before reaching Comet         |
+| `uuid`                        | 🔜     | Nondeterministic random UUID                                              |
+| `variant_get`                 | 🔜     | tracking #4098                                                            |
 
 ---
 
