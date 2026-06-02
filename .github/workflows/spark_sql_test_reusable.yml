@@ -152,7 +152,7 @@ jobs:
           if [ "${{ inputs.spark-short }}" != "4.0" ] || [ "${{ inputs.java }}" != "21" ]; then
             export SERIAL_SBT_TESTS=1
           fi
-          # Cap parallel forked test JVMs at 1: on a 7 GB runner the 2 GB SBT
+          # Cap parallel forked test JVMs at 1: on a 7 GB runner the 3 GB SBT
           # controller and a single 5 GB forked test JVM (HEAP_SIZE override
           # below) already over-commit RAM; any concurrency on top would push
           # us straight into OOMs.
@@ -165,13 +165,13 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-          # Skew Comet's memory budget toward the forked test JVM. The SBT
-          # controller (only the build driver — not where the tests run) is
-          # dropped to 2 GB; the forked test JVM gets 5 GB via Spark's
-          # `HEAP_SIZE` env in SparkBuild.scala. Total nominal = 2 GB SBT +
-          # 5 GB forked test heap + ~1.3 GB metaspace; still over 7 GB but
-          # less peak-coincident pressure than the 4+4 split.
-          SBT_MEM: "2048"
+          # Skew Comet's memory budget toward the forked test JVM. SBT
+          # (build driver, not where the tests run) gets 3 GB; the forked
+          # test JVM gets 5 GB via Spark's `HEAP_SIZE` env in SparkBuild.scala.
+          # Total nominal = 3 GB SBT + 5 GB forked test heap + ~1.3 GB
+          # metaspace; over 7 GB, but peak coincidence is between a small
+          # driver and the big test JVM rather than two equal-sized JVMs.
+          SBT_MEM: "3072"
           HEAP_SIZE: "5g"
           # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
           # build_java21.yml and build_java25.yml set this same env var to
