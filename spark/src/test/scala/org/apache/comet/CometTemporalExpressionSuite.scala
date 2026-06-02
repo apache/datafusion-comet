@@ -62,10 +62,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         s"Format $format is not supported")
     }
 
-    // Comet should fall back to Spark if format is not a literal
-    checkSparkAnswerAndFallbackReason(
-      "SELECT c0, trunc(c0, c1) from tbl order by c0, c1",
-      "Invalid format strings will throw an exception instead of returning NULL")
+    // Non-literal format strings are Incompatible on the native path, so Comet routes them
+    // through the codegen dispatcher and still executes natively.
+    checkSparkAnswerAndOperator("SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
   test("date_trunc (TruncTimestamp) - reading from DataFrame") {
@@ -86,10 +85,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
           s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
           s"Format $format is not supported")
       }
-      // Comet should fall back to Spark if format is not a literal
-      checkSparkAnswerAndFallbackReason(
-        "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
-        "Invalid format strings will throw an exception instead of returning NULL")
+      // Non-literal format strings are Incompatible on the native path, so Comet routes them
+      // through the codegen dispatcher and still executes natively.
+      checkSparkAnswerAndOperator("SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
     }
   }
 
@@ -114,10 +112,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
             s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
             s"Format $format is not supported")
         }
-        // Comet should fall back to Spark if format is not a literal
-        checkSparkAnswerAndFallbackReason(
-          "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
-          "Invalid format strings will throw an exception instead of returning NULL")
+        // Non-literal format strings are Incompatible on the native path, so Comet routes them
+        // through the codegen dispatcher and still executes natively.
+        checkSparkAnswerAndOperator("SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
       }
     }
   }
