@@ -27,7 +27,7 @@ import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
-import org.apache.comet.CometExecIterator
+import org.apache.comet.{CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass
 
 /**
@@ -112,11 +112,17 @@ private[spark] class CometExecRDD(
     }
 
     // Create shuffle block iterators for inputs that are CometShuffledBatchRDD
-    val shuffleBlockIters = shuffleScanIndices.flatMap { idx =>
+    val shuffleBlockIters = shuffleScanIndices.map { idx =>
       inputRDDs(idx) match {
         case rdd: CometShuffledBatchRDD =>
-          Some(idx -> rdd.computeAsShuffleBlockIterator(partition.inputPartitions(idx), context))
-        case _ => None
+          idx -> rdd.computeAsShuffleBlockIterator(partition.inputPartitions(idx), context)
+        case other =>
+          // A slot classified as a shuffle scan in the proto must be wired to a
+          // CometShuffledBatchRDD; anything else is a wiring bug, not something to skip
+          // (native would read the wrong input for that slot).
+          throw new CometRuntimeException(
+            s"Input slot $idx is classified as a shuffle scan but its RDD is " +
+              s"${other.getClass.getName}, expected CometShuffledBatchRDD")
       }
     }.toMap
 

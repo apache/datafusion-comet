@@ -23,7 +23,7 @@ import org.apache.spark._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometShuffleBlockIterator
+import org.apache.comet.{CometRuntimeException, CometShuffleBlockIterator}
 
 /**
  * Thin scheduling-anchor RDD for the native-shuffle path. Declares `OneToOneDependency` on each
@@ -59,11 +59,17 @@ private[shuffle] class CometNativeShuffleInputRDD(
       rdd.iterator(part, context)
     }
     val shuffleBlockIters: Map[Int, CometShuffleBlockIterator] =
-      shuffleScanIndices.flatMap { si =>
+      shuffleScanIndices.map { si =>
         inputRDDs(si) match {
           case rdd: CometShuffledBatchRDD =>
-            Some(si -> rdd.computeAsShuffleBlockIterator(partition.inputPartitions(si), context))
-          case _ => None
+            si -> rdd.computeAsShuffleBlockIterator(partition.inputPartitions(si), context)
+          case other =>
+            // A slot classified as a shuffle scan in the proto must be wired to a
+            // CometShuffledBatchRDD; anything else is a wiring bug, not something to skip
+            // (native would read the wrong input for that slot).
+            throw new CometRuntimeException(
+              s"Input slot $si is classified as a shuffle scan but its RDD is " +
+                s"${other.getClass.getName}, expected CometShuffledBatchRDD")
         }
       }.toMap
     new CometNativeShuffleInputIterator(partition.index, leafIterators, shuffleBlockIters)
