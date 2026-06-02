@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.nio.ByteBuffer
+
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -33,6 +35,7 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.ByteArray
 import org.apache.spark.unsafe.types.UTF8String
+import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.CometConf
 
@@ -256,17 +259,90 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
   }
 
+  // Map selected attributes to their column indices within cacheAttributes by exprId.
+  private def selectedIndices(
+      cacheAttributes: Seq[Attribute],
+      selectedAttributes: Seq[Attribute]): Array[Int] = {
+    val byId = cacheAttributes.map(_.exprId).zipWithIndex.toMap
+    selectedAttributes.map(a => byId(a.exprId)).toArray
+  }
+
+  // Returns true if indices is exactly [0, 1, 2, ..., n-1] (identity projection).
+  private def isIdentityProjection(indices: Array[Int], numCols: Int): Boolean = {
+    if (indices.length != numCols) return false
+    var i = 0
+    while (i < indices.length) {
+      if (indices(i) != i) return false
+      i += 1
+    }
+    true
+  }
+
+  // Decode one CometCachedBatch into a ColumnarBatch projected to the selected columns.
+  private def decodeOne(b: CometCachedBatch, indices: Array[Int]): Iterator[ColumnarBatch] = {
+    val chunked = new ChunkedByteBuffer(ByteBuffer.wrap(b.bytes))
+    CometUtils.decodeBatches(chunked, "CometCachedBatch").map { full =>
+      if (isIdentityProjection(indices, full.numCols())) {
+        full
+      } else {
+        val cols = indices.map(full.column)
+        new ColumnarBatch(cols, full.numRows())
+      }
+    }
+  }
+
+  // Version-safe conversion of a ColumnarBatch's java row iterator to copied Scala InternalRows.
+  private def rowsOf(batch: ColumnarBatch): Iterator[InternalRow] = {
+    val it = batch.rowIterator()
+    new Iterator[InternalRow] {
+      override def hasNext: Boolean = it.hasNext
+      override def next(): InternalRow = it.next().copy()
+    }
+  }
+
   override def convertCachedBatchToColumnarBatch(
       input: RDD[CachedBatch],
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute],
-      conf: SQLConf): RDD[ColumnarBatch] =
-    throw new UnsupportedOperationException("read path not yet implemented")
+      conf: SQLConf): RDD[ColumnarBatch] = {
+    if (!isCometSchema(cacheAttributes.map(_.dataType))) {
+      return fallback.convertCachedBatchToColumnarBatch(
+        input,
+        cacheAttributes,
+        selectedAttributes,
+        conf)
+    }
+    val indices = selectedIndices(cacheAttributes, selectedAttributes)
+    input.mapPartitions { batchIter =>
+      batchIter.flatMap {
+        case b: CometCachedBatch => decodeOne(b, indices)
+        case other =>
+          throw new IllegalStateException(
+            s"Expected CometCachedBatch but got ${other.getClass.getName}")
+      }
+    }
+  }
 
   override def convertCachedBatchToInternalRow(
       input: RDD[CachedBatch],
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute],
-      conf: SQLConf): RDD[InternalRow] =
-    throw new UnsupportedOperationException("read path not yet implemented")
+      conf: SQLConf): RDD[InternalRow] = {
+    if (!isCometSchema(cacheAttributes.map(_.dataType))) {
+      return fallback.convertCachedBatchToInternalRow(
+        input,
+        cacheAttributes,
+        selectedAttributes,
+        conf)
+    }
+    val indices = selectedIndices(cacheAttributes, selectedAttributes)
+    input.mapPartitions { batchIter =>
+      batchIter.flatMap {
+        case b: CometCachedBatch => decodeOne(b, indices).flatMap(rowsOf)
+        case other =>
+          throw new IllegalStateException(
+            s"Expected CometCachedBatch but got ${other.getClass.getName}")
+      }
+    }
+  }
 }

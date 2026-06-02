@@ -101,4 +101,45 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
       assert(statRows.forall(_.getInt(2) == 0))
     }
   }
+
+  test("round-trip: build then decode all columns matches input") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "64") {
+      val ser = new CometCachedBatchSerializer
+      val df = spark.range(200).coalesce(1).selectExpr("id", "cast(id * 2 as string) as s")
+      val attrs = df.queryExecution.analyzed.output
+      val cached = ser.convertInternalRowToCachedBatch(
+        df.queryExecution.toRdd,
+        attrs,
+        org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+        spark.sessionState.conf)
+      val decodedRows = ser
+        .convertCachedBatchToInternalRow(cached, attrs, attrs, spark.sessionState.conf)
+        .map(r => (r.getLong(0), r.getUTF8String(1).toString))
+        .collect()
+        .toSet
+      val expected = (0 until 200).map(i => (i.toLong, (i * 2).toString)).toSet
+      assert(decodedRows == expected)
+    }
+  }
+
+  test("read path prunes to selected columns") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "64") {
+      val ser = new CometCachedBatchSerializer
+      val df = spark.range(200).coalesce(1).selectExpr("id", "cast(id * 2 as string) as s")
+      val attrs = df.queryExecution.analyzed.output
+      val cached = ser.convertInternalRowToCachedBatch(
+        df.queryExecution.toRdd,
+        attrs,
+        org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+        spark.sessionState.conf)
+      // select only the string column (index 1)
+      val onlyS = Seq(attrs(1))
+      val pruned = ser
+        .convertCachedBatchToInternalRow(cached, attrs, onlyS, spark.sessionState.conf)
+        .map(_.getUTF8String(0).toString)
+        .collect()
+        .toSet
+      assert(pruned == (0 until 200).map(i => (i * 2).toString).toSet)
+    }
+  }
 }
