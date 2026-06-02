@@ -70,7 +70,7 @@ The tables below list every Spark built-in expression with its current status.
 | `any_value`             | ✅     |                                                                  |
 | `approx_count_distinct` | 🔜     | tracking #4098                                                   |
 | `array_agg`             | 🔜     | Array aggregate (related to `collect_list`, #2524)               |
-| `avg`                   | ⚠️     | Interval types (YearMonth, DayTime) fall back                    |
+| `avg`                   | ✅     | Interval types fall back                                         |
 | `bit_and`               | ✅     |                                                                  |
 | `bit_or`                | ✅     |                                                                  |
 | `bit_xor`               | ✅     |                                                                  |
@@ -132,30 +132,30 @@ The tables below list every Spark built-in expression with its current status.
 | Function          | Status | Notes                                                                                                                     |
 | ----------------- | ------ | ------------------------------------------------------------------------------------------------------------------------- |
 | `array`           | ✅     |                                                                                                                           |
-| `array_append`    | ⚠️     | On Spark 4.0+ rewrites to `array_insert`; inherits its incompatibilities                                                  |
+| `array_append`    | ✅     |                                                                                                                           |
 | `array_compact`   | ✅     |                                                                                                                           |
-| `array_contains`  | ⚠️     | NaN-canonicalization may differ for float/double arrays ([#4481](https://github.com/apache/datafusion-comet/issues/4481)) |
-| `array_distinct`  | ⚠️     | NaN/signed-zero canonicalization may differ ([#4481](https://github.com/apache/datafusion-comet/issues/4481))             |
-| `array_except`    | ⚠️     | Null handling and ordering may differ; `Incompatible`, flag-gated                                                         |
+| `array_contains`  | ✅     | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md))                                          |
+| `array_distinct`  | ✅     | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md))                                          |
+| `array_except`    | ✅     | Incompatible; falls back by default ([details](compatibility/expressions/array.md))                                       |
 | `array_insert`    | ✅     |                                                                                                                           |
-| `array_intersect` | ⚠️     | Result element order may differ when right array is longer than left                                                      |
-| `array_join`      | ⚠️     | Null handling may differ ([#3178](https://github.com/apache/datafusion-comet/issues/3178)); `Incompatible`, flag-gated    |
-| `array_max`       | ⚠️     | NaN ordering may differ for float/double ([#4482](https://github.com/apache/datafusion-comet/issues/4482))                |
-| `array_min`       | ⚠️     | NaN ordering may differ for float/double ([#4482](https://github.com/apache/datafusion-comet/issues/4482))                |
-| `array_position`  | ⚠️     | Falls back for binary/struct/map/null element types                                                                       |
+| `array_intersect` | ✅     | Incompatible; falls back by default ([details](compatibility/expressions/array.md))                                       |
+| `array_join`      | ✅     | Incompatible; falls back by default ([details](compatibility/expressions/array.md))                                       |
+| `array_max`       | ✅     | NaN ordering may differ ([details](compatibility/floating-point.md))                                                      |
+| `array_min`       | ✅     | NaN ordering may differ ([details](compatibility/floating-point.md))                                                      |
+| `array_position`  | ✅     | Binary/struct/map/null elements fall back                                                                                 |
 | `array_prepend`   | 🔜     | Sibling of `array_append`                                                                                                 |
 | `array_remove`    | ✅     |                                                                                                                           |
 | `array_repeat`    | ✅     |                                                                                                                           |
-| `array_union`     | ⚠️     | NaN/signed-zero canonicalization may differ ([#4481](https://github.com/apache/datafusion-comet/issues/4481))             |
+| `array_union`     | ✅     | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md))                                          |
 | `arrays_overlap`  | ✅     |                                                                                                                           |
 | `arrays_zip`      | ✅     |                                                                                                                           |
-| `element_at`      | ⚠️     | Only `ArrayType` input; `MapType` input falls back                                                                        |
-| `flatten`         | ⚠️     | Falls back for binary/struct/map child element types                                                                      |
+| `element_at`      | ✅     | MapType input falls back                                                                                                  |
+| `flatten`         | ✅     | Binary/struct/map elements fall back                                                                                      |
 | `get`             | ✅     |                                                                                                                           |
 | `sequence`        | 🔜     | #4538                                                                                                                     |
 | `shuffle`         | 🔜     | Random array shuffle                                                                                                      |
 | `slice`           | ✅     | Native (#4149)                                                                                                            |
-| `sort_array`      | ⚠️     | Incompatible under strict floating-point; falls back for nested struct/null arrays                                        |
+| `sort_array`      | ✅     | Nested struct/null arrays fall back                                                                                       |
 
 ---
 
@@ -182,11 +182,11 @@ The tables below list every Spark built-in expression with its current status.
 
 | Function      | Status | Notes                                                                                                                            |
 | ------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `array_size`  | ⚠️     | Lowers to `size`; accelerated, but returns -1 instead of NULL for NULL input (#4560)                                             |
-| `cardinality` | ⚠️     | Alias for `size`; `MapType` input falls back ([#4472](https://github.com/apache/datafusion-comet/issues/4472))                   |
-| `concat`      | ⚠️     | Only `StringType` children; `BinaryType`/`ArrayType` fall back ([#4471](https://github.com/apache/datafusion-comet/issues/4471)) |
-| `reverse`     | ⚠️     | Array with `BinaryType` elements is `Incompatible`, flag-gated ([#2763](https://github.com/apache/datafusion-comet/issues/2763)) |
-| `size`        | ⚠️     | `MapType` input falls back ([#4472](https://github.com/apache/datafusion-comet/issues/4472))                                     |
+| `array_size`  | ⚠️     | Returns -1 instead of NULL for NULL input ([#4560](https://github.com/apache/datafusion-comet/issues/4560))                      |
+| `cardinality` | ✅     | MapType input falls back                                                                                                         |
+| `concat`      | ✅     | Binary/array children fall back                                                                                                  |
+| `reverse`     | ✅     | Binary-element arrays fall back (Incompatible) ([details](compatibility/expressions/array.md))                                   |
+| `size`        | ✅     | MapType input falls back                                                                                                         |
 
 ---
 
@@ -213,7 +213,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Notes                                                                                                              |
 | -------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
-| `cast`   | ⚠️     | Many type pairs supported; float-to-decimal rounding may differ; see [Compatibility Guide](compatibility/index.md) |
+| `cast`   | ✅     | Some casts fall back; float-to-decimal is opt-in ([details](compatibility/expressions/cast.md))                    |
 
 ---
 
@@ -245,7 +245,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `dayofyear`           | ✅     |                                                                                                        |
 | `extract`             | ✅     |                                                                                                        |
 | `from_unixtime`       | ✅     |                                                                                                        |
-| `from_utc_timestamp`  | ⚠️     | Legacy zone forms (`GMT+1`, `PST`) throw a native parse error                                          |
+| `from_utc_timestamp`  | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md))          |
 | `hour`                | ✅     |                                                                                                        |
 | `last_day`            | ✅     |                                                                                                        |
 | `localtimestamp`      | ✅     |                                                                                                        |
@@ -254,8 +254,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `make_interval`       | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                     |
 | `make_time`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
 | `make_timestamp`      | ✅     |                                                                                                        |
-| `make_timestamp_ltz`  | ⚠️     | 6-arg form runs via the codegen dispatcher; 2-arg `(date, time)` form (Spark 4.1 TIME type) falls back |
-| `make_timestamp_ntz`  | ⚠️     | 6-arg form runs via the codegen dispatcher; 2-arg `(date, time)` form (Spark 4.1 TIME type) falls back |
+| `make_timestamp_ltz`  | ✅     | 2-arg TIME form falls back                                                                             |
+| `make_timestamp_ntz`  | ✅     | 2-arg TIME form falls back                                                                             |
 | `make_ym_interval`    | 🔜     | #4541                                                                                                  |
 | `minute`              | ✅     |                                                                                                        |
 | `month`               | ✅     |                                                                                                        |
@@ -277,10 +277,10 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_timestamp_ltz`    | ✅     | Rewrites to `to_timestamp` (`TimestampType`)                                                           |
 | `to_timestamp_ntz`    | ✅     | Rewrites to `to_timestamp` (`TimestampNTZType`)                                                        |
 | `to_unix_timestamp`   | ✅     |                                                                                                        |
-| `to_utc_timestamp`    | ⚠️     | Legacy zone forms (`GMT+1`, `PST`) throw a native parse error                                          |
+| `to_utc_timestamp`    | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md))          |
 | `trunc`               | ✅     |                                                                                                        |
 | `try_make_interval`   | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                     |
-| `try_make_timestamp`  | ⚠️     | Runs natively for valid inputs, but returns wrong values for invalid inputs instead of NULL (#4554)    |
+| `try_make_timestamp`  | ⚠️     | Returns a wrong value instead of NULL for invalid inputs ([#4554](https://github.com/apache/datafusion-comet/issues/4554)) |
 | `try_to_date`         | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                           |
 | `try_to_time`         | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
 | `try_to_timestamp`    | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                           |
@@ -306,11 +306,11 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | Function           | Status | Notes                                                |
 | ------------------ | ------ | ---------------------------------------------------- |
 | `explode`          | ✅     | via `CometExplodeExec`                               |
-| `explode_outer`    | ⚠️     | `outer=true` incompatible; needs `allowIncompatible` |
+| `explode_outer`    | ✅     | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
 | `inline`           | 🔜     | Operator-level generator (like `explode`)            |
 | `inline_outer`     | 🔜     | Operator-level generator (like `explode`)            |
 | `posexplode`       | ✅     | via `CometExplodeExec`                               |
-| `posexplode_outer` | ⚠️     | `outer=true` incompatible; needs `allowIncompatible` |
+| `posexplode_outer` | ✅     | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
 | `stack`            | 🔜     | Operator-level generator                             |
 
 ---
@@ -333,13 +333,13 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 | Function            | Status | Notes                                                                                                                 |
 | ------------------- | ------ | --------------------------------------------------------------------------------------------------------------------- |
-| `from_json`         | ⚠️     | Partial native support (requires explicit schema, marked `Incompatible`); fuller support via codegen dispatch (#4305) |
-| `get_json_object`   | ⚠️     | Single-quoted JSON and unescaped control chars require `allowIncompatible`                                            |
+| `from_json`         | ✅     | Falls back by default; opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json)) |
+| `get_json_object`   | ✅     | Some inputs need allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
 | `json_array_length` | 🔜     | tracking #4098                                                                                                        |
 | `json_object_keys`  | 🔜     | [#3161](https://github.com/apache/datafusion-comet/issues/3161)                                                       |
 | `json_tuple`        | 🔜     | [#3160](https://github.com/apache/datafusion-comet/issues/3160)                                                       |
 | `schema_of_json`    | 🔜     | [#3163](https://github.com/apache/datafusion-comet/issues/3163)                                                       |
-| `to_json`           | ⚠️     | Partial native support (options and map/array inputs fall back); fuller support via codegen dispatch (#4305)          |
+| `to_json`           | ✅     | Options and map/array inputs fall back ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json))     |
 
 ---
 
@@ -368,13 +368,13 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 | Function           | Status | Notes                                                        |
 | ------------------ | ------ | ------------------------------------------------------------ |
-| `element_at`       | ⚠️     | Only `ArrayType` input; `MapType` input falls back           |
+| `element_at`       | ✅     | MapType input falls back                                     |
 | `map`              | 🔜     | Constructs a map                                             |
 | `map_concat`       | 🔜     | Concatenates maps                                            |
 | `map_contains_key` | ✅     |                                                              |
 | `map_entries`      | ✅     |                                                              |
 | `map_from_arrays`  | ✅     |                                                              |
-| `map_from_entries` | ⚠️     | `BinaryType` key/value falls back unless `allowIncompatible` |
+| `map_from_entries` | ✅     | BinaryType key/value falls back (Incompatible) ([details](compatibility/expressions/map.md)) |
 | `map_keys`         | ✅     |                                                              |
 | `map_values`       | ✅     |                                                              |
 | `str_to_map`       | ✅     |                                                              |
@@ -386,12 +386,12 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 | Function       | Status | Notes                                                                                                              |
 | -------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
-| `%`            | ⚠️     | `try_mod` form (`EvalMode.TRY`) falls back ([#4484](https://github.com/apache/datafusion-comet/issues/4484))       |
-| `*`            | ⚠️     | Interval multiplication falls back                                                                                 |
+| `%`            | ✅     | try_mod (TRY mode) falls back                                                                                      |
+| `*`            | ✅     | Interval multiplication falls back                                                                                 |
 | `+`            | ✅     |                                                                                                                    |
 | `-`            | ✅     |                                                                                                                    |
 | `/`            | ✅     |                                                                                                                    |
-| `abs`          | ⚠️     | Interval types fall back; ANSI overflow for integer min value                                                      |
+| `abs`          | ✅     | Interval types fall back                                                                                           |
 | `acos`         | ✅     |                                                                                                                    |
 | `acosh`        | ✅     |                                                                                                                    |
 | `asin`         | ✅     |                                                                                                                    |
@@ -402,7 +402,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `bin`          | ✅     |                                                                                                                    |
 | `bround`       | 🔜     | #4538                                                                                                              |
 | `cbrt`         | ✅     |                                                                                                                    |
-| `ceil`         | ⚠️     | Two-arg `ceil(expr, scale)` form falls back                                                                        |
+| `ceil`         | ✅     | Two-arg form falls back                                                                                            |
 | `ceiling`      | ✅     |                                                                                                                    |
 | `conv`         | 🔜     | #4538                                                                                                              |
 | `cos`          | ✅     |                                                                                                                    |
@@ -415,7 +415,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `exp`          | ✅     |                                                                                                                    |
 | `expm1`        | ✅     |                                                                                                                    |
 | `factorial`    | ✅     |                                                                                                                    |
-| `floor`        | ⚠️     | Two-arg `floor(expr, scale)` form falls back                                                                       |
+| `floor`        | ✅     | Two-arg form falls back                                                                                            |
 | `greatest`     | ✅     |                                                                                                                    |
 | `hex`          | ✅     |                                                                                                                    |
 | `hypot`        | 🔜     | #4538                                                                                                              |
@@ -438,7 +438,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `random`       | ✅     | Alias for `rand` (Spark 4.0+); seed must be a literal                                                              |
 | `randstr`      | 🔜     | Random string (Spark 4.0+)                                                                                         |
 | `rint`         | ✅     |                                                                                                                    |
-| `round`        | ⚠️     | Float/Double inputs always fall back; integer/decimal HALF_UP supported                                            |
+| `round`        | ✅     | Float/double inputs fall back                                                                                      |
 | `sec`          | ✅     |                                                                                                                    |
 | `shiftleft`    | ✅     |                                                                                                                    |
 | `sign`         | ✅     |                                                                                                                    |
@@ -448,14 +448,14 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `sqrt`         | ✅     |                                                                                                                    |
 | `tan`          | ✅     |                                                                                                                    |
 | `tanh`         | ✅     |                                                                                                                    |
-| `try_add`      | ⚠️     | Datetime/interval form falls back; numeric form supported                                                          |
+| `try_add`      | ✅     | Datetime/interval form falls back                                                                                  |
 | `try_divide`   | ✅     |                                                                                                                    |
 | `try_mod`      | 🔜     | Lowers to `Remainder` with TRY eval mode, which falls back (#4484)                                                 |
 | `try_multiply` | ✅     |                                                                                                                    |
 | `try_subtract` | ✅     |                                                                                                                    |
 | `unhex`        | ✅     |                                                                                                                    |
 | `uniform`      | ✅     | Constant-folded; literal arguments only (Spark 4.0+)                                                               |
-| `width_bucket` | ⚠️     | Wired via shim, bypasses support-level framework ([#4485](https://github.com/apache/datafusion-comet/issues/4485)) |
+| `width_bucket` | ✅     |                                                                                                                    |
 
 ---
 
@@ -514,9 +514,9 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `like`        | ✅     |                                                                                               |
 | `not`         | ✅     |                                                                                               |
 | `or`          | ✅     |                                                                                               |
-| `regexp`      | ⚠️     | Alias for `rlike`; uses Rust `regex` crate, requires `allowIncompatible`                      |
-| `regexp_like` | ⚠️     | Alias for `rlike`; uses Rust `regex` crate, requires `allowIncompatible`                      |
-| `rlike`       | ⚠️     | Uses Rust `regex` crate; requires `allowIncompatible`; results may differ from Java `Pattern` |
+| `regexp`      | ✅     | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md))       |
+| `regexp_like` | ✅     | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md))       |
+| `rlike`       | ✅     | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md))       |
 
 ---
 
@@ -579,7 +579,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `substr`             | ✅     |                                                                                  |
 | `substring`          | ✅     |                                                                                  |
 | `substring_index`    | ✅     |                                                                                  |
-| `to_binary`          | ⚠️     | Only the hex format is accelerated (lowers to `unhex`); UTF-8/base64 fall back   |
+| `to_binary`          | ✅     | Hex form accelerated; other formats fall back                                    |
 | `to_char`            | 🔜     | #4538                                                                            |
 | `to_number`          | 🔜     | #4538                                                                            |
 | `to_varchar`         | 🔜     | #4538                                                                            |
@@ -597,7 +597,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 | Function       | Status | Notes                                    |
 | -------------- | ------ | ---------------------------------------- |
-| `named_struct` | ⚠️     | Duplicate field names fall back to Spark |
+| `named_struct` | ✅     | Duplicate field names fall back          |
 | `struct`       | ✅     |                                          |
 
 ---
