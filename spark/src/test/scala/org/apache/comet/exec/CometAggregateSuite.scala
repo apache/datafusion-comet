@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.aggregate.SortAggregateExec
 import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -2106,6 +2107,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |GROUP BY a
           |""".stripMargin,
         "Grouping on map-containing types is not supported")
+    }
+  }
+
+  test("SortAggregate with collect_set is converted to native") {
+    // useObjectHashAggregateExec=false forces Spark to plan SortAggregateExec for
+    // TypedImperativeAggregate functions like collect_set. Comet converts those just like
+    // ObjectHashAggregateExec via the shared CometBaseAggregate path.
+    withSQLConf(
+      "spark.sql.execution.useObjectHashAggregateExec" -> "false",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      withTempView("tbl") {
+        Seq((1, "a"), (2, "a"), (1, "a"), (3, "b"), (4, "b"), (4, "b"))
+          .toDF("v", "g")
+          .createOrReplaceTempView("tbl")
+        val query = "SELECT g, sort_array(collect_set(v)) FROM tbl GROUP BY g ORDER BY g"
+        // Spark must actually plan a SortAggregateExec for this query; otherwise the test
+        // would pass without exercising the new code path.
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val plan = stripAQEPlan(sql(query).queryExecution.executedPlan)
+          assert(
+            plan.find(_.isInstanceOf[SortAggregateExec]).isDefined,
+            s"Expected SortAggregateExec in Spark-only plan but got:\n$plan")
+        }
+        checkSparkAnswerAndOperator(sql(query))
+      }
     }
   }
 

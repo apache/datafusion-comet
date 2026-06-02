@@ -33,7 +33,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -80,6 +80,7 @@ object CometExecRule {
       classOf[GenerateExec] -> CometExplodeExec,
       classOf[HashAggregateExec] -> CometHashAggregateExec,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregateExec,
+      classOf[SortAggregateExec] -> CometSortAggregateExec,
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
@@ -149,8 +150,7 @@ case class CometExecRule(session: SparkSession)
    * Comet columnar shuffle.
    */
   private def revertRedundantColumnarShuffle(plan: SparkPlan): SparkPlan = {
-    def isAggregate(p: SparkPlan): Boolean =
-      p.isInstanceOf[HashAggregateExec] || p.isInstanceOf[ObjectHashAggregateExec]
+    def isAggregate(p: SparkPlan): Boolean = p.isInstanceOf[BaseAggregateExec]
 
     def isRedundantShuffle(child: SparkPlan): Boolean = child match {
       case s: CometShuffleExchangeExec =>
@@ -858,9 +858,13 @@ case class CometExecRule(session: SparkSession)
     val serde = handler.get.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (!isOperatorEnabled(serde, agg.asInstanceOf[SparkPlan])) return false
 
-    // ObjectHashAggregate has an extra shuffle-enabled guard in its convert method
+    // ObjectHashAggregate / SortAggregate carry TypedImperativeAggregate functions whose
+    // intermediate buffer formats differ between Spark and Comet, so the Partial->Final pair
+    // must travel via Comet shuffle.
     agg match {
-      case _: ObjectHashAggregateExec if !isCometShuffleEnabled(agg.conf) => return false
+      case _: ObjectHashAggregateExec | _: SortAggregateExec
+          if !isCometShuffleEnabled(agg.conf) =>
+        return false
       case _ =>
     }
 
