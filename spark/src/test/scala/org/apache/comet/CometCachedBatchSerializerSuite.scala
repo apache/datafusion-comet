@@ -29,6 +29,9 @@ import org.apache.comet.CometConf
 
 class CometCachedBatchSerializerSuite extends CometTestBase {
 
+  // spark.sql.cache.serializer is a STATIC SQL config (cannot be set via withSQLConf at
+  // runtime), so it must be set at session creation. This makes the whole suite use the Comet
+  // cache serializer; the pure-unit tests construct a serializer directly and are unaffected.
   override protected def sparkConf: org.apache.spark.SparkConf = {
     super.sparkConf
       .set("spark.sql.cache.serializer", "org.apache.spark.sql.comet.CometCachedBatchSerializer")
@@ -215,7 +218,7 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
   test("cached scan passes already-Arrow batches through CometSparkToColumnarExec") {
     withSQLConf(
       org.apache.spark.sql.internal.SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") { // jvm shuffle keeps a CometSparkToColumnarExec in the plan over the cached scan
       spark
         .range(1000)
         .selectExpr("id as key", "id % 8 as value")

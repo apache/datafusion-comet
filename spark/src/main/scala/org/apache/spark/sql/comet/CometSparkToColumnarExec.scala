@@ -36,6 +36,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
+import org.apache.comet.vector.CometVector
 
 case class CometSparkToColumnarExec(child: SparkPlan)
     extends RowToColumnarTransition
@@ -70,7 +71,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
       "time converting Spark batches to Arrow batches"),
     "numPassthroughBatches" -> SQLMetrics.createMetric(
       sparkContext,
-      "number of already-Arrow batches passed through without conversion"))
+      "number of passthrough Arrow batches"))
 
   // The conversion happens in next(), so wrap the call to measure time spent.
   private def createTimingIter(
@@ -155,7 +156,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     if (batch.numCols() == 0) return false
     var i = 0
     while (i < batch.numCols()) {
-      if (!batch.column(i).isInstanceOf[org.apache.comet.vector.CometVector]) return false
+      if (!batch.column(i).isInstanceOf[CometVector]) return false
       i += 1
     }
     true
