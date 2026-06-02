@@ -431,7 +431,8 @@
 - [x] datediff
 - [x] datepart
 - [x] day
-- [ ] dayname
+- [x] dayname
+  - Spark 4.0+. Implemented natively: maps a `DateType` value to a fixed US-English abbreviated day name (`DayOfWeek.getDisplayName(TextStyle.SHORT, Locale.US)`), with no session-locale or timezone dependence.
 - [x] dayofmonth
 - [x] dayofweek
 - [x] dayofyear
@@ -457,7 +458,8 @@
 - [ ] make_ym_interval
 - [x] minute
 - [x] month
-- [ ] monthname
+- [x] monthname
+  - Spark 4.0+. Implemented natively: maps a `DateType` value to a fixed US-English abbreviated month name (`Month.getDisplayName(TextStyle.SHORT, Locale.US)`), with no session-locale or timezone dependence.
 - [x] months_between
 - [x] next_day
 - [x] now

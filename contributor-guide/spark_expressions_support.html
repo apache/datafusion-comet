@@ -1109,7 +1109,11 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> datediff</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> datepart</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> day</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> dayname</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> dayname</p>
+<ul>
+<li><p>Spark 4.0+. Implemented natively: maps a <code class="docutils literal notranslate"><span class="pre">DateType</span></code> value to a fixed US-English abbreviated day name (<code class="docutils literal notranslate"><span class="pre">DayOfWeek.getDisplayName(TextStyle.SHORT,</span> <span class="pre">Locale.US)</span></code>), with no session-locale or timezone dependence.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> dayofmonth</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> dayofweek</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> dayofyear</p></li>
@@ -1144,7 +1148,11 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> make_ym_interval</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> minute</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> month</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> monthname</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> monthname</p>
+<ul>
+<li><p>Spark 4.0+. Implemented natively: maps a <code class="docutils literal notranslate"><span class="pre">DateType</span></code> value to a fixed US-English abbreviated month name (<code class="docutils literal notranslate"><span class="pre">Month.getDisplayName(TextStyle.SHORT,</span> <span class="pre">Locale.US)</span></code>), with no session-locale or timezone dependence.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> months_between</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> next_day</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> now</p>
