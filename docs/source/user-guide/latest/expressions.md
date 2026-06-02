@@ -36,12 +36,12 @@ Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enab
 
 ## Status legend
 
-| Status                   | Meaning                                                                                                                                                                                 |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ✅ Supported             | Comet produces Spark-compatible results by default. Some inputs or forms may fall back to Spark, and any incompatible behavior is opt-in (off by default). |
+| Status                   | Meaning                                                                                                                                                            |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ✅ Supported             | Comet produces Spark-compatible results by default. Some inputs or forms may fall back to Spark, and any incompatible behavior is opt-in (off by default).         |
 | ⚠️ Incorrect by default  | Comet runs natively by default but can return results that differ from Spark (a wrong value, or a native error on valid input). See the linked detail on each row. |
-| 🔜 Planned               | Intended; tracked by an open issue or pull request.                                                                                                                                     |
-| 💤 Not currently planned | Not on the current roadmap; falls back to Spark and may be reconsidered later.                                                                                                          |
+| 🔜 Planned               | Intended; tracked by an open issue or pull request.                                                                                                                |
+| 💤 Not currently planned | Not on the current roadmap; falls back to Spark and may be reconsidered later.                                                                                     |
 
 ## Not currently planned
 
@@ -129,33 +129,33 @@ The tables below list every Spark built-in expression with its current status.
 
 ## array_funcs
 
-| Function          | Status | Notes                                                                                                                     |
-| ----------------- | ------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `array`           | ✅     |                                                                                                                           |
-| `array_append`    | ✅     |                                                                                                                           |
-| `array_compact`   | ✅     |                                                                                                                           |
-| `array_contains`  | ✅     | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md))                                          |
-| `array_distinct`  | ✅     | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md))                                          |
-| `array_except`    | ✅     | Incompatible; falls back by default ([details](compatibility/expressions/array.md))                                       |
-| `array_insert`    | ✅     |                                                                                                                           |
-| `array_intersect` | ✅     | Incompatible; falls back by default ([details](compatibility/expressions/array.md))                                       |
-| `array_join`      | ✅     | Incompatible; falls back by default ([details](compatibility/expressions/array.md))                                       |
-| `array_max`       | ✅     | NaN ordering may differ ([details](compatibility/floating-point.md))                                                      |
-| `array_min`       | ✅     | NaN ordering may differ ([details](compatibility/floating-point.md))                                                      |
-| `array_position`  | ✅     | Binary/struct/map/null elements fall back                                                                                 |
-| `array_prepend`   | 🔜     | Sibling of `array_append`                                                                                                 |
-| `array_remove`    | ✅     |                                                                                                                           |
-| `array_repeat`    | ✅     |                                                                                                                           |
-| `array_union`     | ✅     | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md))                                          |
-| `arrays_overlap`  | ✅     |                                                                                                                           |
-| `arrays_zip`      | ✅     |                                                                                                                           |
-| `element_at`      | ✅     | MapType input falls back                                                                                                  |
-| `flatten`         | ✅     | Binary/struct/map elements fall back                                                                                      |
-| `get`             | ✅     |                                                                                                                           |
-| `sequence`        | 🔜     | #4538                                                                                                                     |
-| `shuffle`         | 🔜     | Random array shuffle                                                                                                      |
-| `slice`           | ✅     | Native (#4149)                                                                                                            |
-| `sort_array`      | ✅     | Nested struct/null arrays fall back                                                                                       |
+| Function          | Status | Notes                                                                               |
+| ----------------- | ------ | ----------------------------------------------------------------------------------- |
+| `array`           | ✅     |                                                                                     |
+| `array_append`    | ✅     |                                                                                     |
+| `array_compact`   | ✅     |                                                                                     |
+| `array_contains`  | ✅     | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md))    |
+| `array_distinct`  | ✅     | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md))    |
+| `array_except`    | ✅     | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_insert`    | ✅     |                                                                                     |
+| `array_intersect` | ✅     | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_join`      | ✅     | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_max`       | ✅     | NaN ordering may differ ([details](compatibility/floating-point.md))                |
+| `array_min`       | ✅     | NaN ordering may differ ([details](compatibility/floating-point.md))                |
+| `array_position`  | ✅     | Binary/struct/map/null elements fall back                                           |
+| `array_prepend`   | 🔜     | Sibling of `array_append`                                                           |
+| `array_remove`    | ✅     |                                                                                     |
+| `array_repeat`    | ✅     |                                                                                     |
+| `array_union`     | ✅     | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md))    |
+| `arrays_overlap`  | ✅     |                                                                                     |
+| `arrays_zip`      | ✅     |                                                                                     |
+| `element_at`      | ✅     | MapType input falls back                                                            |
+| `flatten`         | ✅     | Binary/struct/map elements fall back                                                |
+| `get`             | ✅     |                                                                                     |
+| `sequence`        | 🔜     | #4538                                                                               |
+| `shuffle`         | 🔜     | Random array shuffle                                                                |
+| `slice`           | ✅     | Native (#4149)                                                                      |
+| `sort_array`      | ✅     | Nested struct/null arrays fall back                                                 |
 
 ---
 
@@ -180,13 +180,13 @@ The tables below list every Spark built-in expression with its current status.
 
 ## collection_funcs
 
-| Function      | Status | Notes                                                                                                                            |
-| ------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `array_size`  | ⚠️     | Returns -1 instead of NULL for NULL input ([#4560](https://github.com/apache/datafusion-comet/issues/4560))                      |
-| `cardinality` | ✅     | MapType input falls back                                                                                                         |
-| `concat`      | ✅     | Binary/array children fall back                                                                                                  |
-| `reverse`     | ✅     | Binary-element arrays fall back (Incompatible) ([details](compatibility/expressions/array.md))                                   |
-| `size`        | ✅     | MapType input falls back                                                                                                         |
+| Function      | Status | Notes                                                                                                       |
+| ------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
+| `array_size`  | ⚠️     | Returns -1 instead of NULL for NULL input ([#4560](https://github.com/apache/datafusion-comet/issues/4560)) |
+| `cardinality` | ✅     | MapType input falls back                                                                                    |
+| `concat`      | ✅     | Binary/array children fall back                                                                             |
+| `reverse`     | ✅     | Binary-element arrays fall back (Incompatible) ([details](compatibility/expressions/array.md))              |
+| `size`        | ✅     | MapType input falls back                                                                                    |
 
 ---
 
@@ -211,89 +211,89 @@ The tables below list every Spark built-in expression with its current status.
 
 The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `decimal`, `double`, `float`, `int`, `smallint`, `string`, `timestamp`, `tinyint`) are SQL aliases for `CAST(... AS <type>)` and share the support and caveats of `cast`.
 
-| Function | Status | Notes                                                                                                              |
-| -------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
-| `cast`   | ✅     | Some casts fall back; float-to-decimal is opt-in ([details](compatibility/expressions/cast.md))                    |
+| Function | Status | Notes                                                                                           |
+| -------- | ------ | ----------------------------------------------------------------------------------------------- |
+| `cast`   | ✅     | Some casts fall back; float-to-decimal is opt-in ([details](compatibility/expressions/cast.md)) |
 
 ---
 
 ## datetime_funcs
 
-| Function              | Status | Notes                                                                                                  |
-| --------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
-| `add_months`          | ✅     |                                                                                                        |
-| `convert_timezone`    | ✅     |                                                                                                        |
-| `curdate`             | ✅     | Constant-folded to a literal (alias of `current_date`)                                                 |
-| `current_date`        | ✅     | Constant-folded to a literal before Comet sees the plan                                                |
-| `current_time`        | 🔜     | Blocked on Spark 4.1 TIME type support (#4288)                                                         |
-| `current_timestamp`   | ✅     | Constant-folded to a literal before Comet sees the plan                                                |
-| `current_timezone`    | ✅     |                                                                                                        |
-| `date_add`            | ✅     |                                                                                                        |
-| `date_diff`           | ✅     |                                                                                                        |
-| `date_format`         | ✅     |                                                                                                        |
-| `date_from_unix_date` | ✅     |                                                                                                        |
-| `date_part`           | ✅     |                                                                                                        |
-| `date_sub`            | ✅     |                                                                                                        |
-| `date_trunc`          | ✅     |                                                                                                        |
-| `dateadd`             | ✅     |                                                                                                        |
-| `datediff`            | ✅     |                                                                                                        |
-| `datepart`            | ✅     |                                                                                                        |
-| `day`                 | ✅     |                                                                                                        |
-| `dayname`             | 🔜     | #4544                                                                                                  |
-| `dayofmonth`          | ✅     |                                                                                                        |
-| `dayofweek`           | ✅     |                                                                                                        |
-| `dayofyear`           | ✅     |                                                                                                        |
-| `extract`             | ✅     |                                                                                                        |
-| `from_unixtime`       | ✅     |                                                                                                        |
-| `from_utc_timestamp`  | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md))          |
-| `hour`                | ✅     |                                                                                                        |
-| `last_day`            | ✅     |                                                                                                        |
-| `localtimestamp`      | ✅     |                                                                                                        |
-| `make_date`           | ✅     |                                                                                                        |
-| `make_dt_interval`    | 🔜     | #4541                                                                                                  |
-| `make_interval`       | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                     |
-| `make_time`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
-| `make_timestamp`      | ✅     |                                                                                                        |
-| `make_timestamp_ltz`  | ✅     | 2-arg TIME form falls back                                                                             |
-| `make_timestamp_ntz`  | ✅     | 2-arg TIME form falls back                                                                             |
-| `make_ym_interval`    | 🔜     | #4541                                                                                                  |
-| `minute`              | ✅     |                                                                                                        |
-| `month`               | ✅     |                                                                                                        |
-| `monthname`           | 🔜     | #4544                                                                                                  |
-| `months_between`      | ✅     |                                                                                                        |
-| `next_day`            | ✅     |                                                                                                        |
-| `now`                 | ✅     | Constant-folded to a literal (alias of `current_timestamp`)                                            |
-| `quarter`             | ✅     |                                                                                                        |
-| `second`              | ✅     |                                                                                                        |
-| `session_window`      | 🔜     | Time-window grouping; tracked by #4553                                                                 |
-| `time_diff`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
-| `time_trunc`          | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
-| `timestamp_micros`    | ✅     |                                                                                                        |
-| `timestamp_millis`    | ✅     |                                                                                                        |
-| `timestamp_seconds`   | ✅     |                                                                                                        |
-| `to_date`             | ✅     | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan                  |
-| `to_time`             | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
-| `to_timestamp`        | ✅     | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan                        |
-| `to_timestamp_ltz`    | ✅     | Rewrites to `to_timestamp` (`TimestampType`)                                                           |
-| `to_timestamp_ntz`    | ✅     | Rewrites to `to_timestamp` (`TimestampNTZType`)                                                        |
-| `to_unix_timestamp`   | ✅     |                                                                                                        |
-| `to_utc_timestamp`    | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md))          |
-| `trunc`               | ✅     |                                                                                                        |
-| `try_make_interval`   | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                     |
+| Function              | Status | Notes                                                                                                                      |
+| --------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `add_months`          | ✅     |                                                                                                                            |
+| `convert_timezone`    | ✅     |                                                                                                                            |
+| `curdate`             | ✅     | Constant-folded to a literal (alias of `current_date`)                                                                     |
+| `current_date`        | ✅     | Constant-folded to a literal before Comet sees the plan                                                                    |
+| `current_time`        | 🔜     | Blocked on Spark 4.1 TIME type support (#4288)                                                                             |
+| `current_timestamp`   | ✅     | Constant-folded to a literal before Comet sees the plan                                                                    |
+| `current_timezone`    | ✅     |                                                                                                                            |
+| `date_add`            | ✅     |                                                                                                                            |
+| `date_diff`           | ✅     |                                                                                                                            |
+| `date_format`         | ✅     |                                                                                                                            |
+| `date_from_unix_date` | ✅     |                                                                                                                            |
+| `date_part`           | ✅     |                                                                                                                            |
+| `date_sub`            | ✅     |                                                                                                                            |
+| `date_trunc`          | ✅     |                                                                                                                            |
+| `dateadd`             | ✅     |                                                                                                                            |
+| `datediff`            | ✅     |                                                                                                                            |
+| `datepart`            | ✅     |                                                                                                                            |
+| `day`                 | ✅     |                                                                                                                            |
+| `dayname`             | 🔜     | #4544                                                                                                                      |
+| `dayofmonth`          | ✅     |                                                                                                                            |
+| `dayofweek`           | ✅     |                                                                                                                            |
+| `dayofyear`           | ✅     |                                                                                                                            |
+| `extract`             | ✅     |                                                                                                                            |
+| `from_unixtime`       | ✅     |                                                                                                                            |
+| `from_utc_timestamp`  | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md))                              |
+| `hour`                | ✅     |                                                                                                                            |
+| `last_day`            | ✅     |                                                                                                                            |
+| `localtimestamp`      | ✅     |                                                                                                                            |
+| `make_date`           | ✅     |                                                                                                                            |
+| `make_dt_interval`    | 🔜     | #4541                                                                                                                      |
+| `make_interval`       | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                                         |
+| `make_time`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
+| `make_timestamp`      | ✅     |                                                                                                                            |
+| `make_timestamp_ltz`  | ✅     | 2-arg TIME form falls back                                                                                                 |
+| `make_timestamp_ntz`  | ✅     | 2-arg TIME form falls back                                                                                                 |
+| `make_ym_interval`    | 🔜     | #4541                                                                                                                      |
+| `minute`              | ✅     |                                                                                                                            |
+| `month`               | ✅     |                                                                                                                            |
+| `monthname`           | 🔜     | #4544                                                                                                                      |
+| `months_between`      | ✅     |                                                                                                                            |
+| `next_day`            | ✅     |                                                                                                                            |
+| `now`                 | ✅     | Constant-folded to a literal (alias of `current_timestamp`)                                                                |
+| `quarter`             | ✅     |                                                                                                                            |
+| `second`              | ✅     |                                                                                                                            |
+| `session_window`      | 🔜     | Time-window grouping; tracked by #4553                                                                                     |
+| `time_diff`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
+| `time_trunc`          | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
+| `timestamp_micros`    | ✅     |                                                                                                                            |
+| `timestamp_millis`    | ✅     |                                                                                                                            |
+| `timestamp_seconds`   | ✅     |                                                                                                                            |
+| `to_date`             | ✅     | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan                                      |
+| `to_time`             | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
+| `to_timestamp`        | ✅     | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan                                            |
+| `to_timestamp_ltz`    | ✅     | Rewrites to `to_timestamp` (`TimestampType`)                                                                               |
+| `to_timestamp_ntz`    | ✅     | Rewrites to `to_timestamp` (`TimestampNTZType`)                                                                            |
+| `to_unix_timestamp`   | ✅     |                                                                                                                            |
+| `to_utc_timestamp`    | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md))                              |
+| `trunc`               | ✅     |                                                                                                                            |
+| `try_make_interval`   | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                                         |
 | `try_make_timestamp`  | ⚠️     | Returns a wrong value instead of NULL for invalid inputs ([#4554](https://github.com/apache/datafusion-comet/issues/4554)) |
-| `try_to_date`         | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                           |
-| `try_to_time`         | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                  |
-| `try_to_timestamp`    | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                           |
-| `unix_date`           | ✅     |                                                                                                        |
-| `unix_micros`         | ✅     |                                                                                                        |
-| `unix_millis`         | ✅     |                                                                                                        |
-| `unix_seconds`        | ✅     |                                                                                                        |
-| `unix_timestamp`      | ✅     |                                                                                                        |
-| `weekday`             | ✅     |                                                                                                        |
-| `weekofyear`          | ✅     |                                                                                                        |
-| `window`              | 🔜     | Time-window grouping; tracked by #4553                                                                 |
-| `window_time`         | 🔜     | Time-window grouping; tracked by #4553                                                                 |
-| `year`                | ✅     |                                                                                                        |
+| `try_to_date`         | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                                               |
+| `try_to_time`         | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
+| `try_to_timestamp`    | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                                               |
+| `unix_date`           | ✅     |                                                                                                                            |
+| `unix_micros`         | ✅     |                                                                                                                            |
+| `unix_millis`         | ✅     |                                                                                                                            |
+| `unix_seconds`        | ✅     |                                                                                                                            |
+| `unix_timestamp`      | ✅     |                                                                                                                            |
+| `weekday`             | ✅     |                                                                                                                            |
+| `weekofyear`          | ✅     |                                                                                                                            |
+| `window`              | 🔜     | Time-window grouping; tracked by #4553                                                                                     |
+| `window_time`         | 🔜     | Time-window grouping; tracked by #4553                                                                                     |
+| `year`                | ✅     |                                                                                                                            |
 
 ---
 
@@ -303,15 +303,15 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 expression-level). The `outer` variants are wired but marked `Incompatible`; they require
 `spark.comet.exec.explode.enabled=true` and `allowIncompatible`.
 
-| Function           | Status | Notes                                                |
-| ------------------ | ------ | ---------------------------------------------------- |
-| `explode`          | ✅     | via `CometExplodeExec`                               |
-| `explode_outer`    | ✅     | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
-| `inline`           | 🔜     | Operator-level generator (like `explode`)            |
-| `inline_outer`     | 🔜     | Operator-level generator (like `explode`)            |
-| `posexplode`       | ✅     | via `CometExplodeExec`                               |
+| Function           | Status | Notes                                                                                                                         |
+| ------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `explode`          | ✅     | via `CometExplodeExec`                                                                                                        |
+| `explode_outer`    | ✅     | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer))    |
+| `inline`           | 🔜     | Operator-level generator (like `explode`)                                                                                     |
+| `inline_outer`     | 🔜     | Operator-level generator (like `explode`)                                                                                     |
+| `posexplode`       | ✅     | via `CometExplodeExec`                                                                                                        |
 | `posexplode_outer` | ✅     | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
-| `stack`            | 🔜     | Operator-level generator                             |
+| `stack`            | 🔜     | Operator-level generator                                                                                                      |
 
 ---
 
@@ -331,15 +331,15 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 ## json_funcs
 
-| Function            | Status | Notes                                                                                                                 |
-| ------------------- | ------ | --------------------------------------------------------------------------------------------------------------------- |
+| Function            | Status | Notes                                                                                                                            |
+| ------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | `from_json`         | ✅     | Falls back by default; opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json)) |
-| `get_json_object`   | ✅     | Some inputs need allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
-| `json_array_length` | 🔜     | tracking #4098                                                                                                        |
-| `json_object_keys`  | 🔜     | [#3161](https://github.com/apache/datafusion-comet/issues/3161)                                                       |
-| `json_tuple`        | 🔜     | [#3160](https://github.com/apache/datafusion-comet/issues/3160)                                                       |
-| `schema_of_json`    | 🔜     | [#3163](https://github.com/apache/datafusion-comet/issues/3163)                                                       |
-| `to_json`           | ✅     | Options and map/array inputs fall back ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json))     |
+| `get_json_object`   | ✅     | Some inputs need allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object))            |
+| `json_array_length` | 🔜     | tracking #4098                                                                                                                   |
+| `json_object_keys`  | 🔜     | [#3161](https://github.com/apache/datafusion-comet/issues/3161)                                                                  |
+| `json_tuple`        | 🔜     | [#3160](https://github.com/apache/datafusion-comet/issues/3160)                                                                  |
+| `schema_of_json`    | 🔜     | [#3163](https://github.com/apache/datafusion-comet/issues/3163)                                                                  |
+| `to_json`           | ✅     | Options and map/array inputs fall back ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json))                |
 
 ---
 
@@ -366,96 +366,96 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## map_funcs
 
-| Function           | Status | Notes                                                        |
-| ------------------ | ------ | ------------------------------------------------------------ |
-| `element_at`       | ✅     | MapType input falls back                                     |
-| `map`              | 🔜     | Constructs a map                                             |
-| `map_concat`       | 🔜     | Concatenates maps                                            |
-| `map_contains_key` | ✅     |                                                              |
-| `map_entries`      | ✅     |                                                              |
-| `map_from_arrays`  | ✅     |                                                              |
+| Function           | Status | Notes                                                                                        |
+| ------------------ | ------ | -------------------------------------------------------------------------------------------- |
+| `element_at`       | ✅     | MapType input falls back                                                                     |
+| `map`              | 🔜     | Constructs a map                                                                             |
+| `map_concat`       | 🔜     | Concatenates maps                                                                            |
+| `map_contains_key` | ✅     |                                                                                              |
+| `map_entries`      | ✅     |                                                                                              |
+| `map_from_arrays`  | ✅     |                                                                                              |
 | `map_from_entries` | ✅     | BinaryType key/value falls back (Incompatible) ([details](compatibility/expressions/map.md)) |
-| `map_keys`         | ✅     |                                                              |
-| `map_values`       | ✅     |                                                              |
-| `str_to_map`       | ✅     |                                                              |
-| `try_element_at`   | ✅     | Lowers to `element_at`; array input (MapType falls back)     |
+| `map_keys`         | ✅     |                                                                                              |
+| `map_values`       | ✅     |                                                                                              |
+| `str_to_map`       | ✅     |                                                                                              |
+| `try_element_at`   | ✅     | Lowers to `element_at`; array input (MapType falls back)                                     |
 
 ---
 
 ## math_funcs
 
-| Function       | Status | Notes                                                                                                              |
-| -------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
-| `%`            | ✅     | try_mod (TRY mode) falls back                                                                                      |
-| `*`            | ✅     | Interval multiplication falls back                                                                                 |
-| `+`            | ✅     |                                                                                                                    |
-| `-`            | ✅     |                                                                                                                    |
-| `/`            | ✅     |                                                                                                                    |
-| `abs`          | ✅     | Interval types fall back                                                                                           |
-| `acos`         | ✅     |                                                                                                                    |
-| `acosh`        | ✅     |                                                                                                                    |
-| `asin`         | ✅     |                                                                                                                    |
-| `asinh`        | ✅     |                                                                                                                    |
-| `atan`         | ✅     |                                                                                                                    |
-| `atan2`        | ✅     |                                                                                                                    |
-| `atanh`        | ✅     |                                                                                                                    |
-| `bin`          | ✅     |                                                                                                                    |
-| `bround`       | 🔜     | #4538                                                                                                              |
-| `cbrt`         | ✅     |                                                                                                                    |
-| `ceil`         | ✅     | Two-arg form falls back                                                                                            |
-| `ceiling`      | ✅     |                                                                                                                    |
-| `conv`         | 🔜     | #4538                                                                                                              |
-| `cos`          | ✅     |                                                                                                                    |
-| `cosh`         | ✅     |                                                                                                                    |
-| `cot`          | ✅     |                                                                                                                    |
-| `csc`          | ✅     |                                                                                                                    |
-| `degrees`      | ✅     |                                                                                                                    |
-| `div`          | ✅     |                                                                                                                    |
-| `e`            | ✅     | Folds to a literal (like `pi`)                                                                                     |
-| `exp`          | ✅     |                                                                                                                    |
-| `expm1`        | ✅     |                                                                                                                    |
-| `factorial`    | ✅     |                                                                                                                    |
-| `floor`        | ✅     | Two-arg form falls back                                                                                            |
-| `greatest`     | ✅     |                                                                                                                    |
-| `hex`          | ✅     |                                                                                                                    |
-| `hypot`        | 🔜     | #4538                                                                                                              |
-| `least`        | ✅     |                                                                                                                    |
-| `ln`           | ✅     |                                                                                                                    |
-| `log`          | ✅     |                                                                                                                    |
-| `log10`        | ✅     |                                                                                                                    |
-| `log1p`        | 🔜     | #4538                                                                                                              |
-| `log2`         | ✅     |                                                                                                                    |
-| `mod`          | ✅     |                                                                                                                    |
-| `negative`     | ✅     |                                                                                                                    |
-| `pi`           | ✅     |                                                                                                                    |
-| `pmod`         | 🔜     | #4538                                                                                                              |
-| `positive`     | ✅     |                                                                                                                    |
-| `pow`          | ✅     |                                                                                                                    |
-| `power`        | ✅     |                                                                                                                    |
-| `radians`      | ✅     |                                                                                                                    |
-| `rand`         | ✅     |                                                                                                                    |
-| `randn`        | ✅     |                                                                                                                    |
-| `random`       | ✅     | Alias for `rand` (Spark 4.0+); seed must be a literal                                                              |
-| `randstr`      | 🔜     | Random string (Spark 4.0+)                                                                                         |
-| `rint`         | ✅     |                                                                                                                    |
-| `round`        | ✅     | Float/double inputs fall back                                                                                      |
-| `sec`          | ✅     |                                                                                                                    |
-| `shiftleft`    | ✅     |                                                                                                                    |
-| `sign`         | ✅     |                                                                                                                    |
-| `signum`       | ✅     |                                                                                                                    |
-| `sin`          | ✅     |                                                                                                                    |
-| `sinh`         | ✅     |                                                                                                                    |
-| `sqrt`         | ✅     |                                                                                                                    |
-| `tan`          | ✅     |                                                                                                                    |
-| `tanh`         | ✅     |                                                                                                                    |
-| `try_add`      | ✅     | Datetime/interval form falls back                                                                                  |
-| `try_divide`   | ✅     |                                                                                                                    |
-| `try_mod`      | 🔜     | Lowers to `Remainder` with TRY eval mode, which falls back (#4484)                                                 |
-| `try_multiply` | ✅     |                                                                                                                    |
-| `try_subtract` | ✅     |                                                                                                                    |
-| `unhex`        | ✅     |                                                                                                                    |
-| `uniform`      | ✅     | Constant-folded; literal arguments only (Spark 4.0+)                                                               |
-| `width_bucket` | ✅     |                                                                                                                    |
+| Function       | Status | Notes                                                              |
+| -------------- | ------ | ------------------------------------------------------------------ |
+| `%`            | ✅     | try_mod (TRY mode) falls back                                      |
+| `*`            | ✅     | Interval multiplication falls back                                 |
+| `+`            | ✅     |                                                                    |
+| `-`            | ✅     |                                                                    |
+| `/`            | ✅     |                                                                    |
+| `abs`          | ✅     | Interval types fall back                                           |
+| `acos`         | ✅     |                                                                    |
+| `acosh`        | ✅     |                                                                    |
+| `asin`         | ✅     |                                                                    |
+| `asinh`        | ✅     |                                                                    |
+| `atan`         | ✅     |                                                                    |
+| `atan2`        | ✅     |                                                                    |
+| `atanh`        | ✅     |                                                                    |
+| `bin`          | ✅     |                                                                    |
+| `bround`       | 🔜     | #4538                                                              |
+| `cbrt`         | ✅     |                                                                    |
+| `ceil`         | ✅     | Two-arg form falls back                                            |
+| `ceiling`      | ✅     |                                                                    |
+| `conv`         | 🔜     | #4538                                                              |
+| `cos`          | ✅     |                                                                    |
+| `cosh`         | ✅     |                                                                    |
+| `cot`          | ✅     |                                                                    |
+| `csc`          | ✅     |                                                                    |
+| `degrees`      | ✅     |                                                                    |
+| `div`          | ✅     |                                                                    |
+| `e`            | ✅     | Folds to a literal (like `pi`)                                     |
+| `exp`          | ✅     |                                                                    |
+| `expm1`        | ✅     |                                                                    |
+| `factorial`    | ✅     |                                                                    |
+| `floor`        | ✅     | Two-arg form falls back                                            |
+| `greatest`     | ✅     |                                                                    |
+| `hex`          | ✅     |                                                                    |
+| `hypot`        | 🔜     | #4538                                                              |
+| `least`        | ✅     |                                                                    |
+| `ln`           | ✅     |                                                                    |
+| `log`          | ✅     |                                                                    |
+| `log10`        | ✅     |                                                                    |
+| `log1p`        | 🔜     | #4538                                                              |
+| `log2`         | ✅     |                                                                    |
+| `mod`          | ✅     |                                                                    |
+| `negative`     | ✅     |                                                                    |
+| `pi`           | ✅     |                                                                    |
+| `pmod`         | 🔜     | #4538                                                              |
+| `positive`     | ✅     |                                                                    |
+| `pow`          | ✅     |                                                                    |
+| `power`        | ✅     |                                                                    |
+| `radians`      | ✅     |                                                                    |
+| `rand`         | ✅     |                                                                    |
+| `randn`        | ✅     |                                                                    |
+| `random`       | ✅     | Alias for `rand` (Spark 4.0+); seed must be a literal              |
+| `randstr`      | 🔜     | Random string (Spark 4.0+)                                         |
+| `rint`         | ✅     |                                                                    |
+| `round`        | ✅     | Float/double inputs fall back                                      |
+| `sec`          | ✅     |                                                                    |
+| `shiftleft`    | ✅     |                                                                    |
+| `sign`         | ✅     |                                                                    |
+| `signum`       | ✅     |                                                                    |
+| `sin`          | ✅     |                                                                    |
+| `sinh`         | ✅     |                                                                    |
+| `sqrt`         | ✅     |                                                                    |
+| `tan`          | ✅     |                                                                    |
+| `tanh`         | ✅     |                                                                    |
+| `try_add`      | ✅     | Datetime/interval form falls back                                  |
+| `try_divide`   | ✅     |                                                                    |
+| `try_mod`      | 🔜     | Lowers to `Remainder` with TRY eval mode, which falls back (#4484) |
+| `try_multiply` | ✅     |                                                                    |
+| `try_subtract` | ✅     |                                                                    |
+| `unhex`        | ✅     |                                                                    |
+| `uniform`      | ✅     | Constant-folded; literal arguments only (Spark 4.0+)               |
+| `width_bucket` | ✅     |                                                                    |
 
 ---
 
@@ -494,29 +494,29 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## predicate_funcs
 
-| Function      | Status | Notes                                                                                         |
-| ------------- | ------ | --------------------------------------------------------------------------------------------- |
-| `!`           | ✅     |                                                                                               |
-| `<`           | ✅     |                                                                                               |
-| `<=`          | ✅     |                                                                                               |
-| `<=>`         | ✅     |                                                                                               |
-| `=`           | ✅     |                                                                                               |
-| `==`          | ✅     |                                                                                               |
-| `>`           | ✅     |                                                                                               |
-| `>=`          | ✅     |                                                                                               |
-| `and`         | ✅     |                                                                                               |
-| `between`     | ✅     |                                                                                               |
-| `ilike`       | ✅     |                                                                                               |
-| `in`          | ✅     |                                                                                               |
-| `isnan`       | ✅     |                                                                                               |
-| `isnotnull`   | ✅     |                                                                                               |
-| `isnull`      | ✅     |                                                                                               |
-| `like`        | ✅     |                                                                                               |
-| `not`         | ✅     |                                                                                               |
-| `or`          | ✅     |                                                                                               |
-| `regexp`      | ✅     | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md))       |
-| `regexp_like` | ✅     | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md))       |
-| `rlike`       | ✅     | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md))       |
+| Function      | Status | Notes                                                                                   |
+| ------------- | ------ | --------------------------------------------------------------------------------------- |
+| `!`           | ✅     |                                                                                         |
+| `<`           | ✅     |                                                                                         |
+| `<=`          | ✅     |                                                                                         |
+| `<=>`         | ✅     |                                                                                         |
+| `=`           | ✅     |                                                                                         |
+| `==`          | ✅     |                                                                                         |
+| `>`           | ✅     |                                                                                         |
+| `>=`          | ✅     |                                                                                         |
+| `and`         | ✅     |                                                                                         |
+| `between`     | ✅     |                                                                                         |
+| `ilike`       | ✅     |                                                                                         |
+| `in`          | ✅     |                                                                                         |
+| `isnan`       | ✅     |                                                                                         |
+| `isnotnull`   | ✅     |                                                                                         |
+| `isnull`      | ✅     |                                                                                         |
+| `like`        | ✅     |                                                                                         |
+| `not`         | ✅     |                                                                                         |
+| `or`          | ✅     |                                                                                         |
+| `regexp`      | ✅     | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md)) |
+| `regexp_like` | ✅     | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md)) |
+| `rlike`       | ✅     | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md)) |
 
 ---
 
@@ -595,10 +595,10 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## struct_funcs
 
-| Function       | Status | Notes                                    |
-| -------------- | ------ | ---------------------------------------- |
-| `named_struct` | ✅     | Duplicate field names fall back          |
-| `struct`       | ✅     |                                          |
+| Function       | Status | Notes                           |
+| -------------- | ------ | ------------------------------- |
+| `named_struct` | ✅     | Duplicate field names fall back |
+| `struct`       | ✅     |                                 |
 
 ---
 
