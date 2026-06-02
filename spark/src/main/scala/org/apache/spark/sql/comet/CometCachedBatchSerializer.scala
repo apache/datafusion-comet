@@ -197,7 +197,7 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     case FloatType => col.getFloat(r)
     case DoubleType => col.getDouble(r)
     case d: DecimalType => col.getDecimal(r, d.precision, d.scale)
-    case StringType => col.getUTF8String(r)
+    case StringType => col.getUTF8String(r).copy()
     case _ => null // BinaryType etc.: no stats bounds
   }
 

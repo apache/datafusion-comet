@@ -310,6 +310,57 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
     }
   }
 
+  test("string column stats survive encode (no buffer use-after-free)") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "100") {
+      val ser = new CometCachedBatchSerializer
+      // zero-padded so lexicographic order is well-defined and stable
+      val df = spark
+        .range(250)
+        .coalesce(1)
+        .selectExpr("id", "lpad(cast(id as string), 5, '0') as s")
+      val attrs = df.queryExecution.analyzed.output
+      val cached = ser
+        .convertInternalRowToCachedBatch(
+          df.queryExecution.toRdd,
+          attrs,
+          org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+          spark.sessionState.conf)
+        .collect()
+      assert(cached.length == 3)
+      // column 1 is the string column; its stats live at fields [5..9]:
+      // field 5 = lowerBound, field 6 = upperBound
+      cached.zipWithIndex.foreach { case (b, batchIdx) =>
+        val stats = b.asInstanceOf[CometCachedBatch].stats
+        val lo = stats.getUTF8String(5).toString
+        val hi = stats.getUTF8String(6).toString
+        val start = batchIdx * 100
+        val end = math.min(start + 100, 250) - 1
+        assert(
+          lo == f"$start%05d",
+          s"batch $batchIdx lowerBound was '$lo', expected ${f"$start%05d"}")
+        assert(
+          hi == f"$end%05d",
+          s"batch $batchIdx upperBound was '$hi', expected ${f"$end%05d"}")
+      }
+    }
+  }
+
+  test("filtered cached scan on a string column returns correct rows") {
+    spark
+      .range(2000)
+      .selectExpr("lpad(cast(id as string), 5, '0') as s")
+      .createOrReplaceTempView("comet_cache_str")
+    spark.catalog.cacheTable("comet_cache_str")
+    try {
+      val df = spark.sql("SELECT s FROM comet_cache_str WHERE s = '01999'")
+      checkSparkAnswer(df)
+      val rows = df.collect().map(_.getString(0)).toSeq
+      assert(rows == Seq("01999"))
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_str")
+    }
+  }
+
   test("timestamp_ntz cached scan is correct") {
     // A Seq[LocalDateTime] maps to TimestampNTZType, which the Comet serializer supports.
     val data = (0 until 50).map(i => (i.toLong, LocalDateTime.of(2020, 1, 1, 0, 0, i % 60)))
