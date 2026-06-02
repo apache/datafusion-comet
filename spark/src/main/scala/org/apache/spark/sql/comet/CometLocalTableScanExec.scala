@@ -20,8 +20,10 @@
 package org.apache.spark.sql.comet
 
 import scala.collection.mutable.ListBuffer
+import scala.reflect.ClassTag
 
-import org.apache.arrow.c.ArrowArrayStream
+import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, UnsafeProjection}
@@ -30,7 +32,6 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{DataType, NullType}
-import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
 
@@ -79,36 +80,23 @@ case class CometLocalTableScanExec(
     }
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  /**
+   * Build the per-partition `RowArrowReader`; the trait routes it to the JVM or native consumer.
+   */
+  override protected def mapToReaders[T: ClassTag](
+      consume: (String, BufferAllocator => ArrowReader) => Iterator[T]): RDD[T] = {
     val numOutputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
     val sparkSchema = originalPlan.schema
     rdd.mapPartitionsInternal { rowIter =>
       val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
-      CometArrowStream.readerBatchIter(
+      consume(
         "CometLocalTableScan",
         new RowArrowReader(
           _,
           arrowSchema,
           countingRows(rowIter, numOutputRows),
           maxRecordsPerBatch))
-    }
-  }
-
-  override def doExecuteAsArrowStream(): RDD[ArrowArrayStream] = {
-    val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    val sparkSchema = originalPlan.schema
-    val numOutputRows = longMetric("numOutputRows")
-    rdd.mapPartitionsInternal { rowIter =>
-      val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
-      CometArrowStream.stream(
-        "CometLocalTableScan",
-        allocator =>
-          new RowArrowReader(
-            allocator,
-            arrowSchema,
-            countingRows(rowIter, numOutputRows),
-            maxRecordsPerBatch))
     }
   }
 

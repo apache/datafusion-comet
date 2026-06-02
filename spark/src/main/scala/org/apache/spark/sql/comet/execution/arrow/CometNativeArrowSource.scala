@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet.execution.arrow
 
 import scala.jdk.CollectionConverters._
+import scala.reflect.ClassTag
 
 import org.apache.arrow.c.{ArrowArrayStream, Data}
 import org.apache.arrow.memory.BufferAllocator
@@ -37,11 +38,30 @@ import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.{CometDictionaryVector, CometVector, NativeUtil}
 
 /**
- * Marker for Comet operators that can produce Arrow data destined for a Comet native executor
- * directly as the C Stream Interface, skipping the intermediate `RDD[ColumnarBatch]` layer.
+ * A Comet operator that produces its output as Arrow data, consumable either as JVM
+ * `ColumnarBatch`es (`doExecuteColumnar`) or, when the consumer is a Comet native executor,
+ * directly as the Arrow C Stream Interface (`doExecuteAsArrowStream`), skipping the intermediate
+ * `RDD[ColumnarBatch]` layer.
+ *
+ * Implementors supply only [[mapToReaders]] (their source RDD + per-partition `ArrowReader`); the
+ * two execution paths here differ solely in whether each partition's reader is drained into
+ * `ColumnarBatch`es or exported as a stream.
  */
 trait CometNativeArrowSource extends SparkPlan {
-  def doExecuteAsArrowStream(): RDD[ArrowArrayStream]
+
+  /**
+   * Build this operator's per-partition `ArrowReader` and hand it to `consume`, returning the
+   * output RDD. `consume` is provided by this trait: `CometArrowStream.readerBatchIter` for the
+   * JVM columnar path, `CometArrowStream.stream` for the native C Stream path.
+   */
+  protected def mapToReaders[T: ClassTag](
+      consume: (String, BufferAllocator => ArrowReader) => Iterator[T]): RDD[T]
+
+  override protected def doExecuteColumnar(): RDD[ColumnarBatch] =
+    mapToReaders(CometArrowStream.readerBatchIter)
+
+  def doExecuteAsArrowStream(): RDD[ArrowArrayStream] =
+    mapToReaders(CometArrowStream.stream)
 }
 
 object CometArrowStream extends Logging {

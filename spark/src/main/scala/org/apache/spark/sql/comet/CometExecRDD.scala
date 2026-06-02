@@ -96,31 +96,12 @@ private[spark] class CometExecRDD(
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometExecPartition]
 
-    val shuffleBlockIters = scala.collection.mutable.Map.empty[Int, CometShuffleBlockIterator]
-    val inputObjects: Array[Object] = inputRDDs
-      .zip(partition.inputPartitions)
-      .zipWithIndex
-      .map { case ((rdd, part), idx) =>
-        if (shuffleScanIndices.contains(idx)) {
-          rdd match {
-            case shuffleRDD: CometShuffledBatchRDD =>
-              val it = shuffleRDD.computeAsShuffleBlockIterator(part, context)
-              shuffleBlockIters(idx) = it
-              it.asInstanceOf[Object]
-            case other =>
-              throw new CometRuntimeException(
-                s"Slot $idx is marked as a shuffle scan but the input RDD is " +
-                  s"${other.getClass.getName}, expected CometShuffledBatchRDD")
-          }
-        } else {
-          val streams = rdd.iterator(part, context).asInstanceOf[Iterator[ArrowArrayStream]]
-          if (!streams.hasNext) {
-            throw new CometRuntimeException(s"Empty ArrowArrayStream RDD partition for slot $idx")
-          }
-          streams.next().asInstanceOf[Object]
-        }
-      }
-      .toArray
+    val (inputObjects, shuffleBlockIters) =
+      CometExecRDD.resolveInputObjects(
+        inputRDDs,
+        partition.inputPartitions,
+        shuffleScanIndices,
+        context)
 
     // Only inject if we have per-partition planning data
     val actualPlan = if (commonByKey.nonEmpty) {
@@ -142,7 +123,7 @@ private[spark] class CometExecRDD(
       partition.index,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      shuffleBlockIters.toMap)
+      shuffleBlockIters)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
@@ -174,6 +155,48 @@ private[spark] class CometExecRDD(
 }
 
 object CometExecRDD {
+
+  /**
+   * Resolve the per-partition native input slots for `createPlan`, in scan-input order. A slot is
+   * either a `CometShuffleBlockIterator` (for slots in `shuffleScanIndices`, fed by a
+   * `CometShuffledBatchRDD` consumed via the JNI block-iteration protocol) or the single
+   * `ArrowArrayStream` exported by a non-shuffle `RDD[ArrowArrayStream]`. Returned alongside the
+   * subset that are shuffle-block iterators, which `CometExecIterator` needs to drive block
+   * iteration. Shared by [[CometExecRDD.compute]] and the native-shuffle path so both classify
+   * and resolve slots identically.
+   */
+  def resolveInputObjects(
+      inputRDDs: Seq[RDD[_]],
+      inputPartitions: Array[Partition],
+      shuffleScanIndices: Set[Int],
+      context: TaskContext): (Array[Object], Map[Int, CometShuffleBlockIterator]) = {
+    val shuffleBlockIters = scala.collection.mutable.Map.empty[Int, CometShuffleBlockIterator]
+    val inputObjects: Array[Object] = inputRDDs
+      .zip(inputPartitions)
+      .zipWithIndex
+      .map { case ((rdd, part), idx) =>
+        if (shuffleScanIndices.contains(idx)) {
+          rdd match {
+            case shuffleRDD: CometShuffledBatchRDD =>
+              val it = shuffleRDD.computeAsShuffleBlockIterator(part, context)
+              shuffleBlockIters(idx) = it
+              it.asInstanceOf[Object]
+            case other =>
+              throw new CometRuntimeException(
+                s"Slot $idx is marked as a shuffle scan but the input RDD is " +
+                  s"${other.getClass.getName}, expected CometShuffledBatchRDD")
+          }
+        } else {
+          val streams = rdd.iterator(part, context).asInstanceOf[Iterator[ArrowArrayStream]]
+          if (!streams.hasNext) {
+            throw new CometRuntimeException(s"Empty ArrowArrayStream RDD partition for slot $idx")
+          }
+          streams.next().asInstanceOf[Object]
+        }
+      }
+      .toArray
+    (inputObjects, shuffleBlockIters.toMap)
+  }
 
   /**
    * Creates an RDD for native execution with optional per-partition planning data.

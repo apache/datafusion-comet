@@ -91,7 +91,7 @@ class CometNativeShuffleWriter[K, V](
             s"${other.getClass.getName}")
     }
     val partitionIdx = shuffleInputIter.partitionIndex
-    val leafIterators = shuffleInputIter.leafIterators
+    val inputObjects = shuffleInputIter.inputObjects
     val shuffleBlockIters = shuffleInputIter.shuffleBlockIterators
 
     val unifiedPlan = buildUnifiedPlan(tempDataFilename, tempIndexFilename)
@@ -123,17 +123,6 @@ class CometNativeShuffleWriter[K, V](
     // ShuffleWriter metrics at the root; child's metric tree underneath so the SQL UI's per-node
     // breakdown matches what the split-driver flow showed.
     val nativeMetrics = CometMetricNode(shuffleWriterSQLMetrics, Seq(spec.childMetricNode))
-
-    // Each leaf input arrives already wrapped as an ArrowArrayStream (one per partition) by the
-    // arrow C Stream path in CometNativeExec.buildNativeContext; shuffle leaves arrive as a
-    // CometShuffleBlockIterator. Mirror CometExecRDD.compute: hand native the already-built
-    // stream/block object per slot. No re-wrapping here.
-    val inputObjects: Array[Object] = leafIterators.zipWithIndex.map { case (it, idx) =>
-      shuffleBlockIters.get(idx) match {
-        case Some(blockIter) => blockIter.asInstanceOf[Object]
-        case None => it.next().asInstanceOf[Object]
-      }
-    }.toArray
 
     val cometIter = new CometExecIterator(
       CometExec.newIterId,

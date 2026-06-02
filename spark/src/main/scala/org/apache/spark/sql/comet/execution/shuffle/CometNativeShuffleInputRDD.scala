@@ -21,16 +21,18 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark._
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.comet.CometExecRDD
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometShuffleBlockIterator
 
 /**
  * Thin scheduling-anchor RDD for the native-shuffle path. Declares `OneToOneDependency` on each
- * leaf input RDD (so the DAGScheduler triggers prior stages, broadcasts, etc.) and constructs
- * per-partition leaf iterators in `compute`, packaged into a [[CometNativeShuffleInputIterator]].
- * The iterator reports `hasNext = false`; [[CometNativeShuffleWriter]] downcasts it and reads the
- * leaf iterators directly to drive the unified `ShuffleWriter(child = childNativeOp)` plan.
+ * leaf input RDD (so the DAGScheduler triggers prior stages, broadcasts, etc.) and resolves the
+ * per-partition native input slots in `compute`, packaged into a
+ * [[CometNativeShuffleInputIterator]]. The iterator reports `hasNext = false`;
+ * [[CometNativeShuffleWriter]] downcasts it and reads those slots directly to drive the unified
+ * `ShuffleWriter(child = childNativeOp)` plan.
  */
 private[shuffle] class CometNativeShuffleInputRDD(
     sc: SparkContext,
@@ -55,23 +57,13 @@ private[shuffle] class CometNativeShuffleInputRDD(
       split: Partition,
       context: TaskContext): Iterator[Product2[Int, ColumnarBatch]] = {
     val partition = split.asInstanceOf[CometNativeShuffleInputPartition]
-    val shuffleBlockIters: Map[Int, CometShuffleBlockIterator] =
-      shuffleScanIndices.flatMap { si =>
-        inputRDDs(si) match {
-          case rdd: CometShuffledBatchRDD =>
-            Some(si -> rdd.computeAsShuffleBlockIterator(partition.inputPartitions(si), context))
-          case _ => None
-        }
-      }.toMap
-    // Non-shuffle leaves are RDD[ArrowArrayStream] (one stream per partition); pull them lazily in
-    // the writer. Shuffle leaves reach native via the block iterators above, so leave an empty
-    // placeholder to keep slot indices aligned (the writer never drains those slots).
-    val leafIterators: Seq[Iterator[_]] =
-      inputRDDs.zip(partition.inputPartitions).zipWithIndex.map { case ((rdd, part), idx) =>
-        if (shuffleScanIndices.contains(idx)) Iterator.empty
-        else rdd.iterator(part, context)
-      }
-    new CometNativeShuffleInputIterator(partition.index, leafIterators, shuffleBlockIters)
+    val (inputObjects, shuffleBlockIters) =
+      CometExecRDD.resolveInputObjects(
+        inputRDDs,
+        partition.inputPartitions,
+        shuffleScanIndices,
+        context)
+    new CometNativeShuffleInputIterator(partition.index, inputObjects, shuffleBlockIters)
   }
 
   override def getPreferredLocations(split: Partition): Seq[String] = {
@@ -97,12 +89,13 @@ private[shuffle] class CometNativeShuffleInputPartition(
 
 /**
  * Iterator handed to [[CometNativeShuffleWriter.write]] via Spark's ShuffleMapTask. Reports no
- * elements; the writer downcasts and reads `partitionIndex`, `leafIterators`, and
- * `shuffleBlockIterators` directly to drive the unified native plan.
+ * elements; the writer downcasts and reads `partitionIndex`, `inputObjects`, and
+ * `shuffleBlockIterators` directly to drive the unified native plan. `inputObjects` are the
+ * already-resolved native input slots (see [[CometExecRDD.resolveInputObjects]]).
  */
 private[shuffle] class CometNativeShuffleInputIterator(
     val partitionIndex: Int,
-    val leafIterators: Seq[Iterator[_]],
+    val inputObjects: Array[Object],
     val shuffleBlockIterators: Map[Int, CometShuffleBlockIterator])
     extends Iterator[Product2[Int, ColumnarBatch]] {
 

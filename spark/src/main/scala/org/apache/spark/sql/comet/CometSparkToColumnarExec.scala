@@ -20,8 +20,10 @@
 package org.apache.spark.sql.comet
 
 import scala.collection.mutable.ListBuffer
+import scala.reflect.ClassTag
 
-import org.apache.arrow.c.ArrowArrayStream
+import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -73,13 +75,11 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 
   private def countingBatches(
       iter: Iterator[ColumnarBatch],
-      numInputRows: SQLMetric,
-      numOutputBatches: SQLMetric): Iterator[ColumnarBatch] = new Iterator[ColumnarBatch] {
+      numInputRows: SQLMetric): Iterator[ColumnarBatch] = new Iterator[ColumnarBatch] {
     override def hasNext: Boolean = iter.hasNext
     override def next(): ColumnarBatch = {
       val batch = iter.next()
       numInputRows += batch.numRows()
-      numOutputBatches += 1
       batch
     }
   }
@@ -95,74 +95,50 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     }
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  /**
+   * Build the per-partition `ArrowReader` (columnar or row, depending on the child); the trait
+   * routes it to the JVM or native consumer.
+   *
+   * `numOutputBatches` is incremented from the reader's per-produced-batch callback rather than
+   * by counting input batches, so it stays accurate on the native path too (native drives
+   * `loadNextBatch`) and counts produced Arrow batches, not Spark input batches.
+   */
+  override protected def mapToReaders[T: ClassTag](
+      consume: (String, BufferAllocator => ArrowReader) => Iterator[T]): RDD[T] = {
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
     val conversionTime = longMetric("conversionTime")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
     val sparkSchema = child.schema
+    val onConversionNs: Long => Unit = ns => {
+      conversionTime += ns
+      numOutputBatches += 1
+    }
 
     if (child.supportsColumnar) {
       val maxBatchInt = maxRecordsPerBatch.toInt
       child.executeColumnar().mapPartitionsInternal { sparkBatches =>
         val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
-        CometArrowStream.readerBatchIter(
+        consume(
           "CometSparkColumnarToColumnar",
           new SparkColumnarArrowReader(
             _,
             arrowSchema,
-            countingBatches(sparkBatches, numInputRows, numOutputBatches),
+            countingBatches(sparkBatches, numInputRows),
             maxBatchInt,
-            ns => conversionTime += ns))
+            onConversionNs))
       }
     } else {
       child.execute().mapPartitionsInternal { rowIter =>
         val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
-        CometArrowStream.readerBatchIter(
+        consume(
           "CometSparkRowToColumnar",
           new RowArrowReader(
             _,
             arrowSchema,
             countingRows(rowIter, numInputRows),
             maxRecordsPerBatch,
-            ns => conversionTime += ns))
-      }
-    }
-  }
-
-  override def doExecuteAsArrowStream(): RDD[ArrowArrayStream] = {
-    val numInputRows = longMetric("numInputRows")
-    val numOutputBatches = longMetric("numOutputBatches")
-    val conversionTime = longMetric("conversionTime")
-    val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    val sparkSchema = child.schema
-
-    if (child.supportsColumnar) {
-      val maxBatchInt = maxRecordsPerBatch.toInt
-      child.executeColumnar().mapPartitionsInternal { sparkBatches =>
-        val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
-        CometArrowStream.stream(
-          "CometSparkColumnarToColumnar",
-          allocator =>
-            new SparkColumnarArrowReader(
-              allocator,
-              arrowSchema,
-              countingBatches(sparkBatches, numInputRows, numOutputBatches),
-              maxBatchInt,
-              ns => conversionTime += ns))
-      }
-    } else {
-      child.execute().mapPartitionsInternal { rowIter =>
-        val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
-        CometArrowStream.stream(
-          "CometSparkRowToColumnar",
-          allocator =>
-            new RowArrowReader(
-              allocator,
-              arrowSchema,
-              countingRows(rowIter, numInputRows),
-              maxRecordsPerBatch,
-              ns => conversionTime += ns))
+            onConversionNs))
       }
     }
   }
