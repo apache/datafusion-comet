@@ -291,7 +291,7 @@ under the License.
           <version>1.10.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.1's jetty.version -->
+        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.2's jetty.version -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
