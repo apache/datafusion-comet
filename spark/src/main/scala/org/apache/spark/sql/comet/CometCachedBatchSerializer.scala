@@ -69,6 +69,11 @@ class CometCacheColumnStats(attributes: Seq[Attribute]) {
     if (upper(ordinal) == null || compare(dt, value, upper(ordinal)) > 0) upper(ordinal) = value
   }
 
+  /**
+   * Sets the total row count for this batch (the `count` stat field). Must be called before
+   * `toInternalRow`; otherwise `count` stays 0 and predicates like IsNotNull could incorrectly
+   * prune a non-empty batch.
+   */
   def setRowCount(n: Int): Unit = rowCount = n
 
   def toInternalRow: InternalRow = {

@@ -52,5 +52,12 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
     assert(stats.getUTF8String(6) == UTF8String.fromString("y"))
     assert(stats.getInt(7) == 1)
     assert(stats.getInt(8) == 3)
+    // sizeInBytes stat slots (positions 4 and 9) are 0L; they are not used by buildFilter
+    assert(stats.getLong(4) == 0L)
+    assert(stats.getLong(9) == 0L)
+    // CometCachedBatch.sizeInBytes reflects the IPC byte length
+    val cb = CometCachedBatch(numRows = 3, bytes = Array[Byte](1, 2, 3, 4, 5), stats = stats)
+    assert(cb.sizeInBytes == 5L)
+    assert(cb.numRows == 3)
   }
 }
