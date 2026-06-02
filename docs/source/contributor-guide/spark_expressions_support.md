@@ -21,8 +21,11 @@
 
 ## How to Read This Document
 
-- A function marked with `[x]` has a native implementation in Comet and does not fall back to Spark by default.
-- A function marked with `[ ]` has no native Comet implementation and falls back to Spark.
+- A function marked with `[x]` is implemented in Comet and can be evaluated without falling back to Spark. Comet serves such a function through one of two paths:
+  - **Native:** a Rust/DataFusion implementation that runs entirely in native execution. This is the path used for most functions.
+  - **Codegen dispatch:** a JVM kernel that runs Spark's own generated code over Arrow batches, used for some functions that do not have a native implementation. This path is gated by `spark.comet.exec.scalaUDF.codegen.enabled`; when it is disabled, the enclosing operator falls back to Spark.
+  - A few entries (such as `explode` / `posexplode`) are instead handled at the operator level rather than as expressions; these are annotated inline.
+- A function marked with `[ ]` has no Comet implementation and always falls back to Spark.
 
 > **Note:** Some functions listed as supported may still be incompatible with Spark in
 > certain cases (data types, modes, edge values) and fall back to Spark at runtime. Full
@@ -103,9 +106,9 @@
 - [ ] percentile_approx
 - [ ] percentile_cont
 - [ ] percentile_disc
-- [ ] regr_avgx
-- [ ] regr_avgy
-- [ ] regr_count
+- [x] regr_avgx
+- [x] regr_avgy
+- [x] regr_count
 - [ ] regr_intercept
 - [ ] regr_r2
 - [ ] regr_slope
@@ -240,7 +243,7 @@
   - Spark 4.1.1 (audited 2026-05-27): `inputTypes` tightened to `Seq(ArrayType, IntegralType)` (analysis-time only); runtime unchanged.
 - [ ] sequence
 - [ ] shuffle
-- [ ] slice
+- [x] slice
 - [x] sort_array
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `SortArray(base, ascendingOrder) extends BinaryExpression with ArraySortLike`; the second arg must be a `Literal(_: Boolean, BooleanType)`. Comet `CometSortArray` flags `Incompatible` under strict floating-point and falls back for nested arrays whose innermost element is `Struct` or `Null`.
@@ -264,7 +267,7 @@
   - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
   - Spark 4.0.1 (audited 2026-05-27): `>>` parses to `ShiftRight`. Comet `CometShiftRight` mirrors the same operand-cast logic as `CometShiftLeft`.
   - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- [ ] `>>>`
+- [x] `>>>`
 - [x] `^`
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `BitwiseXor(left, right) extends BinaryArithmetic` over `IntegralType`. Comet routes via `CometBitwiseXor` to the proto's `bitwise_xor` binary expression.
@@ -308,8 +311,9 @@
 
 ### collection_funcs
 
-- [ ] array_size
-- [ ] cardinality
+- [x] array_size
+  - Native via `size`; returns -1 instead of NULL for NULL input (https://github.com/apache/datafusion-comet/issues/4560).
+- [x] cardinality
 - [x] concat
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `Concat(children) extends ComplexTypeMergingExpression with QueryErrorsBase`; `allowedTypes = Seq(StringType, BinaryType, ArrayType)`; result type is the merged child type. Empty children is allowed and returns the empty string of the result type.
@@ -352,7 +356,7 @@
   - Spark 3.5.8 (audited 2026-05-27): `NullIf(left, right, replacement) extends RuntimeReplaceable with InheritAnalysisRules`; the analyzer rewrites to `If(EqualTo(left, right), Literal(null, left.dataType), left)`. Comet handles via `CometIf` plus `CometEqualTo`.
   - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8.
   - Spark 4.1.1 (audited 2026-05-27): identical to 3.5.8.
-- [ ] nullifzero
+- [x] nullifzero
 - [x] nvl
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): `Nvl(left, right, replacement) extends RuntimeReplaceable`; analyzer rewrites to `Coalesce(Seq(left, right))`. Comet handles via `CometCoalesce`.
@@ -368,13 +372,13 @@
   - Spark 3.5.8 (audited 2026-05-27): the `CASE WHEN ... THEN ...` SQL form lowers to `CaseWhen(branches: Seq[(Expression, Expression)], elseValue: Option[Expression])`. Spark evaluates left-to-right with short-circuit; result type is the merged branch type. Comet routes via `CometCaseWhen` to the native `CaseWhen` proto.
   - Spark 4.0.1 (audited 2026-05-27): adds the `withNewAlwaysEvaluatedInputs` optimizer hook; semantics unchanged.
   - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- [ ] zeroifnull
+- [x] zeroifnull
 
 ### conversion_funcs
 
-- [ ] bigint
-- [ ] binary
-- [ ] boolean
+- [x] bigint
+- [x] binary
+- [x] boolean
 - [x] cast
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8 modulo `Cast.canUpCast` refactored to delegate to `UpCastRule.canUpCast`.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `Cast(child, dataType, timeZoneId, evalMode)`; eval modes are `LEGACY`, `ANSI`, `TRY`. The legacy `Cast.canCast` matrix and the `Cast.canAnsiCast` matrix decide acceptance per type pair. Comet routes via `CometCast` (`spark/src/main/scala/org/apache/comet/expressions/CometCast.scala`) using a per-source-type support matrix that returns `Compatible`, `Incompatible(reason)`, or `Unsupported(reason)`; literal children are short-circuited to `Compatible()` so `CometLiteral` validates them. The serialized `Cast` proto carries `datatype`, `evalMode`, `timezone` (default `UTC`), `allowIncompat` (from `spark.comet.expression.Cast.allowIncompatible`), and `isSpark4Plus`. The native side (`native/spark-expr/src/conversion_funcs/cast.rs`) implements explicit per-eval-mode branches for narrowing numeric casts that match Spark's overflow exceptions, and falls through to DataFusion `cast_with_options(safe = !ANSI)` for the rest.
@@ -387,15 +391,16 @@
     - `CAST(<map> AS <map>)` falls back to Spark even though native `cast_map_to_map` exists (https://github.com/apache/datafusion-comet/issues/4491).
     - `spark.sql.legacy.castComplexTypesToString.enabled=true` is not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4492).
     - `CAST(<float|double> AS DECIMAL)` rounding may differ from Spark (`Incompatible`, gated by `spark.comet.expression.Cast.allowIncompatible`, tracked at https://github.com/apache/datafusion-comet/issues/1371).
-- [ ] date
-- [ ] decimal
-- [ ] double
-- [ ] float
-- [ ] int
-- [ ] smallint
-- [ ] string
-- [ ] timestamp
-- [ ] tinyint
+  - Spark registers the type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `decimal`, `double`, `float`, `int`, `smallint`, `string`, `timestamp`, `tinyint`) as cast aliases. Each lowers to the same `Cast` node, so Comet handles it via the `cast` implementation with the same compatibility profile.
+- [x] date
+- [x] decimal
+- [x] double
+- [x] float
+- [x] int
+- [x] smallint
+- [x] string
+- [x] timestamp
+- [x] tinyint
 
 ### csv_funcs
 
@@ -407,10 +412,13 @@
 
 - [x] add_months
 - [x] convert_timezone
-- [ ] curdate
-- [ ] current_date
+- [x] curdate
+  - Alias of `current_date`; constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
+- [x] current_date
+  - Constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
 - [ ] current_time
-- [ ] current_timestamp
+- [x] current_timestamp
+  - Constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
 - [x] current_timezone
 - [x] date_add
 - [x] date_diff
@@ -423,7 +431,8 @@
 - [x] datediff
 - [x] datepart
 - [x] day
-- [ ] dayname
+- [x] dayname
+  - Spark 4.0+. Implemented natively: maps a `DateType` value to a fixed US-English abbreviated day name (`DayOfWeek.getDisplayName(TextStyle.SHORT, Locale.US)`), with no session-locale or timezone dependence.
 - [x] dayofmonth
 - [x] dayofweek
 - [x] dayofyear
@@ -442,15 +451,19 @@
 - [ ] make_interval
 - [ ] make_time
 - [x] make_timestamp
-- [ ] make_timestamp_ltz
-- [ ] make_timestamp_ntz
+- [x] make_timestamp_ltz
+  - The 6-argument form rewrites to `MakeTimestamp` and runs via the codegen dispatcher. The 2-argument `(date, time)` form requires the Spark 4.1 TIME type and falls back.
+- [x] make_timestamp_ntz
+  - The 6-argument form rewrites to `MakeTimestamp` and runs via the codegen dispatcher. The 2-argument `(date, time)` form requires the Spark 4.1 TIME type and falls back.
 - [ ] make_ym_interval
 - [x] minute
 - [x] month
-- [ ] monthname
+- [x] monthname
+  - Spark 4.0+. Implemented natively: maps a `DateType` value to a fixed US-English abbreviated month name (`Month.getDisplayName(TextStyle.SHORT, Locale.US)`), with no session-locale or timezone dependence.
 - [x] months_between
 - [x] next_day
-- [ ] now
+- [x] now
+  - Alias of `current_timestamp`; constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
 - [x] quarter
 - [x] second
 - [ ] session_window
@@ -459,11 +472,15 @@
 - [x] timestamp_micros
 - [x] timestamp_millis
 - [x] timestamp_seconds
-- [ ] to_date
+- [x] to_date
+  - Rewrites to `Cast` (no format, native) or `Cast(GetTimestamp(...))` (with format, via the codegen dispatcher) before Comet sees the plan.
 - [ ] to_time
-- [ ] to_timestamp
-- [ ] to_timestamp_ltz
-- [ ] to_timestamp_ntz
+- [x] to_timestamp
+  - Rewrites to `Cast` (no format, native) or `GetTimestamp` (with format, via the codegen dispatcher) before Comet sees the plan.
+- [x] to_timestamp_ltz
+  - Rewrites to `to_timestamp` with `TimestampType`; same support as `to_timestamp`.
+- [x] to_timestamp_ntz
+  - Rewrites to `to_timestamp` with `TimestampNTZType`; same support as `to_timestamp`.
 - [x] to_unix_timestamp
 - [x] to_utc_timestamp
   - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
@@ -472,7 +489,8 @@
   - Known divergence: Comet's native timezone parser does not accept Spark's legacy zone forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). Such timezones throw a native parse error at execution.
 - [x] trunc
 - [ ] try_make_interval
-- [ ] try_make_timestamp
+- [x] try_make_timestamp
+  - Native for valid inputs; returns wrong values for invalid inputs instead of NULL (https://github.com/apache/datafusion-comet/issues/4554).
 - [ ] try_to_date
 - [ ] try_to_time
 - [ ] try_to_timestamp
@@ -489,27 +507,61 @@
 
 ### generator_funcs
 
-- [ ] explode
-- [ ] explode_outer
+- [x] explode
+  - Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
+- [x] explode_outer
+  - Same `CometExplodeExec` path as `explode`, but the `outer=true` case is `Incompatible` (empty arrays are not preserved as null outputs) and falls back unless `spark.comet.expr.allowIncompatible=true` ([datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
 - [ ] inline
 - [ ] inline_outer
-- [ ] posexplode
-- [ ] posexplode_outer
+- [x] posexplode
+  - Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), like `explode`. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
+- [x] posexplode_outer
+  - Same `CometExplodeExec` path as `posexplode`, but the `outer=true` case is `Incompatible` and falls back unless `spark.comet.expr.allowIncompatible=true` ([datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
 - [ ] stack
 
 ### hash_funcs
 
 - [x] crc32
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Crc32(child) extends UnaryExpression`; `inputTypes = Seq(BinaryType) -> LongType`. Wired as `CometScalarFunction("crc32")`.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `NullIntolerant` trait replaced by `nullIntolerant: Boolean` override.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] hash
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Murmur3Hash(children, seed) extends HashExpression[Int]`; produces a Murmur3 hash with a configurable Int seed and `IntegerType` result. Comet routes via `CometMurmur3Hash` to the native `murmur3_hash` UDF.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; some inner helper refactors only.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+  - Known limitation: `DecimalType` children with precision > 18 fall back because Spark hashes them through Java `BigDecimal`; `TimeType` (Spark 4.0+) is also unsupported. The same limitations apply to `xxhash64`, `sha1`, `sha2` through the shared `HashUtils`.
 - [x] md5
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Md5(child) extends UnaryExpression`; `inputTypes = Seq(BinaryType) -> StringType`. Wired as `CometScalarFunction("md5")`.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; trait set gains `DefaultStringProducingExpression` and the `nullIntolerant: Boolean` refactor.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] sha
+  - Spark 3.4.3 (audited 2026-05-27): registry alias of `Sha1`. Same support as `sha1`.
+  - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 3.4.3.
 - [x] sha1
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Sha1(child) extends UnaryExpression with NullIntolerant`; `inputTypes = Seq(BinaryType) -> StringType`. Comet routes via `CometSha1` to the native `sha1` UDF.
+  - Spark 4.0.1 (audited 2026-05-27): trait set gains `DefaultStringProducingExpression` and `NullIntolerant` is replaced by `nullIntolerant: Boolean`. Runtime unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] sha2
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `Sha2(left, right) extends BinaryExpression`; `inputTypes = Seq(BinaryType, IntegerType) -> StringType`. The `numBits` argument selects SHA-224/256/384/512 (0 is treated as 256); other values return NULL. Comet routes via `CometSha2` to the native `sha2` UDF; non-foldable `numBits` falls back to Spark.
+  - Spark 4.0.1 (audited 2026-05-27): trait set gains `DefaultStringProducingExpression` and the `nullIntolerant: Boolean` refactor. Runtime unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - [x] xxhash64
+  - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
+  - Spark 3.5.8 (audited 2026-05-27): baseline. `XxHash64(children, seed) extends HashExpression[Long]`; produces an xxHash64 hash with a configurable Long seed and `LongType` result. Comet routes via `CometXxHash64` to the native `xxhash64` UDF.
+  - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
+  - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
 ### json_funcs
 
-- [ ] from_json
+- [x] from_json
+  - Partial native support, marked `Incompatible` (requires explicit schema).
 - [x] get_json_object
   - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
   - Spark 3.5.8 (audited 2026-05-27): baseline. `BinaryExpression with ExpectsInputTypes with CodegenFallback`; `inputTypes = Seq(StringType, StringType) -> StringType`. Eval is inline and uses Jackson with `RawStyle` output. Foldable paths are parsed once. Returns NULL for invalid JSON, missing paths, or `JsonProcessingException`.
@@ -520,7 +572,8 @@
 - [ ] json_object_keys
 - [ ] json_tuple
 - [ ] schema_of_json
-- [ ] to_json
+- [x] to_json
+  - Partial native support; options and map/array inputs fall back.
 
 ### lambda_funcs
 
@@ -582,7 +635,7 @@
   - Spark 3.5.8 (audited 2026-05-27): baseline. `StringToMap(text, pairDelim, keyValueDelim) extends TernaryExpression`; splits `text` on `pairDelim`, then each pair on `keyValueDelim` (default `","` and `":"`). Uses `ArrayBasedMapBuilder` for duplicate-key handling. Wired as `CometScalarFunction("str_to_map")`.
   - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeNonCSAICollation`; uses `CollationAwareUTF8String.splitSQL` with a `collationId`. Runtime unchanged for `UTF8_BINARY`.
   - Spark 4.1.1 (audited 2026-05-27): adds the `legacySplitTruncate` flag (driven by `spark.sql.legacy.truncateForEmptyRegexSplit`) to both `splitSQL` calls (https://github.com/apache/datafusion-comet/issues/4477). The Comet native impl does not honour this flag; behaviour matches the non-legacy default.
-- [ ] try_element_at
+- [x] try_element_at
 
 ### math_funcs
 
@@ -634,7 +687,8 @@
   - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `UnaryMathExpression(math.toDegrees, "DEGREES")` unchanged across versions.
 - [x] div
   - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `IntegralDivide(left, right, evalMode)`. Non-decimal operands are cast to `DecimalType(19, 0)`; result is recomputed per `IntegralDivide.resultDecimalType`, wrapped in `CheckOverflow`, then cast to `Long`. ANSI overflow for `Long.MinValue div -1` and decimal-overflow ANSI cases are covered by existing tests.
-- [ ] e
+- [x] e
+  - Foldable; rewritten to a literal by ConstantFolding (like `pi`).
 - [x] exp
   - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `UnaryMathExpression(StrictMath.exp, "EXP")` unchanged. ULP-level differences vs DataFusion `exp` are possible but unflagged.
 - [x] expm1
@@ -682,7 +736,7 @@
   - See `misc_funcs / rand`.
 - [x] randn
   - See `misc_funcs / randn`.
-- [ ] random
+- [x] random
 - [ ] randstr
 - [x] rint
   - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `UnaryMathExpression(math.rint, "ROUND")` with `funcName = "rint"`. Passthrough to DataFusion `rint` (round-half-to-even).
@@ -717,7 +771,7 @@
   - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): rewrites to `Subtract(.., EvalMode.TRY)`. Integer path uses `checked_sub`; decimal uses `WideDecimalBinaryExpr` as needed.
 - [x] unhex
   - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Unhex(child, failOnError)`. Spark 4.x widens input to `StringTypeWithCollation` and wraps the inner call in try/catch; Comet `CometUnhex` forwards `failOnError` to native `spark_unhex` but does not gate on collation.
-- [ ] uniform
+- [x] uniform
 - [x] width_bucket
   - Spark 3.5.8 (audited 2026-05-27): introduced; not available in 3.4.3.
   - Spark 4.0.1, 4.1.1 (audited 2026-05-27): same semantics; `NullIntolerant` -> `nullIntolerant: Boolean` refactor.
@@ -735,11 +789,15 @@
 - [ ] bitmap_construct_agg
 - [ ] bitmap_count
 - [ ] bitmap_or_agg
-- [ ] current_catalog
-- [ ] current_database
-- [ ] current_schema
-- [ ] current_user
-- [ ] equal_null
+- [x] current_catalog
+  - Resolved to a literal by the analyzer (`ReplaceCurrentLike`).
+- [x] current_database
+  - Resolved to a literal by the analyzer (`ReplaceCurrentLike`).
+- [x] current_schema
+  - Alias of `current_database`; resolved to a literal by the analyzer.
+- [x] current_user
+  - Resolved to a literal by the analyzer; same as `user`.
+- [x] equal_null
 - [ ] from_avro
 - [ ] from_protobuf
 - [ ] hll_sketch_estimate
@@ -772,7 +830,8 @@
 - [ ] schema_of_avro
 - [ ] schema_of_variant
 - [ ] schema_of_variant_agg
-- [ ] session_user
+- [x] session_user
+  - Alias of `current_user`; resolved to a literal by the analyzer.
 - [x] spark_partition_id
   - Spark 3.4.3 (audited 2026-05-27): byte-for-byte identical to 4.1.1. `SparkPartitionID() extends LeafExpression with Nondeterministic`; returns the integer index of the partition being processed. Comet emits an empty `SparkPartitionId` proto.
   - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
@@ -794,7 +853,8 @@
 - [ ] try_parse_json
 - [ ] try_reflect
 - [ ] try_variant_get
-- [ ] typeof
+- [x] typeof
+  - Foldable; resolved to a literal before Comet sees the plan.
 - [x] user
   - Spark 3.4.3 (audited 2026-05-27): `CurrentUser() extends LeafExpression with Unevaluable`; the analyzer's `ResolveCurrentLike` rule replaces it with a `StringType` literal of the current user name before Comet sees the plan. No Comet serde needed; the literal flows through `CometLiteral`.
   - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
@@ -893,8 +953,8 @@
   - Spark 3.5.8 (audited 2026-05-27): baseline. `Or(left, right) extends BinaryOperator with Predicate`; short-circuit left-to-right. Comet routes via `CometOr` to the proto's `or` binary expression.
   - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
   - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- [ ] regexp
-- [ ] regexp_like
+- [x] regexp
+- [x] regexp_like
 - [x] rlike
   - See `string_funcs / regexp_replace` and the `CometRLike` notes (audited in PR #4461). Uses the Rust `regex` crate, which differs from Java's `Pattern` engine; requires `spark.comet.expression.regexp.allowIncompatible=true`.
 
@@ -909,7 +969,7 @@
 - [x] character_length
 - [x] chr
 - [ ] collate
-- [ ] collation
+- [x] collation
 - [x] concat_ws
 - [x] contains
 - [x] decode
@@ -931,7 +991,7 @@
 - [x] lower
 - [x] lpad
 - [x] ltrim
-- [ ] luhn_check
+- [x] luhn_check
 - [ ] make_valid_utf8
 - [ ] mask
 - [x] octet_length
@@ -959,7 +1019,7 @@
 - [x] substr
 - [x] substring
 - [x] substring_index
-- [ ] to_binary
+- [x] to_binary
 - [ ] to_char
 - [ ] to_number
 - [ ] to_varchar
@@ -1005,8 +1065,10 @@
 
 - [ ] cume_dist
 - [ ] dense_rank
-- [ ] lag
-- [ ] lead
+- [x] lag
+  - Supported via `CometWindowExec` (operator level), not the expression serde.
+- [x] lead
+  - Supported via `CometWindowExec` (operator level), not the expression serde.
 - [ ] nth_value
 - [ ] ntile
 - [ ] percent_rank
