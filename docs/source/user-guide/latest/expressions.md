@@ -38,8 +38,8 @@ Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enab
 
 | Status                   | Meaning                                                                                                                                                                                 |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ✅ Supported             | Native or codegen path; compatible with Spark by default.                                                                                                                               |
-| ⚠️ Supported (caveats)   | Works, but may diverge from Spark in some cases: incompatible, flag-gated (`allowIncompatible`), or restricted to certain types. See the [Compatibility Guide](compatibility/index.md). |
+| ✅ Supported             | Comet produces Spark-compatible results by default. Some inputs or forms may fall back to Spark, and any incompatible behavior is opt-in (off by default). |
+| ⚠️ Incorrect by default  | Comet runs natively by default but can return results that differ from Spark (a wrong value, or a native error on valid input). See the linked detail on each row. |
 | 🔜 Planned               | Intended; tracked by an open issue or pull request.                                                                                                                                     |
 | 💤 Not currently planned | Not on the current roadmap; falls back to Spark and may be reconsidered later.                                                                                                          |
 
