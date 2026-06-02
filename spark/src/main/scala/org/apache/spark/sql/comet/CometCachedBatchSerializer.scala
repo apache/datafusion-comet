@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow}
 import org.apache.spark.sql.columnar.SimpleMetricsCachedBatch
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.ByteArray
 import org.apache.spark.unsafe.types.UTF8String
 
 /**
@@ -106,7 +107,10 @@ class CometCacheColumnStats(attributes: Seq[Attribute]) {
     case _: DecimalType =>
       x.asInstanceOf[org.apache.spark.sql.types.Decimal]
         .compare(y.asInstanceOf[org.apache.spark.sql.types.Decimal])
-    case StringType => x.asInstanceOf[UTF8String].binaryCompare(y.asInstanceOf[UTF8String])
+    case StringType =>
+      ByteArray.compareBinary(
+        x.asInstanceOf[UTF8String].getBytes,
+        y.asInstanceOf[UTF8String].getBytes)
     case other => throw new IllegalStateException(s"compare called for unordered type $other")
   }
 }
