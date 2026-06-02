@@ -19,9 +19,12 @@
 
 package org.apache.spark.sql.comet
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow}
-import org.apache.spark.sql.columnar.SimpleMetricsCachedBatch
+import org.apache.spark.sql.columnar.{SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
+import org.apache.spark.sql.execution.columnar.DefaultCachedBatchSerializer
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.ByteArray
 import org.apache.spark.unsafe.types.UTF8String
@@ -118,4 +121,60 @@ class CometCacheColumnStats(attributes: Seq[Attribute]) {
         y.asInstanceOf[UTF8String].getBytes)
     case other => throw new IllegalStateException(s"compare called for unordered type $other")
   }
+}
+
+class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer with Logging {
+
+  // Delegate target for schemas Comet does not handle. Serializable (no-arg constructor).
+  private val fallback = new DefaultCachedBatchSerializer
+
+  /** Comet handles flat schemas of the data types its Arrow conversion supports. */
+  private def isCometSchema(dataTypes: Seq[DataType]): Boolean =
+    dataTypes.forall(isCometType)
+
+  private def isCometType(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+        _: DecimalType | StringType | BinaryType | DateType | TimestampType =>
+      true
+    // Nested/complex types are out of scope for v1; delegate to the default serializer.
+    case _ => false
+  }
+
+  private def cometSchema(attrs: Seq[Attribute]): Boolean = isCometSchema(attrs.map(_.dataType))
+
+  // Force the row build path for Comet schemas (single code path for encode + stats); delegate
+  // otherwise so the default serializer's columnar-input optimization still applies.
+  override def supportsColumnarInput(schema: Seq[Attribute]): Boolean =
+    if (cometSchema(schema)) false else fallback.supportsColumnarInput(schema)
+
+  override def supportsColumnarOutput(schema: StructType): Boolean =
+    if (isCometSchema(schema.map(_.dataType))) true else fallback.supportsColumnarOutput(schema)
+
+  // Let Spark use generic ColumnVector access; our columns are heterogeneous CometVector subtypes.
+  override def vectorTypes(attributes: Seq[Attribute], conf: SQLConf): Option[Seq[String]] = None
+
+  override def convertInternalRowToCachedBatch(
+      input: org.apache.spark.rdd.RDD[InternalRow],
+      schema: Seq[Attribute],
+      storageLevel: org.apache.spark.storage.StorageLevel,
+      conf: SQLConf): org.apache.spark.rdd.RDD[org.apache.spark.sql.columnar.CachedBatch] = ???
+
+  override def convertColumnarBatchToCachedBatch(
+      input: org.apache.spark.rdd.RDD[org.apache.spark.sql.vectorized.ColumnarBatch],
+      schema: Seq[Attribute],
+      storageLevel: org.apache.spark.storage.StorageLevel,
+      conf: SQLConf): org.apache.spark.rdd.RDD[org.apache.spark.sql.columnar.CachedBatch] = ???
+
+  override def convertCachedBatchToColumnarBatch(
+      input: org.apache.spark.rdd.RDD[org.apache.spark.sql.columnar.CachedBatch],
+      cacheAttributes: Seq[Attribute],
+      selectedAttributes: Seq[Attribute],
+      conf: SQLConf): org.apache.spark.rdd.RDD[org.apache.spark.sql.vectorized.ColumnarBatch] =
+    ???
+
+  override def convertCachedBatchToInternalRow(
+      input: org.apache.spark.rdd.RDD[org.apache.spark.sql.columnar.CachedBatch],
+      cacheAttributes: Seq[Attribute],
+      selectedAttributes: Seq[Attribute],
+      conf: SQLConf): org.apache.spark.rdd.RDD[InternalRow] = ???
 }

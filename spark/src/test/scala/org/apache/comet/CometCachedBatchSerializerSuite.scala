@@ -60,4 +60,13 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
     assert(cb.sizeInBytes == 5L)
     assert(cb.numRows == 3)
   }
+
+  test("supportsColumnarOutput: true for flat supported schema, delegated for nested") {
+    val ser = new org.apache.spark.sql.comet.CometCachedBatchSerializer
+    val flat = StructType(Seq(StructField("a", IntegerType), StructField("b", StringType)))
+    val nested = StructType(Seq(StructField("a", ArrayType(IntegerType))))
+    assert(ser.supportsColumnarOutput(flat))
+    // nested delegates to DefaultCachedBatchSerializer, which does not support columnar output
+    assert(!ser.supportsColumnarOutput(nested))
+  }
 }
