@@ -21,7 +21,6 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, FromUnixTime, Literal}
 import org.apache.spark.sql.catalyst.util.TimestampFormatter
-import org.apache.spark.sql.types.StringType
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
@@ -30,40 +29,17 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 // https://github.com/apache/datafusion/issues/16594
 object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`")
-
   override def getIncompatibleReasons(): Seq[String] = Seq(
-    "DataFusion's valid timestamp range differs from Spark" +
+    "Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`." +
+      " DataFusion's valid timestamp range differs from Spark" +
       " (https://github.com/apache/datafusion/issues/16594)")
 
-  override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
-    expr.format match {
-      case Literal(null, _) =>
-        Compatible(None)
-      case Literal(fmt, _) =>
-        val formatStr = fmt.toString
-        val defaultPattern = TimestampFormatter.defaultPattern
-        if (formatStr == defaultPattern) {
-          Incompatible(Some("DataFusion's valid timestamp range differs from Spark"))
-        } else {
-          Unsupported(Some(s"Datetime pattern format: $formatStr is unsupported"))
-        }
-      case _ =>
-        Unsupported(Some("Non-literal datetime pattern format is unsupported"))
-    }
-  }
+  override def getSupportLevel(expr: FromUnixTime): SupportLevel = Incompatible(None)
 
   override def convert(
       expr: FromUnixTime,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    expr.format match {
-      case Literal(null, _) =>
-        // from_unixtime is null-intolerant, so NULL format yields NULL
-        return exprToProtoInternal(Literal.create(null, StringType), inputs, binding)
-      case _ =>
-    }
     val secExpr = exprToProtoInternal(expr.sec, inputs, binding)
     // TODO: DataFusion toChar does not support Spark datetime pattern format
     // https://github.com/apache/datafusion/issues/16577

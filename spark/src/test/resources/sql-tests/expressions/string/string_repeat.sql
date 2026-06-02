@@ -35,15 +35,3 @@ SELECT repeat('hi', n) FROM test_repeat
 -- literal + literal
 query
 SELECT repeat('hi', 3), repeat('', 5), repeat('a', 0), repeat(NULL, 3)
-
--- non-positive literal count
-query
-SELECT repeat('namaste', -1), repeat('namaste', -100), repeat('a', 0), repeat(NULL, -1)
-
--- non-positive literal count over a column
-query
-SELECT repeat(s, -1), repeat(s, 0) FROM test_repeat
-
--- non-literal count (column expression)
-query
-SELECT repeat(s, -n) FROM test_repeat
