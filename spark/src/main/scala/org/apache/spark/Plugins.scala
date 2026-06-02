@@ -28,8 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
+import org.apache.comet.CometConf.{COMET_CACHE_SERIALIZER_ENABLED, COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.CometSparkSessionExtensions
 
 /**
@@ -108,11 +107,8 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 }
 
 object CometDriverPlugin extends Logging {
-  private[spark] val CACHE_SERIALIZER_KEY = "spark.sql.cache.serializer"
   private[spark] val COMET_CACHE_SERIALIZER =
     "org.apache.spark.sql.comet.CometCachedBatchSerializer"
-  private[spark] val DEFAULT_CACHE_SERIALIZER =
-    "org.apache.spark.sql.execution.columnar.DefaultCachedBatchSerializer"
 
   /**
    * If the Comet cache serializer is enabled, install it as Spark's cache serializer. This is a
@@ -120,10 +116,13 @@ object CometDriverPlugin extends Logging {
    * user-provided non-default serializer is respected and not overridden.
    */
   private[spark] def setCacheSerializerIfEnabled(conf: SparkConf): Unit = {
-    if (conf.getBoolean(CometConf.COMET_CACHE_SERIALIZER_ENABLED.key, defaultValue = false)) {
-      val existing = conf.get(CACHE_SERIALIZER_KEY, "")
-      if (existing.isEmpty || existing == DEFAULT_CACHE_SERIALIZER) {
-        conf.set(CACHE_SERIALIZER_KEY, COMET_CACHE_SERIALIZER)
+    if (conf.getBoolean(COMET_CACHE_SERIALIZER_ENABLED.key, defaultValue = false)) {
+      val key = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
+      val default = StaticSQLConf.SPARK_CACHE_SERIALIZER.defaultValueString
+      val existing = conf.get(key, default)
+      if (existing == default) {
+        logInfo(s"Setting $key=$COMET_CACHE_SERIALIZER")
+        conf.set(key, COMET_CACHE_SERIALIZER)
       }
     }
   }
