@@ -48,13 +48,13 @@ The following operator families fall back to Spark and are not on the current ro
 
 ## Scans
 
-| Operator                | Status | Notes                                                                                                         |
-| ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------- |
-| `FileSourceScanExec`    | ✅     | Parquet only. Some types and configurations fall back. See the [Compatibility Guide](compatibility/index.md). |
-| `BatchScanExec`         | ✅     | Parquet, Apache Iceberg Parquet, and CSV (native) scans.                                                      |
-| `LocalTableScanExec`    | ⚠️     | Experimental, disabled by default (#4393).                                                                    |
-| `InMemoryTableScanExec` | 🔜     | Cached / in-memory table scans fall back today.                                                               |
-| `RangeExec`             | 💤     | See [Not currently planned](#not-currently-planned).                                                          |
+| Operator                | Status | Notes                                                                                                                                                  |
+| ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FileSourceScanExec`    | ✅     | Parquet only. Some types and configurations fall back. See [Parquet Scan Compatibility](compatibility/scans.md).                                       |
+| `BatchScanExec`         | ✅     | Parquet, Apache Iceberg Parquet, and CSV (native) scans. See [Parquet Scan Compatibility](compatibility/scans.md) and the [Iceberg Guide](iceberg.md). |
+| `LocalTableScanExec`    | ⚠️     | Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config (#4393).   |
+| `InMemoryTableScanExec` | 🔜     | Cached / in-memory table scans fall back today.                                                                                                        |
+| `RangeExec`             | 💤     | See [Not currently planned](#not-currently-planned).                                                                                                   |
 
 ## Projection and filtering
 
