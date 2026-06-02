@@ -111,13 +111,13 @@ object CometStringReplace extends CometScalarFunction[StringReplace]("replace") 
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
-      // Native path: faster, but DataFusion's `replace` diverges from Spark when the search
-      // string is empty — it inserts the replacement between every character and at both
-      // boundaries, while Spark short-circuits and returns the source unchanged. Opt-in.
+      // The native DataFusion `replace` avoids the JVM allocations of the codegen
+      // dispatcher but is not Spark-compatible for an empty search string, so it is
+      // only used when incompatibility is explicitly allowed.
       super.convert(expr, inputs, binding)
     } else {
-      // Default: route through the codegen dispatcher so Spark's own doGenCode handles the
-      // empty-search edge case. https://github.com/apache/datafusion-comet/issues/4497
+      // Run Spark's own generated code inside the Comet pipeline so the result matches Spark
+      // exactly. Falls back to Spark when the codegen dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
