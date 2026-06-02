@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -97,6 +97,27 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
       // Comet pipeline. This guarantees Spark-compatible behavior across 3.4 / 3.5 / 4.0.
       // Falls through to Spark when the dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
+
+object CometStringReplace extends CometScalarFunction[StringReplace]("replace") {
+
+  override def getSupportLevel(expr: StringReplace): SupportLevel = Compatible()
+
+  override def convert(
+      expr: StringReplace,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      // The native DataFusion `replace` avoids the JVM allocations of the codegen
+      // dispatcher but is not Spark-compatible for an empty search string, so it is
+      // only used when incompatibility is explicitly allowed.
+      super.convert(expr, inputs, binding)
+    } else {
+      // Run Spark's own generated code inside the Comet pipeline so the result matches Spark
+      // exactly. Falls back to Spark when the codegen dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
