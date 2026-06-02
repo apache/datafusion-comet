@@ -75,7 +75,8 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
   test("build path produces one CometCachedBatch per Arrow batch with stats") {
     withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "100") {
       val ser = new CometCachedBatchSerializer
-      val df = spark.range(250).selectExpr("id", "cast(id as string) as s")
+      // coalesce(1) makes the batch chunking deterministic: 250 rows / 100 = 3 batches
+      val df = spark.range(250).coalesce(1).selectExpr("id", "cast(id as string) as s")
       val attrs = df.queryExecution.analyzed.output
       val rdd = df.queryExecution.toRdd
       val cached = ser
@@ -85,12 +86,19 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
           org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
           spark.sessionState.conf)
         .collect()
+      assert(cached.length == 3)
       assert(cached.forall(_.isInstanceOf[CometCachedBatch]))
       assert(cached.map(_.numRows).sum == 250)
       cached.foreach { b =>
         assert(b.sizeInBytes > 0)
         assert(b.asInstanceOf[CometCachedBatch].stats.numFields == attrs.length * 5)
       }
+      // column 0 is the bigint id; verify real (non-null) stats were computed
+      val statRows = cached.map(_.asInstanceOf[CometCachedBatch].stats)
+      // lowerBound of col 0 lives at field 0 (LongType); min across batches must be 0
+      assert(statRows.map(_.getLong(0)).min == 0L)
+      // nullCount of col 0 lives at field 2; range() has no nulls
+      assert(statRows.forall(_.getInt(2) == 0))
     }
   }
 }

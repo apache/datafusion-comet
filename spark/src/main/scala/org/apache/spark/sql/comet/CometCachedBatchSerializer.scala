@@ -103,7 +103,7 @@ class CometCacheColumnStats(attributes: Seq[Attribute]) {
 
   private def ordered(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        _: DecimalType | StringType | DateType | TimestampType =>
+        _: DecimalType | StringType | DateType | TimestampType | TimestampNTZType =>
       true
     case _ => false
   }
@@ -115,7 +115,7 @@ class CometCacheColumnStats(attributes: Seq[Attribute]) {
     case ShortType => java.lang.Short.compare(x.asInstanceOf[Short], y.asInstanceOf[Short])
     case IntegerType | DateType =>
       java.lang.Integer.compare(x.asInstanceOf[Int], y.asInstanceOf[Int])
-    case LongType | TimestampType =>
+    case LongType | TimestampType | TimestampNTZType =>
       java.lang.Long.compare(x.asInstanceOf[Long], y.asInstanceOf[Long])
     case FloatType => java.lang.Float.compare(x.asInstanceOf[Float], y.asInstanceOf[Float])
     case DoubleType => java.lang.Double.compare(x.asInstanceOf[Double], y.asInstanceOf[Double])
@@ -141,7 +141,7 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
   private def isCometType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        _: DecimalType | StringType | BinaryType | DateType | TimestampType =>
+        _: DecimalType | StringType | BinaryType | DateType | TimestampType | TimestampNTZType =>
       true
     // Nested/complex types are out of scope for v1; delegate to the default serializer.
     case _ => false
@@ -190,7 +190,7 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     case ByteType => col.getByte(r)
     case ShortType => col.getShort(r)
     case IntegerType | DateType => col.getInt(r)
-    case LongType | TimestampType => col.getLong(r)
+    case LongType | TimestampType | TimestampNTZType => col.getLong(r)
     case FloatType => col.getFloat(r)
     case DoubleType => col.getDouble(r)
     case d: DecimalType => col.getDecimal(r, d.precision, d.scale)
@@ -198,7 +198,10 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     case _ => null // BinaryType etc.: no stats bounds
   }
 
-  // Encode a single Arrow ColumnarBatch to compressed Arrow IPC bytes.
+  // INVARIANT: compute stats BEFORE calling this. serializeBatches internally clears the
+  // VectorSchemaRoot wrapping the batch's field vectors, so the batch must not be read after
+  // this call. The row/columnar Arrow iterators reset those vectors before producing the next
+  // batch, so the clear is safe as long as we never touch this batch again.
   private def encodeBytes(batch: ColumnarBatch): Array[Byte] = {
     val it = CometUtils.serializeBatches(Iterator.single(batch))
     val (_, cbb) = it.next()
@@ -211,7 +214,7 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     arrowBatches.map { batch =>
       val stats = computeStats(batch, attrs)
       val bytes = encodeBytes(batch)
-      CometCachedBatch(batch.numRows(), bytes, stats).asInstanceOf[CachedBatch]
+      CometCachedBatch(batch.numRows(), bytes, stats)
     }
 
   override def convertInternalRowToCachedBatch(
@@ -223,13 +226,12 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       return fallback.convertInternalRowToCachedBatch(input, schema, storageLevel, conf)
     }
     val structType = toStructType(schema)
-    val attrs = schema
     val maxRecords = CometConf.COMET_BATCH_SIZE.get(conf).toLong
     input.mapPartitions { rowIter =>
       val ctx = TaskContext.get()
       val arrowBatches =
         CometArrowConverters.rowToArrowBatchIter(rowIter, structType, maxRecords, "UTC", ctx)
-      encode(arrowBatches, attrs)
+      encode(arrowBatches, schema)
     }
   }
 
@@ -244,14 +246,13 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     // Defensive: supportsColumnarInput returns false for Comet schemas so this is rarely
     // called, but implement it correctly by converting each Spark batch to Arrow first.
     val structType = toStructType(schema)
-    val attrs = schema
     val maxRecords = CometConf.COMET_BATCH_SIZE.get(conf)
     input.mapPartitions { batchIter =>
       val ctx = TaskContext.get()
       val arrowBatches = batchIter.flatMap { b =>
         CometArrowConverters.columnarBatchToArrowBatchIter(b, structType, maxRecords, "UTC", ctx)
       }
-      encode(arrowBatches, attrs)
+      encode(arrowBatches, schema)
     }
   }
 
