@@ -152,9 +152,10 @@ jobs:
           if [ "${{ inputs.spark-short }}" != "4.0" ] || [ "${{ inputs.java }}" != "21" ]; then
             export SERIAL_SBT_TESTS=1
           fi
-          # Cap parallel forked test JVMs at 1 so that even when
-          # SparkParallelTestGrouping is enabled we don't blow the
-          # 7 GB runner budget (each forked test JVM has -Xmx2g).
+          # Cap parallel forked test JVMs at 1: on a 7 GB runner the 4 GB SBT
+          # controller and a single 4 GB forked test JVM (Spark's
+          # SparkBuild.scala `HEAP_SIZE` default) already over-commit RAM;
+          # any concurrency on top would push us straight into OOMs.
           NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ inputs.collect-fallback-logs }} \
             build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
               'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
@@ -164,9 +165,12 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-          # Standard GitHub runners have 7 GB RAM; cap SBT heap so forked test
-          # JVMs fit alongside it.
-          SBT_MEM: "3072"
+          # Match Spark's own CI: build/sbt-launch-lib.bash sets sbt_default_mem
+          # to 4096 and Spark CI never overrides -mem. Total nominal budget
+          # = 4 GB SBT + 4 GB forked test heap + ~1.3 GB metaspace, which
+          # over-commits the 7 GB runner; Spark accepts this on the assumption
+          # that both JVMs rarely sit at peak heap simultaneously.
+          SBT_MEM: "4096"
           # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
           # build_java21.yml and build_java25.yml set this same env var to
           # process-isolate the V1/V2 Parquet and Orc source suites because
