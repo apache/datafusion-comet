@@ -626,9 +626,9 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> percentile_approx</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> percentile_cont</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> percentile_disc</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> regr_avgx</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> regr_avgy</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> regr_count</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> regr_avgx</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> regr_avgy</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> regr_count</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> regr_intercept</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> regr_r2</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> regr_slope</p></li>
@@ -825,7 +825,7 @@ per-function details are documented in the
 </li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> sequence</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> shuffle</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> slice</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> slice</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> sort_array</p>
 <ul>
 <li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
@@ -863,7 +863,7 @@ per-function details are documented in the
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">&gt;&gt;&gt;</span></code></p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">&gt;&gt;&gt;</span></code></p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> <code class="docutils literal notranslate"><span class="pre">^</span></code></p>
 <ul>
 <li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
@@ -933,8 +933,12 @@ per-function details are documented in the
 <section id="collection-funcs">
 <h3>collection_funcs<a class="headerlink" href="#collection-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> array_size</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> cardinality</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> array_size</p>
+<ul>
+<li><p>Native via <code class="docutils literal notranslate"><span class="pre">size</span></code>; returns -1 instead of NULL for NULL input (https://github.com/apache/datafusion-comet/issues/4560).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> cardinality</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> concat</p>
 <ul>
 <li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
@@ -1000,7 +1004,7 @@ per-function details are documented in the
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 3.5.8.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> nullifzero</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> nullifzero</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> nvl</p>
 <ul>
 <li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
@@ -1025,7 +1029,7 @@ per-function details are documented in the
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> zeroifnull</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> zeroifnull</p></li>
 </ul>
 </section>
 <section id="conversion-funcs">
@@ -1188,7 +1192,11 @@ per-function details are documented in the
 </li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> trunc</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_make_interval</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_make_timestamp</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_make_timestamp</p>
+<ul>
+<li><p>Native for valid inputs; returns wrong values for invalid inputs instead of NULL (https://github.com/apache/datafusion-comet/issues/4554).</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_to_date</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_to_time</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_to_timestamp</p></li>
@@ -1212,7 +1220,7 @@ per-function details are documented in the
 <li><p>Handled at the operator level as a <code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code> (<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code>), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array inputs; map inputs fall back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2837">#2837</a>).</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> explode_outer</p>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> explode_outer</p>
 <ul>
 <li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">explode</span></code>, but the <code class="docutils literal notranslate"><span class="pre">outer=true</span></code> case is <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> (empty arrays are not preserved as null outputs) and falls back unless <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.allowIncompatible=true</span></code> (<a class="reference external" href="https://github.com/apache/datafusion/issues/19053">datafusion#19053</a>).</p></li>
 </ul>
@@ -1224,7 +1232,7 @@ per-function details are documented in the
 <li><p>Handled at the operator level as a <code class="docutils literal notranslate"><span class="pre">GenerateExec</span></code> (<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code>), like <code class="docutils literal notranslate"><span class="pre">explode</span></code>. Compatible for array inputs; map inputs fall back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2837">#2837</a>).</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> posexplode_outer</p>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> posexplode_outer</p>
 <ul>
 <li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>, but the <code class="docutils literal notranslate"><span class="pre">outer=true</span></code> case is <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> and falls back unless <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.allowIncompatible=true</span></code> (<a class="reference external" href="https://github.com/apache/datafusion/issues/19053">datafusion#19053</a>).</p></li>
 </ul>
@@ -1297,7 +1305,11 @@ per-function details are documented in the
 <section id="json-funcs">
 <h3>json_funcs<a class="headerlink" href="#json-funcs" title="Link to this heading">#</a></h3>
 <ul class="contains-task-list simple">
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> from_json</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> from_json</p>
+<ul>
+<li><p>Partial native support, marked <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> (requires explicit schema).</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> get_json_object</p>
 <ul>
 <li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
@@ -1311,7 +1323,11 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> json_object_keys</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> json_tuple</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> schema_of_json</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_json</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> to_json</p>
+<ul>
+<li><p>Partial native support; options and map/array inputs fall back.</p></li>
+</ul>
+</li>
 </ul>
 </section>
 <section id="lambda-funcs">
@@ -1401,7 +1417,7 @@ per-function details are documented in the
 <li><p>Spark 4.1.1 (audited 2026-05-27): adds the <code class="docutils literal notranslate"><span class="pre">legacySplitTruncate</span></code> flag (driven by <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.truncateForEmptyRegexSplit</span></code>) to both <code class="docutils literal notranslate"><span class="pre">splitSQL</span></code> calls (https://github.com/apache/datafusion-comet/issues/4477). The Comet native impl does not honour this flag; behaviour matches the non-legacy default.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_element_at</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> try_element_at</p></li>
 </ul>
 </section>
 <section id="math-funcs">
@@ -1524,7 +1540,11 @@ per-function details are documented in the
 <li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">IntegralDivide(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code>. Non-decimal operands are cast to <code class="docutils literal notranslate"><span class="pre">DecimalType(19,</span> <span class="pre">0)</span></code>; result is recomputed per <code class="docutils literal notranslate"><span class="pre">IntegralDivide.resultDecimalType</span></code>, wrapped in <code class="docutils literal notranslate"><span class="pre">CheckOverflow</span></code>, then cast to <code class="docutils literal notranslate"><span class="pre">Long</span></code>. ANSI overflow for <code class="docutils literal notranslate"><span class="pre">Long.MinValue</span> <span class="pre">div</span> <span class="pre">-1</span></code> and decimal-overflow ANSI cases are covered by existing tests.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> e</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> e</p>
+<ul>
+<li><p>Foldable; rewritten to a literal by ConstantFolding (like <code class="docutils literal notranslate"><span class="pre">pi</span></code>).</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> exp</p>
 <ul>
 <li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">UnaryMathExpression(StrictMath.exp,</span> <span class="pre">&quot;EXP&quot;)</span></code> unchanged. ULP-level differences vs DataFusion <code class="docutils literal notranslate"><span class="pre">exp</span></code> are possible but unflagged.</p></li>
@@ -1632,7 +1652,7 @@ per-function details are documented in the
 <li><p>See <code class="docutils literal notranslate"><span class="pre">misc_funcs</span> <span class="pre">/</span> <span class="pre">randn</span></code>.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> random</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> random</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> randstr</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> rint</p>
 <ul>
@@ -1715,7 +1735,7 @@ per-function details are documented in the
 <li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Unhex(child,</span> <span class="pre">failOnError)</span></code>. Spark 4.x widens input to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code> and wraps the inner call in try/catch; Comet <code class="docutils literal notranslate"><span class="pre">CometUnhex</span></code> forwards <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> to native <code class="docutils literal notranslate"><span class="pre">spark_unhex</span></code> but does not gate on collation.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> uniform</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> uniform</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> width_bucket</p>
 <ul>
 <li><p>Spark 3.5.8 (audited 2026-05-27): introduced; not available in 3.4.3.</p></li>
@@ -1738,11 +1758,27 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> bitmap_construct_agg</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> bitmap_count</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> bitmap_or_agg</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> current_catalog</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> current_database</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> current_schema</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> current_user</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> equal_null</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> current_catalog</p>
+<ul>
+<li><p>Resolved to a literal by the analyzer (<code class="docutils literal notranslate"><span class="pre">ReplaceCurrentLike</span></code>).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> current_database</p>
+<ul>
+<li><p>Resolved to a literal by the analyzer (<code class="docutils literal notranslate"><span class="pre">ReplaceCurrentLike</span></code>).</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> current_schema</p>
+<ul>
+<li><p>Alias of <code class="docutils literal notranslate"><span class="pre">current_database</span></code>; resolved to a literal by the analyzer.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> current_user</p>
+<ul>
+<li><p>Resolved to a literal by the analyzer; same as <code class="docutils literal notranslate"><span class="pre">user</span></code>.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> equal_null</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> from_avro</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> from_protobuf</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> hll_sketch_estimate</p></li>
@@ -1784,7 +1820,11 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> schema_of_avro</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> schema_of_variant</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> schema_of_variant_agg</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> session_user</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> session_user</p>
+<ul>
+<li><p>Alias of <code class="docutils literal notranslate"><span class="pre">current_user</span></code>; resolved to a literal by the analyzer.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> spark_partition_id</p>
 <ul>
 <li><p>Spark 3.4.3 (audited 2026-05-27): byte-for-byte identical to 4.1.1. <code class="docutils literal notranslate"><span class="pre">SparkPartitionID()</span> <span class="pre">extends</span> <span class="pre">LeafExpression</span> <span class="pre">with</span> <span class="pre">Nondeterministic</span></code>; returns the integer index of the partition being processed. Comet emits an empty <code class="docutils literal notranslate"><span class="pre">SparkPartitionId</span></code> proto.</p></li>
@@ -1809,7 +1849,11 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_parse_json</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_reflect</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> try_variant_get</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> typeof</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> typeof</p>
+<ul>
+<li><p>Foldable; resolved to a literal before Comet sees the plan.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> user</p>
 <ul>
 <li><p>Spark 3.4.3 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">CurrentUser()</span> <span class="pre">extends</span> <span class="pre">LeafExpression</span> <span class="pre">with</span> <span class="pre">Unevaluable</span></code>; the analyzer’s <code class="docutils literal notranslate"><span class="pre">ResolveCurrentLike</span></code> rule replaces it with a <code class="docutils literal notranslate"><span class="pre">StringType</span></code> literal of the current user name before Comet sees the plan. No Comet serde needed; the literal flows through <code class="docutils literal notranslate"><span class="pre">CometLiteral</span></code>.</p></li>
@@ -1967,8 +2011,8 @@ per-function details are documented in the
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> regexp</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> regexp_like</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> regexp</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> regexp_like</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> rlike</p>
 <ul>
 <li><p>See <code class="docutils literal notranslate"><span class="pre">string_funcs</span> <span class="pre">/</span> <span class="pre">regexp_replace</span></code> and the <code class="docutils literal notranslate"><span class="pre">CometRLike</span></code> notes (audited in PR #4461). Uses the Rust <code class="docutils literal notranslate"><span class="pre">regex</span></code> crate, which differs from Java’s <code class="docutils literal notranslate"><span class="pre">Pattern</span></code> engine; requires <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.regexp.allowIncompatible=true</span></code>.</p></li>
@@ -1988,7 +2032,7 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> character_length</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> chr</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> collate</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> collation</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> collation</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> concat_ws</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> contains</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> decode</p></li>
@@ -2010,7 +2054,7 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> lower</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> lpad</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> ltrim</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> luhn_check</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> luhn_check</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> make_valid_utf8</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> mask</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> octet_length</p></li>
@@ -2038,7 +2082,7 @@ per-function details are documented in the
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> substr</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> substring</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> substring_index</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_binary</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> to_binary</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_char</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_number</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> to_varchar</p></li>
@@ -2105,8 +2149,16 @@ per-function details are documented in the
 <ul class="contains-task-list simple">
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> cume_dist</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> dense_rank</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> lag</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> lead</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> lag</p>
+<ul>
+<li><p>Supported via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code> (operator level), not the expression serde.</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> lead</p>
+<ul>
+<li><p>Supported via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code> (operator level), not the expression serde.</p></li>
+</ul>
+</li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> nth_value</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> ntile</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> percent_rank</p></li>
