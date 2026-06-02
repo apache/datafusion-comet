@@ -52,7 +52,7 @@ import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
@@ -885,7 +885,7 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
         .addAllProjectList(exprs.map(_.get).asJava)
       Some(builder.setProjection(projectBuilder).build())
     } else {
-      withInfo(op, op.projectList: _*)
+      withFallbackReason(op, op.projectList: _*)
       None
     }
   }
@@ -945,7 +945,7 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
         .setPredicate(cond.get)
       Some(builder.setFilter(filterBuilder).build())
     } else {
-      withInfo(op, op.condition, op.child)
+      withFallbackReason(op, op.condition, op.child)
       None
     }
   }
@@ -1006,7 +1006,7 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
     if (!supportedSortType(op, op.sortOrder)) {
-      withInfo(op, "Unsupported data type in sort expressions")
+      withFallbackReason(op, "Unsupported data type in sort expressions")
       return None
     }
 
@@ -1018,7 +1018,7 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
         .addAllSortOrders(sortOrders.map(_.get).asJava)
       Some(builder.setSort(sortBuilder).build())
     } else {
-      withInfo(op, "sort order not supported", op.sortOrder: _*)
+      withFallbackReason(op, "sort order not supported", op.sortOrder: _*)
       None
     }
   }
@@ -1091,7 +1091,7 @@ object CometLocalLimitExec extends CometOperatorSerde[LocalLimitExec] {
         .setOffset(0)
       Some(builder.setLimit(limitBuilder).build())
     } else {
-      withInfo(op, "No child operator")
+      withFallbackReason(op, "No child operator")
       None
     }
   }
@@ -1152,7 +1152,7 @@ object CometGlobalLimitExec extends CometOperatorSerde[GlobalLimitExec] {
 
       Some(builder.setLimit(limitBuilder).build())
     } else {
-      withInfo(op, "No child operator")
+      withFallbackReason(op, "No child operator")
       None
     }
   }
@@ -1221,7 +1221,7 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
         .setNumExprPerProject(op.projections.head.size)
       Some(builder.setExpand(expandBuilder).build())
     } else {
-      withInfo(op, allProjExprs: _*)
+      withFallbackReason(op, allProjExprs: _*)
       None
     }
   }
@@ -1306,7 +1306,7 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     val childExprProto = exprToProto(childExpr, op.child.output)
 
     if (childExprProto.isEmpty) {
-      withInfo(op, childExpr)
+      withFallbackReason(op, childExpr)
       return None
     }
 
@@ -1318,7 +1318,7 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     }
 
     if (projectExprs.exists(_.isEmpty) || childOp.isEmpty) {
-      withInfo(op, op.output: _*)
+      withFallbackReason(op, op.output: _*)
       return None
     }
 
@@ -1484,13 +1484,15 @@ trait CometBaseAggregate {
     val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
 
     if (multiMode) {
-      withInfo(aggregate, s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
+      withFallbackReason(
+        aggregate,
+        s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
       return None
     }
 
     if (sparkFinalMode &&
       !QueryPlanSerde.allAggsSupportMixedExecution(aggregate.aggregateExpressions)) {
-      withInfo(
+      withFallbackReason(
         aggregate,
         "Spark Final aggregate without Comet Partial requires compatible " +
           "intermediate buffer formats")
@@ -1501,7 +1503,7 @@ trait CometBaseAggregate {
     // (Comet partial + Spark final with incompatible intermediate buffers)
     val unsafeReason = aggregate.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL)
     if (unsafeReason.isDefined) {
-      withInfo(aggregate, unsafeReason.get)
+      withFallbackReason(aggregate, unsafeReason.get)
       return None
     }
 
@@ -1512,12 +1514,12 @@ trait CometBaseAggregate {
     val child = aggregate.child
 
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
-      withInfo(aggregate, "No group by or aggregation")
+      withFallbackReason(aggregate, "No group by or aggregation")
       return None
     }
 
     if (groupingExpressions.exists(expr => QueryPlanSerde.containsMapType(expr.dataType))) {
-      withInfo(aggregate, "Grouping on map-containing types is not supported")
+      withFallbackReason(aggregate, "Grouping on map-containing types is not supported")
       return None
     }
 
@@ -1525,7 +1527,7 @@ trait CometBaseAggregate {
       // Collation-aware grouping requires collation-aware hashing/equality; Comet only
       // compares raw bytes, which would put rows that compare equal under the collation
       // into different groups.
-      withInfo(aggregate, "Grouping on non-default collated strings is not supported")
+      withFallbackReason(aggregate, "Grouping on non-default collated strings is not supported")
       return None
     }
 
@@ -1537,7 +1539,9 @@ trait CometBaseAggregate {
     }
 
     if (emptyExprs.nonEmpty) {
-      withInfo(aggregate, s"Unsupported group expressions: ${emptyExprs.mkString(", ")}")
+      withFallbackReason(
+        aggregate,
+        s"Unsupported group expressions: ${emptyExprs.mkString(", ")}")
       return None
     }
 
@@ -1563,7 +1567,7 @@ trait CometBaseAggregate {
       val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
       val resultExprs = resultExpressions.map(exprToProto(_, attributes))
       if (resultExprs.exists(_.isEmpty)) {
-        withInfo(
+        withFallbackReason(
           aggregate,
           s"Unsupported result expressions found in: $resultExpressions",
           resultExpressions: _*)
@@ -1579,7 +1583,9 @@ trait CometBaseAggregate {
       // - Mixed {Partial, PartialMerge} (for distinct aggregate plans)
       val isMixedPartialMerge = modeSet == Set(Partial, PartialMerge)
       if (modes.size > 1 && !isMixedPartialMerge) {
-        withInfo(aggregate, s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
+        withFallbackReason(
+          aggregate,
+          s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
         return None
       }
 
@@ -1594,7 +1600,7 @@ trait CometBaseAggregate {
           case Final => CometAggregateMode.Final
           case PartialMerge => CometAggregateMode.PartialMerge
           case _ =>
-            withInfo(aggregate, s"Unsupported aggregation mode ${modes.head}")
+            withFallbackReason(aggregate, s"Unsupported aggregation mode ${modes.head}")
             return None
         }
       }
@@ -1610,7 +1616,7 @@ trait CometBaseAggregate {
             a.aggregateFunction.isInstanceOf[Last])
         }
         if (unsupportedAggs.nonEmpty) {
-          withInfo(
+          withFallbackReason(
             aggregate,
             "PartialMerge not supported for aggregates: " +
               unsupportedAggs.map(_.aggregateFunction.prettyName).mkString(", "))
@@ -1627,7 +1633,7 @@ trait CometBaseAggregate {
       }
 
       if (aggExprs.exists(_.isEmpty)) {
-        withInfo(
+        withFallbackReason(
           aggregate,
           "Unsupported aggregate expression(s)",
           aggregateExpressions ++ aggregateExpressions.map(_.aggregateFunction): _*)
@@ -1643,7 +1649,7 @@ trait CometBaseAggregate {
           val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
           val resultExprs = resultExpressions.map(exprToProto(_, attributes))
           if (resultExprs.exists(_.isEmpty)) {
-            withInfo(
+            withFallbackReason(
               aggregate,
               s"Unsupported result expressions found in: $resultExpressions",
               resultExpressions: _*)
@@ -1661,7 +1667,7 @@ trait CometBaseAggregate {
               case PartialMerge => CometAggregateMode.PartialMerge
               case Final => CometAggregateMode.Final
               case other =>
-                withInfo(aggregate, s"Unsupported aggregation mode $other")
+                withFallbackReason(aggregate, s"Unsupported aggregation mode $other")
                 return None
             }
           }
@@ -1673,7 +1679,7 @@ trait CometBaseAggregate {
       } else {
         val allChildren: Seq[Expression] =
           groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
-        withInfo(aggregate, allChildren: _*)
+        withFallbackReason(aggregate, allChildren: _*)
         None
       }
     }
@@ -1902,7 +1908,7 @@ trait CometHashJoin {
         join.isInstanceOf[ShuffledHashJoinExec]) &&
       !(CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(join.conf) &&
         join.isInstanceOf[BroadcastHashJoinExec])) {
-      withInfo(join, s"Invalid hash join type ${join.nodeName}")
+      withFallbackReason(join, s"Invalid hash join type ${join.nodeName}")
       return None
     }
 
@@ -1914,7 +1920,7 @@ trait CometHashJoin {
 
     val joinKeys = join.leftKeys ++ join.rightKeys
     if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
-      withInfo(join, "unsupported non-default collated string join keys")
+      withFallbackReason(join, "unsupported non-default collated string join keys")
       return None
     }
 
@@ -1925,7 +1931,7 @@ trait CometHashJoin {
       (join.leftKeys.length != 1 || join.rightKeys.length != 1 ||
         join.joinType != LeftAnti || join.buildSide != BuildRight ||
         join.condition.isDefined)) {
-      withInfo(
+      withFallbackReason(
         join,
         "null-aware anti-join requires single-column LeftAnti BuildRight with no condition")
       return None
@@ -1934,7 +1940,7 @@ trait CometHashJoin {
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withInfo(join, cond)
+        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -1951,7 +1957,7 @@ trait CometHashJoin {
         case LeftAnti => JoinType.LeftAnti
         case _ =>
           // Spark doesn't support other join types
-          withInfo(join, s"Unsupported join type ${join.joinType}")
+          withFallbackReason(join, s"Unsupported join type ${join.joinType}")
           return None
       }
     }
@@ -1974,7 +1980,7 @@ trait CometHashJoin {
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
       val allExprs: Seq[Expression] = joinKeys
-      withInfo(join, allExprs: _*)
+      withFallbackReason(join, allExprs: _*)
       None
     }
   }
@@ -2262,7 +2268,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     if (join.condition.isDefined &&
       !CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED
         .get(join.conf)) {
-      withInfo(
+      withFallbackReason(
         join,
         s"${CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key} is not enabled",
         join.condition.get)
@@ -2272,7 +2278,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withInfo(join, cond)
+        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -2289,14 +2295,14 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case LeftAnti => JoinType.LeftAnti
         case _ =>
           // Spark doesn't support other join types
-          withInfo(join, s"Unsupported join type ${join.joinType}")
+          withFallbackReason(join, s"Unsupported join type ${join.joinType}")
           return None
       }
     }
 
     val joinKeys = join.leftKeys ++ join.rightKeys
     if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
-      withInfo(join, "unsupported non-default collated string join keys")
+      withFallbackReason(join, "unsupported non-default collated string join keys")
       return None
     }
 
@@ -2310,7 +2316,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     }
 
     if (errorMsgs.nonEmpty) {
-      withInfo(join, errorMsgs.mkString("\n"))
+      withFallbackReason(join, errorMsgs.mkString("\n"))
       return None
     }
 
@@ -2334,7 +2340,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       Some(builder.setSortMergeJoin(joinBuilder).build())
     } else {
       val allExprs: Seq[Expression] = joinKeys
-      withInfo(join, allExprs: _*)
+      withFallbackReason(join, allExprs: _*)
       None
     }
   }

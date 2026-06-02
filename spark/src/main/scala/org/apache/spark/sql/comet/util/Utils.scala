@@ -235,6 +235,10 @@ object Utils extends CometTypeShim with Logging {
 
       val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
       val root = new VectorSchemaRoot(fieldVectors.asJava)
+      if (fieldVectors.isEmpty) {
+        // VSR cannot infer rowCount without field vectors
+        root.setRowCount(batch.numRows())
+      }
       val provider = batchProviderOpt.getOrElse(dictionaryProvider)
 
       val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
@@ -345,6 +349,11 @@ object Utils extends CometTypeShim with Logging {
 
         if (targetRoot == null) {
           return (Array.empty, 0L, 0L)
+        }
+
+        if (targetRoot.getSchema.getFields.isEmpty) {
+          // VSRAppender does not update rowCount with no columns
+          targetRoot.setRowCount(totalRows.toInt)
         }
 
         assert(

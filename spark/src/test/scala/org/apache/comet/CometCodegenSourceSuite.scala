@@ -450,6 +450,46 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     }
   }
 
+  test("nested fixed-width map children grow with setSafe, not set (#4539)") {
+    // Map<Int, Int> output: both key and value are fixed-width children of the entries struct.
+    // Their element count is the data-dependent sum of per-row map sizes, not bounded by numRows,
+    // and is unknown until the write loop has evaluated each row, so the writes must use `setSafe`
+    // to grow on demand. A bare `set` throws once a row's entries exceed the child's initial
+    // capacity (issue #4539: the literal map's third key overflowed the pre-sized IntVector).
+    val expr = CreateMap(
+      Seq(
+        Literal(1, IntegerType),
+        Literal(10, IntegerType),
+        Literal(2, IntegerType),
+        Literal(20, IntegerType)))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq.empty).body
+    assert(
+      src.contains(".setSafe("),
+      s"expected setSafe for nested fixed-width writes; got:\n$src")
+    // `.set(` is a bare fixed-width write; `setSafe(` / `setNull(` / `setIndexDefined(` do not
+    // match this literal. There must be none into the nested children.
+    assert(
+      !src.contains(".set("),
+      s"expected no bare fixed-width set into map children; got:\n$src")
+  }
+
+  test("top-level scalar output keeps the pre-sized set fast path") {
+    // The root output vector is pre-sized to numRows and written once per row, so it uses the
+    // bare `set` fast path rather than paying for setSafe's per-write capacity check. This pins
+    // the boundary the #4539 fix draws: setSafe is for nested children only.
+    val expr = Add(BoundReference(0, IntegerType, nullable = false), Literal(1, IntegerType))
+    val intSpec = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = false)
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(intSpec)).body
+    assert(
+      src.contains("output.set("),
+      s"expected bare set for the pre-sized root output; got:\n$src")
+    assert(
+      !src.contains(".setSafe("),
+      s"expected no setSafe for a scalar root output; got:\n$src")
+  }
+
   test("ArrayType output elides isNullAt on the element loop when containsNull is false") {
     // CreateArray over only-non-null Literals produces ArrayType(elementType, containsNull=false).
     // The element write should drop the `arr.isNullAt(j)` guard at source level rather than

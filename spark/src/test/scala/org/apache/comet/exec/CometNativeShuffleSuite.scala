@@ -219,15 +219,21 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle with NullType passthrough column") {
-    val df = spark.sql("SELECT x, y FROM VALUES ('a', null), ('b', null), ('c', null) AS t(x, y)")
-    val shuffled = df.repartition(2, $"x")
-    checkShuffleAnswer(shuffled, 1)
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df =
+        spark.sql("SELECT x, y FROM VALUES ('a', null), ('b', null), ('c', null) AS t(x, y)")
+      val shuffled = df.repartition(2, $"x")
+      checkShuffleAnswer(shuffled, 1)
+    }
   }
 
   test("native shuffle with Map[_, NullType] column") {
-    val df = spark.sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
-    val shuffled = df.repartition(2, $"id")
-    checkShuffleAnswer(shuffled, 1)
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = spark.sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
+      val shuffled = df.repartition(2, $"id")
+      println(shuffled.queryExecution.executedPlan)
+      checkShuffleAnswer(shuffled, 1)
+    }
   }
 
   test("fix: Comet native shuffle with binary data") {
