@@ -109,8 +109,11 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     count
   }
 
-  // Two passes: strip transitions first (they assert child.supportsColumnar in constructors),
-  // then revert Comet operators to row-based Spark equivalents.
+  // Three passes:
+  // 1. Strip existing transitions (they assert child.supportsColumnar in constructors)
+  // 2. Revert Comet operators to row-based Spark equivalents
+  // 3. Re-insert ColumnarToRowExec where a columnar child feeds a row-based parent
+  //    (e.g. QueryStageExec from a prior CometShuffleExchangeExec stage)
   private[rules] def revertToSpark(plan: SparkPlan): SparkPlan = {
     val stripped = plan.transformDown {
       case CometNativeColumnarToRowExec(child) => child
@@ -119,7 +122,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
       case sparkToColumnar: CometSparkToColumnarExec => sparkToColumnar.child
       case RowToColumnarExec(child) => child
     }
-    stripped.transformUp {
+    val reverted = stripped.transformUp {
       case cometShuffle: CometShuffleExchangeExec =>
         cometShuffle.originalPlan.withNewChildren(Seq(cometShuffle.child))
       case cometExec: CometExec =>
@@ -128,6 +131,17 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
         } else {
           cometExec.originalPlan
         }
+    }
+    insertTransitions(reverted)
+  }
+
+  private def insertTransitions(plan: SparkPlan): SparkPlan = {
+    plan.transformUp {
+      case node if !node.isInstanceOf[QueryStageExec] && !node.supportsColumnar =>
+        val newChildren = node.children.map { child =>
+          if (child.supportsColumnar) ColumnarToRowExec(child) else child
+        }
+        if (newChildren != node.children) node.withNewChildren(newChildren) else node
     }
   }
 }
