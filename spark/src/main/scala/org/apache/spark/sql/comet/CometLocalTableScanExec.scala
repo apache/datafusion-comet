@@ -35,7 +35,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometSink
 
@@ -158,7 +158,7 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
       childOp: Operator*): Option[Operator] = {
     val fallbackReasons = new ListBuffer[String]()
     if (!isSchemaSupported(op.schema, fallbackReasons)) {
-      withInfo(op, fallbackReasons.mkString("; "))
+      withFallbackReason(op, fallbackReasons.mkString("; "))
       None
     } else {
       super.convert(op, builder, childOp: _*)
