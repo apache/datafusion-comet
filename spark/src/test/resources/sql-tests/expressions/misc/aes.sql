@@ -15,9 +15,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Tests for aes_encrypt, aes_decrypt, try_aes_decrypt
--- All three functions fall back to Spark because StaticInvoke (aesEncrypt/aesDecrypt)
--- is not yet supported as a Comet native expression.
+-- Tests for aes_encrypt and aes_decrypt (available since Spark 3.3). Both fall back to Spark
+-- because StaticInvoke (aesEncrypt/aesDecrypt) is not yet supported as a Comet native expression.
+-- try_aes_decrypt (Spark 3.5+) is covered in aes_try_decrypt.sql and AES-CBC (Spark 3.5+) in
+-- aes_cbc.sql, both gated with MinSparkVersion.
 
 statement
 CREATE TABLE test_aes(data STRING, key STRING) USING parquet
@@ -65,19 +66,3 @@ SELECT CAST(aes_decrypt(aes_encrypt(data, '1234567890abcdef12345678', 'ECB'), '1
 -- 32-byte key
 query spark_answer_only
 SELECT CAST(aes_decrypt(aes_encrypt(data, '1234567890abcdef1234567890abcdef', 'ECB'), '1234567890abcdef1234567890abcdef', 'ECB') AS STRING) FROM test_aes
-
--- try_aes_decrypt: invalid ciphertext returns NULL instead of throwing
-query spark_answer_only
-SELECT try_aes_decrypt(CAST('garbage' AS BINARY), key) FROM test_aes
-
--- try_aes_decrypt: valid ciphertext decrypts correctly
-query spark_answer_only
-SELECT CAST(try_aes_decrypt(aes_encrypt(data, key, 'ECB'), key, 'ECB') AS STRING) FROM test_aes
-
--- try_aes_decrypt with literal invalid ciphertext
-query spark_answer_only
-SELECT try_aes_decrypt(CAST('not_valid_ciphertext' AS BINARY), '1234567890abcdef')
-
--- try_aes_decrypt: NULL data
-query spark_answer_only
-SELECT try_aes_decrypt(NULL, '1234567890abcdef')
