@@ -21,13 +21,18 @@ package org.apache.comet
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
-import org.apache.spark.sql.comet.{CometCacheColumnStats, CometCachedBatch, CometCachedBatchSerializer}
+import org.apache.spark.sql.comet.{CometCacheColumnStats, CometCachedBatch, CometCachedBatchSerializer, CometSparkToColumnarExec}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 
 class CometCachedBatchSerializerSuite extends CometTestBase {
+
+  override protected def sparkConf: org.apache.spark.SparkConf = {
+    super.sparkConf
+      .set("spark.sql.cache.serializer", "org.apache.spark.sql.comet.CometCachedBatchSerializer")
+  }
 
   test("stats row has 5 fields per column in cachedAttributes order") {
     val a = AttributeReference("a", IntegerType, nullable = true)()
@@ -204,6 +209,33 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
           .collect()
           .toSet
       assert(prunedVals == (0 until 100).map(i => (i * 2).toString).toSet)
+    }
+  }
+
+  test("cached scan passes already-Arrow batches through CometSparkToColumnarExec") {
+    withSQLConf(
+      org.apache.spark.sql.internal.SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      spark
+        .range(1000)
+        .selectExpr("id as key", "id % 8 as value")
+        .createOrReplaceTempView("comet_cache_c1")
+      spark.catalog.cacheTable("comet_cache_c1")
+      try {
+        // groupBy forces a CometSparkToColumnarExec to appear above the cached InMemoryTableScan.
+        val df = spark.sql("SELECT value, count(*) FROM comet_cache_c1 GROUP BY value")
+        val rows = df.collect()
+        assert(rows.length == 8)
+        val s2c = collectFirst(df.queryExecution.executedPlan) {
+          case s: CometSparkToColumnarExec => s
+        }
+        // CometSparkToColumnarExec must appear above the cached scan and must have taken the
+        // passthrough fast-path (batches already Arrow, no re-copy needed).
+        assert(s2c.isDefined, "expected CometSparkToColumnarExec in plan over cached scan")
+        assert(s2c.get.metrics("numPassthroughBatches").value > 0L)
+      } finally {
+        spark.catalog.uncacheTable("comet_cache_c1")
+      }
     }
   }
 }

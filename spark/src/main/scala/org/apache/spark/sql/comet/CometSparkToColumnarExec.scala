@@ -67,7 +67,10 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     "numOutputBatches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"),
     "conversionTime" -> SQLMetrics.createNanoTimingMetric(
       sparkContext,
-      "time converting Spark batches to Arrow batches"))
+      "time converting Spark batches to Arrow batches"),
+    "numPassthroughBatches" -> SQLMetrics.createMetric(
+      sparkContext,
+      "number of already-Arrow batches passed through without conversion"))
 
   // The conversion happens in next(), so wrap the call to measure time spent.
   private def createTimingIter(
@@ -96,6 +99,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
     val conversionTime = longMetric("conversionTime")
+    val numPassthroughBatches = longMetric("numPassthroughBatches")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
     // Use UTC for Arrow schema timezone to match the native side, which always
     // deserializes Timestamp as Timestamp(Microsecond, Some("UTC")). Spark's internal
@@ -111,13 +115,19 @@ case class CometSparkToColumnarExec(child: SparkPlan)
         .mapPartitionsInternal { sparkBatches =>
           val arrowBatches =
             sparkBatches.flatMap { sparkBatch =>
-              val context = TaskContext.get()
-              CometArrowConverters.columnarBatchToArrowBatchIter(
-                sparkBatch,
-                schema,
-                maxRecordsPerBatch,
-                timeZoneId,
-                context)
+              if (isAllCometVectors(sparkBatch)) {
+                // Already Arrow (e.g. from CometCachedBatchSerializer): pass through, no copy.
+                numPassthroughBatches += 1
+                Iterator.single(sparkBatch)
+              } else {
+                val context = TaskContext.get()
+                CometArrowConverters.columnarBatchToArrowBatchIter(
+                  sparkBatch,
+                  schema,
+                  maxRecordsPerBatch,
+                  timeZoneId,
+                  context)
+              }
             }
           createTimingIter(arrowBatches, numInputRows, numOutputBatches, conversionTime)
         }
@@ -140,6 +150,16 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 
   override protected def withNewChildInternal(newChild: SparkPlan): CometSparkToColumnarExec =
     copy(child = newChild)
+
+  private def isAllCometVectors(batch: ColumnarBatch): Boolean = {
+    if (batch.numCols() == 0) return false
+    var i = 0
+    while (i < batch.numCols()) {
+      if (!batch.column(i).isInstanceOf[org.apache.comet.vector.CometVector]) return false
+      i += 1
+    }
+    true
+  }
 
 }
 
