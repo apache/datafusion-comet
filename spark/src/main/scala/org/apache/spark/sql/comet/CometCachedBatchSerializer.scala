@@ -19,13 +19,15 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.internal.Logging
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow}
-import org.apache.spark.sql.columnar.{SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
+import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.execution.columnar.DefaultCachedBatchSerializer
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.ByteArray
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -123,7 +125,7 @@ class CometCacheColumnStats(attributes: Seq[Attribute]) {
   }
 }
 
-class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer with Logging {
+class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
   // Delegate target for schemas Comet does not handle. Serializable (no-arg constructor).
   private val fallback = new DefaultCachedBatchSerializer
@@ -140,12 +142,10 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer with
     case _ => false
   }
 
-  private def cometSchema(attrs: Seq[Attribute]): Boolean = isCometSchema(attrs.map(_.dataType))
-
   // Force the row build path for Comet schemas (single code path for encode + stats); delegate
   // otherwise so the default serializer's columnar-input optimization still applies.
   override def supportsColumnarInput(schema: Seq[Attribute]): Boolean =
-    if (cometSchema(schema)) false else fallback.supportsColumnarInput(schema)
+    if (isCometSchema(schema.map(_.dataType))) false else fallback.supportsColumnarInput(schema)
 
   override def supportsColumnarOutput(schema: StructType): Boolean =
     if (isCometSchema(schema.map(_.dataType))) true else fallback.supportsColumnarOutput(schema)
@@ -154,27 +154,26 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer with
   override def vectorTypes(attributes: Seq[Attribute], conf: SQLConf): Option[Seq[String]] = None
 
   override def convertInternalRowToCachedBatch(
-      input: org.apache.spark.rdd.RDD[InternalRow],
+      input: RDD[InternalRow],
       schema: Seq[Attribute],
-      storageLevel: org.apache.spark.storage.StorageLevel,
-      conf: SQLConf): org.apache.spark.rdd.RDD[org.apache.spark.sql.columnar.CachedBatch] = ???
+      storageLevel: StorageLevel,
+      conf: SQLConf): RDD[CachedBatch] = ???
 
   override def convertColumnarBatchToCachedBatch(
-      input: org.apache.spark.rdd.RDD[org.apache.spark.sql.vectorized.ColumnarBatch],
+      input: RDD[ColumnarBatch],
       schema: Seq[Attribute],
-      storageLevel: org.apache.spark.storage.StorageLevel,
-      conf: SQLConf): org.apache.spark.rdd.RDD[org.apache.spark.sql.columnar.CachedBatch] = ???
+      storageLevel: StorageLevel,
+      conf: SQLConf): RDD[CachedBatch] = ???
 
   override def convertCachedBatchToColumnarBatch(
-      input: org.apache.spark.rdd.RDD[org.apache.spark.sql.columnar.CachedBatch],
+      input: RDD[CachedBatch],
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute],
-      conf: SQLConf): org.apache.spark.rdd.RDD[org.apache.spark.sql.vectorized.ColumnarBatch] =
-    ???
+      conf: SQLConf): RDD[ColumnarBatch] = ???
 
   override def convertCachedBatchToInternalRow(
-      input: org.apache.spark.rdd.RDD[org.apache.spark.sql.columnar.CachedBatch],
+      input: RDD[CachedBatch],
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute],
-      conf: SQLConf): org.apache.spark.rdd.RDD[InternalRow] = ???
+      conf: SQLConf): RDD[InternalRow] = ???
 }

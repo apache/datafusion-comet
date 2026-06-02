@@ -21,7 +21,7 @@ package org.apache.comet
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
-import org.apache.spark.sql.comet.{CometCacheColumnStats, CometCachedBatch}
+import org.apache.spark.sql.comet.{CometCacheColumnStats, CometCachedBatch, CometCachedBatchSerializer}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -62,7 +62,7 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
   }
 
   test("supportsColumnarOutput: true for flat supported schema, delegated for nested") {
-    val ser = new org.apache.spark.sql.comet.CometCachedBatchSerializer
+    val ser = new CometCachedBatchSerializer
     val flat = StructType(Seq(StructField("a", IntegerType), StructField("b", StringType)))
     val nested = StructType(Seq(StructField("a", ArrayType(IntegerType))))
     assert(ser.supportsColumnarOutput(flat))
