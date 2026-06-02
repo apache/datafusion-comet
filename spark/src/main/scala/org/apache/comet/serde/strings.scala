@@ -30,6 +30,7 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.shims.CometTypeShim
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -244,16 +245,32 @@ object CometRight extends CometExpressionSerde[Right] {
   }
 }
 
-object CometConcat extends CometScalarFunction[Concat]("concat") {
+object CometConcat extends CometScalarFunction[Concat]("concat") with CometTypeShim {
   private val unsupportedReason = "CONCAT supports only string input parameters"
+
+  // Spark 4.0 widens Concat to accept collated strings and preserves the collation in the merged
+  // result type. The native concat UDF always produces UTF8 (UTF8_BINARY semantics), so a
+  // non-default collation diverges from Spark.
+  private val collationReason =
+    "concat does not support non-UTF8_BINARY collations " +
+      "(https://github.com/apache/datafusion-comet/issues/2190)"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
+
   override def getSupportLevel(expr: Concat): SupportLevel = {
-    if (expr.children.forall(_.dataType == DataTypes.StringType)) {
-      Compatible()
-    } else {
+    // Use isInstanceOf rather than `== DataTypes.StringType` so that collated strings (a
+    // StringType with a non-default collationId, which is not == the default StringType) are still
+    // recognised as string input and routed to the collation check below rather than reported as
+    // an unsupported input type.
+    if (!expr.children.forall(_.dataType.isInstanceOf[StringType])) {
       Unsupported(Some(unsupportedReason))
+    } else if (hasNonDefaultStringCollation(expr.dataType) ||
+      expr.children.exists(c => hasNonDefaultStringCollation(c.dataType))) {
+      Incompatible(Some(collationReason))
+    } else {
+      Compatible()
     }
   }
 }
