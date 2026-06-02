@@ -125,6 +125,37 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("GetStructField: non-nullable field of a nullable struct (Delta action-frame shape)") {
+    // Repro for the under-declared `GetStructField` nullability that crashed Comet's native
+    // execution with "Column '...' is declared as non-nullable but contains null values".
+    //
+    // Models Delta's action frame: each log row is exactly ONE action type, so action columns are
+    // NULLABLE structs, but their inner fields are declared NON-nullable by Delta's typed
+    // SingleAction schema (e.g. `add.size`). We build that exact shape with an explicit in-memory
+    // schema (a Parquet round-trip would mark every field nullable, and a CreateNamedStruct would
+    // be declined). Pushing the struct through a Comet shuffle and projecting the non-nullable
+    // inner field (GetStructField) used to produce a null in a column declared non-nullable, which
+    // Comet's native execution rejected during RecordBatch validation.
+    val schema = StructType(
+      Seq(
+        StructField(
+          "add",
+          StructType(Seq(StructField("size", LongType, nullable = false))),
+          nullable = true),
+        StructField("v", IntegerType, nullable = false)))
+    val rows = (0 until 1000).map(i => Row(if (i % 2 == 0) Row(i.toLong) else null, i))
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key -> "true") {
+      val df = spark
+        .createDataFrame(spark.sparkContext.parallelize(rows), schema)
+        .repartition(4, col("v")) // materialize the typed struct through a Comet shuffle
+        .select(col("add.size").as("size")) // GetStructField on the non-nullable inner field
+        .repartition(4, col("size")) // re-shuffle: read-back validates the declared schema
+      checkSparkAnswer(df)
+    }
+  }
+
   test("compare true/false to negative zero") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf(
