@@ -19,17 +19,22 @@
 
 package org.apache.spark.sql.comet
 
+import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
+import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
+import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.execution.columnar.DefaultCachedBatchSerializer
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.ByteArray
 import org.apache.spark.unsafe.types.UTF8String
+
+import org.apache.comet.CometConf
 
 /**
  * A cached batch holding one compressed Arrow IPC message plus Spark-format column stats.
@@ -153,27 +158,114 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // Let Spark use generic ColumnVector access; our columns are heterogeneous CometVector subtypes.
   override def vectorTypes(attributes: Seq[Attribute], conf: SQLConf): Option[Seq[String]] = None
 
+  private def toStructType(attrs: Seq[Attribute]): StructType =
+    StructType(attrs.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
+
+  // Compute stats from an already-built Arrow ColumnarBatch (columns are CometVector).
+  private def computeStats(batch: ColumnarBatch, attrs: Seq[Attribute]): InternalRow = {
+    val acc = new CometCacheColumnStats(attrs)
+    val numRows = batch.numRows()
+    var c = 0
+    while (c < attrs.length) {
+      val dt = attrs(c).dataType
+      val col = batch.column(c)
+      var r = 0
+      while (r < numRows) {
+        if (col.isNullAt(r)) {
+          acc.update(c, dt, isNull = true, null)
+        } else {
+          acc.update(c, dt, isNull = false, readValue(col, dt, r))
+        }
+        r += 1
+      }
+      c += 1
+    }
+    acc.setRowCount(numRows)
+    acc.toInternalRow
+  }
+
+  // Read one value in Catalyst internal form from a ColumnVector.
+  private def readValue(col: ColumnVector, dt: DataType, r: Int): Any = dt match {
+    case BooleanType => col.getBoolean(r)
+    case ByteType => col.getByte(r)
+    case ShortType => col.getShort(r)
+    case IntegerType | DateType => col.getInt(r)
+    case LongType | TimestampType => col.getLong(r)
+    case FloatType => col.getFloat(r)
+    case DoubleType => col.getDouble(r)
+    case d: DecimalType => col.getDecimal(r, d.precision, d.scale)
+    case StringType => col.getUTF8String(r)
+    case _ => null // BinaryType etc.: no stats bounds
+  }
+
+  // Encode a single Arrow ColumnarBatch to compressed Arrow IPC bytes.
+  private def encodeBytes(batch: ColumnarBatch): Array[Byte] = {
+    val it = CometUtils.serializeBatches(Iterator.single(batch))
+    val (_, cbb) = it.next()
+    cbb.toArray
+  }
+
+  private def encode(
+      arrowBatches: Iterator[ColumnarBatch],
+      attrs: Seq[Attribute]): Iterator[CachedBatch] =
+    arrowBatches.map { batch =>
+      val stats = computeStats(batch, attrs)
+      val bytes = encodeBytes(batch)
+      CometCachedBatch(batch.numRows(), bytes, stats).asInstanceOf[CachedBatch]
+    }
+
   override def convertInternalRowToCachedBatch(
       input: RDD[InternalRow],
       schema: Seq[Attribute],
       storageLevel: StorageLevel,
-      conf: SQLConf): RDD[CachedBatch] = ???
+      conf: SQLConf): RDD[CachedBatch] = {
+    if (!isCometSchema(schema.map(_.dataType))) {
+      return fallback.convertInternalRowToCachedBatch(input, schema, storageLevel, conf)
+    }
+    val structType = toStructType(schema)
+    val attrs = schema
+    val maxRecords = CometConf.COMET_BATCH_SIZE.get(conf).toLong
+    input.mapPartitions { rowIter =>
+      val ctx = TaskContext.get()
+      val arrowBatches =
+        CometArrowConverters.rowToArrowBatchIter(rowIter, structType, maxRecords, "UTC", ctx)
+      encode(arrowBatches, attrs)
+    }
+  }
 
   override def convertColumnarBatchToCachedBatch(
       input: RDD[ColumnarBatch],
       schema: Seq[Attribute],
       storageLevel: StorageLevel,
-      conf: SQLConf): RDD[CachedBatch] = ???
+      conf: SQLConf): RDD[CachedBatch] = {
+    if (!isCometSchema(schema.map(_.dataType))) {
+      return fallback.convertColumnarBatchToCachedBatch(input, schema, storageLevel, conf)
+    }
+    // Defensive: supportsColumnarInput returns false for Comet schemas so this is rarely
+    // called, but implement it correctly by converting each Spark batch to Arrow first.
+    val structType = toStructType(schema)
+    val attrs = schema
+    val maxRecords = CometConf.COMET_BATCH_SIZE.get(conf)
+    input.mapPartitions { batchIter =>
+      val ctx = TaskContext.get()
+      val arrowBatches = batchIter.flatMap { b =>
+        CometArrowConverters.columnarBatchToArrowBatchIter(b, structType, maxRecords, "UTC", ctx)
+      }
+      encode(arrowBatches, attrs)
+    }
+  }
 
   override def convertCachedBatchToColumnarBatch(
       input: RDD[CachedBatch],
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute],
-      conf: SQLConf): RDD[ColumnarBatch] = ???
+      conf: SQLConf): RDD[ColumnarBatch] =
+    throw new UnsupportedOperationException("read path not yet implemented")
 
   override def convertCachedBatchToInternalRow(
       input: RDD[CachedBatch],
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute],
-      conf: SQLConf): RDD[InternalRow] = ???
+      conf: SQLConf): RDD[InternalRow] =
+    throw new UnsupportedOperationException("read path not yet implemented")
 }

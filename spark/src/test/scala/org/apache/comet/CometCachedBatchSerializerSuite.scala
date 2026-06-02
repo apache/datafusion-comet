@@ -25,6 +25,8 @@ import org.apache.spark.sql.comet.{CometCacheColumnStats, CometCachedBatch, Come
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometConf
+
 class CometCachedBatchSerializerSuite extends CometTestBase {
 
   test("stats row has 5 fields per column in cachedAttributes order") {
@@ -68,5 +70,27 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
     assert(ser.supportsColumnarOutput(flat))
     // nested delegates to DefaultCachedBatchSerializer, which does not support columnar output
     assert(!ser.supportsColumnarOutput(nested))
+  }
+
+  test("build path produces one CometCachedBatch per Arrow batch with stats") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "100") {
+      val ser = new CometCachedBatchSerializer
+      val df = spark.range(250).selectExpr("id", "cast(id as string) as s")
+      val attrs = df.queryExecution.analyzed.output
+      val rdd = df.queryExecution.toRdd
+      val cached = ser
+        .convertInternalRowToCachedBatch(
+          rdd,
+          attrs,
+          org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+          spark.sessionState.conf)
+        .collect()
+      assert(cached.forall(_.isInstanceOf[CometCachedBatch]))
+      assert(cached.map(_.numRows).sum == 250)
+      cached.foreach { b =>
+        assert(b.sizeInBytes > 0)
+        assert(b.asInstanceOf[CometCachedBatch].stats.numFields == attrs.length * 5)
+      }
+    }
   }
 }
