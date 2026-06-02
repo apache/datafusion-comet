@@ -19,10 +19,13 @@
 
 package org.apache.comet
 
+import java.time.LocalDateTime
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.comet.{CometCacheColumnStats, CometCachedBatch, CometCachedBatchSerializer, CometSparkToColumnarExec}
 import org.apache.spark.sql.types._
+import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
@@ -239,6 +242,84 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
       } finally {
         spark.catalog.uncacheTable("comet_cache_c1")
       }
+    }
+  }
+
+  test("cached query result matches uncached") {
+    val base = spark
+      .range(2000)
+      .selectExpr("id as k", "id % 10 as v", "cast(id as string) as s")
+    val expected =
+      base
+        .groupBy("v")
+        .count()
+        .orderBy("v")
+        .collect()
+        .toSeq
+        .map(r => (r.getLong(0), r.getLong(1)))
+    base.createOrReplaceTempView("comet_cache_t8")
+    spark.catalog.cacheTable("comet_cache_t8")
+    try {
+      val df = spark.sql("SELECT v, count(*) AS c FROM comet_cache_t8 GROUP BY v ORDER BY v")
+      checkSparkAnswer(df)
+      val actual = df.collect().toSeq.map(r => (r.getLong(0), r.getLong(1)))
+      assert(actual == expected)
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_t8")
+    }
+  }
+
+  test("filtered cached scan returns correct rows with stats pruning") {
+    spark.range(5000).selectExpr("id as k").createOrReplaceTempView("comet_cache_t8f")
+    spark.catalog.cacheTable("comet_cache_t8f")
+    try {
+      val df = spark.sql("SELECT k FROM comet_cache_t8f WHERE k >= 4990")
+      checkSparkAnswer(df)
+      assert(df.count() == 10)
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_t8f")
+    }
+  }
+
+  test("cached table with MEMORY_AND_DISK round-trips") {
+    val cachedDf = spark
+      .range(3000)
+      .selectExpr("id as k", "cast(id as string) as s")
+      .persist(StorageLevel.MEMORY_AND_DISK)
+    try {
+      assert(cachedDf.count() == 3000)
+      checkSparkAnswer(cachedDf.filter("k % 2 = 0"))
+    } finally {
+      cachedDf.unpersist()
+    }
+  }
+
+  test("array-typed cached relation delegates to default serializer and is correct") {
+    val df0 = spark.range(100).selectExpr("id as k", "array(id, id + 1) as a")
+    df0.createOrReplaceTempView("comet_cache_t8a")
+    spark.catalog.cacheTable("comet_cache_t8a")
+    try {
+      val df = spark.sql("SELECT k, a FROM comet_cache_t8a WHERE k < 5 ORDER BY k")
+      checkSparkAnswer(df)
+      assert(df.count() == 5)
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_t8a")
+    }
+  }
+
+  test("timestamp_ntz cached scan is correct") {
+    // A Seq[LocalDateTime] maps to TimestampNTZType, which the Comet serializer supports.
+    val data = (0 until 50).map(i => (i.toLong, LocalDateTime.of(2020, 1, 1, 0, 0, i % 60)))
+    import testImplicits._
+    val df0 = data.toDF("id", "ts")
+    df0.createOrReplaceTempView("comet_cache_ntz")
+    spark.catalog.cacheTable("comet_cache_ntz")
+    try {
+      val df = spark.sql("SELECT id, ts FROM comet_cache_ntz WHERE id < 10 ORDER BY id")
+      checkSparkAnswer(df)
+      assert(df.count() == 10)
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_ntz")
     }
   }
 }
