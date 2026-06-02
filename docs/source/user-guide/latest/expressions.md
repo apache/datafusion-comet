@@ -651,4 +651,4 @@ This list is illustrative, not exhaustive: the per-function tables are not the c
 ## See also
 
 - [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for ⚠️ expressions.
-- [Spark Expressions Support (contributor guide)](../../contributor-guide/spark_expressions_support.md) - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for each expression.
+- [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for audited expressions.
