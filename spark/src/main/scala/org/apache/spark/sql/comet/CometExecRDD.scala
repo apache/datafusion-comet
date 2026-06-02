@@ -45,6 +45,13 @@ private[spark] class CometExecPartition(
  * (consumed natively via the C Stream Interface); shuffle input slots are `CometShuffledBatchRDD`
  * (consumed via `CometShuffleBlockIterator`). Slot order matches the scan-input order in the
  * serialized native plan.
+ *
+ * Solves the closure-capture problem: instead of capturing all partitions' data in the closure
+ * (which gets serialized to every task), each `CometExecPartition` carries only its own data.
+ *
+ * Does not handle DPP (InSubqueryExec), which is resolved in
+ * `CometIcebergNativeScanExec.serializedPartitionData` before this RDD is created. It does handle
+ * `ScalarSubquery` expressions by registering them with `CometScalarSubquery` before execution.
  */
 private[spark] class CometExecRDD(
     sc: SparkContext,

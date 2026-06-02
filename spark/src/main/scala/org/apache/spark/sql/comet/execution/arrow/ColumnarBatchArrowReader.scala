@@ -35,7 +35,7 @@ import org.apache.comet.vector.{CometDictionaryVector, CometVector}
  * the source's `FieldVector`s into a transient `ArrowRecordBatch` (retains buffers), loads it
  * into this reader's stable VSR via `loadFieldBuffers` (release-and-replace), then closes the
  * source batch. The unload/load step decouples this reader's VSR ownership from whatever the
- * upstream does with its own buffers.
+ * source does with its own buffers.
  */
 private[comet] class ColumnarBatchArrowReader(
     allocator: BufferAllocator,

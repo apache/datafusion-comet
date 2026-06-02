@@ -88,6 +88,18 @@ object CometArrowStream extends Logging {
   }
 
   /**
+   * Build the `inputObjects` array that `CometExecIterator` / `CometExec.getCometIterator` pass
+   * to native `createPlan`, for the common case of a single scan input fed by one per-partition
+   * `Iterator[ColumnarBatch]`. The iterator is exported to one `ArrowArrayStream` (Arrow C
+   * Stream) and boxed as the lone element, using the native timezone.
+   */
+  def inputObjects(
+      iter: Iterator[ColumnarBatch],
+      sparkSchema: StructType,
+      name: String): Array[Object] =
+    Array[Object](fromColumnarBatchIter(iter, sparkSchema, NATIVE_TIMEZONE, name))
+
+  /**
    * Build the stream's advertised Arrow schema from the actual `CometVector` types in the first
    * batch, not from `expected` (which derives from the consumer's Spark-declared types). Native
    * operators like `ScanExec` already cast their input to the declared scan-input schema in

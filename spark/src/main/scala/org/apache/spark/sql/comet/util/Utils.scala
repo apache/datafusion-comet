@@ -36,6 +36,7 @@ import org.apache.arrow.vector.util.VectorSchemaRootAppender
 import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -210,10 +211,8 @@ object Utils extends CometTypeShim with Logging {
    * `StructType.fromAttributes` (removed in Spark 4) and `DataTypeUtils.fromAttributes` (only on
    * 4) so the same call works across supported Spark versions.
    */
-  def fromAttributes(
-      attributes: Seq[org.apache.spark.sql.catalyst.expressions.Attribute]): StructType =
-    StructType(attributes.map(a =>
-      org.apache.spark.sql.types.StructField(a.name, a.dataType, a.nullable, a.metadata)))
+  def fromAttributes(attributes: Seq[Attribute]): StructType =
+    StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
 
   /**
    * Serializes a list of `ColumnarBatch` into an output stream. This method must be in `spark`

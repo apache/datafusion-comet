@@ -273,14 +273,14 @@ class CometNativeShuffleWriter[K, V](
         // DataFusion will deduplicate identical sort expressions in LexOrdering,
         // so we need to transform boundary rows to match the deduplicated structure
         val seenExprs = mutable.HashSet[Expression]()
-        val deduplicationMap = mutable.ArrayBuffer[(Int, Boolean)]()
+        val deduplicationMap = mutable.ArrayBuffer[(Int, Boolean)]() // (originalIndex, isKept)
 
         rangePartitioning.ordering.zipWithIndex.foreach { case (sortOrder, idx) =>
           if (seenExprs.contains(sortOrder.child)) {
-            deduplicationMap += (idx -> false)
+            deduplicationMap += (idx -> false) // Will be deduplicated by DataFusion
           } else {
             seenExprs += sortOrder.child
-            deduplicationMap += (idx -> true)
+            deduplicationMap += (idx -> true) // Will be kept by DataFusion
           }
         }
 
@@ -296,6 +296,10 @@ class CometNativeShuffleWriter[K, V](
 
         val boundarySchema = rangePartitioning.ordering.flatMap(e => Some(e.dataType))
 
+        // rangePartitionBounds holds Spark InternalRows of partitioning boundaries: each row is a
+        // boundary, each entry a value in that row (row-major, not column-major). Convert to
+        // Literals and keep only the entries whose ordering expression survived deduplication, so
+        // the boundary shape matches DataFusion's deduplicated LexOrdering.
         val transformedBoundaryExprs: Seq[Seq[Literal]] =
           rangePartitionBounds.get.map((row: InternalRow) => {
             val allLiterals =

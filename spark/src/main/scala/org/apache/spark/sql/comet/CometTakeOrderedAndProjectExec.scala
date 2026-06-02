@@ -144,13 +144,8 @@ case class CometTakeOrderedAndProjectExec(
           val numOutputCols = child.output.length
           val inputSchema = CometUtils.fromAttributes(child.output)
           childRDD.mapPartitionsWithIndexInternal { case (idx, iter) =>
-            val stream = CometArrowStream.fromColumnarBatchIter(
-              iter,
-              inputSchema,
-              CometArrowStream.NATIVE_TIMEZONE,
-              "CometTakeOrderedAndProject-topK")
             CometExec.getCometIterator(
-              Array(stream.asInstanceOf[Object]),
+              CometArrowStream.inputObjects(iter, inputSchema, "CometTakeOrderedAndProject-topK"),
               numOutputCols,
               serializedTopK,
               numParts,
@@ -178,13 +173,9 @@ case class CometTakeOrderedAndProjectExec(
       val finalOutputLength = output.length
       val finalInputSchema = CometUtils.fromAttributes(child.output)
       singlePartitionRDD.mapPartitionsInternal { iter =>
-        val stream = CometArrowStream.fromColumnarBatchIter(
-          iter,
-          finalInputSchema,
-          CometArrowStream.NATIVE_TIMEZONE,
-          "CometTakeOrderedAndProject-final")
         val it = CometExec.getCometIterator(
-          Array(stream.asInstanceOf[Object]),
+          CometArrowStream
+            .inputObjects(iter, finalInputSchema, "CometTakeOrderedAndProject-final"),
           finalOutputLength,
           serializedTopKAndProjection,
           1,

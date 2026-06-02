@@ -496,9 +496,12 @@ abstract class CometNativeExec extends CometExec {
       mutable.ArrayBuffer.empty[(Broadcast[SerializableConfiguration], Seq[String])]
     foreachUntilCometInput(this) {
       case scan: CometNativeScanExec =>
+        // Bring in any SQLConf "spark.hadoop.*" configs and the per-relation options, since
+        // different tables may have different decryption properties.
         val hadoopConf = scan.relation.sparkSession.sessionState
           .newHadoopConfWithOptions(scan.relation.options)
         if (CometParquetUtils.encryptionEnabled(hadoopConf)) {
+          // hadoopConf isn't serializable, so ship it to executors via a broadcast.
           val broadcastedConf = scan.relation.sparkSession.sparkContext
             .broadcast(new SerializableConfiguration(hadoopConf))
           encryptionOptions += ((broadcastedConf, scan.relation.inputFiles.toSeq))
