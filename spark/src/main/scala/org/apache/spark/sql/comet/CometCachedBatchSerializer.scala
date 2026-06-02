@@ -264,10 +264,15 @@ class CometCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute]): Array[Int] = {
     val byId = cacheAttributes.map(_.exprId).zipWithIndex.toMap
-    selectedAttributes.map(a => byId(a.exprId)).toArray
+    selectedAttributes.map { a =>
+      byId.getOrElse(
+        a.exprId,
+        throw new IllegalStateException(
+          s"Selected attribute $a (exprId ${a.exprId}) not found in cached attributes"))
+    }.toArray
   }
 
-  // Returns true if indices is exactly [0, 1, 2, ..., n-1] (identity projection).
+  // True when `indices` selects every column in order: length == numCols and indices(i) == i.
   private def isIdentityProjection(indices: Array[Int], numCols: Int): Boolean = {
     if (indices.length != numCols) return false
     var i = 0

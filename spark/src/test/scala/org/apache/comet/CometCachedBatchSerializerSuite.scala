@@ -142,4 +142,68 @@ class CometCachedBatchSerializerSuite extends CometTestBase {
       assert(pruned == (0 until 200).map(i => (i * 2).toString).toSet)
     }
   }
+
+  test("columnar read path: full and pruned projection") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "64") {
+      val ser = new CometCachedBatchSerializer
+      val df = spark.range(100).coalesce(1).selectExpr("id", "cast(id * 2 as string) as s")
+      val attrs = df.queryExecution.analyzed.output
+      val cached = ser.convertInternalRowToCachedBatch(
+        df.queryExecution.toRdd,
+        attrs,
+        org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+        spark.sessionState.conf)
+
+      // Full projection (identity passthrough): 2 columns, values match.
+      val fullColCounts =
+        ser
+          .convertCachedBatchToColumnarBatch(cached, attrs, attrs, spark.sessionState.conf)
+          .map(_.numCols())
+          .collect()
+      assert(fullColCounts.forall(_ == 2))
+      val fullVals =
+        ser
+          .convertCachedBatchToColumnarBatch(cached, attrs, attrs, spark.sessionState.conf)
+          .mapPartitions { batches =>
+            batches.flatMap { b =>
+              val rows = new scala.collection.mutable.ArrayBuffer[(Long, String)]
+              var i = 0
+              while (i < b.numRows()) {
+                rows += ((b.column(0).getLong(i), b.column(1).getUTF8String(i).toString))
+                i += 1
+              }
+              rows.iterator
+            }
+          }
+          .collect()
+          .toSet
+      assert(fullVals == (0 until 100).map(i => (i.toLong, (i * 2).toString)).toSet)
+
+      // Pruned projection: only the string column (index 1) -> 1 column, correct values.
+      val onlyS = Seq(attrs(1))
+      val prunedColCounts =
+        ser
+          .convertCachedBatchToColumnarBatch(cached, attrs, onlyS, spark.sessionState.conf)
+          .map(_.numCols())
+          .collect()
+      assert(prunedColCounts.forall(_ == 1))
+      val prunedVals =
+        ser
+          .convertCachedBatchToColumnarBatch(cached, attrs, onlyS, spark.sessionState.conf)
+          .mapPartitions { batches =>
+            batches.flatMap { b =>
+              val rows = new scala.collection.mutable.ArrayBuffer[String]
+              var i = 0
+              while (i < b.numRows()) {
+                rows += b.column(0).getUTF8String(i).toString
+                i += 1
+              }
+              rows.iterator
+            }
+          }
+          .collect()
+          .toSet
+      assert(prunedVals == (0 until 100).map(i => (i * 2).toString).toSet)
+    }
+  }
 }
