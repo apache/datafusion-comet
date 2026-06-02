@@ -86,20 +86,8 @@ object CometUrlDecodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
   }
 }
 
-/**
- * Routes a [[StaticInvoke]] through the JVM codegen dispatcher. Spark's [[StaticInvoke]] has its
- * own `doGenCode` that emits a typed call to the target Java method, so the dispatcher will
- * compile that into the kernel and invoke the target method per row when
- * [[org.apache.comet.CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] is enabled. Used for AES
- * (`aes_encrypt`, `aes_decrypt`) where there is no native lowering.
- */
+/** Routes a [[StaticInvoke]] through the JVM codegen dispatcher; used for AES. */
 object CometStaticInvokeCodegenDispatch extends CometCodegenDispatch[StaticInvoke]
 
-/**
- * Routes [[TryEval]] through the JVM codegen dispatcher. `TryEval` wraps its child in a try/catch
- * in `doGenCode`, so dispatching the bound expression compiles the wrapped child into the kernel
- * and yields NULL on any exception. Enables `try_aes_decrypt`, which lowers to
- * `TryEval(StaticInvoke(aesDecrypt, ...))`, plus other `TryEval`-wrapped expressions
- * (`try_to_binary`, `try_add` for non-numeric inputs, etc.).
- */
+/** Routes [[TryEval]] through the JVM codegen dispatcher; used for `try_aes_decrypt`. */
 object CometTryEval extends CometCodegenDispatch[TryEval]
