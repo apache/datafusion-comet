@@ -1043,6 +1043,18 @@ index 885512d4d19..113ae17ad9f 100644
            checkAnswer(shjNonCodegenDF, Seq.empty)
          }
        }
+@@ -1485,7 +1507,10 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+             "/*+ BROADCAST(t2) */ t1.k as k"
+           }
+           val plan = sql(getAggQuery(selectExpr, joinType)).queryExecution.executedPlan
+-          assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
++          assert(collect(plan) {
++            case _: BroadcastNestedLoopJoinExec | _: CometBroadcastNestedLoopJoinExec =>
++              true
++          }.size === 1)
+           // No extra shuffle before aggregation
+           assert(collect(plan) { case _: ShuffleExchangeExec => true }.size === 0)
+       }
 @@ -1501,7 +1523,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            val plan = sql(getAggQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
@@ -1053,11 +1065,15 @@ index 885512d4d19..113ae17ad9f 100644
        }
  
        def getJoinQuery(selectExpr: String, joinType: String): String = {
-@@ -1530,9 +1553,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1530,10 +1556,16 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            }
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
-           assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
+-          assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
 -          assert(collect(plan) { case _: SortMergeJoinExec => true }.size === 3)
++          assert(collect(plan) {
++            case _: BroadcastNestedLoopJoinExec | _: CometBroadcastNestedLoopJoinExec =>
++              true
++          }.size === 1)
 +          assert(collect(plan) {
 +            case _: SortMergeJoinExec => true
 +            case _: CometSortMergeJoinExec => true
