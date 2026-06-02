@@ -537,11 +537,11 @@ trait CommonStringExprs {
             strExpr.get,
             CometEvalMode.LEGACY)
         } else {
-          withInfo(expr, value)
+          withFallbackReason(expr, value)
           None
         }
       case _ =>
-        withInfo(expr, "Comet only supports encoding with 'utf-8'.")
+        withFallbackReason(expr, "Comet only supports encoding with 'utf-8'.")
         None
     }
   }
