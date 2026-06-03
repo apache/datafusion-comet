@@ -109,7 +109,7 @@ Use `query expect_fallback(...)` for inputs where the serde returns `None`. Form
 Hand-curated (`make` does not regenerate these):
 
 - `docs/source/user-guide/latest/expressions.md` — add `| <ExpressionClass> | \`<sql_name>\` |` to the matching category table, alphabetical.
-- `docs/source/contributor-guide/spark_expressions_support.md` — flip `- [ ] <name>` to `- [x] <name>`.
+- `docs/source/user-guide/latest/expressions.md` — update the function's Status from 🔜/💤 to ✅ (or ⚠️) in the matching category table.
 
 Per-expression compatibility pages under `compatibility/expressions/*.md` are auto-generated from `getCompatibleNotes` / `getIncompatibleReasons` / `getUnsupportedReasons` — do not hand-edit.
 
