@@ -25,10 +25,10 @@ const SETTLE_THRESHOLD: isize = 64 * 1024;
 /// armed+stamped thread should trip the breaker. `limit == 0` means "unset".
 #[allow(dead_code)]
 fn should_trip(balance: isize, limit: usize) -> bool {
-    limit != 0 && balance > limit as isize
+    limit != 0 && balance > limit.try_into().unwrap_or(isize::MAX)
 }
 
-/// Pure helper: add `delta` to `local_drift`; if it crosses `SETTLE_THRESHOLD`
+/// Pure helper: add `delta` to `local_drift`; if it reaches or exceeds `SETTLE_THRESHOLD`
 /// in magnitude, flush it into `shared` and return the new shared balance.
 /// Otherwise return `None` (nothing flushed).
 #[allow(dead_code)]
@@ -78,5 +78,14 @@ mod tests {
             settle(&mut drift, -SETTLE_THRESHOLD, &shared),
             Some(1_000_000 - SETTLE_THRESHOLD)
         );
+        assert_eq!(drift, 0);
+    }
+
+    #[test]
+    fn test_settle_flushes_at_exact_threshold() {
+        let shared = AtomicIsize::new(0);
+        let mut drift = 0isize;
+        assert_eq!(settle(&mut drift, SETTLE_THRESHOLD, &shared), Some(SETTLE_THRESHOLD));
+        assert_eq!(drift, 0);
     }
 }
