@@ -113,6 +113,9 @@ fn track(delta: isize) {
     }
     let limit = LIMIT.load(Ordering::Relaxed);
     if should_trip(balance, limit) {
+        // panic_any boxes the payload, which re-enters this allocator and calls
+        // track() again. Set UNWINDING first so that re-entrant call short-circuits
+        // above, preventing infinite recursion / a double panic from inside alloc.
         UNWINDING.with(|u| u.set(true));
         std::panic::panic_any(OomGuardPanic {
             balance: balance.max(0) as usize,
@@ -178,6 +181,8 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let new_ptr = self.inner.realloc(ptr, layout, new_size);
         if !new_ptr.is_null() {
+            // Casts and subtraction are safe in practice: a single allocation cannot
+            // exceed isize::MAX on any real platform, so no wrapping or overflow occurs.
             let old = layout.size() as isize;
             let new = new_size as isize;
             track(new - old);

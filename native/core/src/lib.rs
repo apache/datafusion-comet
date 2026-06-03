@@ -108,7 +108,7 @@ static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<Je
 static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<MiMalloc> =
     crate::execution::memory_pools::oom_guard::AccountingAllocator::new(MiMalloc);
 
-// oom-guard enabled but neither jemalloc nor mimalloc active: wrap the system allocator.
+// oom-guard enabled with system allocator (no mimalloc, and no jemalloc or on MSVC).
 #[cfg(all(
     feature = "oom-guard",
     not(all(not(target_env = "msvc"), feature = "jemalloc", not(feature = "mimalloc"))),
