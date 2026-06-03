@@ -182,7 +182,7 @@ The tables below list every Spark built-in expression with its current status.
 
 | Function      | Status | Notes                                                                                                       |
 | ------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
-| `array_size`  | ⚠️     | Returns -1 instead of NULL for NULL input ([#4560](https://github.com/apache/datafusion-comet/issues/4560)) |
+| `array_size`  | ✅     |                                                                                                             |
 | `cardinality` | ✅     | MapType input falls back                                                                                    |
 | `concat`      | ✅     | Binary/array children fall back                                                                             |
 | `reverse`     | ✅     | Binary-element arrays fall back (Incompatible) ([details](compatibility/expressions/array.md))              |
