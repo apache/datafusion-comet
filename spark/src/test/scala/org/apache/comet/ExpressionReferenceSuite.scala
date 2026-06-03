@@ -31,4 +31,12 @@ class ExpressionReferenceSuite extends AnyFunSuite {
     assert(NotPlanned.symbol == "💤")
     assert(Unclassified.symbol == "🔜")
   }
+
+  test("real statuses have distinct symbols") {
+    assert(Set(Supported.symbol, Planned.symbol, NotPlanned.symbol).size == 3)
+  }
+
+  test("PlannedExpr rejects non-planned status") {
+    assertThrows[IllegalArgumentException](PlannedExpr(Supported))
+  }
 }

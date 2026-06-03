@@ -28,12 +28,17 @@ object ExpressionReference {
 
   /** Status shown in the reference table. */
   sealed trait ExprStatus { def symbol: String }
-  case object Supported extends ExprStatus { val symbol = "✅" }
-  case object Planned extends ExprStatus { val symbol = "🔜" }
-  case object NotPlanned extends ExprStatus { val symbol = "💤" }
+  case object Supported extends ExprStatus { override val symbol = "✅" }
+  case object Planned extends ExprStatus { override val symbol = "🔜" }
+  case object NotPlanned extends ExprStatus { override val symbol = "💤" }
 
-  /** A built-in that is neither serde-backed nor listed; rendered with a warning. */
-  case object Unclassified extends ExprStatus { val symbol = "🔜" }
+  /**
+   * A built-in that is neither serde-backed nor listed in `plannedExpressions`. Rendered with a
+   * warning and the same "🔜" glyph as [[Planned]] on purpose: an unclassified function is
+   * treated as provisionally planned in the table, and its Notes cell ("unclassified; not yet
+   * reviewed") is what distinguishes it from a deliberately planned entry.
+   */
+  case object Unclassified extends ExprStatus { override val symbol = "🔜" }
 
   /**
    * Curated metadata for a function Comet does not serde-support. Lives in the
@@ -43,9 +48,18 @@ object ExpressionReference {
   case class PlannedExpr(
       status: ExprStatus,
       issue: Option[Int] = None,
-      note: Option[String] = None)
+      note: Option[String] = None) {
+    require(
+      status == Planned || status == NotPlanned,
+      s"PlannedExpr.status must be Planned or NotPlanned, got $status")
+  }
 
-  /** Serde-derived doc facts for one expression class. */
+  /**
+   * Serde-derived doc facts for one expression class. `hasCompatContent` is true when the serde
+   * produces any compat-guide content (a non-empty getCompatibleNotes / getIncompatibleReasons /
+   * getUnsupportedReasons), which is what gates whether the reference table emits a compat-guide
+   * link.
+   */
   case class SerdeDocInfo(
       summary: Option[String],
       hasCompatContent: Boolean,
