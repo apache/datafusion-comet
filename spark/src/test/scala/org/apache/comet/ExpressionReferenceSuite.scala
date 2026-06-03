@@ -39,4 +39,59 @@ class ExpressionReferenceSuite extends AnyFunSuite {
   test("PlannedExpr rejects non-planned status") {
     assertThrows[IllegalArgumentException](PlannedExpr(Supported))
   }
+
+  private val arrayAppend = FunctionEntry("array_append", "array_funcs", "x.ArrayAppend")
+  private val arrayExcept = FunctionEntry("array_except", "array_funcs", "x.ArrayExcept")
+  private val kurtosis = FunctionEntry("kurtosis", "agg_funcs", "x.Kurtosis")
+  private val newThing = FunctionEntry("new_thing", "math_funcs", "x.NewThing")
+
+  test("serde-backed with no compat content -> Supported, summary only") {
+    val info = SerdeDocInfo(
+      Some("Interval types fall back"),
+      hasCompatContent = false,
+      None,
+      "arrayappend")
+    val (row, warn) = resolveRow(arrayAppend, Some(info), None)
+    assert(row.status == Supported)
+    assert(row.notes == "Interval types fall back")
+    assert(warn.isEmpty)
+  }
+
+  test("serde-backed with compat content -> Supported, summary + link") {
+    val info = SerdeDocInfo(
+      Some("Falls back by default"),
+      hasCompatContent = true,
+      Some("array"),
+      "arrayexcept")
+    val (row, _) = resolveRow(arrayExcept, Some(info), None)
+    assert(
+      row.notes ==
+        "Falls back by default [details](compatibility/expressions/array.md#arrayexcept)")
+  }
+
+  test("serde-backed compat content but category has no compat page -> no link") {
+    val info = SerdeDocInfo(None, hasCompatContent = true, None, "x")
+    val (row, _) = resolveRow(arrayAppend, Some(info), None)
+    assert(row.notes == "")
+  }
+
+  test("planned with issue -> Planned, issue link") {
+    val (row, warn) = resolveRow(kurtosis, None, Some(PlannedExpr(Planned, issue = Some(4098))))
+    assert(row.status == Planned)
+    assert(row.notes == "[#4098](https://github.com/apache/datafusion-comet/issues/4098)")
+    assert(warn.isEmpty)
+  }
+
+  test("not planned with note -> NotPlanned") {
+    val (row, _) = resolveRow(kurtosis, None, Some(PlannedExpr(NotPlanned, note = Some("Niche"))))
+    assert(row.status == NotPlanned)
+    assert(row.notes == "Niche")
+  }
+
+  test("unclassified -> placeholder row and warning") {
+    val (row, warn) = resolveRow(newThing, None, None)
+    assert(row.status == Unclassified)
+    assert(row.notes == "unclassified; not yet reviewed")
+    assert(warn.contains("new_thing"))
+  }
 }

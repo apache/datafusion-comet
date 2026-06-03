@@ -71,4 +71,38 @@ object ExpressionReference {
 
   /** A fully resolved row ready to render. */
   case class ReferenceRow(name: String, status: ExprStatus, notes: String)
+
+  private def issueLink(n: Int): String =
+    s"[#$n](https://github.com/apache/datafusion-comet/issues/$n)"
+
+  /**
+   * Resolve one function to a row, plus an optional warning string when the function is
+   * unclassified (no serde and not in the planned list).
+   */
+  def resolveRow(
+      entry: FunctionEntry,
+      serde: Option[SerdeDocInfo],
+      planned: Option[PlannedExpr]): (ReferenceRow, Option[String]) = {
+    serde match {
+      case Some(info) =>
+        val link =
+          if (info.hasCompatContent && info.category.isDefined) {
+            Some(s"[details](compatibility/expressions/${info.category.get}.md#${info.anchor})")
+          } else {
+            None
+          }
+        val notes = (info.summary ++ link).mkString(" ")
+        (ReferenceRow(entry.name, Supported, notes), None)
+      case None =>
+        planned match {
+          case Some(p) =>
+            val notes = (p.note ++ p.issue.map(issueLink)).mkString(" ")
+            (ReferenceRow(entry.name, p.status, notes), None)
+          case None =>
+            (
+              ReferenceRow(entry.name, Unclassified, "unclassified; not yet reviewed"),
+              Some(entry.name))
+        }
+    }
+  }
 }
