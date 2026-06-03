@@ -125,18 +125,6 @@ use tikv_jemalloc_ctl::{epoch, stats};
 
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
-/// Human-readable message for an OomGuard circuit-breaker trip.
-#[cfg(feature = "oom-guard")]
-fn oom_guard_error_message(
-    g: &crate::execution::memory_pools::oom_guard::OomGuardPanic,
-) -> String {
-    format!(
-        "Comet OomGuard: native allocation pushed usage to {} bytes, over the limit of {} \
-         bytes; failing this task",
-        g.balance, g.limit
-    )
-}
-
 #[cfg(feature = "jemalloc")]
 fn log_jemalloc_usage() {
     let e = epoch::mib().unwrap();
@@ -828,17 +816,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
                         if let Err(panic) = result {
                             #[cfg(feature = "oom-guard")]
-                            if let Some(g) = panic.downcast_ref::<
-                                crate::execution::memory_pools::oom_guard::OomGuardPanic,
-                            >() {
+                            if let Some(e) = crate::execution::memory_pools::oom_guard::map_panic_to_error(panic.as_ref()) {
                                 // Runs on the tokio worker thread that panicked, so this clears
                                 // that worker's UNWINDING flag (not the blocked JNI caller thread's).
-                                crate::execution::memory_pools::oom_guard::clear_unwinding();
-                                let _ = tx
-                                    .send(Err(DataFusionError::ResourcesExhausted(
-                                        oom_guard_error_message(g),
-                                    )))
-                                    .await;
+                                let _ = tx.send(Err(e)).await;
                                 return;
                             }
                             let msg = match panic.downcast_ref::<&str>() {
@@ -894,18 +875,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     Ok(r) => return r,
                     Err(_panic) => {
                         #[cfg(feature = "oom-guard")]
-                        {
-                            if let Some(g) = _panic.downcast_ref::<
-                                crate::execution::memory_pools::oom_guard::OomGuardPanic,
-                            >() {
-                                crate::execution::memory_pools::oom_guard::clear_unwinding();
-                                // Drop the receiver so any re-entry re-initializes.
-                                exec_context.batch_receiver = None;
-                                return Err(DataFusionError::ResourcesExhausted(
-                                    oom_guard_error_message(g),
-                                )
-                                .into());
-                            }
+                        if let Some(e) = crate::execution::memory_pools::oom_guard::map_panic_to_error(_panic.as_ref()) {
+                            // Drop the receiver so any re-entry re-initializes.
+                            exec_context.batch_receiver = None;
+                            return Err(e.into());
                         }
                         std::panic::resume_unwind(_panic);
                     }
@@ -967,19 +940,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 Ok(r) => r,
                 Err(_panic) => {
                     #[cfg(feature = "oom-guard")]
-                    {
-                        if let Some(g) = _panic.downcast_ref::<
-                            crate::execution::memory_pools::oom_guard::OomGuardPanic,
-                        >() {
-                            crate::execution::memory_pools::oom_guard::clear_unwinding();
-                            // The block_on future was dropped mid-poll; null the stream so any
-                            // inadvertent re-entry re-initializes rather than polling a half-consumed one.
-                            exec_context.stream = None;
-                            return Err(
-                                DataFusionError::ResourcesExhausted(oom_guard_error_message(g))
-                                    .into(),
-                            );
-                        }
+                    if let Some(e) = crate::execution::memory_pools::oom_guard::map_panic_to_error(_panic.as_ref()) {
+                        // The block_on future was dropped mid-poll; null the stream so any
+                        // inadvertent re-entry re-initializes rather than polling a half-consumed one.
+                        exec_context.stream = None;
+                        return Err(e.into());
                     }
                     std::panic::resume_unwind(_panic);
                 }

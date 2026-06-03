@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::common::DataFusionError;
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
@@ -40,7 +41,6 @@ thread_local! {
 
 /// Payload of the panic raised when an armed, stamped thread exceeds the limit.
 #[derive(Debug)]
-#[allow(dead_code)] // fields read by the allocator wrapper in Task 3
 pub struct OomGuardPanic {
     pub balance: usize,
     pub limit: usize,
@@ -53,7 +53,7 @@ pub fn arm(limit_bytes: usize) {
 }
 
 /// Disarm the guard (enforcement off; tracking continues cheaply).
-#[allow(dead_code)]
+#[allow(dead_code)] // used only by tests
 pub fn disarm() {
     ARMED.store(false, Ordering::Relaxed);
 }
@@ -70,8 +70,23 @@ pub fn clear_unwinding() {
     UNWINDING.with(|u| u.set(false));
 }
 
+/// If `panic` is an `OomGuardPanic`, clear this thread's unwinding guard and
+/// return the mapped retriable error. Returns `None` for any other panic.
+/// Centralizes the downcast + unwinding-reset + error mapping for all catch sites.
+pub fn map_panic_to_error(
+    panic: &(dyn std::any::Any + Send),
+) -> Option<DataFusionError> {
+    let g = panic.downcast_ref::<OomGuardPanic>()?;
+    clear_unwinding();
+    Some(DataFusionError::ResourcesExhausted(format!(
+        "Comet OomGuard: native allocation pushed usage to {} bytes, over the limit of {} \
+         bytes; failing this task",
+        g.balance, g.limit
+    )))
+}
+
 /// Current process-wide balance in bytes (never reported negative).
-#[allow(dead_code)]
+#[allow(dead_code)] // used only by tests
 pub fn current_balance() -> usize {
     BALANCE.load(Ordering::Relaxed).max(0) as usize
 }
