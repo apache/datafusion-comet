@@ -832,17 +832,19 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.memoryGuard.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Experimental. When enabled (and Comet is built with the 'oom-guard' native " +
-          "feature), Comet tracks real native allocations and fails an over-budget task " +
-          "with a retriable error instead of risking an executor-wide OOM kill.")
+        "Experimental. When enabled, Comet tracks real native memory allocations and aborts " +
+          "an over-budget task with a retriable error instead of risking an executor-wide OOM " +
+          "kill. Requires a Comet build with the 'oom-guard' native feature; has no effect " +
+          "on builds without it.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_EXEC_MEMORY_GUARD_SIZE: OptionalConfigEntry[Long] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.memoryGuard.size")
       .category(CATEGORY_EXEC)
-      .doc("Experimental. Byte limit for the Comet native memory guard. Defaults to the " +
-        "executor off-heap memory size when unset.")
+      .doc(
+        "Experimental. Memory budget for the Comet native OOM guard (accepts sizes like '4g'). " +
+          "Defaults to the executor off-heap memory size (spark.memory.offHeap.size) when unset.")
       .bytesConf(ByteUnit.BYTE)
       .createOptional
 
