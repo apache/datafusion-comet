@@ -30,9 +30,9 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
+import org.apache.spark.sql.functions.{col, map, monotonically_increasing_id, when}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampType}
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
@@ -1493,6 +1493,37 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql("INSERT INTO TABLE tab1 SELECT named_struct('col1','1','col2','2')")
       checkSparkAnswerAndOperator(
         "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/4491
+  // CometCast.isSupported now routes (MapType, MapType) casts to the native cast_map_to_map
+  // instead of falling back to Spark. The map column must be read natively for the cast to be
+  // exercised by Comet, which only happens under the V1 Parquet scan (see CometMapExpressionSuite),
+  // so we set USE_V1_SOURCE_LIST and assert that a Comet operator (not a Spark fallback) runs.
+  test("cast MapType to MapType") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Spark does not allow null as a key but does allow null as a
+          // value, and the entire map can be null
+          .select(
+            when(
+              col("id") > 1,
+              map(col("id").cast(IntegerType), when(col("id") > 2, col("id").cast(IntegerType))))
+              .alias("map1"))
+        df.write.parquet(dir.toString())
+      }
+
+      withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+        val df = spark.read.parquet(dir.toString())
+        // map<int,int> -> map<long,string>: both inner casts (int->long, int->string) are
+        // supported by Comet, so the whole cast should run natively without falling back.
+        checkSparkAnswerAndOperator(
+          df.select(col("map1").cast(MapType(LongType, StringType)).alias("casted")))
+      }
     }
   }
 
