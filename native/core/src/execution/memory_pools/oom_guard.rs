@@ -47,29 +47,23 @@ pub struct OomGuardPanic {
 }
 
 /// Arm the guard with a byte limit. Idempotent.
-// allow(dead_code) removed in Task 3 when the allocator wrapper calls these
-#[allow(dead_code)]
 pub fn arm(limit_bytes: usize) {
     LIMIT.store(limit_bytes, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);
 }
 
 /// Disarm the guard (enforcement off; tracking continues cheaply).
-// allow(dead_code) removed in Task 3 when the allocator wrapper calls these
 #[allow(dead_code)]
 pub fn disarm() {
     ARMED.store(false, Ordering::Relaxed);
 }
 
 /// Mark the current thread as a query-worker thread eligible for enforcement.
-// allow(dead_code) removed in Task 3 when the allocator wrapper calls these
-#[allow(dead_code)]
 pub fn stamp_current_thread() {
     STAMPED.with(|s| s.set(true));
 }
 
 /// Current process-wide balance in bytes (never reported negative).
-// allow(dead_code) removed in Task 3 when the allocator wrapper calls these
 #[allow(dead_code)]
 pub fn current_balance() -> usize {
     BALANCE.load(Ordering::Relaxed).max(0) as usize

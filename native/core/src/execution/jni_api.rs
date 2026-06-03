@@ -192,6 +192,10 @@ fn parse_usize_env_var(name: &str) -> Option<usize> {
 
 fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
+    #[cfg(feature = "oom-guard")]
+    builder.on_thread_start(|| {
+        crate::execution::memory_pools::oom_guard::stamp_current_thread()
+    });
     if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {
         info!("Comet tokio runtime: using COMET_WORKER_THREADS={n}");
         builder.worker_threads(n);
@@ -368,6 +372,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let max_temp_directory_size =
             spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024);
         let logging_memory_pool = spark_config.get_bool(COMET_DEBUG_MEMORY);
+
+        #[cfg(feature = "oom-guard")]
+        {
+            if spark_config.get_bool("spark.comet.exec.memoryGuard.enabled") {
+                // Default to the executor off-heap memory limit (`memory_limit`);
+                // allow an explicit override.
+                let default_limit = memory_limit.max(0) as u64;
+                let limit =
+                    spark_config.get_u64("spark.comet.exec.memoryGuard.size", default_limit);
+                crate::execution::memory_pools::oom_guard::arm(limit as usize);
+            }
+        }
 
         with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes
@@ -715,6 +731,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     schema_addrs: JLongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
+        #[cfg(feature = "oom-guard")]
+        crate::execution::memory_pools::oom_guard::stamp_current_thread();
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
