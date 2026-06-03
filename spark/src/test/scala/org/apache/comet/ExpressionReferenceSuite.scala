@@ -88,10 +88,18 @@ class ExpressionReferenceSuite extends AnyFunSuite {
     assert(row.notes == "Niche")
   }
 
+  test("serde-backed compat content, category present, no summary -> bare link") {
+    val info = SerdeDocInfo(None, hasCompatContent = true, Some("array"), "arrayexcept")
+    val (row, _) = resolveRow(arrayExcept, Some(info), None)
+    assert(row.status == Supported)
+    assert(row.notes == "[details](compatibility/expressions/array.md#arrayexcept)")
+  }
+
   test("unclassified -> placeholder row and warning") {
     val (row, warn) = resolveRow(newThing, None, None)
     assert(row.status == Unclassified)
     assert(row.notes == "unclassified; not yet reviewed")
     assert(warn.exists(_.contains("new_thing")))
+    assert(warn.exists(_.contains("math_funcs")))
   }
 }
