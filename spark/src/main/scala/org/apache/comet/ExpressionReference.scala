@@ -101,7 +101,7 @@ object ExpressionReference {
           case None =>
             (
               ReferenceRow(entry.name, Unclassified, "unclassified; not yet reviewed"),
-              Some(entry.name))
+              Some(s"Unclassified Spark builtin: ${entry.name} (group ${entry.group})"))
         }
     }
   }

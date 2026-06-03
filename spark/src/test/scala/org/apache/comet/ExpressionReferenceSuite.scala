@@ -92,6 +92,6 @@ class ExpressionReferenceSuite extends AnyFunSuite {
     val (row, warn) = resolveRow(newThing, None, None)
     assert(row.status == Unclassified)
     assert(row.notes == "unclassified; not yet reviewed")
-    assert(warn.contains("new_thing"))
+    assert(warn.exists(_.contains("new_thing")))
   }
 }
