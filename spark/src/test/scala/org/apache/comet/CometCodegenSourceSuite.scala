@@ -429,7 +429,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     val setNullOccurrences = "output\\.setNull\\(i\\);".r.findAllIn(src).length
     assert(
       setNullOccurrences >= 2,
-      s"expected at least two setNull sites (input short-circuit + post-eval ev.isNull guard); " +
+      "expected at least two setNull sites (input short-circuit + post-eval ev.isNull guard); " +
         s"found $setNullOccurrences. Source:\n$formatted")
   }
 
