@@ -112,9 +112,13 @@ use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
+#[cfg(feature = "oom-guard")]
+use crate::execution::spark_config::{COMET_MEMORY_GUARD_ENABLED, COMET_MEMORY_GUARD_SIZE};
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
+#[cfg(feature = "oom-guard")]
+use log::warn;
 use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
@@ -375,12 +379,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
         #[cfg(feature = "oom-guard")]
         {
-            if spark_config.get_bool("spark.comet.exec.memoryGuard.enabled") {
+            if spark_config.get_bool(COMET_MEMORY_GUARD_ENABLED) {
                 // Default to the executor off-heap memory limit (`memory_limit`);
                 // allow an explicit override.
                 let default_limit = memory_limit.max(0) as u64;
                 let limit =
-                    spark_config.get_u64("spark.comet.exec.memoryGuard.size", default_limit);
+                    spark_config.get_u64(COMET_MEMORY_GUARD_SIZE, default_limit);
+                if limit == 0 {
+                    warn!(
+                        "spark.comet.exec.memoryGuard.enabled is true but the effective limit \
+                         is 0 (memory_limit={memory_limit}); the guard will not trip. Set \
+                         spark.comet.exec.memoryGuard.size explicitly."
+                    );
+                }
                 crate::execution::memory_pools::oom_guard::arm(limit as usize);
             }
         }

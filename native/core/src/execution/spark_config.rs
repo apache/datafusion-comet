@@ -23,6 +23,10 @@ pub(crate) const COMET_EXPLAIN_NATIVE_ENABLED: &str = "spark.comet.explain.nativ
 pub(crate) const COMET_MAX_TEMP_DIRECTORY_SIZE: &str = "spark.comet.maxTempDirectorySize";
 pub(crate) const COMET_DEBUG_MEMORY: &str = "spark.comet.debug.memory";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
+#[cfg(feature = "oom-guard")]
+pub(crate) const COMET_MEMORY_GUARD_ENABLED: &str = "spark.comet.exec.memoryGuard.enabled";
+#[cfg(feature = "oom-guard")]
+pub(crate) const COMET_MEMORY_GUARD_SIZE: &str = "spark.comet.exec.memoryGuard.size";
 
 pub(crate) trait SparkConfig {
     fn get_bool(&self, name: &str) -> bool;
