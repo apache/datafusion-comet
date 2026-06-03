@@ -70,6 +70,15 @@ trait CometExpressionSerde[T <: Expression] {
   def getUnsupportedReasons(): Seq[String] = Seq.empty
 
   /**
+   * Get a short, at-a-glance summary note for the expression-reference table (`expressions.md`).
+   * Keep it to a single clause, e.g. "Interval types fall back" or "via `CometExplodeExec`".
+   * Detailed behavior belongs in the Compatibility Guide, which is generated from
+   * getCompatibleNotes/getIncompatibleReasons/getUnsupportedReasons; the reference table only
+   * links there. Returns None by default.
+   */
+  def getExpressionSummary: Option[String] = None
+
+  /**
    * Determine the support level of the expression based on its attributes.
    *
    * @param expr
