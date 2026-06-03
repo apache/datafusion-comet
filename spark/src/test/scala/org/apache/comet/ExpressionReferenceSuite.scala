@@ -36,8 +36,12 @@ class ExpressionReferenceSuite extends AnyFunSuite {
     assert(Set(Supported.symbol, Planned.symbol, NotPlanned.symbol).size == 3)
   }
 
-  test("PlannedExpr rejects non-planned status") {
-    assertThrows[IllegalArgumentException](PlannedExpr(Supported))
+  test("PlannedExpr rejects Unclassified status") {
+    assertThrows[IllegalArgumentException](PlannedExpr(Unclassified))
+  }
+
+  test("PlannedExpr allows Supported for non-serde paths") {
+    PlannedExpr(Supported, note = Some("via rewrite"))
   }
 
   private val arrayAppend = FunctionEntry("array_append", "array_funcs", "x.ArrayAppend")

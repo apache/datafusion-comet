@@ -70,14 +70,14 @@ The tables below list every Spark built-in expression with its current status.
 <!--BEGIN:EXPR_TABLE[agg_funcs]-->
 | Function | Status | Notes |
 | --- | --- | --- |
-| `any` | 🔜 | unclassified; not yet reviewed |
-| `any_value` | 🔜 | unclassified; not yet reviewed |
-| `approx_count_distinct` | 🔜 | [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `any` | ✅ |  |
+| `any_value` | ✅ |  |
+| `approx_count_distinct` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `approx_percentile` | 🔜 | unclassified; not yet reviewed |
 | `approx_top_k` | 🔜 | unclassified; not yet reviewed |
 | `approx_top_k_accumulate` | 🔜 | unclassified; not yet reviewed |
 | `approx_top_k_combine` | 🔜 | unclassified; not yet reviewed |
-| `array_agg` | 🔜 | unclassified; not yet reviewed |
+| `array_agg` | 🔜 | Array aggregate (related to `collect_list`) [#2524](https://github.com/apache/datafusion-comet/issues/2524) |
 | `avg` | ✅ | [details](compatibility/expressions/aggregate.md#average) |
 | `bit_and` | ✅ |  |
 | `bit_or` | ✅ |  |
@@ -85,21 +85,21 @@ The tables below list every Spark built-in expression with its current status.
 | `bitmap_and_agg` | 🔜 | unclassified; not yet reviewed |
 | `bitmap_construct_agg` | 🔜 | unclassified; not yet reviewed |
 | `bitmap_or_agg` | 🔜 | unclassified; not yet reviewed |
-| `bool_and` | 🔜 | unclassified; not yet reviewed |
-| `bool_or` | 🔜 | unclassified; not yet reviewed |
-| `collect_list` | 🔜 | unclassified; not yet reviewed |
+| `bool_and` | ✅ |  |
+| `bool_or` | ✅ |  |
+| `collect_list` | 🔜 | [#2524](https://github.com/apache/datafusion-comet/issues/2524) |
 | `collect_set` | ✅ | [details](compatibility/expressions/aggregate.md#collectset) |
 | `corr` | ✅ |  |
 | `count` | ✅ |  |
-| `count_if` | 🔜 | unclassified; not yet reviewed |
+| `count_if` | ✅ |  |
 | `count_min_sketch` | 🔜 | unclassified; not yet reviewed |
 | `covar_pop` | ✅ |  |
 | `covar_samp` | ✅ |  |
-| `every` | 🔜 | unclassified; not yet reviewed |
+| `every` | ✅ |  |
 | `first` | ✅ | [details](compatibility/expressions/aggregate.md#first) |
 | `first_value` | ✅ | [details](compatibility/expressions/aggregate.md#first) |
-| `grouping` | 🔜 | unclassified; not yet reviewed |
-| `grouping_id` | 🔜 | unclassified; not yet reviewed |
+| `grouping` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping_id` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `histogram_numeric` | 🔜 | unclassified; not yet reviewed |
 | `hll_sketch_agg` | 🔜 | unclassified; not yet reviewed |
 | `hll_union_agg` | 🔜 | unclassified; not yet reviewed |
@@ -109,43 +109,43 @@ The tables below list every Spark built-in expression with its current status.
 | `kll_sketch_agg_bigint` | 🔜 | unclassified; not yet reviewed |
 | `kll_sketch_agg_double` | 🔜 | unclassified; not yet reviewed |
 | `kll_sketch_agg_float` | 🔜 | unclassified; not yet reviewed |
-| `kurtosis` | 🔜 | [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `kurtosis` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `last` | ✅ | [details](compatibility/expressions/aggregate.md#last) |
 | `last_value` | ✅ | [details](compatibility/expressions/aggregate.md#last) |
-| `listagg` | 🔜 | unclassified; not yet reviewed |
+| `listagg` | 🔜 | String aggregation |
 | `max` | ✅ |  |
-| `max_by` | 🔜 | unclassified; not yet reviewed |
+| `max_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
 | `mean` | ✅ | [details](compatibility/expressions/aggregate.md#average) |
-| `median` | 🔜 | unclassified; not yet reviewed |
+| `median` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `min` | ✅ |  |
-| `min_by` | 🔜 | unclassified; not yet reviewed |
-| `mode` | 🔜 | unclassified; not yet reviewed |
-| `percentile` | 🔜 | unclassified; not yet reviewed |
+| `min_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
+| `mode` | 🔜 | [#3970](https://github.com/apache/datafusion-comet/issues/3970) |
+| `percentile` | 🔜 | [#4542](https://github.com/apache/datafusion-comet/issues/4542) |
 | `percentile_approx` | 🔜 | unclassified; not yet reviewed |
-| `percentile_cont` | 🔜 | unclassified; not yet reviewed |
-| `percentile_disc` | 🔜 | unclassified; not yet reviewed |
-| `regr_avgx` | 🔜 | unclassified; not yet reviewed |
-| `regr_avgy` | 🔜 | unclassified; not yet reviewed |
-| `regr_count` | 🔜 | unclassified; not yet reviewed |
-| `regr_intercept` | 🔜 | unclassified; not yet reviewed |
-| `regr_r2` | 🔜 | unclassified; not yet reviewed |
-| `regr_slope` | 🔜 | unclassified; not yet reviewed |
-| `regr_sxx` | 🔜 | unclassified; not yet reviewed |
-| `regr_sxy` | 🔜 | unclassified; not yet reviewed |
-| `regr_syy` | 🔜 | unclassified; not yet reviewed |
-| `skewness` | 🔜 | unclassified; not yet reviewed |
-| `some` | 🔜 | unclassified; not yet reviewed |
+| `percentile_cont` | 🔜 | Percentile aggregate |
+| `percentile_disc` | 🔜 | Percentile aggregate |
+| `regr_avgx` | ✅ | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
+| `regr_avgy` | ✅ | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
+| `regr_count` | ✅ | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
+| `regr_intercept` | 🔜 | Falls back; can reuse `covar_pop`/`var_pop` accumulators [#4552](https://github.com/apache/datafusion-comet/issues/4552) |
+| `regr_r2` | 🔜 | Falls back; can reuse the `corr` accumulator [#4552](https://github.com/apache/datafusion-comet/issues/4552) |
+| `regr_slope` | 🔜 | Falls back; can reuse `covar_pop`/`var_pop` accumulators [#4552](https://github.com/apache/datafusion-comet/issues/4552) |
+| `regr_sxx` | 🔜 | Falls back; can reuse `var_pop` accumulator [#4552](https://github.com/apache/datafusion-comet/issues/4552) |
+| `regr_sxy` | 🔜 | Falls back; can reuse `covar_pop` accumulator [#4552](https://github.com/apache/datafusion-comet/issues/4552) |
+| `regr_syy` | 🔜 | Falls back; can reuse `var_pop` accumulator [#4552](https://github.com/apache/datafusion-comet/issues/4552) |
+| `skewness` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `some` | ✅ |  |
 | `std` | ✅ |  |
 | `stddev` | ✅ |  |
 | `stddev_pop` | ✅ |  |
 | `stddev_samp` | ✅ |  |
-| `string_agg` | 🔜 | unclassified; not yet reviewed |
+| `string_agg` | 🔜 | String aggregation (alias of `listagg`) |
 | `sum` | ✅ |  |
 | `theta_intersection_agg` | 🔜 | unclassified; not yet reviewed |
 | `theta_sketch_agg` | 🔜 | unclassified; not yet reviewed |
 | `theta_union_agg` | 🔜 | unclassified; not yet reviewed |
-| `try_avg` | 🔜 | unclassified; not yet reviewed |
-| `try_sum` | 🔜 | unclassified; not yet reviewed |
+| `try_avg` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `try_sum` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `var_pop` | ✅ |  |
 | `var_samp` | ✅ |  |
 | `variance` | ✅ |  |
@@ -170,17 +170,17 @@ The tables below list every Spark built-in expression with its current status.
 | `array_max` | ✅ |  |
 | `array_min` | ✅ |  |
 | `array_position` | ✅ |  |
-| `array_prepend` | 🔜 | unclassified; not yet reviewed |
+| `array_prepend` | 🔜 | Sibling of `array_append` |
 | `array_remove` | ✅ |  |
 | `array_repeat` | ✅ |  |
-| `array_size` | 🔜 | unclassified; not yet reviewed |
+| `array_size` | ✅ |  |
 | `array_union` | ✅ |  |
 | `arrays_overlap` | ✅ |  |
 | `arrays_zip` | ✅ | [details](compatibility/expressions/array.md#arrayszip) |
 | `flatten` | ✅ |  |
-| `get` | 🔜 | unclassified; not yet reviewed |
-| `sequence` | 🔜 | unclassified; not yet reviewed |
-| `shuffle` | 🔜 | unclassified; not yet reviewed |
+| `get` | ✅ |  |
+| `sequence` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `shuffle` | 🔜 | Random array shuffle |
 | `slice` | ✅ |  |
 | `sort_array` | ✅ | [details](compatibility/expressions/array.md#sortarray) |
 <!--END:EXPR_TABLE[array_funcs]-->
@@ -219,7 +219,7 @@ The tables below list every Spark built-in expression with its current status.
 | `element_at` | ✅ | [details](compatibility/expressions/array.md#elementat) |
 | `reverse` | ✅ | [details](compatibility/expressions/string.md#reverse) |
 | `size` | ✅ | [details](compatibility/expressions/array.md#size) |
-| `try_element_at` | 🔜 | unclassified; not yet reviewed |
+| `try_element_at` | ✅ | Lowers to `element_at`; array input (MapType falls back) |
 <!--END:EXPR_TABLE[collection_funcs]-->
 
 ---
@@ -229,17 +229,17 @@ The tables below list every Spark built-in expression with its current status.
 <!--BEGIN:EXPR_TABLE[conditional_funcs]-->
 | Function | Status | Notes |
 | --- | --- | --- |
-| `between` | 🔜 | unclassified; not yet reviewed |
+| `between` | ✅ |  |
 | `coalesce` | ✅ |  |
 | `if` | ✅ |  |
-| `ifnull` | 🔜 | unclassified; not yet reviewed |
-| `nanvl` | 🔜 | unclassified; not yet reviewed |
-| `nullif` | 🔜 | unclassified; not yet reviewed |
-| `nullifzero` | 🔜 | unclassified; not yet reviewed |
-| `nvl` | 🔜 | unclassified; not yet reviewed |
-| `nvl2` | 🔜 | unclassified; not yet reviewed |
+| `ifnull` | ✅ |  |
+| `nanvl` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `nullif` | ✅ |  |
+| `nullifzero` | ✅ | Lowers to `if`/`=` (Spark 4.0+) |
+| `nvl` | ✅ |  |
+| `nvl2` | ✅ |  |
 | `when` | ✅ |  |
-| `zeroifnull` | 🔜 | unclassified; not yet reviewed |
+| `zeroifnull` | ✅ | Lowers to `coalesce` (Spark 4.0+) |
 <!--END:EXPR_TABLE[conditional_funcs]-->
 
 ---
@@ -276,69 +276,69 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | --- | --- | --- |
 | `add_months` | ✅ |  |
 | `convert_timezone` | ✅ | [details](compatibility/expressions/datetime.md#converttimezone) |
-| `curdate` | 🔜 | unclassified; not yet reviewed |
-| `current_date` | 🔜 | unclassified; not yet reviewed |
-| `current_time` | 🔜 | unclassified; not yet reviewed |
-| `current_timestamp` | 🔜 | unclassified; not yet reviewed |
-| `current_timezone` | 🔜 | unclassified; not yet reviewed |
+| `curdate` | ✅ | Constant-folded to a literal (alias of `current_date`) |
+| `current_date` | ✅ | Constant-folded to a literal before Comet sees the plan |
+| `current_time` | 🔜 | Blocked on Spark 4.1 TIME type support [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `current_timestamp` | ✅ | Constant-folded to a literal before Comet sees the plan |
+| `current_timezone` | ✅ |  |
 | `date_add` | ✅ |  |
 | `date_diff` | ✅ |  |
 | `date_format` | ✅ | [details](compatibility/expressions/datetime.md#dateformatclass) |
 | `date_from_unix_date` | ✅ |  |
-| `date_part` | 🔜 | unclassified; not yet reviewed |
+| `date_part` | ✅ |  |
 | `date_sub` | ✅ |  |
 | `date_trunc` | ✅ | [details](compatibility/expressions/datetime.md#trunctimestamp) |
 | `dateadd` | ✅ |  |
 | `datediff` | ✅ |  |
-| `datepart` | 🔜 | unclassified; not yet reviewed |
+| `datepart` | ✅ |  |
 | `day` | ✅ |  |
-| `dayname` | 🔜 | unclassified; not yet reviewed |
+| `dayname` | 🔜 | [#4544](https://github.com/apache/datafusion-comet/issues/4544) |
 | `dayofmonth` | ✅ |  |
 | `dayofweek` | ✅ |  |
 | `dayofyear` | ✅ |  |
-| `extract` | 🔜 | unclassified; not yet reviewed |
+| `extract` | ✅ |  |
 | `from_unixtime` | ✅ | [details](compatibility/expressions/datetime.md#fromunixtime) |
 | `from_utc_timestamp` | ✅ | [details](compatibility/expressions/datetime.md#fromutctimestamp) |
-| `hour` | 🔜 | unclassified; not yet reviewed |
+| `hour` | ✅ |  |
 | `last_day` | ✅ |  |
-| `localtimestamp` | 🔜 | unclassified; not yet reviewed |
+| `localtimestamp` | ✅ |  |
 | `make_date` | ✅ |  |
-| `make_dt_interval` | 🔜 | unclassified; not yet reviewed |
-| `make_interval` | 🔜 | unclassified; not yet reviewed |
-| `make_time` | 🔜 | unclassified; not yet reviewed |
-| `make_timestamp` | 🔜 | unclassified; not yet reviewed |
-| `make_timestamp_ltz` | 🔜 | unclassified; not yet reviewed |
-| `make_timestamp_ntz` | 🔜 | unclassified; not yet reviewed |
-| `make_ym_interval` | 🔜 | unclassified; not yet reviewed |
-| `minute` | 🔜 | unclassified; not yet reviewed |
+| `make_dt_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
+| `make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
+| `make_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `make_timestamp` | ✅ |  |
+| `make_timestamp_ltz` | ✅ | 2-arg TIME form falls back |
+| `make_timestamp_ntz` | ✅ | 2-arg TIME form falls back |
+| `make_ym_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
+| `minute` | ✅ |  |
 | `month` | ✅ |  |
-| `monthname` | 🔜 | unclassified; not yet reviewed |
+| `monthname` | 🔜 | [#4544](https://github.com/apache/datafusion-comet/issues/4544) |
 | `months_between` | ✅ |  |
 | `next_day` | ✅ |  |
-| `now` | 🔜 | unclassified; not yet reviewed |
+| `now` | ✅ | Constant-folded to a literal (alias of `current_timestamp`) |
 | `quarter` | ✅ |  |
-| `second` | 🔜 | unclassified; not yet reviewed |
-| `session_window` | 🔜 | unclassified; not yet reviewed |
-| `time_diff` | 🔜 | unclassified; not yet reviewed |
-| `time_trunc` | 🔜 | unclassified; not yet reviewed |
+| `second` | ✅ |  |
+| `session_window` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
+| `time_diff` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `time_trunc` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `timestamp_micros` | ✅ |  |
 | `timestamp_millis` | ✅ |  |
 | `timestamp_seconds` | ✅ |  |
-| `to_date` | 🔜 | unclassified; not yet reviewed |
-| `to_time` | 🔜 | unclassified; not yet reviewed |
-| `to_timestamp` | 🔜 | unclassified; not yet reviewed |
-| `to_timestamp_ltz` | 🔜 | unclassified; not yet reviewed |
-| `to_timestamp_ntz` | 🔜 | unclassified; not yet reviewed |
+| `to_date` | ✅ | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
+| `to_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `to_timestamp` | ✅ | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
+| `to_timestamp_ltz` | ✅ | Rewrites to `to_timestamp` (`TimestampType`) |
+| `to_timestamp_ntz` | ✅ | Rewrites to `to_timestamp` (`TimestampNTZType`) |
 | `to_unix_timestamp` | ✅ |  |
 | `to_utc_timestamp` | ✅ | [details](compatibility/expressions/datetime.md#toutctimestamp) |
 | `trunc` | ✅ | [details](compatibility/expressions/datetime.md#truncdate) |
-| `try_make_interval` | 🔜 | unclassified; not yet reviewed |
-| `try_make_timestamp` | 🔜 | unclassified; not yet reviewed |
+| `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
+| `try_make_timestamp` | ✅ | Returns a wrong value instead of NULL for invalid inputs [#4554](https://github.com/apache/datafusion-comet/issues/4554) |
 | `try_make_timestamp_ltz` | 🔜 | unclassified; not yet reviewed |
 | `try_make_timestamp_ntz` | 🔜 | unclassified; not yet reviewed |
-| `try_to_date` | 🔜 | unclassified; not yet reviewed |
-| `try_to_time` | 🔜 | unclassified; not yet reviewed |
-| `try_to_timestamp` | 🔜 | unclassified; not yet reviewed |
+| `try_to_date` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
+| `try_to_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `try_to_timestamp` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
 | `unix_date` | ✅ |  |
 | `unix_micros` | ✅ |  |
 | `unix_millis` | ✅ |  |
@@ -346,8 +346,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `unix_timestamp` | ✅ | [details](compatibility/expressions/datetime.md#unixtimestamp) |
 | `weekday` | ✅ |  |
 | `weekofyear` | ✅ |  |
-| `window` | 🔜 | unclassified; not yet reviewed |
-| `window_time` | 🔜 | unclassified; not yet reviewed |
+| `window` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
+| `window_time` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
 | `year` | ✅ |  |
 <!--END:EXPR_TABLE[datetime_funcs]-->
 
@@ -362,13 +362,13 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 <!--BEGIN:EXPR_TABLE[generator_funcs]-->
 | Function | Status | Notes |
 | --- | --- | --- |
-| `explode` | 🔜 | unclassified; not yet reviewed |
-| `explode_outer` | 🔜 | unclassified; not yet reviewed |
-| `inline` | 🔜 | unclassified; not yet reviewed |
-| `inline_outer` | 🔜 | unclassified; not yet reviewed |
-| `posexplode` | 🔜 | unclassified; not yet reviewed |
-| `posexplode_outer` | 🔜 | unclassified; not yet reviewed |
-| `stack` | 🔜 | unclassified; not yet reviewed |
+| `explode` | ✅ | via `CometExplodeExec` |
+| `explode_outer` | ✅ | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
+| `inline` | 🔜 | Operator-level generator (like `explode`) |
+| `inline_outer` | 🔜 | Operator-level generator (like `explode`) |
+| `posexplode` | ✅ | via `CometExplodeExec` |
+| `posexplode_outer` | ✅ | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
+| `stack` | 🔜 | Operator-level generator |
 <!--END:EXPR_TABLE[generator_funcs]-->
 
 ---
@@ -396,10 +396,10 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | --- | --- | --- |
 | `from_json` | ✅ | [details](compatibility/expressions/struct.md#jsontostructs) |
 | `get_json_object` | ✅ | [details](compatibility/expressions/string.md#getjsonobject) |
-| `json_array_length` | 🔜 | unclassified; not yet reviewed |
-| `json_object_keys` | 🔜 | unclassified; not yet reviewed |
-| `json_tuple` | 🔜 | unclassified; not yet reviewed |
-| `schema_of_json` | 🔜 | unclassified; not yet reviewed |
+| `json_array_length` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `json_object_keys` | 🔜 | [#3161](https://github.com/apache/datafusion-comet/issues/3161) |
+| `json_tuple` | 🔜 | [#3160](https://github.com/apache/datafusion-comet/issues/3160) |
+| `schema_of_json` | 🔜 | [#3163](https://github.com/apache/datafusion-comet/issues/3163) |
 | `to_json` | ✅ |  |
 <!--END:EXPR_TABLE[json_funcs]-->
 
@@ -412,18 +412,18 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 <!--BEGIN:EXPR_TABLE[lambda_funcs]-->
 | Function | Status | Notes |
 | --- | --- | --- |
-| `aggregate` | 🔜 | unclassified; not yet reviewed |
-| `array_sort` | 🔜 | unclassified; not yet reviewed |
-| `exists` | 🔜 | unclassified; not yet reviewed |
+| `aggregate` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `array_sort` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `exists` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
 | `filter` | ✅ | [details](compatibility/expressions/array.md#arrayfilter) |
-| `forall` | 🔜 | unclassified; not yet reviewed |
-| `map_filter` | 🔜 | unclassified; not yet reviewed |
-| `map_zip_with` | 🔜 | unclassified; not yet reviewed |
-| `reduce` | 🔜 | unclassified; not yet reviewed |
-| `transform` | 🔜 | unclassified; not yet reviewed |
-| `transform_keys` | 🔜 | unclassified; not yet reviewed |
-| `transform_values` | 🔜 | unclassified; not yet reviewed |
-| `zip_with` | 🔜 | unclassified; not yet reviewed |
+| `forall` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `map_filter` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `map_zip_with` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `reduce` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `transform` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `transform_keys` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `transform_values` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `zip_with` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
 <!--END:EXPR_TABLE[lambda_funcs]-->
 
 ---
@@ -433,8 +433,8 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 <!--BEGIN:EXPR_TABLE[map_funcs]-->
 | Function | Status | Notes |
 | --- | --- | --- |
-| `map` | 🔜 | unclassified; not yet reviewed |
-| `map_concat` | 🔜 | unclassified; not yet reviewed |
+| `map` | 🔜 | Constructs a map |
+| `map_concat` | 🔜 | Concatenates maps |
 | `map_contains_key` | ✅ |  |
 | `map_entries` | ✅ |  |
 | `map_from_arrays` | ✅ |  |
@@ -465,36 +465,36 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `atan2` | ✅ |  |
 | `atanh` | ✅ |  |
 | `bin` | ✅ |  |
-| `bround` | 🔜 | unclassified; not yet reviewed |
+| `bround` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `cbrt` | ✅ |  |
-| `ceil` | 🔜 | unclassified; not yet reviewed |
-| `ceiling` | 🔜 | unclassified; not yet reviewed |
-| `conv` | 🔜 | unclassified; not yet reviewed |
+| `ceil` | ✅ | Two-arg form falls back |
+| `ceiling` | ✅ |  |
+| `conv` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `cos` | ✅ |  |
 | `cosh` | ✅ |  |
 | `cot` | ✅ |  |
 | `csc` | ✅ |  |
 | `degrees` | ✅ |  |
 | `div` | ✅ |  |
-| `e` | 🔜 | unclassified; not yet reviewed |
+| `e` | ✅ | Folds to a literal (like `pi`) |
 | `exp` | ✅ |  |
 | `expm1` | ✅ |  |
 | `factorial` | ✅ |  |
-| `floor` | 🔜 | unclassified; not yet reviewed |
+| `floor` | ✅ | Two-arg form falls back |
 | `greatest` | ✅ |  |
 | `hex` | ✅ |  |
-| `hypot` | 🔜 | unclassified; not yet reviewed |
+| `hypot` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `least` | ✅ |  |
 | `ln` | ✅ |  |
 | `log` | ✅ |  |
 | `log10` | ✅ |  |
-| `log1p` | 🔜 | unclassified; not yet reviewed |
+| `log1p` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `log2` | ✅ |  |
 | `mod` | ✅ |  |
 | `negative` | ✅ |  |
 | `pi` | ✅ |  |
-| `pmod` | 🔜 | unclassified; not yet reviewed |
-| `positive` | 🔜 | unclassified; not yet reviewed |
+| `pmod` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `positive` | ✅ |  |
 | `pow` | ✅ |  |
 | `power` | ✅ |  |
 | `radians` | ✅ |  |
@@ -511,14 +511,14 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `sqrt` | ✅ |  |
 | `tan` | ✅ |  |
 | `tanh` | ✅ |  |
-| `try_add` | 🔜 | unclassified; not yet reviewed |
-| `try_divide` | 🔜 | unclassified; not yet reviewed |
-| `try_mod` | 🔜 | unclassified; not yet reviewed |
-| `try_multiply` | 🔜 | unclassified; not yet reviewed |
-| `try_subtract` | 🔜 | unclassified; not yet reviewed |
+| `try_add` | ✅ | Datetime/interval form falls back |
+| `try_divide` | ✅ |  |
+| `try_mod` | 🔜 | Lowers to `Remainder` with TRY eval mode, which falls back [#4484](https://github.com/apache/datafusion-comet/issues/4484) |
+| `try_multiply` | ✅ |  |
+| `try_subtract` | ✅ |  |
 | `unhex` | ✅ |  |
-| `uniform` | 🔜 | unclassified; not yet reviewed |
-| `width_bucket` | 🔜 | unclassified; not yet reviewed |
+| `uniform` | ✅ | Constant-folded; literal arguments only (Spark 4.0+) |
+| `width_bucket` | ✅ |  |
 <!--END:EXPR_TABLE[math_funcs]-->
 
 ---
@@ -528,17 +528,17 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 <!--BEGIN:EXPR_TABLE[misc_funcs]-->
 | Function | Status | Notes |
 | --- | --- | --- |
-| `aes_decrypt` | 🔜 | unclassified; not yet reviewed |
-| `aes_encrypt` | 🔜 | unclassified; not yet reviewed |
+| `aes_decrypt` | 🔜 | Falls back; `StaticInvoke` not allowlisted; planned via codegen dispatch [#4558](https://github.com/apache/datafusion-comet/issues/4558) |
+| `aes_encrypt` | 🔜 | Falls back; planned via codegen dispatch; nondeterministic IV by default [#4558](https://github.com/apache/datafusion-comet/issues/4558) |
 | `approx_top_k_estimate` | 🔜 | unclassified; not yet reviewed |
-| `assert_true` | 🔜 | unclassified; not yet reviewed |
+| `assert_true` | 🔜 | Lowers to `RaiseError`, which falls back |
 | `bitmap_bit_position` | 🔜 | unclassified; not yet reviewed |
 | `bitmap_bucket_number` | 🔜 | unclassified; not yet reviewed |
 | `bitmap_count` | 🔜 | unclassified; not yet reviewed |
-| `current_catalog` | 🔜 | unclassified; not yet reviewed |
-| `current_database` | 🔜 | unclassified; not yet reviewed |
-| `current_schema` | 🔜 | unclassified; not yet reviewed |
-| `current_user` | 🔜 | unclassified; not yet reviewed |
+| `current_catalog` | ✅ | Resolved to a literal by the analyzer (`ReplaceCurrentLike`) |
+| `current_database` | ✅ | Resolved to a literal by the analyzer (`ReplaceCurrentLike`) |
+| `current_schema` | ✅ | Alias of `current_database`; resolved to a literal by the analyzer |
+| `current_user` | ✅ | Resolved to a literal by the analyzer; same as `user` |
 | `from_avro` | 🔜 | unclassified; not yet reviewed |
 | `from_protobuf` | 🔜 | unclassified; not yet reviewed |
 | `hll_sketch_estimate` | 🔜 | unclassified; not yet reviewed |
@@ -563,10 +563,10 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `kll_sketch_to_string_double` | 🔜 | unclassified; not yet reviewed |
 | `kll_sketch_to_string_float` | 🔜 | unclassified; not yet reviewed |
 | `monotonically_increasing_id` | ✅ |  |
-| `raise_error` | 🔜 | unclassified; not yet reviewed |
+| `raise_error` | 🔜 | Raises a runtime error |
 | `reflect` | 🔜 | unclassified; not yet reviewed |
 | `schema_of_avro` | 🔜 | unclassified; not yet reviewed |
-| `session_user` | 🔜 | unclassified; not yet reviewed |
+| `session_user` | ✅ | Alias of `current_user`; resolved to a literal by the analyzer |
 | `spark_partition_id` | ✅ |  |
 | `theta_difference` | 🔜 | unclassified; not yet reviewed |
 | `theta_intersection` | 🔜 | unclassified; not yet reviewed |
@@ -574,11 +574,11 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `theta_union` | 🔜 | unclassified; not yet reviewed |
 | `to_avro` | 🔜 | unclassified; not yet reviewed |
 | `to_protobuf` | 🔜 | unclassified; not yet reviewed |
-| `try_aes_decrypt` | 🔜 | unclassified; not yet reviewed |
+| `try_aes_decrypt` | 🔜 | Falls back; planned via codegen dispatch [#4558](https://github.com/apache/datafusion-comet/issues/4558) |
 | `try_reflect` | 🔜 | unclassified; not yet reviewed |
-| `typeof` | 🔜 | unclassified; not yet reviewed |
-| `user` | 🔜 | unclassified; not yet reviewed |
-| `uuid` | 🔜 | unclassified; not yet reviewed |
+| `typeof` | ✅ | Foldable; resolved to a literal before Comet sees the plan |
+| `user` | ✅ | Resolved to a literal by the Spark analyzer before reaching Comet |
+| `uuid` | 🔜 | Nondeterministic random UUID |
 | `version` | 🔜 | unclassified; not yet reviewed |
 <!--END:EXPR_TABLE[misc_funcs]-->
 
@@ -598,8 +598,8 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `>` | ✅ |  |
 | `>=` | ✅ |  |
 | `and` | ✅ |  |
-| `equal_null` | 🔜 | unclassified; not yet reviewed |
-| `ilike` | 🔜 | unclassified; not yet reviewed |
+| `equal_null` | ✅ | Lowers to `<=>` (`EqualNullSafe`) |
+| `ilike` | ✅ |  |
 | `in` | ✅ |  |
 | `isnan` | ✅ |  |
 | `isnotnull` | ✅ |  |
@@ -620,24 +620,24 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | Function | Status | Notes |
 | --- | --- | --- |
 | `ascii` | ✅ |  |
-| `base64` | 🔜 | unclassified; not yet reviewed |
+| `base64` | 🔜 | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
 | `bit_length` | ✅ |  |
 | `btrim` | ✅ |  |
 | `char` | ✅ |  |
 | `char_length` | ✅ | [details](compatibility/expressions/string.md#length) |
 | `character_length` | ✅ | [details](compatibility/expressions/string.md#length) |
 | `chr` | ✅ |  |
-| `collate` | 🔜 | unclassified; not yet reviewed |
-| `collation` | 🔜 | unclassified; not yet reviewed |
+| `collate` | 🔜 | Spark collation (umbrella) [#2190](https://github.com/apache/datafusion-comet/issues/2190) |
+| `collation` | ✅ | Constant-folded to a literal (Spark 4.0+) |
 | `concat_ws` | ✅ |  |
-| `contains` | 🔜 | unclassified; not yet reviewed |
-| `decode` | 🔜 | unclassified; not yet reviewed |
-| `elt` | 🔜 | unclassified; not yet reviewed |
-| `encode` | 🔜 | unclassified; not yet reviewed |
-| `endswith` | 🔜 | unclassified; not yet reviewed |
-| `find_in_set` | 🔜 | unclassified; not yet reviewed |
-| `format_number` | 🔜 | unclassified; not yet reviewed |
-| `format_string` | 🔜 | unclassified; not yet reviewed |
+| `contains` | ✅ |  |
+| `decode` | ✅ |  |
+| `elt` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `encode` | 🔜 | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `endswith` | ✅ |  |
+| `find_in_set` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `format_number` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `format_string` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `initcap` | ✅ |  |
 | `instr` | ✅ |  |
 | `is_valid_utf8` | 🔜 | unclassified; not yet reviewed |
@@ -645,51 +645,51 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `left` | ✅ | [details](compatibility/expressions/string.md#left) |
 | `len` | ✅ | [details](compatibility/expressions/string.md#length) |
 | `length` | ✅ | [details](compatibility/expressions/string.md#length) |
-| `levenshtein` | 🔜 | unclassified; not yet reviewed |
-| `locate` | 🔜 | unclassified; not yet reviewed |
+| `levenshtein` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `locate` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `lower` | ✅ |  |
-| `lpad` | 🔜 | unclassified; not yet reviewed |
+| `lpad` | ✅ |  |
 | `ltrim` | ✅ |  |
-| `luhn_check` | 🔜 | unclassified; not yet reviewed |
+| `luhn_check` | ✅ | Native via `StaticInvoke` (tests: luhn_check.sql) |
 | `make_valid_utf8` | 🔜 | unclassified; not yet reviewed |
-| `mask` | 🔜 | unclassified; not yet reviewed |
+| `mask` | 🔜 | Data masking |
 | `octet_length` | ✅ |  |
-| `overlay` | 🔜 | unclassified; not yet reviewed |
-| `position` | 🔜 | unclassified; not yet reviewed |
-| `printf` | 🔜 | unclassified; not yet reviewed |
+| `overlay` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `position` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `printf` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `quote` | 🔜 | unclassified; not yet reviewed |
-| `randstr` | 🔜 | unclassified; not yet reviewed |
-| `regexp_count` | 🔜 | unclassified; not yet reviewed |
-| `regexp_extract` | 🔜 | unclassified; not yet reviewed |
-| `regexp_extract_all` | 🔜 | unclassified; not yet reviewed |
-| `regexp_instr` | 🔜 | unclassified; not yet reviewed |
+| `randstr` | 🔜 | Random string (Spark 4.0+) |
+| `regexp_count` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `regexp_extract` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `regexp_extract_all` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `regexp_instr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `regexp_replace` | ✅ | [details](compatibility/expressions/string.md#regexpreplace) |
-| `regexp_substr` | 🔜 | unclassified; not yet reviewed |
+| `regexp_substr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `repeat` | ✅ | [details](compatibility/expressions/string.md#stringrepeat) |
 | `replace` | ✅ |  |
 | `right` | ✅ | [details](compatibility/expressions/string.md#right) |
-| `rpad` | 🔜 | unclassified; not yet reviewed |
+| `rpad` | ✅ |  |
 | `rtrim` | ✅ |  |
 | `sentences` | 🔜 | unclassified; not yet reviewed |
-| `soundex` | 🔜 | unclassified; not yet reviewed |
+| `soundex` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `space` | ✅ |  |
 | `split` | ✅ | [details](compatibility/expressions/string.md#stringsplit) |
-| `split_part` | 🔜 | unclassified; not yet reviewed |
-| `startswith` | 🔜 | unclassified; not yet reviewed |
+| `split_part` | 🔜 | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back [#4561](https://github.com/apache/datafusion-comet/issues/4561) |
+| `startswith` | ✅ |  |
 | `substr` | ✅ |  |
 | `substring` | ✅ |  |
 | `substring_index` | ✅ |  |
-| `to_binary` | 🔜 | unclassified; not yet reviewed |
-| `to_char` | 🔜 | unclassified; not yet reviewed |
-| `to_number` | 🔜 | unclassified; not yet reviewed |
-| `to_varchar` | 🔜 | unclassified; not yet reviewed |
+| `to_binary` | ✅ | Hex form accelerated; other formats fall back |
+| `to_char` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `to_number` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `to_varchar` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `translate` | ✅ |  |
 | `trim` | ✅ |  |
-| `try_to_binary` | 🔜 | unclassified; not yet reviewed |
-| `try_to_number` | 🔜 | unclassified; not yet reviewed |
+| `try_to_binary` | 🔜 | Lowers to `TryEval(...)`, which falls back |
+| `try_to_number` | 🔜 | TRY variant of `to_number` |
 | `try_validate_utf8` | 🔜 | unclassified; not yet reviewed |
 | `ucase` | ✅ |  |
-| `unbase64` | 🔜 | unclassified; not yet reviewed |
+| `unbase64` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `upper` | ✅ |  |
 | `validate_utf8` | 🔜 | unclassified; not yet reviewed |
 <!--END:EXPR_TABLE[string_funcs]-->
@@ -714,9 +714,9 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | --- | --- | --- |
 | `parse_url` | ✅ |  |
 | `try_parse_url` | 🔜 | unclassified; not yet reviewed |
-| `try_url_decode` | 🔜 | unclassified; not yet reviewed |
-| `url_decode` | 🔜 | unclassified; not yet reviewed |
-| `url_encode` | 🔜 | unclassified; not yet reviewed |
+| `try_url_decode` | ✅ |  |
+| `url_decode` | ✅ |  |
+| `url_encode` | ✅ |  |
 <!--END:EXPR_TABLE[url_funcs]-->
 
 ---
@@ -733,15 +733,15 @@ fall back to Spark.
 <!--BEGIN:EXPR_TABLE[window_funcs]-->
 | Function | Status | Notes |
 | --- | --- | --- |
-| `cume_dist` | 🔜 | unclassified; not yet reviewed |
-| `dense_rank` | 🔜 | unclassified; not yet reviewed |
-| `lag` | 🔜 | unclassified; not yet reviewed |
-| `lead` | 🔜 | unclassified; not yet reviewed |
-| `nth_value` | 🔜 | unclassified; not yet reviewed |
-| `ntile` | 🔜 | unclassified; not yet reviewed |
-| `percent_rank` | 🔜 | unclassified; not yet reviewed |
-| `rank` | 🔜 | unclassified; not yet reviewed |
-| `row_number` | 🔜 | unclassified; not yet reviewed |
+| `cume_dist` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `dense_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `lag` | ✅ | via `CometWindowExec` |
+| `lead` | ✅ | via `CometWindowExec` |
+| `nth_value` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `ntile` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `percent_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `row_number` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
 <!--END:EXPR_TABLE[window_funcs]-->
 
 ---

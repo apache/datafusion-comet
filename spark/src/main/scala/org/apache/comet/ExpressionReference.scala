@@ -47,17 +47,17 @@ object ExpressionReference {
   // scalastyle:on nonascii
 
   /**
-   * Curated metadata for a function Comet does not serde-support. Lives in the
-   * `plannedExpressions` map in [[GenerateDocs]] (a CI-exempt file). `status` must be `Planned`
-   * or `NotPlanned`.
+   * Curated metadata for a function described by the `plannedExpressions` map in [[GenerateDocs]]
+   * (a CI-exempt file). `status` is a curated status (Supported, Planned, or NotPlanned).
+   * Supported is used for functions Comet supports through a non-serde path (an analyzer rewrite,
+   * constant-folding, or an operator) rather than a serde-backed expression. The only status that
+   * may not appear here is the placeholder [[Unclassified]].
    */
   case class PlannedExpr(
       status: ExprStatus,
       issue: Option[Int] = None,
       note: Option[String] = None) {
-    require(
-      status == Planned || status == NotPlanned,
-      s"PlannedExpr.status must be Planned or NotPlanned, got $status")
+    require(status != Unclassified, s"curated status must not be Unclassified, got $status")
   }
 
   /**

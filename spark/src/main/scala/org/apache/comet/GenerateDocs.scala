@@ -150,10 +150,373 @@ object GenerateDocs {
    * issue is filed) does not trigger those heavy jobs. Keyed by Spark function name.
    */
   private val plannedExpressions: Map[String, PlannedExpr] = Map(
-    "approx_count_distinct" -> PlannedExpr(Planned, issue = Some(4098)),
-    "kurtosis" -> PlannedExpr(Planned, issue = Some(4098))
-    // Populated to match the current doc during a later task.
-  )
+    "aes_decrypt" -> PlannedExpr(
+      Planned,
+      issue = Some(4558),
+      note = Some("Falls back; `StaticInvoke` not allowlisted; planned via codegen dispatch")),
+    "aes_encrypt" -> PlannedExpr(
+      Planned,
+      issue = Some(4558),
+      note = Some("Falls back; planned via codegen dispatch; nondeterministic IV by default")),
+    "aggregate" -> PlannedExpr(Planned, issue = Some(4224)),
+    "any" -> PlannedExpr(Supported),
+    "any_value" -> PlannedExpr(Supported),
+    "approx_count_distinct" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "array_agg" -> PlannedExpr(
+      Planned,
+      issue = Some(2524),
+      note = Some("Array aggregate (related to `collect_list`)")),
+    "array_prepend" -> PlannedExpr(Planned, note = Some("Sibling of `array_append`")),
+    "array_size" -> PlannedExpr(Supported),
+    "array_sort" -> PlannedExpr(Planned, issue = Some(4224)),
+    "assert_true" -> PlannedExpr(
+      Planned,
+      note = Some("Lowers to `RaiseError`, which falls back")),
+    "base64" -> PlannedExpr(
+      Planned,
+      note = Some("Lowers to `StaticInvoke(encode)` (not allowlisted); falls back")),
+    "between" -> PlannedExpr(Supported),
+    "bool_and" -> PlannedExpr(Supported),
+    "bool_or" -> PlannedExpr(Supported),
+    "bround" -> PlannedExpr(Planned, issue = Some(4538)),
+    "ceil" -> PlannedExpr(Supported, note = Some("Two-arg form falls back")),
+    "ceiling" -> PlannedExpr(Supported),
+    "collate" -> PlannedExpr(
+      Planned,
+      issue = Some(2190),
+      note = Some("Spark collation (umbrella)")),
+    "collation" -> PlannedExpr(
+      Supported,
+      note = Some("Constant-folded to a literal (Spark 4.0+)")),
+    "collect_list" -> PlannedExpr(Planned, issue = Some(2524)),
+    "contains" -> PlannedExpr(Supported),
+    "conv" -> PlannedExpr(Planned, issue = Some(4538)),
+    "count_if" -> PlannedExpr(Supported),
+    "cume_dist" -> PlannedExpr(
+      Planned,
+      issue = Some(2721),
+      note = Some("Window function; tracked by")),
+    "curdate" -> PlannedExpr(
+      Supported,
+      note = Some("Constant-folded to a literal (alias of `current_date`)")),
+    "current_catalog" -> PlannedExpr(
+      Supported,
+      note = Some("Resolved to a literal by the analyzer (`ReplaceCurrentLike`)")),
+    "current_database" -> PlannedExpr(
+      Supported,
+      note = Some("Resolved to a literal by the analyzer (`ReplaceCurrentLike`)")),
+    "current_date" -> PlannedExpr(
+      Supported,
+      note = Some("Constant-folded to a literal before Comet sees the plan")),
+    "current_schema" -> PlannedExpr(
+      Supported,
+      note = Some("Alias of `current_database`; resolved to a literal by the analyzer")),
+    "current_time" -> PlannedExpr(
+      Planned,
+      issue = Some(4288),
+      note = Some("Blocked on Spark 4.1 TIME type support")),
+    "current_timestamp" -> PlannedExpr(
+      Supported,
+      note = Some("Constant-folded to a literal before Comet sees the plan")),
+    "current_timezone" -> PlannedExpr(Supported),
+    "current_user" -> PlannedExpr(
+      Supported,
+      note = Some("Resolved to a literal by the analyzer; same as `user`")),
+    "date_part" -> PlannedExpr(Supported),
+    "datepart" -> PlannedExpr(Supported),
+    "dayname" -> PlannedExpr(Planned, issue = Some(4544)),
+    "decode" -> PlannedExpr(Supported),
+    "dense_rank" -> PlannedExpr(
+      Planned,
+      issue = Some(2721),
+      note = Some("Window function; tracked by")),
+    "e" -> PlannedExpr(Supported, note = Some("Folds to a literal (like `pi`)")),
+    "elt" -> PlannedExpr(Planned, issue = Some(4538)),
+    "encode" -> PlannedExpr(
+      Planned,
+      note = Some("Lowers to `StaticInvoke(encode)` (not allowlisted); falls back")),
+    "endswith" -> PlannedExpr(Supported),
+    "equal_null" -> PlannedExpr(Supported, note = Some("Lowers to `<=>` (`EqualNullSafe`)")),
+    "every" -> PlannedExpr(Supported),
+    "exists" -> PlannedExpr(Planned, issue = Some(4224)),
+    "explode" -> PlannedExpr(Supported, note = Some("via `CometExplodeExec`")),
+    "explode_outer" -> PlannedExpr(
+      Supported,
+      note = Some("outer=true falls back (Incompatible) " +
+        "([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer))")),
+    "extract" -> PlannedExpr(Supported),
+    "find_in_set" -> PlannedExpr(Planned, issue = Some(4538)),
+    "floor" -> PlannedExpr(Supported, note = Some("Two-arg form falls back")),
+    "forall" -> PlannedExpr(Planned, issue = Some(4224)),
+    "format_number" -> PlannedExpr(Planned, issue = Some(4538)),
+    "format_string" -> PlannedExpr(Planned, issue = Some(4538)),
+    "get" -> PlannedExpr(Supported),
+    "grouping" -> PlannedExpr(
+      Planned,
+      note = Some("Grouping indicator for ROLLUP/CUBE/GROUPING SETS")),
+    "grouping_id" -> PlannedExpr(
+      Planned,
+      note = Some("Grouping indicator for ROLLUP/CUBE/GROUPING SETS")),
+    "hour" -> PlannedExpr(Supported),
+    "hypot" -> PlannedExpr(Planned, issue = Some(4538)),
+    "ifnull" -> PlannedExpr(Supported),
+    "ilike" -> PlannedExpr(Supported),
+    "inline" -> PlannedExpr(Planned, note = Some("Operator-level generator (like `explode`)")),
+    "inline_outer" -> PlannedExpr(
+      Planned,
+      note = Some("Operator-level generator (like `explode`)")),
+    "json_array_length" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "json_object_keys" -> PlannedExpr(Planned, issue = Some(3161)),
+    "json_tuple" -> PlannedExpr(Planned, issue = Some(3160)),
+    "kurtosis" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "lag" -> PlannedExpr(Supported, note = Some("via `CometWindowExec`")),
+    "lead" -> PlannedExpr(Supported, note = Some("via `CometWindowExec`")),
+    "levenshtein" -> PlannedExpr(Planned, issue = Some(4538)),
+    "listagg" -> PlannedExpr(Planned, note = Some("String aggregation")),
+    "localtimestamp" -> PlannedExpr(Supported),
+    "locate" -> PlannedExpr(Planned, issue = Some(4538)),
+    "log1p" -> PlannedExpr(Planned, issue = Some(4538)),
+    "lpad" -> PlannedExpr(Supported),
+    "luhn_check" -> PlannedExpr(
+      Supported,
+      note = Some("Native via `StaticInvoke` (tests: luhn_check.sql)")),
+    "make_dt_interval" -> PlannedExpr(Planned, issue = Some(4541)),
+    "make_interval" -> PlannedExpr(
+      Planned,
+      issue = Some(4540),
+      note = Some("Produces legacy CalendarInterval; tracked by")),
+    "make_time" -> PlannedExpr(
+      Planned,
+      issue = Some(4288),
+      note = Some("Spark 4.1 TIME type; tracked by")),
+    "make_timestamp" -> PlannedExpr(Supported),
+    "make_timestamp_ltz" -> PlannedExpr(Supported, note = Some("2-arg TIME form falls back")),
+    "make_timestamp_ntz" -> PlannedExpr(Supported, note = Some("2-arg TIME form falls back")),
+    "make_ym_interval" -> PlannedExpr(Planned, issue = Some(4541)),
+    "map" -> PlannedExpr(Planned, note = Some("Constructs a map")),
+    "map_concat" -> PlannedExpr(Planned, note = Some("Concatenates maps")),
+    "map_filter" -> PlannedExpr(Planned, issue = Some(4224)),
+    "map_zip_with" -> PlannedExpr(Planned, issue = Some(4224)),
+    "mask" -> PlannedExpr(Planned, note = Some("Data masking")),
+    "max_by" -> PlannedExpr(Planned, issue = Some(3841)),
+    "median" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "min_by" -> PlannedExpr(Planned, issue = Some(3841)),
+    "minute" -> PlannedExpr(Supported),
+    "mode" -> PlannedExpr(Planned, issue = Some(3970)),
+    "monthname" -> PlannedExpr(Planned, issue = Some(4544)),
+    "nanvl" -> PlannedExpr(Planned, issue = Some(4538)),
+    "now" -> PlannedExpr(
+      Supported,
+      note = Some("Constant-folded to a literal (alias of `current_timestamp`)")),
+    "nth_value" -> PlannedExpr(
+      Planned,
+      issue = Some(2721),
+      note = Some("Window function; tracked by")),
+    "ntile" -> PlannedExpr(
+      Planned,
+      issue = Some(2721),
+      note = Some("Window function; tracked by")),
+    "nullif" -> PlannedExpr(Supported),
+    "nullifzero" -> PlannedExpr(Supported, note = Some("Lowers to `if`/`=` (Spark 4.0+)")),
+    "nvl" -> PlannedExpr(Supported),
+    "nvl2" -> PlannedExpr(Supported),
+    "overlay" -> PlannedExpr(Planned, issue = Some(4538)),
+    "percent_rank" -> PlannedExpr(
+      Planned,
+      issue = Some(2721),
+      note = Some("Window function; tracked by")),
+    "percentile" -> PlannedExpr(Planned, issue = Some(4542)),
+    "percentile_cont" -> PlannedExpr(Planned, note = Some("Percentile aggregate")),
+    "percentile_disc" -> PlannedExpr(Planned, note = Some("Percentile aggregate")),
+    "pmod" -> PlannedExpr(Planned, issue = Some(4538)),
+    "posexplode" -> PlannedExpr(Supported, note = Some("via `CometExplodeExec`")),
+    "posexplode_outer" -> PlannedExpr(
+      Supported,
+      note = Some(
+        "outer=true falls back (Incompatible) " +
+          "([audit](../../contributor-guide/expression-audits/" +
+          "generator_funcs.md#posexplode_outer))")),
+    "position" -> PlannedExpr(Planned, issue = Some(4538)),
+    "positive" -> PlannedExpr(Supported),
+    "printf" -> PlannedExpr(Planned, issue = Some(4538)),
+    "raise_error" -> PlannedExpr(Planned, note = Some("Raises a runtime error")),
+    "randstr" -> PlannedExpr(Planned, note = Some("Random string (Spark 4.0+)")),
+    "rank" -> PlannedExpr(
+      Planned,
+      issue = Some(2721),
+      note = Some("Window function; tracked by")),
+    "reduce" -> PlannedExpr(Planned, issue = Some(4224)),
+    "regexp_count" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "regexp_extract" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "regexp_extract_all" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "regexp_instr" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "regexp_substr" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "regr_avgx" -> PlannedExpr(
+      Supported,
+      note = Some(
+        "Native: Spark rewrites to `Average` " +
+          "(tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551))")),
+    "regr_avgy" -> PlannedExpr(
+      Supported,
+      note = Some(
+        "Native: Spark rewrites to `Average` " +
+          "(tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551))")),
+    "regr_count" -> PlannedExpr(
+      Supported,
+      note = Some(
+        "Native: Spark rewrites to `Count` " +
+          "(tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551))")),
+    "regr_intercept" -> PlannedExpr(
+      Planned,
+      issue = Some(4552),
+      note = Some("Falls back; can reuse `covar_pop`/`var_pop` accumulators")),
+    "regr_r2" -> PlannedExpr(
+      Planned,
+      issue = Some(4552),
+      note = Some("Falls back; can reuse the `corr` accumulator")),
+    "regr_slope" -> PlannedExpr(
+      Planned,
+      issue = Some(4552),
+      note = Some("Falls back; can reuse `covar_pop`/`var_pop` accumulators")),
+    "regr_sxx" -> PlannedExpr(
+      Planned,
+      issue = Some(4552),
+      note = Some("Falls back; can reuse `var_pop` accumulator")),
+    "regr_sxy" -> PlannedExpr(
+      Planned,
+      issue = Some(4552),
+      note = Some("Falls back; can reuse `covar_pop` accumulator")),
+    "regr_syy" -> PlannedExpr(
+      Planned,
+      issue = Some(4552),
+      note = Some("Falls back; can reuse `var_pop` accumulator")),
+    "row_number" -> PlannedExpr(
+      Planned,
+      issue = Some(2721),
+      note = Some("Window function; tracked by")),
+    "rpad" -> PlannedExpr(Supported),
+    "schema_of_json" -> PlannedExpr(Planned, issue = Some(3163)),
+    "second" -> PlannedExpr(Supported),
+    "sequence" -> PlannedExpr(Planned, issue = Some(4538)),
+    "session_user" -> PlannedExpr(
+      Supported,
+      note = Some("Alias of `current_user`; resolved to a literal by the analyzer")),
+    "session_window" -> PlannedExpr(
+      Planned,
+      issue = Some(4553),
+      note = Some("Time-window grouping; tracked by")),
+    "shuffle" -> PlannedExpr(Planned, note = Some("Random array shuffle")),
+    "skewness" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "some" -> PlannedExpr(Supported),
+    "soundex" -> PlannedExpr(Planned, issue = Some(4538)),
+    "split_part" -> PlannedExpr(
+      Planned,
+      issue = Some(4561),
+      note = Some("Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back")),
+    "stack" -> PlannedExpr(Planned, note = Some("Operator-level generator")),
+    "startswith" -> PlannedExpr(Supported),
+    "string_agg" -> PlannedExpr(Planned, note = Some("String aggregation (alias of `listagg`)")),
+    "time_diff" -> PlannedExpr(
+      Planned,
+      issue = Some(4288),
+      note = Some("Spark 4.1 TIME type; tracked by")),
+    "time_trunc" -> PlannedExpr(
+      Planned,
+      issue = Some(4288),
+      note = Some("Spark 4.1 TIME type; tracked by")),
+    "to_binary" -> PlannedExpr(
+      Supported,
+      note = Some("Hex form accelerated; other formats fall back")),
+    "to_char" -> PlannedExpr(Planned, issue = Some(4538)),
+    "to_date" -> PlannedExpr(
+      Supported,
+      note = Some(
+        "Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan")),
+    "to_number" -> PlannedExpr(Planned, issue = Some(4538)),
+    "to_time" -> PlannedExpr(
+      Planned,
+      issue = Some(4288),
+      note = Some("Spark 4.1 TIME type; tracked by")),
+    "to_timestamp" -> PlannedExpr(
+      Supported,
+      note =
+        Some("Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan")),
+    "to_timestamp_ltz" -> PlannedExpr(
+      Supported,
+      note = Some("Rewrites to `to_timestamp` (`TimestampType`)")),
+    "to_timestamp_ntz" -> PlannedExpr(
+      Supported,
+      note = Some("Rewrites to `to_timestamp` (`TimestampNTZType`)")),
+    "to_varchar" -> PlannedExpr(Planned, issue = Some(4538)),
+    "transform" -> PlannedExpr(Planned, issue = Some(4224)),
+    "transform_keys" -> PlannedExpr(Planned, issue = Some(4224)),
+    "transform_values" -> PlannedExpr(Planned, issue = Some(4224)),
+    "try_add" -> PlannedExpr(Supported, note = Some("Datetime/interval form falls back")),
+    "try_aes_decrypt" -> PlannedExpr(
+      Planned,
+      issue = Some(4558),
+      note = Some("Falls back; planned via codegen dispatch")),
+    "try_avg" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "try_divide" -> PlannedExpr(Supported),
+    "try_element_at" -> PlannedExpr(
+      Supported,
+      note = Some("Lowers to `element_at`; array input (MapType falls back)")),
+    "try_make_interval" -> PlannedExpr(
+      Planned,
+      issue = Some(4540),
+      note = Some("Produces legacy CalendarInterval; tracked by")),
+    "try_make_timestamp" -> PlannedExpr(
+      Supported,
+      issue = Some(4554),
+      note = Some("Returns a wrong value instead of NULL for invalid inputs")),
+    "try_mod" -> PlannedExpr(
+      Planned,
+      issue = Some(4484),
+      note = Some("Lowers to `Remainder` with TRY eval mode, which falls back")),
+    "try_multiply" -> PlannedExpr(Supported),
+    "try_subtract" -> PlannedExpr(Supported),
+    "try_sum" -> PlannedExpr(Planned, issue = Some(4098), note = Some("tracking")),
+    "try_to_binary" -> PlannedExpr(
+      Planned,
+      note = Some("Lowers to `TryEval(...)`, which falls back")),
+    "try_to_date" -> PlannedExpr(
+      Planned,
+      issue = Some(4556),
+      note = Some("Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by")),
+    "try_to_number" -> PlannedExpr(Planned, note = Some("TRY variant of `to_number`")),
+    "try_to_time" -> PlannedExpr(
+      Planned,
+      issue = Some(4288),
+      note = Some("Spark 4.1 TIME type; tracked by")),
+    "try_to_timestamp" -> PlannedExpr(
+      Planned,
+      issue = Some(4556),
+      note = Some("Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by")),
+    "try_url_decode" -> PlannedExpr(Supported),
+    "typeof" -> PlannedExpr(
+      Supported,
+      note = Some("Foldable; resolved to a literal before Comet sees the plan")),
+    "unbase64" -> PlannedExpr(Planned, issue = Some(4538)),
+    "uniform" -> PlannedExpr(
+      Supported,
+      note = Some("Constant-folded; literal arguments only (Spark 4.0+)")),
+    "url_decode" -> PlannedExpr(Supported),
+    "url_encode" -> PlannedExpr(Supported),
+    "user" -> PlannedExpr(
+      Supported,
+      note = Some("Resolved to a literal by the Spark analyzer before reaching Comet")),
+    "uuid" -> PlannedExpr(Planned, note = Some("Nondeterministic random UUID")),
+    "width_bucket" -> PlannedExpr(Supported),
+    "window" -> PlannedExpr(
+      Planned,
+      issue = Some(4553),
+      note = Some("Time-window grouping; tracked by")),
+    "window_time" -> PlannedExpr(
+      Planned,
+      issue = Some(4553),
+      note = Some("Time-window grouping; tracked by")),
+    "zeroifnull" -> PlannedExpr(Supported, note = Some("Lowers to `coalesce` (Spark 4.0+)")),
+    "zip_with" -> PlannedExpr(Planned, issue = Some(4224)))
 
   /**
    * Spark function groups rendered as tables, in display order. Families that fall back wholesale
