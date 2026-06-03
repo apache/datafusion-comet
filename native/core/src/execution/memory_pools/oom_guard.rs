@@ -73,9 +73,7 @@ pub fn clear_unwinding() {
 /// If `panic` is an `OomGuardPanic`, clear this thread's unwinding guard and
 /// return the mapped retriable error. Returns `None` for any other panic.
 /// Centralizes the downcast + unwinding-reset + error mapping for all catch sites.
-pub fn map_panic_to_error(
-    panic: &(dyn std::any::Any + Send),
-) -> Option<DataFusionError> {
+pub fn map_panic_to_error(panic: &(dyn std::any::Any + Send)) -> Option<DataFusionError> {
     let g = panic.downcast_ref::<OomGuardPanic>()?;
     clear_unwinding();
     Some(DataFusionError::ResourcesExhausted(format!(
@@ -129,9 +127,25 @@ fn track(delta: isize) {
     }
     let limit = LIMIT.load(Ordering::Relaxed);
     if should_trip(balance, limit) {
+        // At most one thread may fire the guard panic per arm cycle. CAS the
+        // master gate true->false; threads that lose the race bail before
+        // panic_any. The relaxed load above (line ~121) is not a serialization
+        // point: several threads can all read ARMED=true and reach here in the
+        // same tight window. If each then dispatches a panic, Rust's unwind ABI
+        // can abort the process with "failed to initiate panic" instead of
+        // unwinding cleanly (observed on the 5-concurrent repro: ~4 threads
+        // firing within ~10 ms -> exit 133). The guard re-arms on the next
+        // createPlan.
+        if ARMED
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
         // panic_any boxes the payload, which re-enters this allocator and calls
-        // track() again. Set UNWINDING first so that re-entrant call short-circuits
-        // above, preventing infinite recursion / a double panic from inside alloc.
+        // track() again. ARMED is now false so the re-entrant call short-circuits
+        // at the ARMED check above; setting UNWINDING adds defense in depth in
+        // case a concurrent createPlan re-arms mid-unwind.
         UNWINDING.with(|u| u.set(true));
         std::panic::panic_any(OomGuardPanic {
             balance: balance.max(0) as usize,
@@ -195,15 +209,20 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let new_ptr = self.inner.realloc(ptr, layout, new_size);
-        if !new_ptr.is_null() {
-            // Casts and subtraction are safe in practice: a single allocation cannot
-            // exceed isize::MAX on any real platform, so no wrapping or overflow occurs.
-            let old = layout.size() as isize;
-            let new = new_size as isize;
-            track(new - old);
-        }
-        new_ptr
+        // Account for and enforce the size delta BEFORE delegating to the inner
+        // realloc. If this trips the breaker it panics here, while `ptr` is still
+        // valid, so the unwind frees it correctly. Panicking *after* inner.realloc
+        // would be unsound: realloc may have already freed/moved the old block, and
+        // the caller (which never received the new pointer) would free the dangling
+        // old pointer on unwind and segfault. Only growth can trip; over-counting on
+        // a (rare) realloc failure errs on the conservative side for an OOM guard.
+        //
+        // Casts and subtraction are safe in practice: a single allocation cannot
+        // exceed isize::MAX on any real platform, so no wrapping or overflow occurs.
+        let old = layout.size() as isize;
+        let new = new_size as isize;
+        track(new - old);
+        self.inner.realloc(ptr, layout, new_size)
     }
 }
 
@@ -267,7 +286,10 @@ mod tests {
     fn test_settle_flushes_at_exact_threshold() {
         let shared = AtomicIsize::new(0);
         let mut drift = 0isize;
-        assert_eq!(settle(&mut drift, SETTLE_THRESHOLD, &shared), Some(SETTLE_THRESHOLD));
+        assert_eq!(
+            settle(&mut drift, SETTLE_THRESHOLD, &shared),
+            Some(SETTLE_THRESHOLD)
+        );
         assert_eq!(drift, 0);
     }
 
@@ -345,7 +367,10 @@ mod tests {
             "large allocation on a stamped, armed thread should trip the guard"
         );
         assert!(
-            result.unwrap_err().downcast_ref::<OomGuardPanic>().is_some(),
+            result
+                .unwrap_err()
+                .downcast_ref::<OomGuardPanic>()
+                .is_some(),
             "panic payload should be OomGuardPanic"
         );
     }

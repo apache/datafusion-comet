@@ -197,9 +197,7 @@ fn parse_usize_env_var(name: &str) -> Option<usize> {
 fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     #[cfg(feature = "oom-guard")]
-    builder.on_thread_start(|| {
-        crate::execution::memory_pools::oom_guard::stamp_current_thread()
-    });
+    builder.on_thread_start(|| crate::execution::memory_pools::oom_guard::stamp_current_thread());
     if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {
         info!("Comet tokio runtime: using COMET_WORKER_THREADS={n}");
         builder.worker_threads(n);
@@ -383,8 +381,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 // Default to the executor off-heap memory limit (`memory_limit`);
                 // allow an explicit override.
                 let default_limit = memory_limit.max(0) as u64;
-                let limit =
-                    spark_config.get_u64(COMET_MEMORY_GUARD_SIZE, default_limit);
+                let limit = spark_config.get_u64(COMET_MEMORY_GUARD_SIZE, default_limit);
                 if limit == 0 {
                     warn!(
                         "spark.comet.exec.memoryGuard.enabled is true but the effective limit \
@@ -816,7 +813,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
                         if let Err(panic) = result {
                             #[cfg(feature = "oom-guard")]
-                            if let Some(e) = crate::execution::memory_pools::oom_guard::map_panic_to_error(panic.as_ref()) {
+                            if let Some(e) =
+                                crate::execution::memory_pools::oom_guard::map_panic_to_error(
+                                    panic.as_ref(),
+                                )
+                            {
                                 // Runs on the tokio worker thread that panicked, so this clears
                                 // that worker's UNWINDING flag (not the blocked JNI caller thread's).
                                 let _ = tx.send(Err(e)).await;
@@ -847,11 +848,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             if exec_context.batch_receiver.is_some() {
-                let recv_result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> CometResult<jlong> {
+                let recv_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> CometResult<jlong> {
                         // Scope the rx borrow to just the blocking_recv call so that
                         // exec_context is free for update_metrics / prepare_output below.
-                        let recv = exec_context.batch_receiver.as_mut().unwrap().blocking_recv();
+                        let recv = exec_context
+                            .batch_receiver
+                            .as_mut()
+                            .unwrap()
+                            .blocking_recv();
                         match recv {
                             Some(Ok(batch)) => {
                                 update_metrics(env, exec_context)?;
@@ -869,13 +874,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                                 Ok(-1)
                             }
                         }
-                    }));
+                    },
+                ));
 
                 match recv_result {
                     Ok(r) => return r,
                     Err(_panic) => {
                         #[cfg(feature = "oom-guard")]
-                        if let Some(e) = crate::execution::memory_pools::oom_guard::map_panic_to_error(_panic.as_ref()) {
+                        if let Some(e) =
+                            crate::execution::memory_pools::oom_guard::map_panic_to_error(
+                                _panic.as_ref(),
+                            )
+                        {
                             // Drop the receiver so any re-entry re-initializes.
                             exec_context.batch_receiver = None;
                             return Err(e.into());
@@ -940,7 +950,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 Ok(r) => r,
                 Err(_panic) => {
                     #[cfg(feature = "oom-guard")]
-                    if let Some(e) = crate::execution::memory_pools::oom_guard::map_panic_to_error(_panic.as_ref()) {
+                    if let Some(e) = crate::execution::memory_pools::oom_guard::map_panic_to_error(
+                        _panic.as_ref(),
+                    ) {
                         // The block_on future was dropped mid-poll; null the stream so any
                         // inadvertent re-entry re-initializes rather than polling a half-consumed one.
                         exec_context.stream = None;
