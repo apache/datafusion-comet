@@ -173,14 +173,33 @@ jobs:
           # driver and the big test JVM rather than two equal-sized JVMs.
           SBT_MEM: "3072"
           HEAP_SIZE: "5g"
-          # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
-          # build_java21.yml and build_java25.yml set this same env var to
-          # process-isolate the V1/V2 Parquet and Orc source suites because
-          # they exhibit cross-suite resource interactions (file-stream and
-          # thread leaks) under the newer JDKs. project/SparkBuild.scala
-          # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
-          # listed suite. Empty value is a safe no-op.
-          DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
+          # Cap forked test JVM direct memory. Without this, -XX:MaxDirectMemorySize
+          # defaults to ≈ -Xmx (5 GB), letting Netty / DirectByteBuffer / shuffle
+          # buffers grow alongside the heap and push host RSS past the 7 GB
+          # runner ceiling. JAVA_TOOL_OPTIONS is honoured by every child JVM;
+          # SBT picks it up too but allocates negligible direct memory itself.
+          JAVA_TOOL_OPTIONS: "-XX:MaxDirectMemorySize=1g"
+          # Force these suites into their own forked JVMs so per-suite state
+          # (codegen classes, native pools, shuffle buffers) is reclaimed on
+          # JVM exit instead of accumulating across a single testOnly run:
+          #   * AdaptiveQueryExecSuite — long, codegen- and shuffle-heavy;
+          #     observed to SIGKILL the host on 7 GB runners after ~10 tests.
+          #   * Parquet/Orc V1/V2 source suites — Spark 4.0 only; mirrors
+          #     apache/spark's build_java21.yml / build_java25.yml workaround
+          #     for cross-suite file-stream / thread leaks under newer JDKs.
+          # SparkBuild.scala reads this env var and installs the testGrouping
+          # regardless of SERIAL_SBT_TESTS, so listed suites still get their
+          # own JVM in serial-test mode (only run policy changes).
+          DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.adaptive.AdaptiveQueryExecSuite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || 'org.apache.spark.sql.execution.adaptive.AdaptiveQueryExecSuite' }}
+      - name: Dump kernel + memory state on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo '== /proc/meminfo =='; cat /proc/meminfo 2>/dev/null || true
+          echo '== /proc/swaps ==';   cat /proc/swaps   2>/dev/null || true
+          echo '== top RSS ==';       ps -eo pid,rss,cmd --sort=-rss 2>/dev/null | head -20 || true
+          echo '== dmesg (best effort) ==';
+          dmesg -T 2>/dev/null | tail -200 || cat /var/log/kern.log 2>/dev/null | tail -200 || echo 'kernel log unavailable inside container'
       - name: Upload fallback log
         if: ${{ inputs.collect-fallback-logs }}
         uses: actions/upload-artifact@v7
