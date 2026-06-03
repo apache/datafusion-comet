@@ -169,7 +169,7 @@ FILTERS = {
         "!spark/src/main/spark-4.2/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
         "spark/pom.xml",
-        "dev/diffs/4.1.1.diff",
+        "dev/diffs/4.1.2.diff",
         "pom.xml",
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",

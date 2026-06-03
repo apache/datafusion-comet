@@ -22,17 +22,19 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
 object CometXxHash64 extends CometExpressionSerde[XxHash64] {
+
+  override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
+
+  override def getSupportLevel(expr: XxHash64): SupportLevel =
+    HashUtils.supportLevelForChildren(expr)
+
   override def convert(
       expr: XxHash64,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!HashUtils.isSupportedType(expr)) {
-      return None
-    }
     val exprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val seedBuilder = LiteralOuterClass.Literal
       .newBuilder()
@@ -45,13 +47,16 @@ object CometXxHash64 extends CometExpressionSerde[XxHash64] {
 }
 
 object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
+
+  override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
+
+  override def getSupportLevel(expr: Murmur3Hash): SupportLevel =
+    HashUtils.supportLevelForChildren(expr)
+
   override def convert(
       expr: Murmur3Hash,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!HashUtils.isSupportedType(expr)) {
-      return None
-    }
     val exprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val seedBuilder = LiteralOuterClass.Literal
       .newBuilder()
@@ -68,21 +73,25 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
 }
 
 object CometSha2 extends CometExpressionSerde[Sha2] {
+
+  private val nonFoldableNumBitsReason =
+    "The `numBits` argument must be a foldable literal value"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    HashUtils.unsupportedReasons :+ nonFoldableNumBitsReason
+
+  override def getSupportLevel(expr: Sha2): SupportLevel = {
+    if (!expr.right.foldable) {
+      Unsupported(Some(nonFoldableNumBitsReason))
+    } else {
+      HashUtils.supportLevelForChildren(expr)
+    }
+  }
+
   override def convert(
       expr: Sha2,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!HashUtils.isSupportedType(expr)) {
-      return None
-    }
-
-    // It's possible for spark to dynamically compute the number of bits from input
-    // expression, however DataFusion does not support that yet.
-    if (!expr.right.foldable) {
-      withFallbackReason(expr, "For Sha2, non literal numBits is not supported")
-      return None
-    }
-
     val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
     val numBitsExpr = exprToProtoInternal(expr.right, inputs, binding)
     scalarFunctionExprToProtoWithReturnType("sha2", StringType, false, leftExpr, numBitsExpr)
@@ -90,50 +99,50 @@ object CometSha2 extends CometExpressionSerde[Sha2] {
 }
 
 object CometSha1 extends CometExpressionSerde[Sha1] {
+
+  override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
+
+  override def getSupportLevel(expr: Sha1): SupportLevel =
+    HashUtils.supportLevelForChildren(expr)
+
   override def convert(
       expr: Sha1,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!HashUtils.isSupportedType(expr)) {
-      withFallbackReason(expr, s"HashUtils doesn't support dataType: ${expr.child.dataType}")
-      return None
-    }
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     scalarFunctionExprToProtoWithReturnType("sha1", StringType, false, childExpr)
   }
 }
 
 private object HashUtils {
-  def isSupportedType(expr: Expression): Boolean = {
-    for (child <- expr.children) {
-      if (!isSupportedDataType(expr, child.dataType)) {
-        return false
-      }
+
+  private val unsupportedDecimalReason =
+    "`DecimalType` with precision > 18 is not supported (Spark hashes via Java `BigDecimal`)"
+  private val unsupportedTimeTypeReason = "`TimeType` is not supported"
+
+  val unsupportedReasons: Seq[String] =
+    Seq(unsupportedDecimalReason, unsupportedTimeTypeReason, "Unsupported child data type")
+
+  def supportLevelForChildren(expr: Expression): SupportLevel = {
+    expr.children.iterator
+      .flatMap(c => unsupportedReasonFor(c.dataType).iterator)
+      .toSeq
+      .headOption match {
+      case Some(reason) => Unsupported(Some(reason))
+      case None => Compatible()
     }
-    true
   }
 
-  private def isSupportedDataType(expr: Expression, dt: DataType): Boolean = {
-    dt match {
-      case d: DecimalType if d.precision > 18 =>
-        // Spark converts decimals with precision > 18 into
-        // Java BigDecimal before hashing
-        withFallbackReason(expr, s"Unsupported datatype: $dt (precision > 18)")
-        false
-      case s: StructType =>
-        s.fields.forall(f => isSupportedDataType(expr, f.dataType))
-      case a: ArrayType =>
-        isSupportedDataType(expr, a.elementType)
-      case m: MapType =>
-        isSupportedDataType(expr, m.keyType) && isSupportedDataType(expr, m.valueType)
-      case dt if isTimeType(dt) =>
-        withFallbackReason(expr, s"Unsupported datatype $dt")
-        false
-      case _ if !supportedDataType(dt, allowComplex = true) =>
-        withFallbackReason(expr, s"Unsupported datatype $dt")
-        false
-      case _ =>
-        true
-    }
+  private def unsupportedReasonFor(dt: DataType): Option[String] = dt match {
+    case d: DecimalType if d.precision > 18 => Some(unsupportedDecimalReason)
+    case s: StructType =>
+      s.fields.iterator.flatMap(f => unsupportedReasonFor(f.dataType).iterator).toSeq.headOption
+    case a: ArrayType => unsupportedReasonFor(a.elementType)
+    case m: MapType =>
+      unsupportedReasonFor(m.keyType).orElse(unsupportedReasonFor(m.valueType))
+    case dt if isTimeType(dt) => Some(unsupportedTimeTypeReason)
+    case _ if !supportedDataType(dt, allowComplex = true) =>
+      Some(s"Unsupported child data type: $dt")
+    case _ => None
   }
 }

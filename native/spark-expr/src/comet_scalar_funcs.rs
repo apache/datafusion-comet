@@ -22,12 +22,12 @@ use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mu
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
-    spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_isnan,
-    spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad,
-    spark_to_time, spark_unhex, spark_unscaled_value, EvalMode, SparkArrayCompact,
-    SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff,
-    SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime, SparkSecondsToTimestamp,
-    SparkSizeFunc,
+    spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
+    spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
+    spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
+    SparkArrayCompact, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime,
+    SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -115,6 +115,14 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "read_side_padding" => {
             let func = Arc::new(spark_read_side_padding);
             make_comet_scalar_udf!("read_side_padding", func, without data_type)
+        }
+        "dayname" => {
+            let func = Arc::new(spark_day_name);
+            make_comet_scalar_udf!("dayname", func, without data_type)
+        }
+        "monthname" => {
+            let func = Arc::new(spark_month_name);
+            make_comet_scalar_udf!("monthname", func, without data_type)
         }
         "rpad" => {
             let func = Arc::new(spark_rpad);
