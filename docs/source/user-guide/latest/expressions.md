@@ -25,8 +25,6 @@ dispatching to a Spark-compatible codegen path. When an expression is not suppor
 transparently falls back to Spark for that part of the plan; results are unaffected.
 
 Expressions marked ✅ Supported are enabled by default and produce Spark-compatible results.
-Expressions marked ⚠️ Incorrect by default run natively by default but can return results that
-differ from Spark on some inputs; see the linked detail on each affected row.
 
 Some ✅ Supported expressions have specific incompatible cases that fall back to Spark by
 default. Those cases must be opted into per expression with
@@ -42,7 +40,6 @@ Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enab
 | Status | Meaning |
 | --- | --- |
 | ✅ Supported | Comet produces Spark-compatible results by default. Some inputs or forms may fall back to Spark, and any incompatible behavior is opt-in (off by default). |
-| ⚠️ Incorrect by default | Comet runs natively by default but can return results that differ from Spark (a wrong value, or a native error on valid input). See the linked detail on each row. |
 | 🔜 Planned | Intended; tracked by an open issue or pull request. |
 | 💤 Not currently planned | Not on the current roadmap; falls back to Spark and may be reconsidered later. |
 
@@ -777,5 +774,5 @@ This list is illustrative, not exhaustive: the per-function tables are not the c
 
 ## See also
 
-- [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for ⚠️ expressions.
+- [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for expressions with opt-in incompatible behavior.
 - [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for audited expressions.

@@ -42,7 +42,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 echo "Compiling and generating documentation content..."
-./mvnw package -Pgenerate-docs -DskipTests -Dmaven.test.skip=true
+# Use the newest Spark profile so the expression reference enumerates the full FunctionRegistry.
+./mvnw package -Pgenerate-docs -Pspark-4.1 -DskipTests -Dmaven.test.skip=true
 
 echo ""
 echo "Done! Generated documentation content in docs/source/user-guide/latest/"
