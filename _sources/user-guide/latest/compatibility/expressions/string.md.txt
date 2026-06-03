@@ -23,6 +23,10 @@ under the License.
 
 ## Concat
 
+The following incompatibilities cause `Concat` to fall back to Spark by default. Set `spark.comet.expression.Concat.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- concat does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)
+
 The following cases are not supported by Comet:
 
 - CONCAT supports only string input parameters
@@ -67,6 +71,7 @@ The following cases are not supported by Comet:
 The following incompatibilities cause `Reverse` to fall back to Spark by default. Set `spark.comet.expression.Reverse.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - reverse on array containing binary is not supported
+- reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)
 
 ## Right
 

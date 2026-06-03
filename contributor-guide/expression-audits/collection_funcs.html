@@ -552,7 +552,7 @@ under the License.
 <section id="array-size">
 <h2>array_size<a class="headerlink" href="#array-size" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Native via <code class="docutils literal notranslate"><span class="pre">size</span></code>; returns -1 instead of NULL for NULL input (https://github.com/apache/datafusion-comet/issues/4560).</p></li>
+<li><p>Native via <code class="docutils literal notranslate"><span class="pre">size</span></code>. <code class="docutils literal notranslate"><span class="pre">array_size</span></code> lowers to <code class="docutils literal notranslate"><span class="pre">Size(child,</span> <span class="pre">legacySizeOfNull</span> <span class="pre">=</span> <span class="pre">false)</span></code>, so it returns NULL for NULL input. <code class="docutils literal notranslate"><span class="pre">CometSize</span></code> reads the per-expression <code class="docutils literal notranslate"><span class="pre">legacySizeOfNull</span></code> flag.</p></li>
 </ul>
 </section>
 <section id="concat">
