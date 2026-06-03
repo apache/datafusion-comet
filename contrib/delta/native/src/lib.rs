@@ -23,8 +23,10 @@
 //! Surfaces:
 //!   - JNI: `Java_org_apache_comet_contrib_delta_Native_planDeltaScan` (driver-side
 //!     log replay via delta-kernel-rs; returns a `DeltaScanTaskList` proto)
-//!   - [`DeltaDvFilterExec`]: deletion-vector filter exec wrapper, constructed by
-//!     core's planner dispatcher when any task in the scan carries a DV
+//!   - [`synthetic_columns::DeltaSyntheticColumnsExec`]: the unified DV-sweep exec,
+//!     constructed by core's planner dispatcher. It appends Delta's synthetic columns
+//!     and/or drops DV-deleted rows in a single running-offset sweep (the latter mode
+//!     replaces the former standalone deletion-vector filter exec)
 //!   - [`plan_delta_scan`]: helpers core's planner dispatcher invokes to assemble
 //!     a Delta scan's `DataSourceExec` (kernel-rs is JVM-side, so the per-scan
 //!     planning the JVM doesn't pre-resolve happens here)
@@ -33,7 +35,6 @@
 //! crate exposes plain Rust functions that core calls directly under
 //! `#[cfg(feature = "contrib-delta")]`.
 
-pub mod dv_filter;
 pub mod dv_reader;
 pub mod engine;
 pub mod error;
@@ -55,7 +56,6 @@ pub mod proto {
     };
 }
 
-pub use dv_filter::DeltaDvFilterExec;
 pub use engine::{create_engine, DeltaStorageConfig};
 pub use missing_file_tolerant::IgnoreMissingFileSource;
 pub use error::{DeltaError, DeltaResult};

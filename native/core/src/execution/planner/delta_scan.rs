@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use comet_contrib_delta::planner::{build_delta_partitioned_files, ColumnMappingFilterRewriter};
-use comet_contrib_delta::{DeltaDvFilterExec, IgnoreMissingFileSource};
+use comet_contrib_delta::IgnoreMissingFileSource;
 use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{TransformedResult, TreeNode};
 use datafusion::datasource::listing::PartitionedFile;
@@ -176,7 +176,7 @@ pub(crate) fn plan_delta_scan(
     .map_err(GeneralError)?;
 
     // Split files by DV presence -- each DV'd file becomes its own FileGroup so the
-    // DeltaDvFilterExec's per-partition mapping is 1:1 with one physical parquet
+    // DV-sweep exec's per-partition mapping is 1:1 with one physical parquet
     // file. All non-DV files go in a single combined group.
     //
     // EXCEPT when ANY synthetic column is emitted: the per-partition row offset
@@ -196,7 +196,7 @@ pub(crate) fn plan_delta_scan(
         || !common.metadata_column_names.is_empty();
     let mut file_groups: Vec<Vec<PartitionedFile>> = Vec::new();
     // Per-group DV descriptor (None = no DV). Lazily decoded on the executor
-    // by DeltaDvFilterExec / DeltaSyntheticColumnsExec via dv_reader::read_dv_indexes
+    // by DeltaSyntheticColumnsExec via dv_reader::read_dv_indexes
     // -- this is the per-file/per-group analog of Iceberg's delete_files_idx.
     let mut dv_descriptors_per_group: Vec<Option<comet_contrib_delta::proto::DeltaDvDescriptor>> =
         Vec::new();
@@ -317,14 +317,13 @@ pub(crate) fn plan_delta_scan(
         delta_exec
     };
 
-    // Three mutually-exclusive wrap modes based on what the surrounding plan asks
-    // for:
-    //  - Delta synthetic columns requested (row_index and/or is_row_deleted): wrap
-    //    with DeltaSyntheticColumnsExec which keeps all rows and APPENDS the
-    //    columns. The outer Delta plan (typically UPDATE/DELETE/MERGE) decides
-    //    what to do with the deletion flag.
-    //  - DV present and no synthetics: wrap with DeltaDvFilterExec which DROPS
-    //    deleted rows inline (standard read path).
+    // What to wrap the parquet scan with, based on what the surrounding plan asks for.
+    // One DeltaSyntheticColumnsExec (the unified DV-sweep exec) covers every case:
+    //  - synthetic columns requested (row_index / is_row_deleted / row_id / metadata):
+    //    it APPENDS the columns; the outer Delta plan (UPDATE/DELETE/MERGE) decides what
+    //    to do with the deletion flag.
+    //  - DV present whose deletions aren't surfaced upward: it DROPS deleted rows inline
+    //    (standard read path; the same exec with drop_deleted = true).
     //  - Neither: pass through (avoids per-batch overhead).
     let need_synthetics = common.emit_row_index
         || common.emit_is_row_deleted
@@ -377,15 +376,11 @@ pub(crate) fn plan_delta_scan(
         delta_exec
     };
 
-    // After CM-name rename: apply synthetic emission and/or DV filter.
-    //   - When synthetics are emitted: chain `synthetic` first (so row_index is
-    //     populated with original-file offsets) then DV filter (which uses its own
-    //     row counter to drop deleted rows; emitted columns ride along).
-    //   - When `emit_is_row_deleted` is on, the upstream (UPDATE/DELETE/MERGE
-    //     writer) consumes the flag itself; DON'T filter here -- the writer needs
-    //     to see every row to decide what to do.
-    //   - When only DV filtering is needed (no synthetic emission): use
-    //     `DeltaDvFilterExec` directly.
+    // After CM-name rename: build the unified DV-sweep exec (below). Synthetic columns
+    // are computed on physical row positions first, then -- when the DV's deletions are
+    // not being surfaced via is_row_deleted -- the deleted rows are dropped in the same
+    // sweep. When `emit_is_row_deleted` is on, the upstream UPDATE/DELETE/MERGE writer
+    // consumes the flag, so rows are NOT dropped here (it must see every row).
     let has_dv = dv_descriptors_per_group.iter().any(Option::is_some);
     // Resolve the table-root URL once (kernel needs trailing slash for DV path joins).
     // scan.table_root is the authoritative driver-supplied value; fall back to deriving
@@ -407,65 +402,58 @@ pub(crate) fn plan_delta_scan(
     } else {
         None
     };
-    let after_synthetics: Arc<dyn datafusion::physical_plan::ExecutionPlan> = if need_synthetics {
-        let row_index_alias = if common.row_index_column_alias.is_empty() {
-            comet_contrib_delta::synthetic_columns::ROW_INDEX_COLUMN_NAME
-        } else {
-            common.row_index_column_alias.as_str()
-        };
-        // SyntheticColumnsExec only consults the DV when emit_is_row_deleted is on;
-        // otherwise pass `None`s so it never decodes (matches the pre-refactor behaviour
-        // where callers shipped `vec![Vec::new(); n]` for the synthetic-only path).
-        let synthetic_dvs: Vec<Option<comet_contrib_delta::proto::DeltaDvDescriptor>> =
-            if common.emit_is_row_deleted {
-                dv_descriptors_per_group.clone()
+    let after_synthetics: Arc<dyn datafusion::physical_plan::ExecutionPlan> =
+        if need_synthetics || has_dv {
+            // Unified DV-sweep exec (absorbs the former DeltaDvFilterExec). It appends any
+            // requested synthetic columns AND, when there's a DV whose deletions are not
+            // being surfaced upward (`!emit_is_row_deleted`), drops the deleted rows in the
+            // same running-offset sweep. The three former wirings collapse here:
+            //   - synthetics + DV + !is_row_deleted -> emit flags + drop (was synthetic
+            //     emission with a DeltaDvFilterExec stacked on top)
+            //   - synthetics + (is_row_deleted or no DV) -> emit flags, no drop
+            //   - no synthetics + DV -> no emit flags + drop (was DeltaDvFilterExec alone)
+            // Synthetic columns are computed on physical positions before the drop, so a
+            // surviving row keeps the same row_index / row_id it had when the two execs
+            // were stacked.
+            let drop_deleted = has_dv && !common.emit_is_row_deleted;
+            let row_index_alias = if common.row_index_column_alias.is_empty() {
+                comet_contrib_delta::synthetic_columns::ROW_INDEX_COLUMN_NAME
             } else {
-                vec![None; dv_descriptors_per_group.len()]
+                common.row_index_column_alias.as_str()
             };
-        // table_root for synthetics: only meaningful when emit_is_row_deleted; use the
-        // resolved one if we computed it, else a placeholder (never consulted).
-        let synth_root = table_root_for_dv
-            .clone()
-            .unwrap_or_else(|| url::Url::parse("file:///").expect("static URL"));
-        let synth: Arc<dyn datafusion::physical_plan::ExecutionPlan> = Arc::new(
-            comet_contrib_delta::synthetic_columns::DeltaSyntheticColumnsExec::new(
-                after_rename,
-                synthetic_dvs,
-                synth_root,
-                base_row_ids_per_group,
-                default_commit_versions_per_group,
-                common.emit_row_index,
-                common.emit_is_row_deleted,
-                common.emit_row_id,
-                common.emit_row_commit_version,
-                row_index_alias,
-                common.metadata_column_names.clone(),
-                task_metadata_per_group,
-            )
-            .map_err(|e| GeneralError(format!("DeltaSyntheticColumnsExec: {e}")))?,
-        );
-        // Apply DV filter on top of synthetic emission, EXCEPT when the upstream
-        // is consuming is_row_deleted -- then it needs every row.
-        if has_dv && !common.emit_is_row_deleted {
-            let root = table_root_for_dv
-                .clone()
-                .expect("table_root_for_dv set when has_dv");
+            // The exec needs the real DV descriptors whenever it flags
+            // (`emit_is_row_deleted`) or drops; otherwise pass `None`s so it never decodes.
+            let dvs_for_exec: Vec<Option<comet_contrib_delta::proto::DeltaDvDescriptor>> =
+                if common.emit_is_row_deleted || drop_deleted {
+                    dv_descriptors_per_group.clone()
+                } else {
+                    vec![None; dv_descriptors_per_group.len()]
+                };
+            // table_root is only consulted when the exec actually decodes a DV; use the
+            // resolved one if we computed it, else a never-consulted placeholder.
+            let synth_root = table_root_for_dv
+                .unwrap_or_else(|| url::Url::parse("file:///").expect("static URL"));
             Arc::new(
-                DeltaDvFilterExec::new(synth, dv_descriptors_per_group, root)
-                    .map_err(|e| GeneralError(format!("DeltaDvFilterExec: {e}")))?,
+                comet_contrib_delta::synthetic_columns::DeltaSyntheticColumnsExec::new(
+                    after_rename,
+                    dvs_for_exec,
+                    synth_root,
+                    base_row_ids_per_group,
+                    default_commit_versions_per_group,
+                    common.emit_row_index,
+                    common.emit_is_row_deleted,
+                    common.emit_row_id,
+                    common.emit_row_commit_version,
+                    drop_deleted,
+                    row_index_alias,
+                    common.metadata_column_names.clone(),
+                    task_metadata_per_group,
+                )
+                .map_err(|e| GeneralError(format!("DeltaSyntheticColumnsExec: {e}")))?,
             )
         } else {
-            synth
-        }
-    } else if has_dv {
-        let root = table_root_for_dv.expect("table_root_for_dv set when has_dv");
-        Arc::new(
-            DeltaDvFilterExec::new(after_rename, dv_descriptors_per_group, root)
-                .map_err(|e| GeneralError(format!("DeltaDvFilterExec: {e}")))?,
-        )
-    } else {
-        after_rename
-    };
+            after_rename
+        };
 
     // If synthetic columns aren't a suffix of the user-visible required_schema,
     // `final_output_indices` is set and we project to reorder. Each entry is an

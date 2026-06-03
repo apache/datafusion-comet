@@ -169,7 +169,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
                     })
                     .collect(),
                 // Deletion-vector descriptor (path/offset/size) -- the executor's
-                // `DeltaDvFilterExec` calls `kernel::DeletionVectorDescriptor::read`
+                // `DeltaSyntheticColumnsExec` calls `kernel::DeletionVectorDescriptor::read`
                 // to decode the bitmap on-task. The driver-side `plan_delta_scan`
                 // no longer materialises the indexes (task #218 / Iceberg-style
                 // refactor: per-scan-exec heap stays KB-scale regardless of DV size).

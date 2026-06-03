@@ -128,11 +128,9 @@ fn proto_to_kernel_descriptor(p: &DeltaDvDescriptor) -> DeltaResult<DeletionVect
 /// test fails because `findIfResponsible[FileNotFoundException]` walks the cause chain and
 /// doesn't find a `FileNotFoundException`.
 ///
-/// Called from BOTH `DeltaDvFilterExec::execute` AND
-/// `DeltaSyntheticColumnsExec::execute` (when `emit_is_row_deleted`) -- keep them in lock-step
-/// or the failure mode visible to the test will depend on whether synthetic columns are
-/// requested. (The "resource leak" test is a `SELECT *` which routes through
-/// synthetic-columns when the table emits `is_row_deleted`.)
+/// Called from `DeltaSyntheticColumnsExec::execute` whenever that exec flags
+/// (`emit_is_row_deleted`) or drops (`drop_deleted`) DV rows -- the single DV decode site
+/// since that exec absorbed the former `DeltaDvFilterExec`.
 pub fn map_dv_error_to_datafusion(err: DeltaError, desc: &DeltaDvDescriptor) -> DataFusionError {
     let msg = err.to_string();
     // Substring match over the lowercased Display of the error. `read_dv_indexes`

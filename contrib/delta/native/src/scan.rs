@@ -289,7 +289,7 @@ pub fn plan_delta_scan_with_predicate(
     let raw = acc.entries;
 
     // No more driver-side DV materialisation -- just forward the descriptor. The
-    // executor (`dv_reader::read_dv_indexes` invoked from `DeltaDvFilterExec`)
+    // executor (`dv_reader::read_dv_indexes` invoked from `DeltaSyntheticColumnsExec`)
     // reads + decodes the RoaringBitmap on-task. Pre-refactor this loop called
     // `DvInfo::get_row_indexes` and produced a `Vec<u64>` per file, which on the
     // 99 M-row "huge table delete" DV reached ~800 MB per scan exec (task #218).

@@ -25,14 +25,19 @@
 //!
 //! Delta's reader synthesizes these from parquet row positions + the DV bitmap. Comet's
 //! native parquet path (DataFusion 53) doesn't expose virtual row-index columns; this
-//! module provides equivalent synthesis as small `ExecutionPlan` wrappers that sit
+//! module provides equivalent synthesis as a small `ExecutionPlan` wrapper that sits
 //! between the inner parquet scan and the rest of the plan.
 //!
-//! Same physical-order invariant as `DeltaDvFilterExec` — these execs rely on one file
-//! per partition and the parquet scan emitting rows in file row order. Both
-//! `maintains_input_order() = [true]` and `benefits_from_input_partitioning() = [false]`
-//! are overridden to pin the contract so future optimizer rewrites are forced to bail
-//! rather than silently re-order rows out from under the row-index emit.
+//! The same exec also optionally DROPS DV-deleted rows (`drop_deleted`), which is the
+//! standard read path. A single deletion-vector running-offset sweep drives both the
+//! `is_row_deleted` flag and the drop keep-mask, so the formerly-separate
+//! `DeltaDvFilterExec` is absorbed here rather than stacked on top.
+//!
+//! Physical-order invariant: this exec relies on one file per partition and the parquet
+//! scan emitting rows in file row order (the running-offset sweep assumes physical order).
+//! Both `maintains_input_order() = [true]` and `benefits_from_input_partitioning() =
+//! [false]` are overridden to pin the contract so future optimizer rewrites are forced to
+//! bail rather than silently re-order rows out from under the row-index emit / DV drop.
 
 use std::any::Any;
 use std::fmt;
@@ -41,15 +46,16 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arrow::array::{
-    Int64Array, Int8Array, RecordBatch, StringArray, TimestampMicrosecondArray,
+    BooleanArray, Int64Array, Int8Array, RecordBatch, StringArray, TimestampMicrosecondArray,
 };
+use arrow::compute::filter_record_batch;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
-    BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet,
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::{Stream, StreamExt};
@@ -199,18 +205,20 @@ pub fn build_output_schema(
 /// membership in this list. When `emit_row_index` is true, each row's row_index column
 /// is set to its physical position within the file (running offset across batches).
 ///
-/// Unlike `DeltaDvFilterExec`, this exec does NOT filter rows — it surfaces the
-/// information for an outer operator (e.g. Delta's MERGE/UPDATE writer) to decide what
-/// to do.
+/// When `drop_deleted` is set, the exec also physically drops DV-deleted rows in the
+/// same sweep (the standard read path, absorbing the former `DeltaDvFilterExec`).
+/// Otherwise it only surfaces the synthetic columns (e.g. `__delta_internal_is_row_deleted`)
+/// and leaves every row in place for an outer operator — Delta's MERGE/UPDATE writer — to
+/// act on.
 #[derive(Debug)]
 pub struct DeltaSyntheticColumnsExec {
     input: Arc<dyn ExecutionPlan>,
     /// One entry per output partition. Length must match the input's partition count.
-    /// `None` means no DV for that partition. When `emit_is_row_deleted` is true,
-    /// each `Some` descriptor is decoded on the executor (one kernel read against
-    /// `<table_root>/_delta_log/deletion_vectors/...`) on first `execute()` --
-    /// matching `DeltaDvFilterExec`'s lazy-decode model so the driver no longer
-    /// retains the full `Vec<u64>` (was the 1 GB `long[]` dominator before #218).
+    /// `None` means no DV for that partition. When `emit_is_row_deleted` or
+    /// `drop_deleted` is true, each `Some` descriptor is decoded lazily on the executor
+    /// (one kernel read against `<table_root>/_delta_log/deletion_vectors/...`) on first
+    /// `execute()`, so the driver no longer retains the full `Vec<u64>` (was the 1 GB
+    /// `long[]` dominator before #218).
     dv_descriptors_by_partition: Vec<Option<DeltaDvDescriptor>>,
     /// Trailing-slash-normalised table-root URL for DV decode (only consulted
     /// when `emit_is_row_deleted` is true and some partition has `Some` DV).
@@ -226,6 +234,14 @@ pub struct DeltaSyntheticColumnsExec {
     emit_is_row_deleted: bool,
     emit_row_id: bool,
     emit_row_commit_version: bool,
+    /// When true, physically DROP rows whose row index is in the DV (after appending
+    /// any synthetic columns), instead of only surfacing them. This absorbs the former
+    /// `DeltaDvFilterExec`: the standard read path constructs this exec with no emit
+    /// flags and `drop_deleted = true`, and the synthetic-emit-without-is_row_deleted
+    /// path (which used to stack a `DeltaDvFilterExec` on top) sets it alongside the
+    /// emit flags. The same DV running-offset sweep drives both the `is_row_deleted`
+    /// flag and the drop keep-mask, so the two are never computed twice.
+    drop_deleted: bool,
     /// Column name to emit for the row_index synthetic. Stored so with_new_children
     /// can reconstruct correctly. Defaults to ROW_INDEX_COLUMN_NAME but DV-aware
     /// Delta plans may use `_tmp_metadata_row_index` instead.
@@ -255,6 +271,7 @@ impl DeltaSyntheticColumnsExec {
         emit_is_row_deleted: bool,
         emit_row_id: bool,
         emit_row_commit_version: bool,
+        drop_deleted: bool,
         row_index_column_name: &str,
         metadata_column_names: Vec<String>,
         task_metadata_by_partition: Vec<TaskMetadata>,
@@ -264,9 +281,10 @@ impl DeltaSyntheticColumnsExec {
             && !emit_row_id
             && !emit_row_commit_version
             && metadata_column_names.is_empty()
+            && !drop_deleted
         {
             return Err(DataFusionError::Internal(
-                "DeltaSyntheticColumnsExec constructed with nothing to emit".to_string(),
+                "DeltaSyntheticColumnsExec constructed with nothing to emit and no drop".to_string(),
             ));
         }
         let input_props = input.properties();
@@ -311,6 +329,7 @@ impl DeltaSyntheticColumnsExec {
             emit_is_row_deleted,
             emit_row_id,
             emit_row_commit_version,
+            drop_deleted,
             row_index_column_name: row_index_column_name.to_string(),
             metadata_column_names,
             task_metadata_by_partition,
@@ -325,11 +344,12 @@ impl DisplayAs for DeltaSyntheticColumnsExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "DeltaSyntheticColumnsExec: row_index={}, is_row_deleted={}, row_id={}, row_commit_version={}",
+            "DeltaSyntheticColumnsExec: row_index={}, is_row_deleted={}, row_id={}, row_commit_version={}, drop_deleted={}",
             self.emit_row_index,
             self.emit_is_row_deleted,
             self.emit_row_id,
-            self.emit_row_commit_version
+            self.emit_row_commit_version,
+            self.drop_deleted
         )
     }
 }
@@ -351,7 +371,8 @@ impl ExecutionPlan for DeltaSyntheticColumnsExec {
         vec![&self.input]
     }
 
-    // Same physical-order invariant as DeltaDvFilterExec.
+    // Pins the physical-order contract (see module docs): the running-offset sweep
+    // assumes the child emits rows in file order.
     fn maintains_input_order(&self) -> Vec<bool> {
         vec![true]
     }
@@ -380,6 +401,7 @@ impl ExecutionPlan for DeltaSyntheticColumnsExec {
             self.emit_is_row_deleted,
             self.emit_row_id,
             self.emit_row_commit_version,
+            self.drop_deleted,
             &self.row_index_column_name,
             self.metadata_column_names.clone(),
             self.task_metadata_by_partition.clone(),
@@ -397,7 +419,9 @@ impl ExecutionPlan for DeltaSyntheticColumnsExec {
         // metadata-only paths the DV isn't read at all, so the descriptor is
         // ignored (matching the pre-#218 behaviour where the upstream passed
         // `vec![Vec::new(); n]` for the synthetic-only case).
-        let deleted = if self.emit_is_row_deleted {
+        // Decode the DV whenever the sweep result is needed: either to flag rows
+        // (`emit_is_row_deleted`) or to physically drop them (`drop_deleted`).
+        let deleted = if self.emit_is_row_deleted || self.drop_deleted {
             match self.dv_descriptors_by_partition.get(partition) {
                 Some(Some(desc)) => read_dv_indexes(desc, &self.table_root_url)
                     .map_err(|e| map_dv_error_to_datafusion(e, desc))?,
@@ -418,6 +442,8 @@ impl ExecutionPlan for DeltaSyntheticColumnsExec {
             .cloned()
             .unwrap_or_default();
         let baseline = BaselineMetrics::new(&self.metrics, partition);
+        let rows_dropped_metric =
+            MetricBuilder::new(&self.metrics).counter("dv_rows_dropped", partition);
         Ok(Box::pin(DeltaSyntheticColumnsStream {
             inner: child_stream,
             deleted,
@@ -428,11 +454,13 @@ impl ExecutionPlan for DeltaSyntheticColumnsExec {
             emit_is_row_deleted: self.emit_is_row_deleted,
             emit_row_id: self.emit_row_id,
             emit_row_commit_version: self.emit_row_commit_version,
+            drop_deleted: self.drop_deleted,
             base_row_id,
             default_row_commit_version,
             metadata_column_names: self.metadata_column_names.clone(),
             task_metadata: task_meta,
             baseline_metrics: baseline,
+            rows_dropped_metric,
         }))
     }
 
@@ -451,11 +479,13 @@ struct DeltaSyntheticColumnsStream {
     emit_is_row_deleted: bool,
     emit_row_id: bool,
     emit_row_commit_version: bool,
+    drop_deleted: bool,
     base_row_id: Option<i64>,
     default_row_commit_version: Option<i64>,
     metadata_column_names: Vec<String>,
     task_metadata: TaskMetadata,
     baseline_metrics: BaselineMetrics,
+    rows_dropped_metric: Count,
 }
 
 impl DeltaSyntheticColumnsStream {
@@ -474,32 +504,42 @@ impl DeltaSyntheticColumnsStream {
             None
         };
 
-        // Build the is_row_deleted column: walk the deleted indexes alongside the batch
-        // row range, advancing `next_delete_idx` as we go. Both arrays share the same
-        // O(rows + deletes) sweep; allocation is one Int8Array (Delta schema = Byte)
-        // of length batch_rows.
-        let is_deleted_array: Option<Int8Array> = if self.emit_is_row_deleted {
-            let mut values = vec![0i8; batch_rows as usize];
-            // Skip deleted entries that fall before this batch.
+        // Single DV running-offset sweep, shared by the `is_row_deleted` flag (Int8,
+        // Delta's ByteType) and the drop keep-mask. It runs whenever either is needed
+        // and advances `next_delete_idx` past every consumed index, so across batches
+        // the sweep is O(rows + deletes) total rather than re-walking. This is the
+        // sweep formerly duplicated in DeltaDvFilterExec.
+        let mut is_deleted_values: Option<Vec<i8>> =
+            self.emit_is_row_deleted.then(|| vec![0i8; batch_rows as usize]);
+        let mut keep_mask: Option<Vec<bool>> =
+            self.drop_deleted.then(|| vec![true; batch_rows as usize]);
+        let mut dropped: usize = 0;
+        if self.emit_is_row_deleted || self.drop_deleted {
+            // Skip deleted entries that fall before this batch (defensive; for correct
+            // sequential input `next_delete_idx` already points past them).
             while self.next_delete_idx < self.deleted.len()
                 && self.deleted[self.next_delete_idx] < batch_start
             {
                 self.next_delete_idx += 1;
             }
-            // Mark every deleted index within [batch_start, batch_end). Advance
-            // `self.next_delete_idx` past them so the next batch's skip-before-start
-            // loop is O(1) instead of re-walking the entire prior batch.
+            // Flag and/or drop every deleted index within [batch_start, batch_end).
             let mut idx = self.next_delete_idx;
             while idx < self.deleted.len() && self.deleted[idx] < batch_end {
                 let local = (self.deleted[idx] - batch_start) as usize;
-                values[local] = 1;
+                if let Some(values) = is_deleted_values.as_mut() {
+                    values[local] = 1;
+                }
+                if let Some(mask) = keep_mask.as_mut() {
+                    if mask[local] {
+                        mask[local] = false;
+                        dropped += 1;
+                    }
+                }
                 idx += 1;
             }
             self.next_delete_idx = idx;
-            Some(Int8Array::from(values))
-        } else {
-            None
-        };
+        }
+        let is_deleted_array: Option<Int8Array> = is_deleted_values.map(Int8Array::from);
 
         // row_id: baseRowId + physical row index. Nullable because tables without row
         // tracking won't have baseRowId; in that case we emit a null-valued column so the
@@ -639,11 +679,25 @@ impl DeltaSyntheticColumnsStream {
             };
             columns.push(arr);
         }
-        RecordBatch::try_new(Arc::clone(&self.output_schema), columns).map_err(|e| {
-            DataFusionError::Internal(format!(
-                "DeltaSyntheticColumnsExec: failed to append synthetic columns: {e}"
-            ))
-        })
+        let augmented =
+            RecordBatch::try_new(Arc::clone(&self.output_schema), columns).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "DeltaSyntheticColumnsExec: failed to append synthetic columns: {e}"
+                ))
+            })?;
+
+        // Drop deleted rows (absorbs DeltaDvFilterExec). Synthetic columns above were
+        // computed on PHYSICAL positions before the drop, so surviving rows keep the
+        // same row_index / row_id they had when stacked under the old filter. Skip the
+        // filter allocation entirely when nothing was dropped in this batch.
+        match keep_mask {
+            Some(mask) if dropped > 0 => {
+                self.rows_dropped_metric.add(dropped);
+                filter_record_batch(&augmented, &BooleanArray::from(mask))
+                    .map_err(DataFusionError::from)
+            }
+            _ => Ok(augmented),
+        }
     }
 }
 
@@ -682,11 +736,13 @@ mod tests {
 
     /// Helper: build a `DeltaSyntheticColumnsStream` directly, without an exec, so we
     /// can drive `augment()` in isolation. Mirrors the real construction path.
-    fn make_stream(
+    #[allow(clippy::too_many_arguments)]
+    fn make_stream_full(
         emit_row_index: bool,
         emit_is_row_deleted: bool,
         emit_row_id: bool,
         emit_row_commit_version: bool,
+        drop_deleted: bool,
         deleted: Vec<u64>,
         base_row_id: Option<i64>,
         default_row_commit_version: Option<i64>,
@@ -702,6 +758,7 @@ mod tests {
         );
         let metrics = ExecutionPlanMetricsSet::new();
         let baseline = BaselineMetrics::new(&metrics, 0);
+        let rows_dropped_metric = MetricBuilder::new(&metrics).counter("dv_rows_dropped", 0);
         let (_tx, rx) = futures::channel::mpsc::unbounded::<DFResult<RecordBatch>>();
         let inner: SendableRecordBatchStream = Box::pin(EmptyStream {
             schema: input_schema(),
@@ -717,12 +774,36 @@ mod tests {
             emit_is_row_deleted,
             emit_row_id,
             emit_row_commit_version,
+            drop_deleted,
             base_row_id,
             default_row_commit_version,
             metadata_column_names: Vec::new(),
             task_metadata: TaskMetadata::default(),
             baseline_metrics: baseline,
+            rows_dropped_metric,
         }
+    }
+
+    /// Convenience wrapper for the common non-dropping (flag/emit-only) case.
+    fn make_stream(
+        emit_row_index: bool,
+        emit_is_row_deleted: bool,
+        emit_row_id: bool,
+        emit_row_commit_version: bool,
+        deleted: Vec<u64>,
+        base_row_id: Option<i64>,
+        default_row_commit_version: Option<i64>,
+    ) -> DeltaSyntheticColumnsStream {
+        make_stream_full(
+            emit_row_index,
+            emit_is_row_deleted,
+            emit_row_id,
+            emit_row_commit_version,
+            false,
+            deleted,
+            base_row_id,
+            default_row_commit_version,
+        )
     }
 
     struct EmptyStream {
@@ -1001,6 +1082,7 @@ mod tests {
             false,
             false,
             false,
+            false, // drop_deleted
             ROW_INDEX_COLUMN_NAME,
             Vec::new(),
             vec![TaskMetadata::default(), TaskMetadata::default()],
@@ -1011,5 +1093,122 @@ mod tests {
             msg.contains("don't match input partitions") || msg.contains("partitions"),
             "unexpected error: {msg}"
         );
+    }
+
+    // ---- drop_deleted: rows physically dropped (absorbed DeltaDvFilterExec) ----
+    //
+    // These drive `augment()` with `drop_deleted = true` and no emit flags, the wiring
+    // that replaced the standalone DeltaDvFilterExec. The `v` column is column 0.
+
+    fn drop_stream(deleted: Vec<u64>) -> DeltaSyntheticColumnsStream {
+        make_stream_full(false, false, false, false, true, deleted, None, None)
+    }
+
+    fn col_v(b: &RecordBatch) -> Vec<i64> {
+        b.column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .iter()
+            .map(Option::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn drop_empty_batch_passes_through() {
+        let mut s = drop_stream(vec![1, 3]);
+        let out = s.augment(batch(&[])).unwrap();
+        assert_eq!(out.num_rows(), 0);
+        assert_eq!(s.current_row_offset, 0);
+        assert_eq!(s.next_delete_idx, 0);
+    }
+
+    #[test]
+    fn drop_no_deletes_is_passthrough() {
+        let mut s = drop_stream(vec![]);
+        let out = s.augment(batch(&[10, 20, 30, 40])).unwrap();
+        assert_eq!(col_v(&out), vec![10, 20, 30, 40]);
+        assert_eq!(s.current_row_offset, 4);
+    }
+
+    #[test]
+    fn drop_deletes_in_batch() {
+        // Delete indexes 1 and 3 from a 5-row batch -> keep rows 0, 2, 4.
+        let mut s = drop_stream(vec![1, 3]);
+        let out = s.augment(batch(&[10, 20, 30, 40, 50])).unwrap();
+        assert_eq!(col_v(&out), vec![10, 30, 50]);
+        assert_eq!(s.current_row_offset, 5);
+        assert_eq!(s.next_delete_idx, 2);
+    }
+
+    #[test]
+    fn drop_delete_at_batch_boundaries() {
+        let mut s = drop_stream(vec![0, 4]);
+        let out = s.augment(batch(&[10, 20, 30, 40, 50])).unwrap();
+        assert_eq!(col_v(&out), vec![20, 30, 40]);
+    }
+
+    #[test]
+    fn drop_multi_batch_with_deletes_spanning_boundary() {
+        let mut s = drop_stream(vec![1, 5, 7]);
+        let out1 = s.augment(batch(&[10, 20, 30, 40])).unwrap();
+        assert_eq!(col_v(&out1), vec![10, 30, 40]);
+        assert_eq!(s.current_row_offset, 4);
+        assert_eq!(s.next_delete_idx, 1);
+        let out2 = s.augment(batch(&[50, 60, 70, 80])).unwrap();
+        assert_eq!(col_v(&out2), vec![50, 70]);
+        assert_eq!(s.current_row_offset, 8);
+        assert_eq!(s.next_delete_idx, 3);
+    }
+
+    #[test]
+    fn drop_deletes_beyond_batch_pass_through() {
+        let mut s = drop_stream(vec![100, 200]);
+        let out = s.augment(batch(&[10, 20, 30, 40])).unwrap();
+        assert_eq!(col_v(&out), vec![10, 20, 30, 40]);
+        assert_eq!(s.current_row_offset, 4);
+        assert_eq!(s.next_delete_idx, 0);
+    }
+
+    #[test]
+    fn drop_all_rows_deleted() {
+        let mut s = drop_stream(vec![0, 1, 2]);
+        let out = s.augment(batch(&[10, 20, 30])).unwrap();
+        assert_eq!(out.num_rows(), 0);
+        assert_eq!(s.current_row_offset, 3);
+        assert_eq!(s.next_delete_idx, 3);
+    }
+
+    #[test]
+    fn drop_with_row_index_keeps_physical_positions() {
+        // The former synthetic->DeltaDvFilterExec stack: emit row_index AND drop. Synthetic
+        // columns are computed on physical positions BEFORE the drop, so surviving rows keep
+        // their original row_index (with gaps where deleted rows were).
+        let mut s = make_stream_full(true, false, false, false, true, vec![1, 3], None, None);
+        let out = s.augment(batch(&[10, 20, 30, 40, 50])).unwrap();
+        assert_eq!(out.num_rows(), 3);
+        assert_eq!(col_v(&out), vec![10, 30, 50]);
+        let idx: Vec<i64> = out
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .iter()
+            .map(Option::unwrap)
+            .collect();
+        assert_eq!(idx, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn drop_tolerates_stale_predating_index() {
+        // Deliberate behavior change from the old DeltaDvFilterExec (which errored on a
+        // delete index predating batch_start). The unified sweep's skip-before-start loop
+        // advances past stale entries instead. For correct sequential input this never
+        // fires; it can only ever drop a delete, never produce a wrong row.
+        let mut s = drop_stream(vec![3]);
+        s.current_row_offset = 5; // pretend rows 0..5 already consumed; entry 3 is stale
+        let out = s.augment(batch(&[100, 200])).unwrap();
+        assert_eq!(col_v(&out), vec![100, 200]);
+        assert_eq!(s.next_delete_idx, 1);
     }
 }
