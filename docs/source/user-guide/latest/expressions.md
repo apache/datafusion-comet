@@ -219,81 +219,81 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 ## datetime_funcs
 
-| Function              | Status | Notes                                                                                                                      |
-| --------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `add_months`          | ✅     |                                                                                                                            |
-| `convert_timezone`    | ✅     |                                                                                                                            |
-| `curdate`             | ✅     | Constant-folded to a literal (alias of `current_date`)                                                                     |
-| `current_date`        | ✅     | Constant-folded to a literal before Comet sees the plan                                                                    |
-| `current_time`        | 🔜     | Blocked on Spark 4.1 TIME type support (#4288)                                                                             |
-| `current_timestamp`   | ✅     | Constant-folded to a literal before Comet sees the plan                                                                    |
-| `current_timezone`    | ✅     |                                                                                                                            |
-| `date_add`            | ✅     |                                                                                                                            |
-| `date_diff`           | ✅     |                                                                                                                            |
-| `date_format`         | ✅     |                                                                                                                            |
-| `date_from_unix_date` | ✅     |                                                                                                                            |
-| `date_part`           | ✅     |                                                                                                                            |
-| `date_sub`            | ✅     |                                                                                                                            |
-| `date_trunc`          | ✅     |                                                                                                                            |
-| `dateadd`             | ✅     |                                                                                                                            |
-| `datediff`            | ✅     |                                                                                                                            |
-| `datepart`            | ✅     |                                                                                                                            |
-| `day`                 | ✅     |                                                                                                                            |
-| `dayname`             | 🔜     | #4544                                                                                                                      |
-| `dayofmonth`          | ✅     |                                                                                                                            |
-| `dayofweek`           | ✅     |                                                                                                                            |
-| `dayofyear`           | ✅     |                                                                                                                            |
-| `extract`             | ✅     |                                                                                                                            |
-| `from_unixtime`       | ✅     |                                                                                                                            |
-| `from_utc_timestamp`  | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md))                              |
-| `hour`                | ✅     |                                                                                                                            |
-| `last_day`            | ✅     |                                                                                                                            |
-| `localtimestamp`      | ✅     |                                                                                                                            |
-| `make_date`           | ✅     |                                                                                                                            |
-| `make_dt_interval`    | 🔜     | #4541                                                                                                                      |
-| `make_interval`       | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                                         |
-| `make_time`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
-| `make_timestamp`      | ✅     |                                                                                                                            |
-| `make_timestamp_ltz`  | ✅     | 2-arg TIME form falls back                                                                                                 |
-| `make_timestamp_ntz`  | ✅     | 2-arg TIME form falls back                                                                                                 |
-| `make_ym_interval`    | 🔜     | #4541                                                                                                                      |
-| `minute`              | ✅     |                                                                                                                            |
-| `month`               | ✅     |                                                                                                                            |
-| `monthname`           | 🔜     | #4544                                                                                                                      |
-| `months_between`      | ✅     |                                                                                                                            |
-| `next_day`            | ✅     |                                                                                                                            |
-| `now`                 | ✅     | Constant-folded to a literal (alias of `current_timestamp`)                                                                |
-| `quarter`             | ✅     |                                                                                                                            |
-| `second`              | ✅     |                                                                                                                            |
-| `session_window`      | 🔜     | Time-window grouping; tracked by #4553                                                                                     |
-| `time_diff`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
-| `time_trunc`          | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
-| `timestamp_micros`    | ✅     |                                                                                                                            |
-| `timestamp_millis`    | ✅     |                                                                                                                            |
-| `timestamp_seconds`   | ✅     |                                                                                                                            |
-| `to_date`             | ✅     | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan                                      |
-| `to_time`             | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
-| `to_timestamp`        | ✅     | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan                                            |
-| `to_timestamp_ltz`    | ✅     | Rewrites to `to_timestamp` (`TimestampType`)                                                                               |
-| `to_timestamp_ntz`    | ✅     | Rewrites to `to_timestamp` (`TimestampNTZType`)                                                                            |
-| `to_unix_timestamp`   | ✅     |                                                                                                                            |
-| `to_utc_timestamp`    | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md))                              |
-| `trunc`               | ✅     |                                                                                                                            |
-| `try_make_interval`   | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                                                         |
-| `try_make_timestamp`  | ⚠️     | Returns a wrong value instead of NULL for invalid inputs ([#4554](https://github.com/apache/datafusion-comet/issues/4554)) |
-| `try_to_date`         | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                                               |
-| `try_to_time`         | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                                                      |
-| `try_to_timestamp`    | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                                               |
-| `unix_date`           | ✅     |                                                                                                                            |
-| `unix_micros`         | ✅     |                                                                                                                            |
-| `unix_millis`         | ✅     |                                                                                                                            |
-| `unix_seconds`        | ✅     |                                                                                                                            |
-| `unix_timestamp`      | ✅     |                                                                                                                            |
-| `weekday`             | ✅     |                                                                                                                            |
-| `weekofyear`          | ✅     |                                                                                                                            |
-| `window`              | 🔜     | Time-window grouping; tracked by #4553                                                                                     |
-| `window_time`         | 🔜     | Time-window grouping; tracked by #4553                                                                                     |
-| `year`                | ✅     |                                                                                                                            |
+| Function              | Status | Notes                                                                                         |
+| --------------------- | ------ | --------------------------------------------------------------------------------------------- |
+| `add_months`          | ✅     |                                                                                               |
+| `convert_timezone`    | ✅     |                                                                                               |
+| `curdate`             | ✅     | Constant-folded to a literal (alias of `current_date`)                                        |
+| `current_date`        | ✅     | Constant-folded to a literal before Comet sees the plan                                       |
+| `current_time`        | 🔜     | Blocked on Spark 4.1 TIME type support (#4288)                                                |
+| `current_timestamp`   | ✅     | Constant-folded to a literal before Comet sees the plan                                       |
+| `current_timezone`    | ✅     |                                                                                               |
+| `date_add`            | ✅     |                                                                                               |
+| `date_diff`           | ✅     |                                                                                               |
+| `date_format`         | ✅     |                                                                                               |
+| `date_from_unix_date` | ✅     |                                                                                               |
+| `date_part`           | ✅     |                                                                                               |
+| `date_sub`            | ✅     |                                                                                               |
+| `date_trunc`          | ✅     |                                                                                               |
+| `dateadd`             | ✅     |                                                                                               |
+| `datediff`            | ✅     |                                                                                               |
+| `datepart`            | ✅     |                                                                                               |
+| `day`                 | ✅     |                                                                                               |
+| `dayname`             | 🔜     | #4544                                                                                         |
+| `dayofmonth`          | ✅     |                                                                                               |
+| `dayofweek`           | ✅     |                                                                                               |
+| `dayofyear`           | ✅     |                                                                                               |
+| `extract`             | ✅     |                                                                                               |
+| `from_unixtime`       | ✅     |                                                                                               |
+| `from_utc_timestamp`  | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md)) |
+| `hour`                | ✅     |                                                                                               |
+| `last_day`            | ✅     |                                                                                               |
+| `localtimestamp`      | ✅     |                                                                                               |
+| `make_date`           | ✅     |                                                                                               |
+| `make_dt_interval`    | 🔜     | #4541                                                                                         |
+| `make_interval`       | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                            |
+| `make_time`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                         |
+| `make_timestamp`      | ✅     |                                                                                               |
+| `make_timestamp_ltz`  | ✅     | 2-arg TIME form falls back                                                                    |
+| `make_timestamp_ntz`  | ✅     | 2-arg TIME form falls back                                                                    |
+| `make_ym_interval`    | 🔜     | #4541                                                                                         |
+| `minute`              | ✅     |                                                                                               |
+| `month`               | ✅     |                                                                                               |
+| `monthname`           | 🔜     | #4544                                                                                         |
+| `months_between`      | ✅     |                                                                                               |
+| `next_day`            | ✅     |                                                                                               |
+| `now`                 | ✅     | Constant-folded to a literal (alias of `current_timestamp`)                                   |
+| `quarter`             | ✅     |                                                                                               |
+| `second`              | ✅     |                                                                                               |
+| `session_window`      | 🔜     | Time-window grouping; tracked by #4553                                                        |
+| `time_diff`           | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                         |
+| `time_trunc`          | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                         |
+| `timestamp_micros`    | ✅     |                                                                                               |
+| `timestamp_millis`    | ✅     |                                                                                               |
+| `timestamp_seconds`   | ✅     |                                                                                               |
+| `to_date`             | ✅     | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan         |
+| `to_time`             | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                         |
+| `to_timestamp`        | ✅     | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan               |
+| `to_timestamp_ltz`    | ✅     | Rewrites to `to_timestamp` (`TimestampType`)                                                  |
+| `to_timestamp_ntz`    | ✅     | Rewrites to `to_timestamp` (`TimestampNTZType`)                                               |
+| `to_unix_timestamp`   | ✅     |                                                                                               |
+| `to_utc_timestamp`    | ✅     | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md)) |
+| `trunc`               | ✅     |                                                                                               |
+| `try_make_interval`   | 🔜     | Produces legacy CalendarInterval; tracked by #4540                                            |
+| `try_make_timestamp`  | ✅     |                                                                                               |
+| `try_to_date`         | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                  |
+| `try_to_time`         | 🔜     | Spark 4.1 TIME type; tracked by #4288                                                         |
+| `try_to_timestamp`    | 🔜     | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by #4556                  |
+| `unix_date`           | ✅     |                                                                                               |
+| `unix_micros`         | ✅     |                                                                                               |
+| `unix_millis`         | ✅     |                                                                                               |
+| `unix_seconds`        | ✅     |                                                                                               |
+| `unix_timestamp`      | ✅     |                                                                                               |
+| `weekday`             | ✅     |                                                                                               |
+| `weekofyear`          | ✅     |                                                                                               |
+| `window`              | 🔜     | Time-window grouping; tracked by #4553                                                        |
+| `window_time`         | 🔜     | Time-window grouping; tracked by #4553                                                        |
+| `year`                | ✅     |                                                                                               |
 
 ---
 
