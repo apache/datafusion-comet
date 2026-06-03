@@ -15,15 +15,117 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 
 /// Per-thread drift is flushed into the shared balance once it crosses this.
-#[allow(dead_code)]
 const SETTLE_THRESHOLD: isize = 64 * 1024;
+
+/// Process-wide outstanding bytes (signed so transient under-settle is fine).
+static BALANCE: AtomicIsize = AtomicIsize::new(0);
+/// Enforcement limit in bytes; 0 means unset.
+static LIMIT: AtomicUsize = AtomicUsize::new(0);
+/// Master enforcement gate (single relaxed load on the hot path).
+static ARMED: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Un-flushed per-thread delta.
+    static LOCAL_DRIFT: Cell<isize> = const { Cell::new(0) };
+    /// Is this a query-worker thread eligible for enforcement?
+    static STAMPED: Cell<bool> = const { Cell::new(false) };
+    /// Set while a guard panic is unwinding this thread, to avoid double-faults.
+    static UNWINDING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Payload of the panic raised when an armed, stamped thread exceeds the limit.
+#[derive(Debug)]
+#[allow(dead_code)] // fields read by the allocator wrapper in Task 3
+pub struct OomGuardPanic {
+    pub balance: usize,
+    pub limit: usize,
+}
+
+/// Arm the guard with a byte limit. Idempotent.
+// allow(dead_code) removed in Task 3 when the allocator wrapper calls these
+#[allow(dead_code)]
+pub fn arm(limit_bytes: usize) {
+    LIMIT.store(limit_bytes, Ordering::Relaxed);
+    ARMED.store(true, Ordering::Relaxed);
+}
+
+/// Disarm the guard (enforcement off; tracking continues cheaply).
+// allow(dead_code) removed in Task 3 when the allocator wrapper calls these
+#[allow(dead_code)]
+pub fn disarm() {
+    ARMED.store(false, Ordering::Relaxed);
+}
+
+/// Mark the current thread as a query-worker thread eligible for enforcement.
+// allow(dead_code) removed in Task 3 when the allocator wrapper calls these
+#[allow(dead_code)]
+pub fn stamp_current_thread() {
+    STAMPED.with(|s| s.set(true));
+}
+
+/// Current process-wide balance in bytes (never reported negative).
+// allow(dead_code) removed in Task 3 when the allocator wrapper calls these
+#[allow(dead_code)]
+pub fn current_balance() -> usize {
+    BALANCE.load(Ordering::Relaxed).max(0) as usize
+}
+
+/// Record an allocation of `size` bytes; may trip the breaker.
+// removed in Task 3 when the allocator wrapper calls these
+#[allow(dead_code)]
+#[inline]
+fn record_alloc(size: usize) {
+    track(size as isize);
+}
+
+/// Record a deallocation of `size` bytes; never trips (credit only).
+// removed in Task 3 when the allocator wrapper calls these
+#[allow(dead_code)]
+#[inline]
+fn record_dealloc(size: usize) {
+    track(-(size as isize));
+}
+
+/// Core tracking + enforcement. Flushes drift; on a debit flush that crosses the
+/// limit on an armed, stamped, non-unwinding thread, panics with `OomGuardPanic`.
+#[inline]
+fn track(delta: isize) {
+    let new_balance = LOCAL_DRIFT.with(|d| {
+        let mut drift = d.get();
+        let flushed = settle(&mut drift, delta, &BALANCE);
+        d.set(drift);
+        flushed
+    });
+
+    if delta <= 0 {
+        return; // credits never enforce
+    }
+    let Some(balance) = new_balance else { return };
+    if !ARMED.load(Ordering::Relaxed) {
+        return;
+    }
+    if !STAMPED.with(|s| s.get()) {
+        return;
+    }
+    if UNWINDING.with(|u| u.get()) {
+        return;
+    }
+    let limit = LIMIT.load(Ordering::Relaxed);
+    if should_trip(balance, limit) {
+        UNWINDING.with(|u| u.set(true));
+        std::panic::panic_any(OomGuardPanic {
+            balance: balance.max(0) as usize,
+            limit,
+        });
+    }
+}
 
 /// Pure helper: given the current shared balance and a limit, decide whether an
 /// armed+stamped thread should trip the breaker. `limit == 0` means "unset".
-#[allow(dead_code)]
 fn should_trip(balance: isize, limit: usize) -> bool {
     limit != 0 && balance > limit.try_into().unwrap_or(isize::MAX)
 }
@@ -31,22 +133,40 @@ fn should_trip(balance: isize, limit: usize) -> bool {
 /// Pure helper: add `delta` to `local_drift`; if it reaches or exceeds `SETTLE_THRESHOLD`
 /// in magnitude, flush it into `shared` and return the new shared balance.
 /// Otherwise return `None` (nothing flushed).
-#[allow(dead_code)]
 fn settle(local_drift: &mut isize, delta: isize, shared: &AtomicIsize) -> Option<isize> {
-    *local_drift += delta;
+    *local_drift = local_drift.wrapping_add(delta);
     if local_drift.unsigned_abs() >= SETTLE_THRESHOLD as usize {
         let flushed = *local_drift;
         *local_drift = 0;
         let prev = shared.fetch_add(flushed, Ordering::Relaxed);
-        Some(prev + flushed)
+        Some(prev.wrapping_add(flushed))
     } else {
         None
     }
 }
 
 #[cfg(test)]
+fn reset_for_test() {
+    BALANCE.store(0, Ordering::Relaxed);
+    LIMIT.store(0, Ordering::Relaxed);
+    ARMED.store(false, Ordering::Relaxed);
+    LOCAL_DRIFT.with(|d| d.set(0));
+    STAMPED.with(|s| s.set(false));
+    UNWINDING.with(|u| u.set(false));
+}
+
+#[cfg(test)]
+fn clear_unwinding_for_test() {
+    UNWINDING.with(|u| u.set(false));
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serializes tests that mutate the process-global guard state.
+    static GUARD: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_should_trip() {
@@ -87,5 +207,47 @@ mod tests {
         let mut drift = 0isize;
         assert_eq!(settle(&mut drift, SETTLE_THRESHOLD, &shared), Some(SETTLE_THRESHOLD));
         assert_eq!(drift, 0);
+    }
+
+    #[test]
+    fn test_disarmed_never_trips() {
+        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_test();
+        stamp_current_thread();
+        // not armed -> record_alloc must never panic regardless of size
+        record_alloc(usize::MAX / 2);
+        record_alloc(usize::MAX / 2);
+    }
+
+    #[test]
+    fn test_unstamped_thread_never_trips() {
+        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_test();
+        // arm with a tiny limit relative to current balance, but DO NOT stamp
+        let limit = current_balance() + 1;
+        arm(limit);
+        record_alloc(SETTLE_THRESHOLD as usize * 4); // big enough to flush
+        disarm();
+    }
+
+    #[test]
+    fn test_stamped_over_budget_trips() {
+        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_test();
+        stamp_current_thread();
+        let limit = current_balance() + SETTLE_THRESHOLD as usize; // headroom
+        arm(limit);
+        let result = std::panic::catch_unwind(|| {
+            // exceed the headroom in one flush
+            record_alloc(SETTLE_THRESHOLD as usize * 4);
+        });
+        disarm();
+        clear_unwinding_for_test();
+        assert!(result.is_err(), "expected OomGuardPanic");
+        let panic = result.unwrap_err();
+        assert!(
+            panic.downcast_ref::<OomGuardPanic>().is_some(),
+            "panic payload should be OomGuardPanic"
+        );
     }
 }
