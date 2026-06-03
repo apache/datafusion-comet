@@ -865,24 +865,49 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 pull_input_batches(exec_context)?;
             }
 
-            if let Some(rx) = &mut exec_context.batch_receiver {
-                match rx.blocking_recv() {
-                    Some(Ok(batch)) => {
-                        update_metrics(env, exec_context)?;
-                        return prepare_output(
-                            env,
-                            array_addrs,
-                            schema_addrs,
-                            batch,
-                            exec_context.debug_native,
-                        );
-                    }
-                    Some(Err(e)) => {
-                        return Err(e.into());
-                    }
-                    None => {
-                        log_plan_metrics(exec_context, stage_id, partition);
-                        return Ok(-1);
+            if exec_context.batch_receiver.is_some() {
+                let recv_result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> CometResult<jlong> {
+                        // Scope the rx borrow to just the blocking_recv call so that
+                        // exec_context is free for update_metrics / prepare_output below.
+                        let recv = exec_context.batch_receiver.as_mut().unwrap().blocking_recv();
+                        match recv {
+                            Some(Ok(batch)) => {
+                                update_metrics(env, exec_context)?;
+                                prepare_output(
+                                    env,
+                                    array_addrs,
+                                    schema_addrs,
+                                    batch,
+                                    exec_context.debug_native,
+                                )
+                            }
+                            Some(Err(e)) => Err(e.into()),
+                            None => {
+                                log_plan_metrics(exec_context, stage_id, partition);
+                                Ok(-1)
+                            }
+                        }
+                    }));
+
+                match recv_result {
+                    Ok(r) => return r,
+                    Err(_panic) => {
+                        #[cfg(feature = "oom-guard")]
+                        {
+                            if let Some(g) = _panic.downcast_ref::<
+                                crate::execution::memory_pools::oom_guard::OomGuardPanic,
+                            >() {
+                                crate::execution::memory_pools::oom_guard::clear_unwinding();
+                                // Drop the receiver so any re-entry re-initializes.
+                                exec_context.batch_receiver = None;
+                                return Err(DataFusionError::ResourcesExhausted(
+                                    oom_guard_error_message(g),
+                                )
+                                .into());
+                            }
+                        }
+                        std::panic::resume_unwind(_panic);
                     }
                 }
             }
