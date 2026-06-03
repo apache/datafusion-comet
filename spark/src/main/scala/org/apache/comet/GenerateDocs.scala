@@ -145,9 +145,9 @@ object GenerateDocs {
 
   /**
    * Curated status for Spark built-ins that Comet does not serde-support. This list lives in
-   * GenerateDocs (not in the serde files) on purpose: it is excluded from the build/spark-sql/
-   * iceberg CI path filters in dev/ci/compute-changes.py, so editing it (e.g. when an issue is
-   * filed) does not trigger those heavy jobs. Keyed by Spark function name.
+   * GenerateDocs (not in the serde files) on purpose: it is excluded from the heavy CI path
+   * filters (build, spark-sql, iceberg) in dev/ci/compute-changes.py, so editing it (e.g. when an
+   * issue is filed) does not trigger those heavy jobs. Keyed by Spark function name.
    */
   private val plannedExpressions: Map[String, PlannedExpr] = Map(
     "approx_count_distinct" -> PlannedExpr(Planned, issue = Some(4098)),
@@ -159,6 +159,8 @@ object GenerateDocs {
    * Spark function groups rendered as tables, in display order. Families that fall back wholesale
    * (xml_funcs, csv_funcs, geospatial, etc.) are intentionally omitted; they are covered by the
    * "Not currently planned" prose section.
+   *
+   * Consumed by `generateExpressionReference` (added in the following task).
    */
   private val expressionGroups: Seq[String] = Seq(
     "agg_funcs",
@@ -181,7 +183,11 @@ object GenerateDocs {
     "url_funcs",
     "window_funcs")
 
-  /** Map expression class -> compat-guide category, only for categories that have a page. */
+  /**
+   * Map expression class -> compat-guide category, only for categories that have a page. Must
+   * stay in sync with `categoryPages`: only categories that have a compat-guide page belong here,
+   * so functions in other categories intentionally get no compat link.
+   */
   private val classToCategory: Map[Class[_], String] = Seq(
     QueryPlanSerde.arrayExpressions.keys.map((_: Class[_]) -> "array"),
     QueryPlanSerde.temporalExpressions.keys.map((_: Class[_]) -> "datetime"),
@@ -199,6 +205,8 @@ object GenerateDocs {
     val clsOpt = Try(Class.forName(className)).toOption
     // scalastyle:on classforname
     clsOpt.flatMap { cls =>
+      // The cast is erased at runtime; the lookup is by key equality, so a class that is
+      // not actually an Expression subtype simply matches no key and yields None.
       val exprSerde = QueryPlanSerde.exprSerdeMap
         .get(cls.asInstanceOf[Class[_ <: Expression]])
       val aggSerde = QueryPlanSerde.aggrSerdeMap.get(cls)
@@ -230,7 +238,11 @@ object GenerateDocs {
     }
   }
 
-  /** Resolve all rows for a group, logging warnings for unclassified builtins. */
+  /**
+   * Resolve all rows for a group, logging warnings for unclassified builtins.
+   *
+   * Consumed by `generateExpressionReference` (added in the following task).
+   */
   private def rowsForGroup(group: String, entries: Seq[FunctionEntry]): Seq[ReferenceRow] = {
     entries.filter(_.group == group).map { e =>
       val (row, warn) =
