@@ -297,4 +297,41 @@ mod tests {
             "panic payload should be OomGuardPanic"
         );
     }
+
+    // Drives a real heap allocation through the installed AccountingAllocator (only
+    // wrapped under the `oom-guard` feature) and confirms the guard trips.
+    #[test]
+    #[cfg(feature = "oom-guard")]
+    fn test_real_allocation_trips_guard() {
+        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_test();
+        stamp_current_thread();
+        // 8 MiB headroom over the current (noisy) baseline.
+        let headroom = 8 * 1024 * 1024;
+        arm(current_balance() + headroom);
+
+        let result = std::panic::catch_unwind(|| {
+            // Allocate well past the headroom in 1 MiB chunks so a flush crosses the limit.
+            let mut held: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..64 {
+                held.push(vec![0u8; 1024 * 1024]);
+            }
+            // Touch the data so the allocation cannot be optimized away.
+            held.iter().map(|v| v.len()).sum::<usize>()
+        });
+
+        // Disarm BEFORE clearing UNWINDING so no post-catch allocation on this still-armed,
+        // still-stamped thread can re-trip outside the catch.
+        disarm();
+        clear_unwinding_for_test();
+
+        assert!(
+            result.is_err(),
+            "large allocation on a stamped, armed thread should trip the guard"
+        );
+        assert!(
+            result.unwrap_err().downcast_ref::<OomGuardPanic>().is_some(),
+            "panic payload should be OomGuardPanic"
+        );
+    }
 }
