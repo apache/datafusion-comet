@@ -213,7 +213,7 @@ object CometPow extends CometExpressionSerde[Pow] {
     val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
     val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
     val optExpr = scalarFunctionExprToProto("pow", leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
+    optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
   }
 }
 

@@ -165,7 +165,7 @@ object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateF
           .build()
       }
       .headOption
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
