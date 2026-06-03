@@ -23,7 +23,7 @@
 
 ## array_size
 
-- Native via `size`; returns -1 instead of NULL for NULL input (https://github.com/apache/datafusion-comet/issues/4560).
+- Native via `size`. `array_size` lowers to `Size(child, legacySizeOfNull = false)`, so it returns NULL for NULL input. `CometSize` reads the per-expression `legacySizeOfNull` flag.
 
 ## concat
 
