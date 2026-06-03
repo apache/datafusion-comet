@@ -193,6 +193,14 @@ fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionErro
                 Ok(ScalarValue::Int32(Some(len)))
             }
         }
+        ScalarValue::Map(array) => {
+            if array.is_null(0) {
+                Ok(ScalarValue::Int32(Some(-1)))
+            } else {
+                let len = array.value_length(0) as i32;
+                Ok(ScalarValue::Int32(Some(len)))
+            }
+        }
         ScalarValue::Null => {
             Ok(ScalarValue::Int32(Some(-1))) // Spark behavior: return -1 for null
         }
@@ -274,75 +282,56 @@ mod tests {
     // TODO: Add map array test once Arrow MapArray API constraints are resolved
     // Currently MapArray doesn't allow nulls in entries which makes testing complex
     // The core size() implementation supports maps correctly
-    #[ignore]
     #[test]
     fn test_spark_size_map_array() {
-        use arrow::array::{MapArray, StringArray};
+        use arrow::array::{Int32Array, MapArray, StringArray};
 
-        // Create a simpler test with maps:
-        // [{"key1": "value1", "key2": "value2"}, {"key3": "value3"}, {}, null]
+        let keys = StringArray::from(vec![Some("key1"), Some("key2"), Some("key3")]);
+        let values = Int32Array::from(vec![Some(1), Some(2), Some(3)]);
 
-        // Create keys array for all entries (no nulls)
-        let keys = StringArray::from(vec!["key1", "key2", "key3"]);
-
-        // Create values array for all entries (no nulls)
-        let values = StringArray::from(vec!["value1", "value2", "value3"]);
-
-        // Create entry offsets: [0, 2, 3, 3] representing:
-        // - Map 1: entries 0-1 (2 key-value pairs)
-        // - Map 2: entries 2-2 (1 key-value pair)
-        // - Map 3: entries 3-2 (0 key-value pairs, empty map)
-        // - Map 4: null (handled by null buffer)
-        let entry_offsets = arrow::buffer::OffsetBuffer::new(vec![0, 2, 3, 3, 3].into());
+        let entry_offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 2, 3, 3, 3].into());
 
         let key_field = Arc::new(Field::new("key", DataType::Utf8, false));
-        let value_field = Arc::new(Field::new("value", DataType::Utf8, false)); // Make values non-nullable too
+        let value_field = Arc::new(Field::new("value", DataType::Int32, true));
 
-        // Create the entries struct array
         let entries = arrow::array::StructArray::new(
             arrow::datatypes::Fields::from(vec![key_field, value_field]),
             vec![Arc::new(keys), Arc::new(values)],
-            None, // No nulls in the entries struct array itself
+            None,
         );
 
-        // Create null buffer for the map array (fourth map is null)
         let mut null_buffer = NullBufferBuilder::new(4);
-        null_buffer.append(true); // Map with 2 entries - not null
-        null_buffer.append(true); // Map with 1 entry - not null
-        null_buffer.append(true); // Empty map - not null
-        null_buffer.append(false); // null map
+        null_buffer.append(true);
+        null_buffer.append(true);
+        null_buffer.append(true);
+        null_buffer.append(false);
 
-        let map_data_type = DataType::Map(
-            Arc::new(Field::new(
-                "entries",
-                DataType::Struct(arrow::datatypes::Fields::from(vec![
-                    Field::new("key", DataType::Utf8, false),
-                    Field::new("value", DataType::Utf8, false), // Make values non-nullable too
-                ])),
-                false,
-            )),
-            false, // keys are not sorted
-        );
+        let map_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(arrow::datatypes::Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int32, true),
+            ])),
+            false,
+        ));
 
-        let map_field = Arc::new(Field::new("map", map_data_type, true));
-
-        let map_array = MapArray::new(
+        let map_array = MapArray::try_new(
             map_field,
             entry_offsets,
             entries,
             null_buffer.finish(),
-            false, // keys are not sorted
-        );
+            false,
+        )
+        .unwrap();
 
         let array_ref: ArrayRef = Arc::new(map_array);
         let result = spark_size_array(&array_ref).unwrap();
         let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
 
-        // Expected: [2, 1, 0, -1]
-        assert_eq!(result.value(0), 2); // Map with 2 key-value pairs
-        assert_eq!(result.value(1), 1); // Map with 1 key-value pair
-        assert_eq!(result.value(2), 0); // empty map has 0 pairs
-        assert_eq!(result.value(3), -1); // null map returns -1
+        assert_eq!(result.value(0), 2);
+        assert_eq!(result.value(1), 1);
+        assert_eq!(result.value(2), 0);
+        assert_eq!(result.value(3), -1);
     }
 
     #[test]
