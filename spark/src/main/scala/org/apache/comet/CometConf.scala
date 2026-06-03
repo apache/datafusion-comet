@@ -828,6 +828,24 @@ object CometConf extends ShimCometConf {
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
+  val COMET_EXEC_MEMORY_GUARD_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.memoryGuard.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental. When enabled (and Comet is built with the 'oom-guard' native " +
+          "feature), Comet tracks real native allocations and fails an over-budget task " +
+          "with a retriable error instead of risking an executor-wide OOM kill.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_MEMORY_GUARD_SIZE: OptionalConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.memoryGuard.size")
+      .category(CATEGORY_EXEC)
+      .doc("Experimental. Byte limit for the Comet native memory guard. Defaults to the " +
+        "executor off-heap memory size when unset.")
+      .bytesConf(ByteUnit.BYTE)
+      .createOptional
+
   val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
       .category(CATEGORY_TESTING)
