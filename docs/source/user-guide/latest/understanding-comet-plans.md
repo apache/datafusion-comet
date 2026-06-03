@@ -169,6 +169,7 @@ they execute as a single fused native block.
 | `CometHashAggregate`         | `HashAggregateExec`, `ObjectHashAggregateExec`  |
 | `CometHashJoin`              | `ShuffledHashJoinExec`                          |
 | `CometBroadcastHashJoin`     | `BroadcastHashJoinExec`                         |
+| `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                 |
 | `CometSortMergeJoin`         | `SortMergeJoinExec`                             |
 | `CometWindow`                | `WindowExec`                                    |
 | `CometTakeOrderedAndProject` | `TakeOrderedAndProjectExec`                     |

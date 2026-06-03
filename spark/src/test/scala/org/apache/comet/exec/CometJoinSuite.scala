@@ -775,4 +775,32 @@ class CometJoinSuite extends CometTestBase {
       }
     }
   }
+
+  test("BroadcastNestedLoopJoin RIGHT OUTER with inequality (BuildLeft, swap path)") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_a") {
+        withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_b") {
+          val df =
+            sql("SELECT /*+ BROADCAST(tbl_a) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._1 < tbl_b._1")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin cross join without condition (materialized rows)") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 5).map(i => (i, i * 10)), "tbl_a") {
+        withParquetTable((0 until 4).map(i => (i, s"v_$i")), "tbl_b") {
+          val df =
+            sql("SELECT /*+ BROADCAST(tbl_b) */ tbl_a._1, tbl_b._2 FROM tbl_a, tbl_b")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
 }

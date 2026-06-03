@@ -27,6 +27,7 @@ not supported by Comet will fall back to regular Spark execution.
 | BatchScanExec                     | Yes               | Supports Parquet files and Apache Iceberg Parquet scans. See the [Comet Compatibility Guide] for more information. |
 | BroadcastExchangeExec             | Yes               |                                                                                                                    |
 | BroadcastHashJoinExec             | Yes               |                                                                                                                    |
+| BroadcastNestedLoopJoinExec       | Yes               | Falls back to Spark when the preserved side is broadcast (e.g. LEFT OUTER with BROADCAST on the left).             |
 | ExpandExec                        | Yes               |                                                                                                                    |
 | FileSourceScanExec                | Yes               | Supports Parquet files. See the [Comet Compatibility Guide] for more information.                                  |
 | FilterExec                        | Yes               |                                                                                                                    |

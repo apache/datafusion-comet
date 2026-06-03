@@ -1937,8 +1937,39 @@ case class CometBroadcastNestedLoopJoinExec(
     override val serializedPlanOpt: SerializedPlan)
     extends CometBinaryExec {
 
+  // Mirror Spark's BroadcastNestedLoopJoinExec: output partitioning derives from the streamed
+  // (non-broadcast) side. Reading from live left/right rather than originalPlan keeps this
+  // correct after an AQE child swap.
+  private def streamedPlan: SparkPlan = buildSide match {
+    case BuildLeft => right
+    case BuildRight => left
+  }
+
+  override def outputPartitioning: Partitioning = streamedPlan.outputPartitioning
+
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
+
+  override def stringArgs: Iterator[Any] =
+    Iterator(joinType, buildSide, condition, left, right)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometBroadcastNestedLoopJoinExec =>
+        this.output == other.output &&
+        this.joinType == other.joinType &&
+        this.condition == other.condition &&
+        this.buildSide == other.buildSide &&
+        this.left == other.left &&
+        this.right == other.right &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(output, joinType, condition, buildSide, left, right)
 }
 
 object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNestedLoopJoinExec] {
@@ -1958,12 +1989,12 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
 
   override def getSupportLevel(op: BroadcastNestedLoopJoinExec): SupportLevel =
     (op.joinType, op.buildSide) match {
-      case (LeftOuter, BuildLeft) => Unsupported(Some(broadcastBuildReplicationReason))
-      case (RightOuter, BuildRight) => Unsupported(Some(broadcastBuildReplicationReason))
-      case (FullOuter, _) => Unsupported(Some(broadcastBuildReplicationReason))
-      case (LeftSemi, BuildLeft) => Unsupported(Some(broadcastBuildReplicationReason))
-      case (LeftAnti, BuildLeft) => Unsupported(Some(broadcastBuildReplicationReason))
-      case _ => Compatible(None)
+      case (Inner, _) | (LeftOuter, BuildRight) | (RightOuter, BuildLeft) |
+          (LeftSemi, BuildRight) | (LeftAnti, BuildRight) =>
+        Compatible(None)
+      case (LeftOuter | RightOuter | FullOuter | LeftSemi | LeftAnti, _) =>
+        Unsupported(Some(broadcastBuildReplicationReason))
+      case _ => Unsupported(Some(s"Join type ${op.joinType} is not supported"))
     }
 
   /**

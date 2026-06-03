@@ -108,6 +108,15 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
               "LEFT OUTER JOIN build b ON p.k BETWEEN b.lo AND b.hi",
             cometConfigs)
         }
+
+        runBenchmark("BroadcastNestedLoopJoin - range, materialized rows") {
+          runExpressionBenchmark(
+            "range join (BETWEEN, projected)",
+            probeRows,
+            "SELECT /*+ BROADCAST(b) */ p.k, p.v, b.lo, b.hi FROM probe p " +
+              "JOIN build b ON p.k BETWEEN b.lo AND b.hi",
+            cometConfigs)
+        }
       }
     }
   }
