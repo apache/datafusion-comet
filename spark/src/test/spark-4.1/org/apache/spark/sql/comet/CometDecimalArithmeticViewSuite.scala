@@ -56,7 +56,7 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
             assert(
               dt === add.dataType,
               s"CheckOverflow target $dt must match Add.dataType ${add.dataType}; mismatch " +
-                s"causes the decimal buffer to be re-labelled at the wrong scale.")
+                "causes the decimal buffer to be re-labelled at the wrong scale.")
           case other =>
             fail(s"Expected DecimalPrecision.promote to wrap Add in CheckOverflow, got: $other")
         }
