@@ -101,6 +101,11 @@ hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 
+# Allocator-level OOM circuit breaker. When enabled, the global allocator is
+# wrapped to track real allocated bytes and panic an over-budget query-worker
+# thread (caught at the task boundary). Off by default; zero overhead when off.
+oom-guard = []
+
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]
 ignored = ["hdfs-sys", "paste"]

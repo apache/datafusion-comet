@@ -18,6 +18,7 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+pub mod oom_guard;
 mod task_shared;
 mod unified_pool;
 
