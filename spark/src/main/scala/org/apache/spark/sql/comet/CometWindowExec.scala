@@ -20,8 +20,7 @@
 package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
-
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NTile, NamedExpression, NthValue, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -30,9 +29,8 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, DecimalType, LongType, NumericType}
 import org.apache.spark.sql.types.Decimal
-
 import com.google.common.base.Objects
-
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
@@ -54,7 +52,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       case Alias(w: WindowExpression, _) => w
       case Alias(MakeDecimal(w: WindowExpression, _, _, _), _) => w
       case other =>
-        withInfo(op, s"Unsupported window expression: $other", other)
+        withFallbackReason(op, s"Unsupported window expression: $other", other)
         return None
     }.toArray
 
@@ -83,7 +81,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       val failing = winExprs.toSeq.zip(windowExprProto).collect { case (we, None) => we } ++
         op.partitionSpec.zip(partitionExprs).collect { case (e, None) => e } ++
         op.orderSpec.zip(sortOrders).collect { case (e, None) => e }
-      withInfo(op, failing: _*)
+      withFallbackReason(op, failing: _*)
       None
     }
   }
@@ -124,7 +122,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               if (AggSerde.avgDataTypeSupported(a.dataType)) {
                 Some(agg)
               } else {
-                withInfo(windowExpr, s"datatype ${a.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${a.dataType} is not supported", expr)
                 None
               }
             case _: First =>
@@ -167,7 +165,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       windowExpr.windowFunction match {
         case lag: Lag if !lag.default.isInstanceOf[Literal] =>
           // https://github.com/apache/datafusion-comet/issues/4268
-          withInfo(windowExpr, "Lag default value must be a literal", lag.default)
+          withFallbackReason(windowExpr, "Lag default value must be a literal", lag.default)
           (None, None, false)
         case lag: Lag =>
           val inputExpr = exprToProto(lag.input, output)
@@ -177,7 +175,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           (None, func, lag.ignoreNulls)
         case lead: Lead if !lead.default.isInstanceOf[Literal] =>
           // https://github.com/apache/datafusion-comet/issues/4268
-          withInfo(windowExpr, "Lead default value must be a literal", lead.default)
+          withFallbackReason(windowExpr, "Lead default value must be a literal", lead.default)
           (None, None, false)
         case lead: Lead =>
           val inputExpr = exprToProto(lead.input, output)
@@ -198,7 +196,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         case nt: NTile =>
           // Known correctness bug: Comet's NTILE produces different bucket
           // assignments than Spark; tracked in #4255. Fall back to Spark.
-          withInfo(windowExpr, "NTILE has a correctness bug in Comet tracked in #4255", nt)
+          withFallbackReason(windowExpr, "NTILE has a correctness bug in Comet tracked in #4255", nt)
           (None, None, false)
         case nv: NthValue =>
           val inputExpr = exprToProto(nv.input, output)
@@ -207,7 +205,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
             case n: Number =>
               exprToProto(Literal(n.longValue(), LongType), output)
             case _ =>
-              withInfo(
+              withFallbackReason(
                 windowExpr,
                 s"Unsupported NTH_VALUE offset: ${nv.offset} (${nv.offset.dataType})")
               None
@@ -216,7 +214,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           (None, func, nv.ignoreNulls)
 
         case other =>
-          withInfo(
+          withFallbackReason(
             windowExpr,
             s"window function ${other.getClass.getSimpleName} is not supported",
             other)
@@ -247,12 +245,12 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
             !ub.isInstanceOf[SpecialFrameBoundary] =>
         windowExpr.windowSpec.orderSpec.headOption.map(_.dataType) match {
           case Some(DateType) =>
-            withInfo(
+            withFallbackReason(
               windowExpr,
               "RANGE frame with explicit offset on DATE ORDER BY is not supported")
             return None
           case Some(_: DecimalType) =>
-            withInfo(
+            withFallbackReason(
               windowExpr,
               "RANGE frame with explicit offset on DECIMAL ORDER BY is not supported")
             return None
@@ -284,7 +282,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               case i: Integer => i.toLong
               case l: Long => l
               case _ =>
-                withInfo(windowExpr, s"Unsupported ROWS frame lower offset: $e (${e.dataType})")
+                withFallbackReason(windowExpr, s"Unsupported ROWS frame lower offset: $e (${e.dataType})")
                 return None
             }
             OperatorOuterClass.LowerWindowFrameBound
@@ -307,11 +305,11 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                       .build())
                   .build()
               case None =>
-                withInfo(windowExpr, s"Unsupported RANGE frame lower offset: $e")
+                withFallbackReason(windowExpr, s"Unsupported RANGE frame lower offset: $e")
                 return None
             }
           case e =>
-            withInfo(
+            withFallbackReason(
               windowExpr,
               s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
             return None
@@ -333,7 +331,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               case i: Integer => i.toLong
               case l: Long => l
               case _ =>
-                withInfo(windowExpr, s"Unsupported ROWS frame upper offset: $e (${e.dataType})")
+                withFallbackReason(windowExpr, s"Unsupported ROWS frame upper offset: $e (${e.dataType})")
                 return None
             }
             OperatorOuterClass.UpperWindowFrameBound
@@ -356,11 +354,11 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                       .build())
                   .build()
               case None =>
-                withInfo(windowExpr, s"Unsupported RANGE frame upper offset: $e")
+                withFallbackReason(windowExpr, s"Unsupported RANGE frame upper offset: $e")
                 return None
             }
           case e =>
-            withInfo(
+            withFallbackReason(
               windowExpr,
               s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
             return None

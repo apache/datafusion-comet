@@ -45,8 +45,7 @@ class CometWindowExecSuite extends CometTestBase {
         "spark.comet.operator.WindowExec.allowIncompatible" -> "true",
         "spark.comet.explainFallback.enabled" -> "true",
         "spark.comet.logFallbackReasons.enabled" -> "true",
-        "spark.comet.exec.localTableScan.enabled" -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+        "spark.comet.exec.localTableScan.enabled" -> "true") {
         testFun
       }
     }
