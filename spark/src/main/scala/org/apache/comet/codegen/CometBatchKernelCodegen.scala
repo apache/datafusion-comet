@@ -23,7 +23,7 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, HigherOrderFunction, LambdaFunction, Literal, NamedLambdaVariable, TryEval, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, HigherOrderFunction, LambdaFunction, Literal, NamedLambdaVariable, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -365,15 +365,37 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         val nullCheck =
           if (inputOrdinals.isEmpty) "false"
           else inputOrdinals.map(nullCheckCall).mkString(" || ")
-        s"""
-           |if ($nullCheck) {
-           |  output.setNull(i);
-           |} else {
-           |  $subExprsCode
-           |  ${ev.code}
-           |  $writeSnippet
-           |}
-         """.stripMargin
+        // `NullIntolerant` only constrains "any input null -> output null"; it does NOT promise
+        // that non-null inputs always produce non-null output. `MakeTimestamp(failOnError=false)`
+        // is `NullIntolerant=true` but its `doGenCode` catches `DateTimeException` for invalid
+        // year/month/day/hour/min/sec components and sets `ev.isNull = true`. Honor `ev.isNull`
+        // post-eval whenever the expression is nullable; skip the guard only when the root is
+        // statically non-nullable (`ev.isNull` is then a literal `false`).
+        if (boundExpr.nullable) {
+          s"""
+             |if ($nullCheck) {
+             |  output.setNull(i);
+             |} else {
+             |  $subExprsCode
+             |  ${ev.code}
+             |  if (${ev.isNull}) {
+             |    output.setNull(i);
+             |  } else {
+             |    $writeSnippet
+             |  }
+             |}
+           """.stripMargin
+        } else {
+          s"""
+             |if ($nullCheck) {
+             |  output.setNull(i);
+             |} else {
+             |  $subExprsCode
+             |  ${ev.code}
+             |  $writeSnippet
+             |}
+           """.stripMargin
+        }
       case _ =>
         // NonNullableOutputShortCircuit: when `nullable = false`, drop the `if (ev.isNull)`
         // guard at source level rather than relying on JIT folding.
@@ -401,15 +423,10 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    * True iff every node in the tree propagates nulls (`NullIntolerant`, `BoundReference`, or
    * `Literal`). Gates the [[defaultBody]] short-circuit, which is only correct when no node
    * (`Coalesce`, `If`, `CaseWhen`, `Concat`, ...) breaks the propagation chain.
-   *
-   * `TryEval` is rejected: it is `NullIntolerant` (null input -> null output), but its
-   * `doGenCode` also yields null on non-null input when the child throws. The short-circuit
-   * assumes non-null inputs imply non-null output and would feed a null `ev.value` to the writer.
    */
   private def allNullIntolerant(expr: Expression): Boolean =
     !expr.exists {
       case _: BoundReference | _: Literal => false
-      case _: TryEval => true
       case other => !isNullIntolerant(other)
     }
 

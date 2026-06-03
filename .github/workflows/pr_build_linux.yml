@@ -46,6 +46,32 @@ jobs:
           rustup component add rustfmt
           cd native && cargo fmt --all -- --check
 
+  # Fast syntactic-only scalafix check. Parses sources without compiling, so it
+  # surfaces version-independent style issues (e.g. RedundantSyntax) in seconds,
+  # long before the lint-java matrix finishes its ~3.5 min build. It also scans
+  # the spark-4.1 / spark-4.2 sources that lint-java skips (those profiles can't
+  # run -Psemanticdb yet), so it is the only gate covering them. The full rule
+  # set, including the semantic rules, still runs in lint-java.
+  scalafix-syntactic:
+    name: Lint Scala (syntactic)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup coursier
+        uses: coursier/setup-action@v1
+        with:
+          jvm: temurin:21
+
+      - name: Run syntactic scalafix check (no compile)
+        run: |
+          cs launch scalafix:0.14.6 -- \
+            --check \
+            --syntactic \
+            --config .scalafix-syntactic.conf \
+            --exclude '**/target/**' \
+            spark
+
   lint-java:
     needs: lint
     name: Lint Java (${{ matrix.profile.name }})

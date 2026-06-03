@@ -24,7 +24,7 @@ import java.time.{Duration, Period}
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
@@ -3124,6 +3124,41 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         checkSparkAnswerAndOperator(df1)
       }
+    }
+  }
+
+  test("deep AND/OR predicate chains do not overflow the protobuf recursion limit") {
+    // A left-deep chain of N associative boolean operands serializes to a proto nested N
+    // levels deep. With N > protobuf's default recursion limit (100), the message overflows
+    // when the serialized plan is re-parsed (JVM Operator.parseFrom and the Rust prost
+    // decoder), failing an otherwise-supported query. Comet evaluates AND/OR vectorially with
+    // no short-circuit, so the chain is fully associative and safe to rebalance.
+    val n = 200
+    // `_2` is nullable (every 7th row is null) so the rebalanced chain is exercised under SQL
+    // three-valued logic, not just true/false operands.
+    withParquetTable(
+      (0 until 100).map(i => (i, if (i % 7 == 0) None else Some(i.toLong))),
+      "tbl") {
+      // Build a chain that mixes the non-nullable `_1` with the nullable `_2` so null operands
+      // flow through the rebalanced tree.
+      def operand(i: Int): Column =
+        if (i % 2 == 0) col("_2") > lit(-i) else col("_1") > lit(-i)
+
+      // Project the chains as boolean columns rather than filtering: a top-level filter AND is
+      // split by Spark's splitConjunctivePredicates into many shallow pushed predicates, which
+      // would hide the deep-nesting. A projected expression survives intact. Distinct literals
+      // keep the optimizer from folding the chain; `>`/`<` (not `=`) keeps OptimizeIn from
+      // collapsing the OR chain into a single In.
+      val andChain = (1 to n).map(operand).reduce(_ && _)
+      checkSparkAnswerAndOperator(spark.table("tbl").select(andChain.as("a")))
+
+      val orChain = (1 to n).map(i => col("_1") < lit(i) || col("_2") < lit(i)).reduce(_ || _)
+      checkSparkAnswerAndOperator(spark.table("tbl").select(orChain.as("o")))
+
+      // A deep OR is a common real-world WHERE clause and, unlike a top-level AND, is NOT split
+      // by Spark -- it stays intact as a single deeply-nested predicate, so exercise that path
+      // directly.
+      checkSparkAnswerAndOperator(spark.table("tbl").where(orChain))
     }
   }
 
