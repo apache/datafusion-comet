@@ -157,22 +157,22 @@ by role. Names match what is shown in the plan output.
 These run natively in DataFusion. When several appear consecutively in a plan,
 they execute as a single fused native block.
 
-| Node                         | Spark equivalent                                |
-| ---------------------------- | ----------------------------------------------- |
-| `CometProject`               | `ProjectExec`                                   |
-| `CometFilter`                | `FilterExec`                                    |
-| `CometSort`                  | `SortExec`                                      |
-| `CometLocalLimit`            | `LocalLimitExec`                                |
-| `CometGlobalLimit`           | `GlobalLimitExec`                               |
-| `CometExpand`                | `ExpandExec`                                    |
-| `CometExplode`               | `GenerateExec` (for `explode` and `posexplode`) |
-| `CometHashAggregate`         | `HashAggregateExec`, `ObjectHashAggregateExec`  |
-| `CometHashJoin`              | `ShuffledHashJoinExec`                          |
-| `CometBroadcastHashJoin`     | `BroadcastHashJoinExec`                         |
-| `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                 |
-| `CometSortMergeJoin`         | `SortMergeJoinExec`                             |
-| `CometWindow`                | `WindowExec`                                    |
-| `CometTakeOrderedAndProject` | `TakeOrderedAndProjectExec`                     |
+| Node                           | Spark equivalent                                |
+| ------------------------------ | ----------------------------------------------- |
+| `CometProject`                 | `ProjectExec`                                   |
+| `CometFilter`                  | `FilterExec`                                    |
+| `CometSort`                    | `SortExec`                                      |
+| `CometLocalLimit`              | `LocalLimitExec`                                |
+| `CometGlobalLimit`             | `GlobalLimitExec`                               |
+| `CometExpand`                  | `ExpandExec`                                    |
+| `CometExplode`                 | `GenerateExec` (for `explode` and `posexplode`) |
+| `CometHashAggregate`           | `HashAggregateExec`, `ObjectHashAggregateExec`  |
+| `CometHashJoin`                | `ShuffledHashJoinExec`                          |
+| `CometBroadcastHashJoin`       | `BroadcastHashJoinExec`                         |
+| `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                   |
+| `CometSortMergeJoin`           | `SortMergeJoinExec`                             |
+| `CometWindow`                  | `WindowExec`                                    |
+| `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                     |
 
 ### JVM-Side Operators
 
