@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.expression.LengthOfJsonArray.allowIncompatible=true
+
 statement
 CREATE TABLE test_json_array_length(j string) USING parquet
 
@@ -42,23 +44,20 @@ INSERT INTO test_json_array_length VALUES
   ('{"arrays": {"first": [1,2], "second": [3,4,5]}}'),
   ('[{"arr": [1,2,3]}, {"arr": [4,5]}]')
 
-query spark_answer_only
+query
 SELECT json_array_length(j) FROM test_json_array_length
 
-query spark_answer_only
+query
 SELECT json_array_length('[1,2,3,4]')
 
-query spark_answer_only
+query
 SELECT json_array_length('not an array')
 
-query spark_answer_only
+query
 SELECT json_array_length('{"key":"value"}')
 
-query spark_answer_only
+query
 SELECT json_array_length(NULL)
 
-query spark_answer_only
+query
 SELECT json_array_length('[]')
-
-query expect_fallback(Spark's lenient JSON parser allows single quotes, unescaped controls, and trailing content, while Comet's serde_json requires strict JSON.)
-SELECT json_array_length("[{'key':'value'}]")
