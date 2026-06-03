@@ -19,6 +19,8 @@
 
 package org.apache.comet
 
+import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
+
 /**
  * Pure helpers for generating the Spark expression reference table (`expressions.md`). No file IO
  * or SparkSession dependency, so it is unit-testable in isolation. The impure parts (enumerating
@@ -71,6 +73,23 @@ object ExpressionReference {
 
   /** A fully resolved row ready to render. */
   case class ReferenceRow(name: String, status: ExprStatus, notes: String)
+
+  /**
+   * Enumerate Spark's built-in functions using the public FunctionRegistry API. Uses
+   * `builtin.listFunction` + `lookupFunction` (both public) rather than the `expressions` val,
+   * whose visibility varies across Spark versions.
+   */
+  def builtinFunctions(): Seq[FunctionEntry] = {
+    val registry = FunctionRegistry.builtin
+    registry.listFunction().flatMap { id =>
+      registry.lookupFunction(id).map { info =>
+        FunctionEntry(
+          name = id.funcName,
+          group = Option(info.getGroup).getOrElse(""),
+          className = info.getClassName)
+      }
+    }
+  }
 
   private def issueLink(n: Int): String =
     s"[#$n](https://github.com/apache/datafusion-comet/issues/$n)"
