@@ -23,10 +23,12 @@ import java.io.{BufferedOutputStream, BufferedReader, FileOutputStream, FileRead
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
+import scala.util.Try
 
-import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.{Cast, Expression}
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
+import org.apache.comet.ExpressionReference._
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, Unsupported}
 
@@ -140,6 +142,105 @@ object GenerateDocs {
             serde.getIncompatibleReasons(),
             serde.getUnsupportedReasons())
         })))
+
+  /**
+   * Curated status for Spark built-ins that Comet does not serde-support. This list lives in
+   * GenerateDocs (not in the serde files) on purpose: it is excluded from the build/spark-sql/
+   * iceberg CI path filters in dev/ci/compute-changes.py, so editing it (e.g. when an issue is
+   * filed) does not trigger those heavy jobs. Keyed by Spark function name.
+   */
+  private val plannedExpressions: Map[String, PlannedExpr] = Map(
+    "approx_count_distinct" -> PlannedExpr(Planned, issue = Some(4098)),
+    "kurtosis" -> PlannedExpr(Planned, issue = Some(4098))
+    // Populated to match the current doc during a later task.
+  )
+
+  /**
+   * Spark function groups rendered as tables, in display order. Families that fall back wholesale
+   * (xml_funcs, csv_funcs, geospatial, etc.) are intentionally omitted; they are covered by the
+   * "Not currently planned" prose section.
+   */
+  private val expressionGroups: Seq[String] = Seq(
+    "agg_funcs",
+    "array_funcs",
+    "bitwise_funcs",
+    "collection_funcs",
+    "conditional_funcs",
+    "conversion_funcs",
+    "datetime_funcs",
+    "generator_funcs",
+    "hash_funcs",
+    "json_funcs",
+    "lambda_funcs",
+    "map_funcs",
+    "math_funcs",
+    "misc_funcs",
+    "predicate_funcs",
+    "string_funcs",
+    "struct_funcs",
+    "url_funcs",
+    "window_funcs")
+
+  /** Map expression class -> compat-guide category, only for categories that have a page. */
+  private val classToCategory: Map[Class[_], String] = Seq(
+    QueryPlanSerde.arrayExpressions.keys.map((_: Class[_]) -> "array"),
+    QueryPlanSerde.temporalExpressions.keys.map((_: Class[_]) -> "datetime"),
+    QueryPlanSerde.mathExpressions.keys.map((_: Class[_]) -> "math"),
+    QueryPlanSerde.structExpressions.keys.map((_: Class[_]) -> "struct"),
+    QueryPlanSerde.stringExpressions.keys.map((_: Class[_]) -> "string"),
+    QueryPlanSerde.mapExpressions.keys.map((_: Class[_]) -> "map"),
+    QueryPlanSerde.miscExpressions.keys.map((_: Class[_]) -> "misc"),
+    QueryPlanSerde.urlExpressions.keys.map((_: Class[_]) -> "url"),
+    QueryPlanSerde.aggrSerdeMap.keys.map((_: Class[_]) -> "aggregate")).flatten.toMap
+
+  /** Build the serde-derived doc facts for a function class, if Comet serde-supports it. */
+  private def serdeDocInfoFor(className: String): Option[SerdeDocInfo] = {
+    // scalastyle:off classforname
+    val clsOpt = Try(Class.forName(className)).toOption
+    // scalastyle:on classforname
+    clsOpt.flatMap { cls =>
+      val exprSerde = QueryPlanSerde.exprSerdeMap
+        .get(cls.asInstanceOf[Class[_ <: Expression]])
+      val aggSerde = QueryPlanSerde.aggrSerdeMap.get(cls)
+      val notesAndSummary: Option[(Option[String], Boolean)] = exprSerde match {
+        case Some(s) =>
+          Some(
+            (
+              s.getExpressionSummary,
+              s.getCompatibleNotes().nonEmpty || s.getIncompatibleReasons().nonEmpty ||
+                s.getUnsupportedReasons().nonEmpty))
+        case None =>
+          aggSerde.map { s =>
+            (
+              s.getExpressionSummary,
+              s.getCompatibleNotes().nonEmpty || s.getIncompatibleReasons().nonEmpty ||
+                s.getUnsupportedReasons().nonEmpty)
+          }
+      }
+      notesAndSummary.map { case (summary, hasCompat) =>
+        // scalastyle:off caselocale
+        val anchor = cls.getSimpleName.toLowerCase
+        // scalastyle:on caselocale
+        SerdeDocInfo(
+          summary = summary,
+          hasCompatContent = hasCompat,
+          category = classToCategory.get(cls),
+          anchor = anchor)
+      }
+    }
+  }
+
+  /** Resolve all rows for a group, logging warnings for unclassified builtins. */
+  private def rowsForGroup(group: String, entries: Seq[FunctionEntry]): Seq[ReferenceRow] = {
+    entries.filter(_.group == group).map { e =>
+      val (row, warn) =
+        resolveRow(e, serdeDocInfoFor(e.className), plannedExpressions.get(e.name))
+      // scalastyle:off println
+      warn.foreach(w => println(s"[GenerateDocs][WARN] $w"))
+      // scalastyle:on println
+      row
+    }
+  }
 
   def main(args: Array[String]): Unit = {
     val userGuideLocation = args(0)

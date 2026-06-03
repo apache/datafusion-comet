@@ -30,9 +30,11 @@ object ExpressionReference {
 
   /** Status shown in the reference table. */
   sealed trait ExprStatus { def symbol: String }
+  // scalastyle:off nonascii
   case object Supported extends ExprStatus { override val symbol = "✅" }
   case object Planned extends ExprStatus { override val symbol = "🔜" }
   case object NotPlanned extends ExprStatus { override val symbol = "💤" }
+  // scalastyle:on nonascii
 
   /**
    * A built-in that is neither serde-backed nor listed in `plannedExpressions`. Rendered with a
@@ -40,7 +42,9 @@ object ExpressionReference {
    * treated as provisionally planned in the table, and its Notes cell ("unclassified; not yet
    * reviewed") is what distinguishes it from a deliberately planned entry.
    */
+  // scalastyle:off nonascii
   case object Unclassified extends ExprStatus { override val symbol = "🔜" }
+  // scalastyle:on nonascii
 
   /**
    * Curated metadata for a function Comet does not serde-support. Lives in the
