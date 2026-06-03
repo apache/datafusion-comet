@@ -261,6 +261,24 @@ object GenerateDocs {
     for ((category, (page, notesFn)) <- categoryPages) {
       generateExpressionCompatNotes(s"$userGuideLocation/$page", category, notesFn())
     }
+    generateExpressionReference(s"$userGuideLocation/expressions.md")
+  }
+
+  private def generateExpressionReference(filename: String): Unit = {
+    val entries = builtinFunctions()
+    val pattern = "<!--BEGIN:EXPR_TABLE\\[(.*)]-->".r
+    val lines = readFile(filename)
+    val w = new BufferedOutputStream(new FileOutputStream(filename))
+    for (line <- lines) {
+      w.write(s"${line.stripTrailing()}\n".getBytes)
+      line.trim match {
+        case pattern(group) =>
+          val table = ExpressionReference.renderTable(rowsForGroup(group, entries))
+          w.write(s"$table\n".getBytes)
+        case _ =>
+      }
+    }
+    w.close()
   }
 
   private def generateConfigReference(filename: String): Unit = {
