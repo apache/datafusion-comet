@@ -75,6 +75,16 @@ object ExpressionReference {
   private def issueLink(n: Int): String =
     s"[#$n](https://github.com/apache/datafusion-comet/issues/$n)"
 
+  /** Render one row with single-space padding (matches the .prettierignore'd table style). */
+  def renderRow(r: ReferenceRow): String =
+    s"| `${r.name}` | ${r.status.symbol} | ${r.notes} |"
+
+  /** Render a full group table (header + separator + sorted rows). */
+  def renderTable(rows: Seq[ReferenceRow]): String = {
+    val header = Seq("| Function | Status | Notes |", "| --- | --- | --- |")
+    (header ++ rows.sortBy(_.name).map(renderRow)).mkString("\n")
+  }
+
   /**
    * Resolve one function to a row, plus an optional warning string when the function is
    * unclassified (no serde and not in the planned list).

@@ -102,4 +102,21 @@ class ExpressionReferenceSuite extends AnyFunSuite {
     assert(warn.exists(_.contains("new_thing")))
     assert(warn.exists(_.contains("math_funcs")))
   }
+
+  test("renderRow uses backticked name, status symbol, single-space padding") {
+    assert(renderRow(ReferenceRow("any", Supported, "")) == "| `any` | ✅ |  |")
+    assert(
+      renderRow(ReferenceRow("kurtosis", Planned, "[#4098](u)")) ==
+        "| `kurtosis` | 🔜 | [#4098](u) |")
+  }
+
+  test("renderTable sorts rows by name and emits header") {
+    val rows = Seq(ReferenceRow("b", Supported, ""), ReferenceRow("a", Planned, "x"))
+    val expected =
+      """|| Function | Status | Notes |
+        || --- | --- | --- |
+        || `a` | 🔜 | x |
+        || `b` | ✅ |  |""".stripMargin
+    assert(renderTable(rows) == expected)
+  }
 }
