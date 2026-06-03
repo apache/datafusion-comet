@@ -63,6 +63,13 @@ pub fn stamp_current_thread() {
     STAMPED.with(|s| s.set(true));
 }
 
+/// Reset the per-thread unwinding guard after a guard panic has been caught on
+/// this thread. Safe to call when not unwinding. The JNI caller thread is
+/// reused across tasks, so this must run after catching an OomGuardPanic.
+pub fn clear_unwinding() {
+    UNWINDING.with(|u| u.set(false));
+}
+
 /// Current process-wide balance in bytes (never reported negative).
 #[allow(dead_code)]
 pub fn current_balance() -> usize {

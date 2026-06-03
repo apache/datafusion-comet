@@ -815,6 +815,20 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         .await;
 
                         if let Err(panic) = result {
+                            #[cfg(feature = "oom-guard")]
+                            if let Some(g) = panic.downcast_ref::<
+                                crate::execution::memory_pools::oom_guard::OomGuardPanic,
+                            >() {
+                                crate::execution::memory_pools::oom_guard::clear_unwinding();
+                                let _ = tx
+                                    .send(Err(DataFusionError::ResourcesExhausted(format!(
+                                        "Comet OomGuard: native allocation pushed usage to {} \
+                                         bytes, over the limit of {} bytes; failing this task",
+                                        g.balance, g.limit
+                                    ))))
+                                    .await;
+                                return;
+                            }
                             let msg = match panic.downcast_ref::<&str>() {
                                 Some(s) => s.to_string(),
                                 None => match panic.downcast_ref::<String>() {
@@ -862,53 +876,76 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
-            get_runtime().block_on(async {
-                loop {
-                    let next_item = exec_context.stream.as_mut().unwrap().next();
-                    let poll_output = poll!(next_item);
+            let poll_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                get_runtime().block_on(async {
+                    loop {
+                        let next_item = exec_context.stream.as_mut().unwrap().next();
+                        let poll_output = poll!(next_item);
 
-                    // Only check time/tracing every 100 polls to reduce overhead
-                    exec_context.poll_count_since_metrics_check += 1;
-                    if exec_context.poll_count_since_metrics_check >= 100 {
-                        exec_context.poll_count_since_metrics_check = 0;
-                        if let Some(interval) = exec_context.metrics_update_interval {
-                            let now = Instant::now();
-                            if now - exec_context.metrics_last_update_time >= interval {
-                                update_metrics(env, exec_context)?;
-                                exec_context.metrics_last_update_time = now;
+                        // Only check time/tracing every 100 polls to reduce overhead
+                        exec_context.poll_count_since_metrics_check += 1;
+                        if exec_context.poll_count_since_metrics_check >= 100 {
+                            exec_context.poll_count_since_metrics_check = 0;
+                            if let Some(interval) = exec_context.metrics_update_interval {
+                                let now = Instant::now();
+                                if now - exec_context.metrics_last_update_time >= interval {
+                                    update_metrics(env, exec_context)?;
+                                    exec_context.metrics_last_update_time = now;
+                                }
+                            }
+                            if exec_context.tracing_enabled {
+                                log_memory_usage(
+                                    &exec_context.tracing_memory_metric_name,
+                                    total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+                                );
                             }
                         }
-                        if exec_context.tracing_enabled {
-                            log_memory_usage(
-                                &exec_context.tracing_memory_metric_name,
-                                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
-                            );
-                        }
-                    }
 
-                    match poll_output {
-                        Poll::Ready(Some(output)) => {
-                            return prepare_output(
-                                env,
-                                array_addrs,
-                                schema_addrs,
-                                output?,
-                                exec_context.debug_native,
-                            );
-                        }
-                        Poll::Ready(None) => {
-                            log_plan_metrics(exec_context, stage_id, partition);
-                            return Ok(-1);
-                        }
-                        Poll::Pending => {
-                            // JNI call to pull batches from JVM into ScanExec operators.
-                            // block_in_place lets tokio move other tasks off this worker
-                            // while we wait for JVM data.
-                            tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
+                        match poll_output {
+                            Poll::Ready(Some(output)) => {
+                                return prepare_output(
+                                    env,
+                                    array_addrs,
+                                    schema_addrs,
+                                    output?,
+                                    exec_context.debug_native,
+                                );
+                            }
+                            Poll::Ready(None) => {
+                                log_plan_metrics(exec_context, stage_id, partition);
+                                return Ok(-1);
+                            }
+                            Poll::Pending => {
+                                // JNI call to pull batches from JVM into ScanExec operators.
+                                // block_in_place lets tokio move other tasks off this worker
+                                // while we wait for JVM data.
+                                tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
+                            }
                         }
                     }
+                })
+            }));
+
+            match poll_result {
+                Ok(r) => r,
+                Err(_panic) => {
+                    #[cfg(feature = "oom-guard")]
+                    {
+                        if let Some(g) = _panic.downcast_ref::<
+                            crate::execution::memory_pools::oom_guard::OomGuardPanic,
+                        >() {
+                            crate::execution::memory_pools::oom_guard::clear_unwinding();
+                            let msg = format!(
+                                "Comet OomGuard: native allocation pushed usage to {} bytes, \
+                                 over the limit of {} bytes; failing this task",
+                                g.balance, g.limit
+                            );
+                            return Err(DataFusionError::ResourcesExhausted(msg).into());
+                        }
+                    }
+                    std::panic::resume_unwind(_panic);
                 }
-            })
+            }
         });
 
         if exec_context.tracing_enabled {
