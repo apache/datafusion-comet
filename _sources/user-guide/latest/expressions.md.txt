@@ -283,7 +283,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_utc_timestamp` | ✅ | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md)) |
 | `trunc` | ✅ |  |
 | `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
-| `try_make_timestamp` | ⚠️ | Returns a wrong value instead of NULL for invalid inputs ([#4554](https://github.com/apache/datafusion-comet/issues/4554)) |
+| `try_make_timestamp` | ✅ |  |
 | `try_to_date` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
 | `try_to_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `try_to_timestamp` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |

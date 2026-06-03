@@ -168,9 +168,9 @@ as `"1.23E+4"`).
 
 **Notes:**
 - **double -> decimal**: There can be rounding differences
-- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **double -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
 - **float -> decimal**: There can be rounding differences
-- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 <!-- prettier-ignore-end -->
 <!--END:CAST_LEGACY_TABLE-->
@@ -197,9 +197,9 @@ as `"1.23E+4"`).
 
 **Notes:**
 - **double -> decimal**: There can be rounding differences
-- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **double -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
 - **float -> decimal**: There can be rounding differences
-- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 <!-- prettier-ignore-end -->
 <!--END:CAST_TRY_TABLE-->
@@ -226,9 +226,9 @@ as `"1.23E+4"`).
 
 **Notes:**
 - **double -> decimal**: There can be rounding differences
-- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **double -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
 - **float -> decimal**: There can be rounding differences
-- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 <!-- prettier-ignore-end -->
 <!--END:CAST_ANSI_TABLE-->
