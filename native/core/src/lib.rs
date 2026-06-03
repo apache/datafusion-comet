@@ -75,17 +75,48 @@ pub mod debug;
 #[cfg(all(
     not(target_env = "msvc"),
     feature = "jemalloc",
-    not(feature = "mimalloc")
+    not(feature = "mimalloc"),
+    not(feature = "oom-guard")
 ))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
 #[cfg(all(
     feature = "mimalloc",
-    not(all(not(target_env = "msvc"), feature = "jemalloc"))
+    not(all(not(target_env = "msvc"), feature = "jemalloc")),
+    not(feature = "oom-guard")
 ))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "jemalloc",
+    not(feature = "mimalloc"),
+    feature = "oom-guard"
+))]
+#[global_allocator]
+static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<Jemalloc> =
+    crate::execution::memory_pools::oom_guard::AccountingAllocator::new(Jemalloc);
+
+#[cfg(all(
+    feature = "mimalloc",
+    not(all(not(target_env = "msvc"), feature = "jemalloc")),
+    feature = "oom-guard"
+))]
+#[global_allocator]
+static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<MiMalloc> =
+    crate::execution::memory_pools::oom_guard::AccountingAllocator::new(MiMalloc);
+
+// oom-guard enabled but neither jemalloc nor mimalloc active: wrap the system allocator.
+#[cfg(all(
+    feature = "oom-guard",
+    not(all(not(target_env = "msvc"), feature = "jemalloc", not(feature = "mimalloc"))),
+    not(feature = "mimalloc")
+))]
+#[global_allocator]
+static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<std::alloc::System> =
+    crate::execution::memory_pools::oom_guard::AccountingAllocator::new(std::alloc::System);
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(

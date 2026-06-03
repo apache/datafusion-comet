@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 
@@ -75,16 +76,12 @@ pub fn current_balance() -> usize {
 }
 
 /// Record an allocation of `size` bytes; may trip the breaker.
-// removed in Task 3 when the allocator wrapper calls these
-#[allow(dead_code)]
 #[inline]
 fn record_alloc(size: usize) {
     track(size as isize);
 }
 
 /// Record a deallocation of `size` bytes; never trips (credit only).
-// removed in Task 3 when the allocator wrapper calls these
-#[allow(dead_code)]
 #[inline]
 fn record_dealloc(size: usize) {
     track(-(size as isize));
@@ -142,6 +139,50 @@ fn settle(local_drift: &mut isize, delta: isize, shared: &AtomicIsize) -> Option
         Some(prev.wrapping_add(flushed))
     } else {
         None
+    }
+}
+
+/// Wraps an inner global allocator, tracking layout bytes for the OomGuard.
+pub struct AccountingAllocator<A: GlobalAlloc> {
+    inner: A,
+}
+
+impl<A: GlobalAlloc> AccountingAllocator<A> {
+    pub const fn new(inner: A) -> Self {
+        Self { inner }
+    }
+}
+
+unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = self.inner.alloc(layout);
+        if !ptr.is_null() {
+            record_alloc(layout.size());
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        self.inner.dealloc(ptr, layout);
+        record_dealloc(layout.size());
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let ptr = self.inner.alloc_zeroed(layout);
+        if !ptr.is_null() {
+            record_alloc(layout.size());
+        }
+        ptr
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let new_ptr = self.inner.realloc(ptr, layout, new_size);
+        if !new_ptr.is_null() {
+            let old = layout.size() as isize;
+            let new = new_size as isize;
+            track(new - old);
+        }
+        new_ptr
     }
 }
 
