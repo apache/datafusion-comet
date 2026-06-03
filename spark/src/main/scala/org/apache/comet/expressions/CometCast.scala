@@ -241,7 +241,10 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case DataTypes.DateType => Compatible()
       case DataTypes.TimestampType => Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
-        Compatible(Some("There can be differences in precision"))
+        Compatible(
+          Some(
+            "String formatting can differ for floating-point values near precision limits " +
+              "or when scientific notation is used"))
       case d: DecimalType if d.scale < 0 =>
         // Negative-scale decimals require spark.sql.legacy.allowNegativeScaleOfDecimal=true.
         // When that config is enabled, Spark formats them using Java BigDecimal.toString()
