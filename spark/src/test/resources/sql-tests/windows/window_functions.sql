@@ -435,7 +435,7 @@ INSERT INTO avg_nulls_trailing VALUES
   (3, NULL),
   (4, NULL)
 
-query ignore(https://github.com/apache/datafusion/issues/22138)
+query
 SELECT i,
   AVG(v) OVER (ORDER BY i
                ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS a
@@ -660,7 +660,7 @@ FROM scores
 -- because Comet stops falling back — that's the signal to re-enable it.
 -- ============================================================
 
-query expect_fallback(NTILE has a correctness bug in Comet tracked in #4255)
+query
 SELECT dept, id, salary,
   NTILE(4) OVER (PARTITION BY dept ORDER BY id) AS bucket
 FROM emp

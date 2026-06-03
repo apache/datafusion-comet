@@ -20,7 +20,8 @@
 package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NTile, NamedExpression, NthValue, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -29,8 +30,9 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, DecimalType, LongType, NumericType}
 import org.apache.spark.sql.types.Decimal
+
 import com.google.common.base.Objects
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
@@ -194,10 +196,8 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         case _: CumeDist =>
           (None, scalarFunctionExprToProto("cume_dist"), false)
         case nt: NTile =>
-          // Known correctness bug: Comet's NTILE produces different bucket
-          // assignments than Spark; tracked in #4255. Fall back to Spark.
-          withFallbackReason(windowExpr, "NTILE has a correctness bug in Comet tracked in #4255", nt)
-          (None, None, false)
+          val func = scalarFunctionExprToProto("ntile", exprToProto(nt.buckets, output))
+          (None, func, false)
         case nv: NthValue =>
           val inputExpr = exprToProto(nv.input, output)
 
@@ -282,7 +282,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               case i: Integer => i.toLong
               case l: Long => l
               case _ =>
-                withFallbackReason(windowExpr, s"Unsupported ROWS frame lower offset: $e (${e.dataType})")
+                withFallbackReason(
+                  windowExpr,
+                  s"Unsupported ROWS frame lower offset: $e (${e.dataType})")
                 return None
             }
             OperatorOuterClass.LowerWindowFrameBound
@@ -331,7 +333,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               case i: Integer => i.toLong
               case l: Long => l
               case _ =>
-                withFallbackReason(windowExpr, s"Unsupported ROWS frame upper offset: $e (${e.dataType})")
+                withFallbackReason(
+                  windowExpr,
+                  s"Unsupported ROWS frame upper offset: $e (${e.dataType})")
                 return None
             }
             OperatorOuterClass.UpperWindowFrameBound

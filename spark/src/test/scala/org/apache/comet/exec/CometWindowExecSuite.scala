@@ -228,8 +228,9 @@ class CometWindowExecSuite extends CometTestBase {
                   // for a real query and introduces a Cast(TimestampType, DoubleType)
                   // that Comet does not support. Exclude SUM for those columns the
                   // same way _12 (DATE) is excluded below.
+                  // _9 is high precision decimal and pure Spark fails on this query
                   val aggregateFunctions =
-                    if (col == 10 || col == 11) {
+                    if (col == 9 || col == 10 || col == 11) {
                       List(s"COUNT(_$col)", s"MAX(_$col)", s"MIN(_$col)")
                     } else {
                       List(s"COUNT(_$col)", s"MAX(_$col)", s"MIN(_$col)", s"SUM(_$col)")
@@ -607,9 +608,7 @@ class CometWindowExecSuite extends CometTestBase {
           NTILE(4) OVER (PARTITION BY a ORDER BY b) as ntile_4
         FROM window_test
       """)
-      checkSparkAnswerAndFallbackReason(
-        df,
-        "NTILE has a correctness bug in Comet tracked in #4255")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -1072,10 +1071,7 @@ class CometWindowExecSuite extends CometTestBase {
           NTILE(3) OVER (PARTITION BY a ORDER BY b) as ntile_3
         FROM window_test
       """)
-      // all functions ok excepting NTILE
-      checkSparkAnswerAndFallbackReason(
-        df,
-        "NTILE has a correctness bug in Comet tracked in #4255")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
