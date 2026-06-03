@@ -282,7 +282,14 @@ pub(crate) fn plan_delta_scan(
         common.session_timezone.as_str(),
         common.case_sensitive,
         false, // return_null_struct_if_all_fields_missing
-        false, // allow_type_promotion (Delta resolves an exact schema; no implicit widening)
+        // allow_type_promotion: Delta's TypeWidening feature leaves pre-widening files in their
+        // original (narrower) physical parquet type and relies on read-time promotion to the
+        // table's current widened type (e.g. INT32->INT64, FLOAT->DOUBLE, INT32->DOUBLE). Delta
+        // only ever permits *widening* conversions, so the promotion is always lossless and safe.
+        // With this false, the schema adapter rejects exactly those three pairs, failing
+        // TypeWidening{...}Suite's non-partitioned data-column reads (partition columns are read
+        // from metadata strings via parse_delta_partition_scalar, so they were unaffected).
+        true,
         planner.session_ctx(),
         false, // encryption_enabled (Delta tables we natively support are unencrypted)
         common.use_field_id,
