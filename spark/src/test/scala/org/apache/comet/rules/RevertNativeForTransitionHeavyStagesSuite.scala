@@ -21,9 +21,7 @@ package org.apache.comet.rules
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 
 import org.apache.comet.CometConf
 
@@ -57,103 +55,43 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
   }
 
   test("rule is a no-op when disabled") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
-      val rule = RevertNativeForTransitionHeavyStages(spark)
-      val sparkPlan = createSparkPlan("SELECT 1")
-      val cometPlan = applyCometExecRule(sparkPlan)
-      val result = rule.apply(cometPlan)
-      assert(result eq cometPlan, "Rule should be a no-op when disabled")
+    withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+      withTempView("test_data") {
+        spark.range(10).toDF("id").createOrReplaceTempView("test_data")
+        val sparkPlan = createSparkPlan("SELECT id, id * 2 FROM test_data WHERE id > 5")
+        val cometPlan = applyCometExecRule(sparkPlan)
+        assert(countCometExecs(cometPlan) > 0, "Plan should have CometExec nodes")
+
+        val rule = RevertNativeForTransitionHeavyStages(spark)
+        val result = rule.apply(cometPlan)
+        assert(result eq cometPlan, "Rule should be a no-op when disabled")
+      }
     }
   }
 
   test("rule does not revert plan below threshold") {
     withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "10") {
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "10",
+      "spark.comet.exec.project.enabled" -> "false") {
       withTempView("test_data") {
         spark.range(10).toDF("id").createOrReplaceTempView("test_data")
         val sparkPlan =
           createSparkPlan("SELECT id, id * 2 as doubled FROM test_data WHERE id > 5")
-        val cometPlan = applyCometExecRule(sparkPlan)
+        val cometPlan = applyFullColumnarPipeline(sparkPlan)
 
         val rule = RevertNativeForTransitionHeavyStages(spark)
+        val transitions = rule.countTransitions(cometPlan)
+        assert(transitions > 0, s"Plan should have transitions, got $transitions")
+        assert(transitions <= 10, s"Transitions should be below threshold")
+
         val result = rule.apply(cometPlan)
         assert(result eq cometPlan, "Plan should be unchanged when below threshold")
       }
     }
   }
 
-  test("countTransitions counts non-root C2R correctly") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      val rule = RevertNativeForTransitionHeavyStages(spark)
-
-      withTempView("test_data") {
-        spark.range(10).toDF("id").createOrReplaceTempView("test_data")
-        val sparkPlan = createSparkPlan("SELECT id FROM test_data")
-        val cometPlan = applyFullColumnarPipeline(sparkPlan)
-
-        val count = rule.countTransitions(cometPlan)
-        // A simple scan+project plan should have 0 or 1 transitions
-        assert(count >= 0, s"Transition count should be non-negative, got $count")
-      }
-    }
-  }
-
-  test("countTransitions counts all C2R nodes including root") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      val rule = RevertNativeForTransitionHeavyStages(spark)
-
-      withTempView("test_data") {
-        spark.range(10).toDF("id").createOrReplaceTempView("test_data")
-        val sparkPlan = createSparkPlan("SELECT id FROM test_data")
-        val cometPlan = applyCometExecRule(sparkPlan)
-
-        // Wrap in a ColumnarToRow (simulating a terminal output)
-        val planWithRootC2R = ColumnarToRowExec(cometPlan)
-        val count = rule.countTransitions(planWithRootC2R)
-        assert(count == 1, s"Should count the C2R node, got $count")
-      }
-    }
-  }
-
-  test("revertToSpark removes CometExec operators") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-
-      withTempView("test_data") {
-        spark.range(10).toDF("id").createOrReplaceTempView("test_data")
-        val sparkPlan =
-          createSparkPlan("SELECT id, id * 2 as doubled FROM test_data WHERE id > 5")
-        val cometPlan = applyCometExecRule(sparkPlan)
-
-        assert(countCometExecs(cometPlan) > 0, "Should have CometExec nodes before revert")
-
-        val rule = RevertNativeForTransitionHeavyStages(spark)
-        val reverted = rule.revertToSpark(cometPlan)
-
-        assert(
-          countCometExecs(reverted) == 0,
-          s"Should have no CometExec nodes after revert, plan:\n${reverted.treeString}")
-      }
-    }
-  }
-
   test("revertToSpark preserves plan structure") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
 
       withTempView("test_data") {
         spark.range(10).toDF("id").createOrReplaceTempView("test_data")
@@ -172,17 +110,14 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
   }
 
   test("revertToSpark removes all Comet operators from a plan with transitions") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
 
       withTempView("test_data") {
         spark.range(10).toDF("id").createOrReplaceTempView("test_data")
         val sparkPlan =
           createSparkPlan("SELECT id, id * 2 as doubled FROM test_data WHERE id > 5")
         val cometPlan = applyFullColumnarPipeline(sparkPlan)
+        assert(countCometExecs(cometPlan) > 0, "Should have CometExec nodes before revert")
 
         val rule = RevertNativeForTransitionHeavyStages(spark)
         val result = rule.revertToSpark(cometPlan)
@@ -193,41 +128,8 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
-  test("CometShuffleExchangeExec is reverted by revertToSpark") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      "spark.sql.adaptive.enabled" -> "false") {
-
-      withTempView("test_data") {
-        spark.range(10).toDF("id").createOrReplaceTempView("test_data")
-        val sparkPlan = createSparkPlan("SELECT id FROM test_data DISTRIBUTE BY id")
-        val cometPlan = applyCometExecRule(sparkPlan)
-
-        val cometShuffles = cometPlan.collect { case s: CometShuffleExchangeExec => s }
-        if (cometShuffles.nonEmpty) {
-          val rule = RevertNativeForTransitionHeavyStages(spark)
-          val reverted = rule.revertToSpark(cometPlan)
-          val remainingCometShuffles = reverted.collect { case s: CometShuffleExchangeExec =>
-            s
-          }
-          assert(
-            remainingCometShuffles.isEmpty,
-            "CometShuffleExchangeExec should be reverted to ShuffleExchangeExec")
-          val sparkShuffles = reverted.collect { case s: ShuffleExchangeExec => s }
-          assert(sparkShuffles.nonEmpty, "Should have ShuffleExchangeExec after revert")
-        }
-      }
-    }
-  }
-
   test("non-AQE path applies rule per-stage via transformUp") {
     withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
       CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "10",
       "spark.sql.adaptive.enabled" -> "false") {
 
@@ -247,31 +149,32 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
-  test("default threshold of 2 allows stages with up to 2 transition pairs") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "2") {
-      val rule = RevertNativeForTransitionHeavyStages(spark)
+  test("revert fires and produces correct results when transitions exceed threshold") {
+    withParquetTable((0 until 100).map(i => (i, i % 10, s"val_$i")), "tbl") {
+      val query = "SELECT _2, count(*), sum(_1) FROM tbl GROUP BY _2"
 
-      withTempView("test_data") {
-        spark.range(10).toDF("id").createOrReplaceTempView("test_data")
-        val sparkPlan = createSparkPlan("SELECT id FROM test_data")
-        val cometPlan = applyFullColumnarPipeline(sparkPlan)
+      // Without revert, plan should have CometExec nodes with transitions
+      withSQLConf(
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false",
+        "spark.comet.exec.project.enabled" -> "false") {
+        val df = sql(query)
+        df.collect()
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(countCometExecs(plan) > 0, "Plan without revert should have CometExec nodes")
+        assert(countC2RNodes(plan) > 0, "Plan without revert should have C2R transitions")
+      }
 
-        val pairs = rule.countTransitions(cometPlan)
-        val result = rule.apply(cometPlan)
-        if (pairs <= 2) {
-          assert(
-            result eq cometPlan,
-            s"Plan with $pairs pairs should NOT be reverted at threshold 2")
-        } else {
-          assert(
-            countCometExecs(result) == 0,
-            s"Plan with $pairs pairs should be reverted at threshold 2")
-        }
+      // With revert enabled at threshold 0, all CometExec should be removed
+      withSQLConf(
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
+        "spark.comet.exec.project.enabled" -> "false") {
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val executedPlan = stripAQEPlan(cometPlan)
+        assert(
+          countCometExecs(executedPlan) == 0,
+          s"Revert should have removed all CometExec nodes:\n${executedPlan.treeString}")
       }
     }
   }
+
 }

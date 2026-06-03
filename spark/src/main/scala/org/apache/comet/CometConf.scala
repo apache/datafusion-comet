@@ -469,15 +469,11 @@ object CometConf extends ShimCometConf {
           "stage before Comet reverts the entire stage to Spark row-based execution. When " +
           "columnar shuffle is enabled, each C2R has a corresponding row-to-columnar (R2C) " +
           "conversion to feed back into the columnar shuffle, so the count reflects full " +
-          "round-trips. Minimum value is 2 because reverting a stage that feeds a columnar " +
-          "shuffle still requires at least one R2C at the shuffle boundary. " +
+          "round-trips. Set to 0 to revert any stage with transitions. " +
           "Only effective when spark.comet.exec.transitionRevert.enabled is true.")
       .intConf
-      .checkValue(
-        _ >= 2,
-        "Must be >= 2. A reverted stage still requires at least one " +
-          "R2C at the columnar shuffle boundary.")
-      .createWithDefault(2)
+      .checkValue(_ >= 0, "Must be >= 0.")
+      .createWithDefault(5)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")

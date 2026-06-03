@@ -23,7 +23,6 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
@@ -65,11 +64,13 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   }
 
   private def applyForNonAQE(plan: SparkPlan): SparkPlan = {
-    plan.transformUp { case exchange: ShuffleExchangeLike =>
+    val withRevertedStages = plan.transformUp { case exchange: ShuffleExchangeLike =>
       revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
         .map(reverted => exchange.withNewChildren(Seq(reverted)))
         .getOrElse(exchange)
     }
+    revertStageIfNeeded(withRevertedStages, outputColumnar = false)
+      .getOrElse(withRevertedStages)
   }
 
   /**
@@ -98,7 +99,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   private[rules] def countTransitions(plan: SparkPlan): Int = {
     var count = 0
     def visit(node: SparkPlan): Unit = node match {
-      case _: QueryStageExec | _: ShuffleExchangeLike => ()
+      case _: QueryStageExec | _: ShuffleExchangeLike | _: BroadcastExchangeLike => ()
       case _: ColumnarToRowTransition =>
         count += 1
         node.children.foreach(visit)
@@ -109,11 +110,6 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     count
   }
 
-  // Three passes:
-  // 1. Strip existing transitions (they assert child.supportsColumnar in constructors)
-  // 2. Revert Comet operators to row-based Spark equivalents
-  // 3. Re-insert ColumnarToRowExec where a columnar child feeds a row-based parent
-  //    (e.g. QueryStageExec from a prior CometShuffleExchangeExec stage)
   private[rules] def revertToSpark(plan: SparkPlan): SparkPlan = {
     val stripped = plan.transformDown {
       case CometNativeColumnarToRowExec(child) => child
@@ -122,15 +118,15 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
       case sparkToColumnar: CometSparkToColumnarExec => sparkToColumnar.child
       case RowToColumnarExec(child) => child
     }
-    val reverted = stripped.transformUp {
-      case cometShuffle: CometShuffleExchangeExec =>
-        cometShuffle.originalPlan.withNewChildren(Seq(cometShuffle.child))
-      case cometExec: CometExec =>
-        if (cometExec.originalPlan.children.size == cometExec.children.size) {
-          cometExec.originalPlan.withNewChildren(cometExec.children)
-        } else {
-          cometExec.originalPlan
-        }
+    val reverted = stripped.transformUp { case cometExec: CometExec =>
+      if (cometExec.originalPlan.children.size == cometExec.children.size) {
+        cometExec.originalPlan.withNewChildren(cometExec.children)
+      } else {
+        logWarning(
+          s"Comet plan and original have different child count for " +
+            s"${cometExec.getClass.getSimpleName}, using originalPlan as-is.")
+        cometExec.originalPlan
+      }
     }
     insertTransitions(reverted)
   }
