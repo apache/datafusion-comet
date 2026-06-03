@@ -125,6 +125,18 @@ use tikv_jemalloc_ctl::{epoch, stats};
 
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
+/// Human-readable message for an OomGuard circuit-breaker trip.
+#[cfg(feature = "oom-guard")]
+fn oom_guard_error_message(
+    g: &crate::execution::memory_pools::oom_guard::OomGuardPanic,
+) -> String {
+    format!(
+        "Comet OomGuard: native allocation pushed usage to {} bytes, over the limit of {} \
+         bytes; failing this task",
+        g.balance, g.limit
+    )
+}
+
 #[cfg(feature = "jemalloc")]
 fn log_jemalloc_usage() {
     let e = epoch::mib().unwrap();
@@ -819,13 +831,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             if let Some(g) = panic.downcast_ref::<
                                 crate::execution::memory_pools::oom_guard::OomGuardPanic,
                             >() {
+                                // Runs on the tokio worker thread that panicked, so this clears
+                                // that worker's UNWINDING flag (not the blocked JNI caller thread's).
                                 crate::execution::memory_pools::oom_guard::clear_unwinding();
                                 let _ = tx
-                                    .send(Err(DataFusionError::ResourcesExhausted(format!(
-                                        "Comet OomGuard: native allocation pushed usage to {} \
-                                         bytes, over the limit of {} bytes; failing this task",
-                                        g.balance, g.limit
-                                    ))))
+                                    .send(Err(DataFusionError::ResourcesExhausted(
+                                        oom_guard_error_message(g),
+                                    )))
                                     .await;
                                 return;
                             }
@@ -935,12 +947,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             crate::execution::memory_pools::oom_guard::OomGuardPanic,
                         >() {
                             crate::execution::memory_pools::oom_guard::clear_unwinding();
-                            let msg = format!(
-                                "Comet OomGuard: native allocation pushed usage to {} bytes, \
-                                 over the limit of {} bytes; failing this task",
-                                g.balance, g.limit
+                            // The block_on future was dropped mid-poll; null the stream so any
+                            // inadvertent re-entry re-initializes rather than polling a half-consumed one.
+                            exec_context.stream = None;
+                            return Err(
+                                DataFusionError::ResourcesExhausted(oom_guard_error_message(g))
+                                    .into(),
                             );
-                            return Err(DataFusionError::ResourcesExhausted(msg).into());
                         }
                     }
                     std::panic::resume_unwind(_panic);
