@@ -529,9 +529,11 @@ under the License.
 expression. Comet accelerates expressions either with a native (Rust) implementation or by
 dispatching to a Spark-compatible codegen path. When an expression is not supported, Comet
 transparently falls back to Spark for that part of the plan; results are unaffected.</p>
-<p>Expressions marked ✅ Supported are enabled by default. Expressions marked ⚠️ Supported
-(caveats) include cases that are known to diverge from Spark; those cases fall back to Spark
-by default and must be opted into per expression with
+<p>Expressions marked ✅ Supported are enabled by default and produce Spark-compatible results.
+Expressions marked ⚠️ Incorrect by default run natively by default but can return results that
+differ from Spark on some inputs; see the linked detail on each affected row.</p>
+<p>Some ✅ Supported expressions have specific incompatible cases that fall back to Spark by
+default. Those cases must be opted into per expression with
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code> (where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark
 expression class name, for example <code class="docutils literal notranslate"><span class="pre">Cast</span></code>). There is no global opt-in.</p>
 <p>Most expressions can also be disabled with <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.enabled=false</span></code>, where
@@ -600,11 +602,11 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">approx_count_distinct</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_agg</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Array aggregate (related to <code class="docutils literal notranslate"><span class="pre">collect_list</span></code>, #2524)</p></td>
+<td><p>Array aggregate (related to <code class="docutils literal notranslate"><span class="pre">collect_list</span></code>, <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2524">#2524</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">avg</span></code></p></td>
 <td><p>✅</p></td>
@@ -680,7 +682,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">kurtosis</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">last</span></code></p></td>
 <td><p>✅</p></td>
@@ -708,7 +710,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">median</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">min</span></code></p></td>
 <td><p>✅</p></td>
@@ -724,7 +726,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">percentile</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4542</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4542">#4542</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_cont</span></code></p></td>
 <td><p>🔜</p></td>
@@ -736,43 +738,43 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgx</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in #4551)</p></td>
+<td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4551">#4551</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgy</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in #4551)</p></td>
+<td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4551">#4551</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_count</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Count</span></code> (tests in #4551)</p></td>
+<td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Count</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4551">#4551</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_intercept</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code>/<code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulators (#4552)</p></td>
+<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code>/<code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulators (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_r2</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Falls back; can reuse the <code class="docutils literal notranslate"><span class="pre">corr</span></code> accumulator (#4552)</p></td>
+<td><p>Falls back; can reuse the <code class="docutils literal notranslate"><span class="pre">corr</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_slope</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code>/<code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulators (#4552)</p></td>
+<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code>/<code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulators (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulator (#4552)</p></td>
+<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxy</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code> accumulator (#4552)</p></td>
+<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_syy</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulator (#4552)</p></td>
+<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">skewness</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">some</span></code></p></td>
 <td><p>✅</p></td>
@@ -804,11 +806,11 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_avg</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_sum</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">var_pop</span></code></p></td>
 <td><p>✅</p></td>
@@ -923,7 +925,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sequence</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shuffle</span></code></p></td>
 <td><p>🔜</p></td>
@@ -931,7 +933,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">slice</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native (#4149)</p></td>
+<td><p>Native (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4149">#4149</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sort_array</span></code></p></td>
 <td><p>✅</p></td>
@@ -1064,7 +1066,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nanvl</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nullif</span></code></p></td>
 <td><p>✅</p></td>
@@ -1143,7 +1145,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">current_time</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Blocked on Spark 4.1 TIME type support (#4288)</p></td>
+<td><p>Blocked on Spark 4.1 TIME type support (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">current_timestamp</span></code></p></td>
 <td><p>✅</p></td>
@@ -1199,7 +1201,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dayname</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4544</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4544">#4544</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dayofmonth</span></code></p></td>
 <td><p>✅</p></td>
@@ -1243,15 +1245,15 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_dt_interval</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4541</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4541">#4541</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_interval</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Produces legacy CalendarInterval; tracked by #4540</p></td>
+<td><p>Produces legacy CalendarInterval; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4540">#4540</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_time</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Spark 4.1 TIME type; tracked by #4288</p></td>
+<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_timestamp</span></code></p></td>
 <td><p>✅</p></td>
@@ -1267,7 +1269,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_ym_interval</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4541</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4541">#4541</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 <td><p>✅</p></td>
@@ -1279,7 +1281,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">monthname</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4544</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4544">#4544</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">months_between</span></code></p></td>
 <td><p>✅</p></td>
@@ -1303,15 +1305,15 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">session_window</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Time-window grouping; tracked by #4553</p></td>
+<td><p>Time-window grouping; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4553">#4553</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">time_diff</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Spark 4.1 TIME type; tracked by #4288</p></td>
+<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">time_trunc</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Spark 4.1 TIME type; tracked by #4288</p></td>
+<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_micros</span></code></p></td>
 <td><p>✅</p></td>
@@ -1331,7 +1333,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_time</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Spark 4.1 TIME type; tracked by #4288</p></td>
+<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code></p></td>
 <td><p>✅</p></td>
@@ -1359,7 +1361,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_interval</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Produces legacy CalendarInterval; tracked by #4540</p></td>
+<td><p>Produces legacy CalendarInterval; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4540">#4540</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_timestamp</span></code></p></td>
 <td><p>⚠️</p></td>
@@ -1367,15 +1369,15 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_date</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> but currently falls back; tracked by #4556</p></td>
+<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> but currently falls back; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4556">#4556</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_time</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Spark 4.1 TIME type; tracked by #4288</p></td>
+<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> but currently falls back; tracked by #4556</p></td>
+<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> but currently falls back; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4556">#4556</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
 <td><p>✅</p></td>
@@ -1407,11 +1409,11 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">window</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Time-window grouping; tracked by #4553</p></td>
+<td><p>Time-window grouping; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4553">#4553</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">window_time</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Time-window grouping; tracked by #4553</p></td>
+<td><p>Time-window grouping; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4553">#4553</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">year</span></code></p></td>
 <td><p>✅</p></td>
@@ -1531,7 +1533,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">json_array_length</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">json_object_keys</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1745,7 +1747,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bround</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cbrt</span></code></p></td>
 <td><p>✅</p></td>
@@ -1761,7 +1763,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">conv</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cos</span></code></p></td>
 <td><p>✅</p></td>
@@ -1817,7 +1819,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">hypot</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">least</span></code></p></td>
 <td><p>✅</p></td>
@@ -1837,7 +1839,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">log1p</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">log2</span></code></p></td>
 <td><p>✅</p></td>
@@ -1857,7 +1859,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pmod</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">positive</span></code></p></td>
 <td><p>✅</p></td>
@@ -1945,7 +1947,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_mod</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">Remainder</span></code> with TRY eval mode, which falls back (#4484)</p></td>
+<td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">Remainder</span></code> with TRY eval mode, which falls back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4484">#4484</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_multiply</span></code></p></td>
 <td><p>✅</p></td>
@@ -1984,11 +1986,11 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aes_decrypt</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Falls back; <code class="docutils literal notranslate"><span class="pre">StaticInvoke</span></code> not allowlisted; planned via codegen dispatch (#4558)</p></td>
+<td><p>Falls back; <code class="docutils literal notranslate"><span class="pre">StaticInvoke</span></code> not allowlisted; planned via codegen dispatch (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4558">#4558</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aes_encrypt</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Falls back; planned via codegen dispatch (#4558); nondeterministic IV by default</p></td>
+<td><p>Falls back; planned via codegen dispatch (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4558">#4558</a>); nondeterministic IV by default</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">assert_true</span></code></p></td>
 <td><p>🔜</p></td>
@@ -2016,7 +2018,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">is_variant_null</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">monotonically_increasing_id</span></code></p></td>
 <td><p>✅</p></td>
@@ -2024,7 +2026,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">parse_json</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">raise_error</span></code></p></td>
 <td><p>🔜</p></td>
@@ -2040,11 +2042,11 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_variant</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_variant_agg</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">session_user</span></code></p></td>
 <td><p>✅</p></td>
@@ -2056,19 +2058,19 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_variant_object</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_aes_decrypt</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Falls back; planned via codegen dispatch (#4558)</p></td>
+<td><p>Falls back; planned via codegen dispatch (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4558">#4558</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_parse_json</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_variant_get</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">typeof</span></code></p></td>
 <td><p>✅</p></td>
@@ -2084,7 +2086,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">variant_get</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 </tbody>
 </table>
@@ -2234,7 +2236,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collate</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Spark collation (umbrella #2190)</p></td>
+<td><p>Spark collation (umbrella <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2190">#2190</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collation</span></code></p></td>
 <td><p>✅</p></td>
@@ -2254,7 +2256,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">elt</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">encode</span></code></p></td>
 <td><p>🔜</p></td>
@@ -2266,15 +2268,15 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">find_in_set</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">format_number</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">format_string</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">initcap</span></code></p></td>
 <td><p>✅</p></td>
@@ -2302,11 +2304,11 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">levenshtein</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">locate</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lower</span></code></p></td>
 <td><p>✅</p></td>
@@ -2334,31 +2336,31 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">overlay</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">position</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">printf</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_count</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code></p></td>
 <td><p>✅</p></td>
@@ -2366,7 +2368,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_substr</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>tracking #4098</p></td>
+<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repeat</span></code></p></td>
 <td><p>✅</p></td>
@@ -2390,7 +2392,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">soundex</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">space</span></code></p></td>
 <td><p>✅</p></td>
@@ -2402,7 +2404,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">split_part</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">element_at(StringSplitSQL(...))</span></code>; <code class="docutils literal notranslate"><span class="pre">StringSplitSQL</span></code> falls back (#4561)</p></td>
+<td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">element_at(StringSplitSQL(...))</span></code>; <code class="docutils literal notranslate"><span class="pre">StringSplitSQL</span></code> falls back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4561">#4561</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">startswith</span></code></p></td>
 <td><p>✅</p></td>
@@ -2426,15 +2428,15 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_char</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_number</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_varchar</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">translate</span></code></p></td>
 <td><p>✅</p></td>
@@ -2458,7 +2460,7 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unbase64</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>#4538</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">upper</span></code></p></td>
 <td><p>✅</p></td>
@@ -2541,11 +2543,11 @@ fall back to Spark.</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cume_dist</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Window function; tracked by #2721</p></td>
+<td><p>Window function; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dense_rank</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Window function; tracked by #2721</p></td>
+<td><p>Window function; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">lag</span></code></p></td>
 <td><p>✅</p></td>
@@ -2557,23 +2559,23 @@ fall back to Spark.</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nth_value</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Window function; tracked by #2721</p></td>
+<td><p>Window function; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ntile</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Window function; tracked by #2721</p></td>
+<td><p>Window function; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">percent_rank</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Window function; tracked by #2721</p></td>
+<td><p>Window function; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rank</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Window function; tracked by #2721</p></td>
+<td><p>Window function; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">row_number</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Window function; tracked by #2721</p></td>
+<td><p>Window function; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a></p></td>
 </tr>
 </tbody>
 </table>
