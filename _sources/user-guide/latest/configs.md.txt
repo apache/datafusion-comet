@@ -382,6 +382,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ToUnixTimestamp.enabled` | Enable Comet acceleration for `ToUnixTimestamp` | true |
 | `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
+| `spark.comet.expression.TryEval.enabled` | Enable Comet acceleration for `TryEval` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
 | `spark.comet.expression.Unhex.enabled` | Enable Comet acceleration for `Unhex` | true |
 | `spark.comet.expression.UnixDate.enabled` | Enable Comet acceleration for `UnixDate` | true |

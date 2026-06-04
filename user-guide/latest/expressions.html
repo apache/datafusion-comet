@@ -1985,12 +1985,12 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aes_decrypt</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Falls back; <code class="docutils literal notranslate"><span class="pre">StaticInvoke</span></code> not allowlisted; planned via codegen dispatch (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4558">#4558</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>Routed through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aes_encrypt</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Falls back; planned via codegen dispatch (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4558">#4558</a>); nondeterministic IV by default</p></td>
+<td><p>✅</p></td>
+<td><p>Routed through the JVM codegen dispatcher; nondeterministic IV by default</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">assert_true</span></code></p></td>
 <td><p>🔜</p></td>
@@ -2061,8 +2061,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_aes_decrypt</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Falls back; planned via codegen dispatch (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4558">#4558</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>Routed through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_parse_json</span></code></p></td>
 <td><p>🔜</p></td>
