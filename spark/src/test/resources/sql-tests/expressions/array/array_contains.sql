@@ -36,6 +36,10 @@ SELECT array_contains(array(1, 2, 3), val) FROM test_array_contains
 query
 SELECT array_contains(array(1, 2, 3), 2), array_contains(array(1, 2, 3), 4), array_contains(array(), 1), array_contains(cast(NULL as array<int>), 1)
 
+-- NULL element/value cases
+query
+SELECT array_contains(array(1, NULL, 3), 2), array_contains(array(1, NULL, 3), 1), array_contains(array(1, 2, 3), cast(NULL as int)), array_contains(array(1, NULL, 3), cast(NULL as int))
+
 -- Additional NULL array tests (issue #3345 fix verification)
 -- NULL array with integer value
 query
