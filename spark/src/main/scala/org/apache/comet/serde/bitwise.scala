@@ -29,10 +29,16 @@ object CometBitwiseAnd extends CometExpressionSerde[BitwiseAnd] {
       expr: BitwiseAnd,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createBinaryExpr(
+    // Rebalance the (associative, always-integral) chain so deep `a & b & ...` produces a
+    // shallow proto instead of a left-deep one that overflows protobuf's recursion limit when
+    // the plan is re-parsed (see createBalancedBinaryExpr).
+    val operands = flattenAssociative(
       expr,
-      expr.left,
-      expr.right,
+      { case _: BitwiseAnd => true; case _ => false },
+      { case b: BitwiseAnd => (b.left, b.right) })
+    createBalancedBinaryExpr(
+      expr,
+      operands,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
@@ -56,10 +62,13 @@ object CometBitwiseOr extends CometExpressionSerde[BitwiseOr] {
       expr: BitwiseOr,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createBinaryExpr(
+    val operands = flattenAssociative(
       expr,
-      expr.left,
-      expr.right,
+      { case _: BitwiseOr => true; case _ => false },
+      { case b: BitwiseOr => (b.left, b.right) })
+    createBalancedBinaryExpr(
+      expr,
+      operands,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setBitwiseOr(binaryExpr))
@@ -71,10 +80,13 @@ object CometBitwiseXor extends CometExpressionSerde[BitwiseXor] {
       expr: BitwiseXor,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createBinaryExpr(
+    val operands = flattenAssociative(
       expr,
-      expr.left,
-      expr.right,
+      { case _: BitwiseXor => true; case _ => false },
+      { case b: BitwiseXor => (b.left, b.right) })
+    createBalancedBinaryExpr(
+      expr,
+      operands,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))

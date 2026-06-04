@@ -26,7 +26,7 @@ import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, 
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
@@ -83,6 +83,65 @@ trait MathBase {
       false
   }
 
+  /**
+   * True when an `Add` / `Multiply` chain of `dataType` in `evalMode` can be rebalanced without
+   * changing results. Only integral types in LEGACY (wrapping, modular) eval mode are exactly
+   * associative, so re-grouping the chain is a no-op on the value. Floating point is not
+   * associative (rounding differs by grouping -- Spark's own `ReorderAssociativeOperator`
+   * excludes it). ANSI / TRY make integer overflow observable (throw / null), and the grouping
+   * changes which intermediate overflows, so those are excluded too. Decimal is excluded because
+   * intermediate precision grows per operation.
+   */
+  def isAssociativeAndRebalanceable(dataType: DataType, evalMode: EvalMode.Value): Boolean =
+    evalMode == EvalMode.LEGACY && (dataType match {
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
+      case _ => false
+    })
+
+  /**
+   * Like [[QueryPlanSerde.createBalancedBinaryExpr]] but for `MathExpr`-shaped associative
+   * operators (`Add`, `Multiply`): each combined inner node carries the chain's `evalMode` and
+   * `returnType`. Rebalances a flattened chain into an `O(log n)`-depth tree so deep
+   * `a + b + ...` chains serialize to a shallow proto instead of a left-deep one that overflows
+   * protobuf's recursion limit when the plan is re-parsed. Only safe for exactly-associative
+   * chains -- callers gate via [[isAssociativeAndRebalanceable]]. The flattened leaves all share
+   * the chain's type (Spark coerces operands to it, with casts acting as flatten boundaries), so
+   * a single `returnType` / `evalMode` is correct for every inner node.
+   */
+  def createBalancedMathExpr(
+      expr: Expression,
+      operands: Seq[Expression],
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      dataType: DataType,
+      evalMode: EvalMode.Value,
+      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
+      : Option[ExprOuterClass.Expr] = {
+    val protos = operands.map(exprToProtoInternal(_, inputs, binding))
+    if (protos.exists(_.isEmpty)) {
+      withFallbackReason(expr, operands: _*)
+      None
+    } else {
+      val returnType = serializeDataType(dataType)
+      val evalModeProto = evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode))
+      val leaves = protos.map(_.get).toIndexedSeq
+      def build(slice: IndexedSeq[ExprOuterClass.Expr]): ExprOuterClass.Expr = {
+        if (slice.length == 1) slice.head
+        else {
+          val mid = slice.length / 2
+          val mathBuilder = ExprOuterClass.MathExpr
+            .newBuilder()
+            .setLeft(build(slice.slice(0, mid)))
+            .setRight(build(slice.slice(mid, slice.length)))
+            .setEvalMode(evalModeProto)
+          returnType.foreach(mathBuilder.setReturnType)
+          f(ExprOuterClass.Expr.newBuilder(), mathBuilder.build()).build()
+        }
+      }
+      Some(build(leaves))
+    }
+  }
+
 }
 
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
@@ -95,15 +154,32 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
       withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    createMathExpression(
-      expr,
-      expr.left,
-      expr.right,
-      inputs,
-      binding,
-      expr.dataType,
-      expr.evalMode,
-      (builder, mathExpr) => builder.setAdd(mathExpr))
+    if (isAssociativeAndRebalanceable(expr.dataType, expr.evalMode)) {
+      // Rebalance deep `a + b + ...` chains (integral + LEGACY = exactly associative) so the
+      // proto stays shallow and doesn't overflow protobuf's recursion limit when re-parsed.
+      val operands = flattenAssociative(
+        expr,
+        { case _: Add => true; case _ => false },
+        { case a: Add => (a.left, a.right) })
+      createBalancedMathExpr(
+        expr,
+        operands,
+        inputs,
+        binding,
+        expr.dataType,
+        expr.evalMode,
+        (builder, mathExpr) => builder.setAdd(mathExpr))
+    } else {
+      createMathExpression(
+        expr,
+        expr.left,
+        expr.right,
+        inputs,
+        binding,
+        expr.dataType,
+        expr.evalMode,
+        (builder, mathExpr) => builder.setAdd(mathExpr))
+    }
   }
 }
 
@@ -139,15 +215,32 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
       withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    createMathExpression(
-      expr,
-      expr.left,
-      expr.right,
-      inputs,
-      binding,
-      expr.dataType,
-      expr.evalMode,
-      (builder, mathExpr) => builder.setMultiply(mathExpr))
+    if (isAssociativeAndRebalanceable(expr.dataType, expr.evalMode)) {
+      // Rebalance deep `a * b * ...` chains (integral + LEGACY = exactly associative) so the
+      // proto stays shallow and doesn't overflow protobuf's recursion limit when re-parsed.
+      val operands = flattenAssociative(
+        expr,
+        { case _: Multiply => true; case _ => false },
+        { case m: Multiply => (m.left, m.right) })
+      createBalancedMathExpr(
+        expr,
+        operands,
+        inputs,
+        binding,
+        expr.dataType,
+        expr.evalMode,
+        (builder, mathExpr) => builder.setMultiply(mathExpr))
+    } else {
+      createMathExpression(
+        expr,
+        expr.left,
+        expr.right,
+        inputs,
+        binding,
+        expr.dataType,
+        expr.evalMode,
+        (builder, mathExpr) => builder.setMultiply(mathExpr))
+    }
   }
 }
 

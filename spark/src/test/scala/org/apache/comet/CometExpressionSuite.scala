@@ -3162,4 +3162,38 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("deep bitwise And/Or/Xor chains do not overflow the protobuf recursion limit") {
+    // Same protobuf-recursion-limit concern as the AND/OR case, for the (always-integral,
+    // exactly associative) bitwise operators: a left-deep chain of N serializes N levels deep
+    // and overflows the default limit (100) when re-parsed. Comet rebalances them.
+    val n = 200
+    withParquetTable((0 until 100).map(i => (i, i.toLong)), "tbl") {
+      // Column-based operands (mix the column with a distinct literal) so the chain isn't
+      // constant-folded away before serialization.
+      val terms = (1 to n).map(i => col("_1") + lit(i))
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseAND(b)).as("a")))
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseOR(b)).as("o")))
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseXOR(b)).as("x")))
+    }
+  }
+
+  test("deep integral Add/Multiply chains do not overflow the protobuf recursion limit") {
+    // Integral + non-ANSI (LEGACY, wrapping) Add/Multiply are exactly associative, so Comet
+    // rebalances the deep chain. (ANSI/TRY, float, and decimal are intentionally NOT rebalanced
+    // -- their result or overflow behaviour depends on grouping -- so force non-ANSI here.)
+    val n = 200
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i.toLong)), "tbl") {
+        val terms = (1 to n).map(i => col("_1") + lit(i))
+        checkSparkAnswerAndOperator(spark.table("tbl").select(terms.reduce(_ + _).as("a")))
+        // Wrapping (mod 2^32) multiply: the product overflows Int but wraps identically in
+        // Spark and Comet, so the rebalanced grouping yields the same value.
+        checkSparkAnswerAndOperator(spark.table("tbl").select(terms.reduce(_ * _).as("m")))
+      }
+    }
+  }
+
 }
