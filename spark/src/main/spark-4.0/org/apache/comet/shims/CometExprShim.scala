@@ -38,7 +38,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends CommonStringExprs with CometExprShim4x {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -182,6 +182,11 @@ trait CometExprShim extends CommonStringExprs {
             childExpr)
           optExprWithFallbackReason(mapSortExpr, ms, ms.child)
         }
+
+      // dayname / monthname (Spark 4.0+) are shared across all 4.x minor versions; see
+      // CometExprShim4x.convertDayMonthName.
+      case _: DayName | _: MonthName =>
+        convertDayMonthName(expr, inputs, binding)
 
       case _ => None
     }

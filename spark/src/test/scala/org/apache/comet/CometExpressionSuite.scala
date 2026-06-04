@@ -24,7 +24,7 @@ import java.time.{Duration, Period}
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
@@ -122,6 +122,37 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
         "unsupported range partitioning sort order")
+    }
+  }
+
+  test("GetStructField: non-nullable field of a nullable struct (Delta action-frame shape)") {
+    // Repro for the under-declared `GetStructField` nullability that crashed Comet's native
+    // execution with "Column '...' is declared as non-nullable but contains null values".
+    //
+    // Models Delta's action frame: each log row is exactly ONE action type, so action columns are
+    // NULLABLE structs, but their inner fields are declared NON-nullable by Delta's typed
+    // SingleAction schema (e.g. `add.size`). We build that exact shape with an explicit in-memory
+    // schema (a Parquet round-trip would mark every field nullable, and a CreateNamedStruct would
+    // be declined). Pushing the struct through a Comet shuffle and projecting the non-nullable
+    // inner field (GetStructField) used to produce a null in a column declared non-nullable, which
+    // Comet's native execution rejected during RecordBatch validation.
+    val schema = StructType(
+      Seq(
+        StructField(
+          "add",
+          StructType(Seq(StructField("size", LongType, nullable = false))),
+          nullable = true),
+        StructField("v", IntegerType, nullable = false)))
+    val rows = (0 until 1000).map(i => Row(if (i % 2 == 0) Row(i.toLong) else null, i))
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key -> "true") {
+      val df = spark
+        .createDataFrame(spark.sparkContext.parallelize(rows), schema)
+        .repartition(4, col("v")) // materialize the typed struct through a Comet shuffle
+        .select(col("add.size").as("size")) // GetStructField on the non-nullable inner field
+        .repartition(4, col("size")) // re-shuffle: read-back validates the declared schema
+      checkSparkAnswer(df)
     }
   }
 
@@ -3093,6 +3124,41 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         checkSparkAnswerAndOperator(df1)
       }
+    }
+  }
+
+  test("deep AND/OR predicate chains do not overflow the protobuf recursion limit") {
+    // A left-deep chain of N associative boolean operands serializes to a proto nested N
+    // levels deep. With N > protobuf's default recursion limit (100), the message overflows
+    // when the serialized plan is re-parsed (JVM Operator.parseFrom and the Rust prost
+    // decoder), failing an otherwise-supported query. Comet evaluates AND/OR vectorially with
+    // no short-circuit, so the chain is fully associative and safe to rebalance.
+    val n = 200
+    // `_2` is nullable (every 7th row is null) so the rebalanced chain is exercised under SQL
+    // three-valued logic, not just true/false operands.
+    withParquetTable(
+      (0 until 100).map(i => (i, if (i % 7 == 0) None else Some(i.toLong))),
+      "tbl") {
+      // Build a chain that mixes the non-nullable `_1` with the nullable `_2` so null operands
+      // flow through the rebalanced tree.
+      def operand(i: Int): Column =
+        if (i % 2 == 0) col("_2") > lit(-i) else col("_1") > lit(-i)
+
+      // Project the chains as boolean columns rather than filtering: a top-level filter AND is
+      // split by Spark's splitConjunctivePredicates into many shallow pushed predicates, which
+      // would hide the deep-nesting. A projected expression survives intact. Distinct literals
+      // keep the optimizer from folding the chain; `>`/`<` (not `=`) keeps OptimizeIn from
+      // collapsing the OR chain into a single In.
+      val andChain = (1 to n).map(operand).reduce(_ && _)
+      checkSparkAnswerAndOperator(spark.table("tbl").select(andChain.as("a")))
+
+      val orChain = (1 to n).map(i => col("_1") < lit(i) || col("_2") < lit(i)).reduce(_ || _)
+      checkSparkAnswerAndOperator(spark.table("tbl").select(orChain.as("o")))
+
+      // A deep OR is a common real-world WHERE clause and, unlike a top-level AND, is NOT split
+      // by Spark -- it stays intact as a single deeply-nested predicate, so exercise that path
+      // directly.
+      checkSparkAnswerAndOperator(spark.table("tbl").where(orChain))
     }
   }
 
