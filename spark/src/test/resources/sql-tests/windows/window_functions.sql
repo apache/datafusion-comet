@@ -267,15 +267,14 @@ FROM t_single
 -- Ported from Spark's postgreSQL/window_part2.sql:
 --   select x.id, last(x.id) over (order by x.id range between current row and 4 following)
 --   from range(9223372036854775804, 9223372036854775807) x;
--- ANSI is off here (the file default) so this is not an overflow
--- error case. When Spark computes the frame upper bound
--- `current + 4` for a row near Long.MaxValue the addition
--- overflows; Spark's non-ANSI Add wraps to a negative value, so
--- the upper bound ends up below the current row and the range
--- frame is empty — LAST_VALUE returns NULL for every overflowing
--- row. The test verifies Comet propagates that overflow through
--- the native RANGE frame and produces the same NULL result rather
--- than a wrapped id or a saturated Long.MaxValue bound.
+-- When Spark computes the frame upper bound `current + 4` for a row near
+-- Long.MaxValue the non-ANSI Add wraps to a negative value, the wrapped
+-- upper bound ends up below the current row, the range frame is empty,
+-- and LAST_VALUE returns NULL. Comet's native RANGE frame doesn't
+-- reproduce that wrap, and Spark's SlidingWindowFunctionFrame iterator
+-- state (rows excluded by an earlier wrapped bound stay excluded) can't
+-- be matched stateless on the native side, so Comet falls back to Spark
+-- for FIRST_VALUE / LAST_VALUE on RANGE with literal offsets.
 -- ============================================================
 
 statement
@@ -287,15 +286,37 @@ INSERT INTO bigint_max_range VALUES
   (9223372036854775805),
   (9223372036854775806)
 
--- https://github.com/apache/datafusion-comet/issues/4307
-query ignore(https://github.com/apache/datafusion-comet/issues/4307)
+query expect_fallback(LAST_VALUE with RANGE frame and literal offset is not supported)
 SELECT id,
   LAST_VALUE(id) OVER (ORDER BY id
                        RANGE BETWEEN CURRENT ROW AND 4 FOLLOWING) AS lv
 FROM bigint_max_range
 
 -- ============================================================
--- 1.14: multiple PARTITION BY + multiple ORDER BY
+-- 1.14: RANGE frame with BIGINT ORDER BY values near Long.MinValue
+-- Companion to 1.13 covering the underflow side. Spark wraps the lower
+-- bound `current - 4` for rows near Long.MinValue, the wrapped bound
+-- ends up above the current row, and FIRST_VALUE returns NULL. Same
+-- fallback reason as 1.13.
+-- ============================================================
+
+statement
+CREATE TABLE bigint_min_range(id bigint) USING parquet
+
+statement
+INSERT INTO bigint_min_range VALUES
+  (-9223372036854775807),
+  (-9223372036854775806),
+  (-9223372036854775805)
+
+query expect_fallback(FIRST_VALUE with RANGE frame and literal offset is not supported)
+SELECT id,
+  FIRST_VALUE(id) OVER (ORDER BY id
+                        RANGE BETWEEN 4 PRECEDING AND CURRENT ROW) AS fv
+FROM bigint_min_range
+
+-- ============================================================
+-- 1.15: multiple PARTITION BY + multiple ORDER BY
 -- ============================================================
 
 query
@@ -305,7 +326,7 @@ SELECT dept, id, hire_yr, salary,
 FROM emp
 
 -- ============================================================
--- 1.15: complex expression in aggregate input
+-- 1.16: complex expression in aggregate input
 -- ============================================================
 
 query
@@ -314,7 +335,7 @@ SELECT dept, id, salary,
 FROM emp
 
 -- ============================================================
--- 1.16: multiple window functions with mixed specs in one query
+-- 1.17: multiple window functions with mixed specs in one query
 -- ============================================================
 
 query

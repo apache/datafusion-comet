@@ -256,6 +256,33 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
             return None
           case _ =>
         }
+
+        // FIRST_VALUE / LAST_VALUE on RANGE with a literal PRECEDING / FOLLOWING
+        // offset diverges from Spark when the boundary computation
+        // `current +/- offset` overflows under non-ANSI semantics. Spark's
+        // SlidingWindowFunctionFrame advances its internal lowerBound index
+        // monotonically, so rows excluded by an earlier wrapped bound stay
+        // excluded even after the bound becomes valid again - a property
+        // tied to the iterator's mutable state that Comet's native RANGE
+        // frame can't reproduce stateless. Fall back to Spark for these
+        // cases until the native side carries the same iterator semantics.
+        windowExpr.windowFunction match {
+          case agg: AggregateExpression =>
+            agg.aggregateFunction match {
+              case _: First =>
+                withFallbackReason(
+                  windowExpr,
+                  "FIRST_VALUE with RANGE frame and literal offset is not supported")
+                return None
+              case _: Last =>
+                withFallbackReason(
+                  windowExpr,
+                  "LAST_VALUE with RANGE frame and literal offset is not supported")
+                return None
+              case _ =>
+            }
+          case _ =>
+        }
       case _ =>
     }
 
