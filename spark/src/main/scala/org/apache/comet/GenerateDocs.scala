@@ -313,7 +313,7 @@ object GenerateDocs {
                 annotations += ((fromTypeName, toTypeName, note.trim.replace("(10,2)", "")))
               }
               "C"
-            case Incompatible(notes, _) =>
+            case Incompatible(notes) =>
               notes.filter(_.trim.nonEmpty).foreach { note =>
                 annotations += ((fromTypeName, toTypeName, note.trim.replace("(10,2)", "")))
               }

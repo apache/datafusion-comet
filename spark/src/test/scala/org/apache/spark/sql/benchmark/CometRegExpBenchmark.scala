@@ -103,18 +103,15 @@ object CometRegExpBenchmark extends CometBenchmarkBase {
       "spark.sql.optimizer.constantFolding.enabled" -> "false")
 
     benchmark.addCase("Comet (Exec, native Rust regex)") { _ =>
-      val configs = baseExec ++ Map(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true")
+      val configs = baseExec ++ Map(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true")
       withSQLConf(configs.toSeq: _*) {
         spark.sql(query).noop()
       }
     }
 
     benchmark.addCase("Comet (Exec, JVM regex)") { _ =>
-      val configs =
-        baseExec ++ Map(
-          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
-          CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_JAVA)
-      withSQLConf(configs.toSeq: _*) {
+      // The codegen dispatcher is enabled by default, so no extra config is needed.
+      withSQLConf(baseExec.toSeq: _*) {
         spark.sql(query).noop()
       }
     }

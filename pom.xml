@@ -69,7 +69,7 @@ under the License.
     <scala.plugin.version>4.9.6</scala.plugin.version>
     <scalatest.version>3.2.16</scalatest.version>
     <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
-    <spark.version>4.1.1</spark.version>
+    <spark.version>4.1.2</spark.version>
     <spark.version.short>4.1</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.25.5</protobuf.version>
@@ -704,13 +704,13 @@ under the License.
     <profile>
       <id>spark-4.1</id>
       <properties>
-        <!-- Spark 4.1.1 is compiled against Scala 2.13.17 and emits calls into stdlib methods
+        <!-- Spark 4.1 is compiled against Scala 2.13.17 and emits calls into stdlib methods
              added in that release (e.g. MurmurHash3$.caseClassHash$default$2()). Comet must
              match to avoid runtime NoSuchMethodError. Note: semanticdb-scalac_2.13.17 is not
              yet published, so the -Psemanticdb / scalafix lint job is skipped for spark-4.1. -->
         <scala.version>2.13.17</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.1.1</spark.version>
+        <spark.version>4.1.2</spark.version>
         <spark.version.short>4.1</spark.version.short>
         <parquet.version>1.16.0</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>

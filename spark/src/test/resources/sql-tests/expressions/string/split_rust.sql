@@ -16,7 +16,8 @@
 -- under the License.
 
 -- Test split with Rust regexp engine
--- Config: spark.comet.exec.regexp.engine=rust
+-- Opt in to the native (rust) regexp engine. Without this, it runs through the codegen dispatcher.
+-- Config: spark.comet.expression.StringSplit.allowIncompatible=true
 
 statement
 CREATE TABLE test_split_rust_enabled(s string) USING parquet

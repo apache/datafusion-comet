@@ -24,7 +24,7 @@ import java.time.{Duration, Period}
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
@@ -122,6 +122,37 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
         "unsupported range partitioning sort order")
+    }
+  }
+
+  test("GetStructField: non-nullable field of a nullable struct (Delta action-frame shape)") {
+    // Repro for the under-declared `GetStructField` nullability that crashed Comet's native
+    // execution with "Column '...' is declared as non-nullable but contains null values".
+    //
+    // Models Delta's action frame: each log row is exactly ONE action type, so action columns are
+    // NULLABLE structs, but their inner fields are declared NON-nullable by Delta's typed
+    // SingleAction schema (e.g. `add.size`). We build that exact shape with an explicit in-memory
+    // schema (a Parquet round-trip would mark every field nullable, and a CreateNamedStruct would
+    // be declined). Pushing the struct through a Comet shuffle and projecting the non-nullable
+    // inner field (GetStructField) used to produce a null in a column declared non-nullable, which
+    // Comet's native execution rejected during RecordBatch validation.
+    val schema = StructType(
+      Seq(
+        StructField(
+          "add",
+          StructType(Seq(StructField("size", LongType, nullable = false))),
+          nullable = true),
+        StructField("v", IntegerType, nullable = false)))
+    val rows = (0 until 1000).map(i => Row(if (i % 2 == 0) Row(i.toLong) else null, i))
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key -> "true") {
+      val df = spark
+        .createDataFrame(spark.sparkContext.parallelize(rows), schema)
+        .repartition(4, col("v")) // materialize the typed struct through a Comet shuffle
+        .select(col("add.size").as("size")) // GetStructField on the non-nullable inner field
+        .repartition(4, col("size")) // re-shuffle: read-back validates the declared schema
+      checkSparkAnswer(df)
     }
   }
 
@@ -929,7 +960,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // add repetitive data to trigger dictionary encoding
         Range(0, 100).map(_ => "John Smith")
       withParquetFile(data.zipWithIndex, withDictionary) { file =>
-        withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true") {
           spark.read.parquet(file).createOrReplaceTempView(table)
           val query = sql(s"select _2 as id, _1 rlike 'R[a-z]+s [Rr]ose' from $table")
           checkSparkAnswerAndOperator(query)
@@ -938,7 +969,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("withInfo") {
+  test("withFallbackReason") {
     val table = "with_info"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -947,14 +978,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val (_, cometPlan) = checkSparkAnswerAndOperator(query)
       val project = stripAQEPlan(cometPlan).collectFirst { case p: CometProjectExec => p }.get
       val id = project.expressions.head
-      CometSparkSessionExtensions.withInfo(id, "reason 1")
-      CometSparkSessionExtensions.withInfo(project, "reason 2")
-      CometSparkSessionExtensions.withInfo(project, "reason 3", id)
-      CometSparkSessionExtensions.withInfo(project, id)
-      CometSparkSessionExtensions.withInfo(project, "reason 4")
-      CometSparkSessionExtensions.withInfo(project, "reason 5", id)
-      CometSparkSessionExtensions.withInfo(project, id)
-      CometSparkSessionExtensions.withInfo(project, "reason 6")
+      CometSparkSessionExtensions.withFallbackReason(id, "reason 1")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 2")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 3", id)
+      CometSparkSessionExtensions.withFallbackReason(project, id)
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 4")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 5", id)
+      CometSparkSessionExtensions.withFallbackReason(project, id)
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 6")
       val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
       for (i <- 1 until 7) {
         assert(explain.contains(s"reason $i"))
@@ -962,17 +993,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("rlike fallback for non scalar pattern") {
-    val table = "rlike_fallback"
+  test("rlike with non-scalar pattern runs via codegen dispatcher") {
+    val table = "rlike_non_scalar"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
       sql(s"insert into $table values(1,'James Smith')")
-      withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
-        val query2 = sql(s"select id from $table where name rlike name")
-        val (_, cometPlan) = checkSparkAnswer(query2)
-        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
-        assert(explain.contains("Only scalar regexp patterns are supported"))
-      }
+      // The native path only handles scalar patterns. A column pattern routes through the codegen
+      // dispatcher (Spark's own code) and still runs on Comet rather than falling back to Spark.
+      checkSparkAnswerAndOperator(sql(s"select id from $table where name rlike name"))
     }
   }
 
@@ -1001,7 +1029,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // "Smith$",
         "Smith\\Z",
         "Smith\\z")
-      withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true") {
         patterns.foreach { pattern =>
           val query2 = sql(s"select name, '$pattern', name rlike '$pattern' from $table")
           checkSparkAnswerAndOperator(query2)
@@ -1061,7 +1089,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "\\V")
       val qualifiers = Seq("", "+", "*", "?", "{1,}")
 
-      withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true") {
         // testing every possible combination takes too long, so we pick some
         // random combinations
         for (_ <- 0 until 100) {
@@ -1452,13 +1480,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         true
       }.length
     }
-    withParquetTable(Seq(0, 1, 2).map(n => (n.toString, n.toString)), "tbl") {
-      val sql = "select initcap(_1) from tbl"
-      val (_, cometPlan) = checkSparkAnswer(sql)
-      assert(1 == countSparkProjectExec(cometPlan))
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
-        val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
-        assert(0 == countSparkProjectExec(cometPlan))
+    // Disable the JVM codegen dispatcher so InitCap exercises the serde-level incompatible
+    // fallback path under test here. With the dispatcher enabled (the default), InitCap is routed
+    // natively through Spark's own codegen regardless of the allowIncompat config, which is
+    // covered separately.
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(Seq(0, 1, 2).map(n => (n.toString, n.toString)), "tbl") {
+        val sql = "select initcap(_1) from tbl"
+        val (_, cometPlan) = checkSparkAnswer(sql)
+        assert(1 == countSparkProjectExec(cometPlan))
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
+          assert(0 == countSparkProjectExec(cometPlan))
+        }
       }
     }
   }
@@ -3087,6 +3121,41 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         checkSparkAnswerAndOperator(df1)
       }
+    }
+  }
+
+  test("deep AND/OR predicate chains do not overflow the protobuf recursion limit") {
+    // A left-deep chain of N associative boolean operands serializes to a proto nested N
+    // levels deep. With N > protobuf's default recursion limit (100), the message overflows
+    // when the serialized plan is re-parsed (JVM Operator.parseFrom and the Rust prost
+    // decoder), failing an otherwise-supported query. Comet evaluates AND/OR vectorially with
+    // no short-circuit, so the chain is fully associative and safe to rebalance.
+    val n = 200
+    // `_2` is nullable (every 7th row is null) so the rebalanced chain is exercised under SQL
+    // three-valued logic, not just true/false operands.
+    withParquetTable(
+      (0 until 100).map(i => (i, if (i % 7 == 0) None else Some(i.toLong))),
+      "tbl") {
+      // Build a chain that mixes the non-nullable `_1` with the nullable `_2` so null operands
+      // flow through the rebalanced tree.
+      def operand(i: Int): Column =
+        if (i % 2 == 0) col("_2") > lit(-i) else col("_1") > lit(-i)
+
+      // Project the chains as boolean columns rather than filtering: a top-level filter AND is
+      // split by Spark's splitConjunctivePredicates into many shallow pushed predicates, which
+      // would hide the deep-nesting. A projected expression survives intact. Distinct literals
+      // keep the optimizer from folding the chain; `>`/`<` (not `=`) keeps OptimizeIn from
+      // collapsing the OR chain into a single In.
+      val andChain = (1 to n).map(operand).reduce(_ && _)
+      checkSparkAnswerAndOperator(spark.table("tbl").select(andChain.as("a")))
+
+      val orChain = (1 to n).map(i => col("_1") < lit(i) || col("_2") < lit(i)).reduce(_ || _)
+      checkSparkAnswerAndOperator(spark.table("tbl").select(orChain.as("o")))
+
+      // A deep OR is a common real-world WHERE clause and, unlike a top-level AND, is NOT split
+      // by Spark -- it stays intact as a single deeply-nested predicate, so exercise that path
+      // directly.
+      checkSparkAnswerAndOperator(spark.table("tbl").where(orChain))
     }
   }
 

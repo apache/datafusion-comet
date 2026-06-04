@@ -88,7 +88,7 @@ Tracing <tracing>
 :caption: Reference
 :hidden:
 
-Supported Spark Expressions <spark_expressions_support>
+Expression Audits <expression-audits/index>
 Supported Spark Configurations <spark_configs_support>
 ```
 

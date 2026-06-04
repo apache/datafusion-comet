@@ -24,7 +24,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
@@ -81,7 +81,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           if (childExpr.isDefined) {
             castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, cometEvalMode)
           } else {
-            withInfo(cast, cast.child)
+            withFallbackReason(cast, cast.child)
             None
           }
         }
@@ -131,7 +131,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
             .setCast(castBuilder)
             .build())
       case _ =>
-        withInfo(expr, s"Unsupported datatype in castToProto: $dt")
+        withFallbackReason(expr, s"Unsupported datatype in castToProto: $dt")
         None
     }
   }
@@ -151,8 +151,6 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
           if toElementType != DataTypes.IntegerType && toElementType != DataTypes.StringType =>
         unsupported(fromType, toType)
-      case (dt: ArrayType, DataTypes.StringType) if dt.elementType == DataTypes.BinaryType =>
-        Incompatible()
       case (dt: ArrayType, DataTypes.StringType) =>
         isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode)
       case (dt: ArrayType, dt1: ArrayType) =>
@@ -245,9 +243,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible(
           Some(
-            "There can be differences in precision. " +
-              "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
-              "instead of 1.4E-45"))
+            "String formatting can differ for floating-point values near precision limits " +
+              "or when scientific notation is used"))
       case d: DecimalType if d.scale < 0 =>
         // Negative-scale decimals require spark.sql.legacy.allowNegativeScaleOfDecimal=true.
         // When that config is enabled, Spark formats them using Java BigDecimal.toString()

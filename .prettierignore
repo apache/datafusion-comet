@@ -15,23 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Check that all test suites are added to PR workflows
-
-concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
-  cancel-in-progress: true
-
-on:
-  push:
-    branches:
-      - main
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-jobs:
-  check-missing-suites:
-    runs-on: ubuntu-slim
-    steps:
-      - uses: actions/checkout@v6
-      - name: Check Missing Suites
-        run: python3 dev/ci/check-suites.py
+# prettier re-aligns markdown table columns to the widest cell, so adding a
+# single expression row rewrites every row in the table. That produces noisy
+# diffs and frequent merge conflicts between PRs that each add new expressions.
+# This file is almost entirely tables, so exempt it from prettier formatting.
+docs/source/user-guide/latest/expressions.md

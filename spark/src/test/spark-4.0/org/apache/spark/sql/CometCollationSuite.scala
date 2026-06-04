@@ -110,7 +110,7 @@ class CometCollationSuite extends CometTestBase {
     }
 
   private def assertFallbackReason(plan: SparkPlan, expectedReason: String): Unit = {
-    val reasons = plan.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+    val reasons = plan.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
     assert(
       reasons.contains(expectedReason),
       s"Expected fallback reason '$expectedReason' on ${plan.nodeName}, got: $reasons")

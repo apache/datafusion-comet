@@ -16,8 +16,6 @@
 -- under the License.
 
 -- Test regexp_extract via JVM regex engine
--- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
--- Config: spark.comet.exec.regexp.engine=java
 
 statement
 CREATE TABLE test_regexp_extract(s string) USING parquet

@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -32,7 +32,7 @@ object CometMapKeys extends CometExpressionSerde[MapKeys] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapKeysScalarExpr = scalarFunctionExprToProto("map_keys", childExpr)
-    optExprWithInfo(mapKeysScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(mapKeysScalarExpr, expr, expr.children: _*)
   }
 }
 
@@ -44,7 +44,7 @@ object CometMapEntries extends CometExpressionSerde[MapEntries] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapEntriesScalarExpr = scalarFunctionExprToProto("map_entries", childExpr)
-    optExprWithInfo(mapEntriesScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(mapEntriesScalarExpr, expr, expr.children: _*)
   }
 }
 
@@ -56,7 +56,7 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapValuesScalarExpr = scalarFunctionExprToProto("map_values", childExpr)
-    optExprWithInfo(mapValuesScalarExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(mapValuesScalarExpr, expr, expr.children: _*)
   }
 }
 
@@ -69,7 +69,7 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
     val mapExpr = exprToProtoInternal(expr.child, inputs, binding)
     val keyExpr = exprToProtoInternal(expr.key, inputs, binding)
     val mapExtractExpr = scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
-    optExprWithInfo(mapExtractExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(mapExtractExpr, expr, expr.children: _*)
   }
 }
 
@@ -129,7 +129,7 @@ object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
     val mapKeysExpr = scalarFunctionExprToProto("map_keys", mapExpr)
 
     val mapContainsKeyExpr = scalarFunctionExprToProto("array_has", mapKeysExpr, keyExpr)
-    optExprWithInfo(mapContainsKeyExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(mapContainsKeyExpr, expr, expr.children: _*)
   }
 }
 

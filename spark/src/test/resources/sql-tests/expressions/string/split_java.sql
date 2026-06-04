@@ -16,8 +16,6 @@
 -- under the License.
 
 -- Test split via JVM regex engine
--- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
--- Config: spark.comet.exec.regexp.engine=java
 
 statement
 CREATE TABLE test_split_java(s string) USING parquet

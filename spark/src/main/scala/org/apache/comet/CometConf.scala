@@ -365,37 +365,15 @@ object CometConf extends ShimCometConf {
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Experimental. Whether to route Spark `ScalaUDF` expressions through Comet's " +
+      .doc("Whether to route Spark `ScalaUDF` expressions through Comet's " +
         "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
         "a per-batch kernel that reads and writes Arrow vectors directly from native " +
         "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
-        "enclosing operator. The same dispatcher backs `spark.comet.exec.regexp.engine=java` " +
-        "so the regex family routes through it as well.")
+        "enclosing operator. The same dispatcher backs the regex family (`rlike`, " +
+        "`regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`) so " +
+        "those route through it by default as well.")
       .booleanConf
-      .createWithDefault(false)
-
-  val REGEXP_ENGINE_RUST = "rust"
-  val REGEXP_ENGINE_JAVA = "java"
-
-  val COMET_REGEXP_ENGINE: ConfigEntry[String] =
-    conf("spark.comet.exec.regexp.engine")
-      .category(CATEGORY_EXEC)
-      .doc(
-        "Selects the engine used to evaluate Spark regular-expression expressions. " +
-          s"`$REGEXP_ENGINE_JAVA` (default) routes through the Arrow-direct codegen dispatcher " +
-          "so Spark's own `doGenCode` (backed by `java.util.regex.Pattern`) runs inside the " +
-          s"Comet pipeline; this requires ${COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true and " +
-          s"falls back to Spark otherwise. `$REGEXP_ENGINE_RUST` runs the " +
-          "native DataFusion regexp engine when an implementation exists; setting this is " +
-          "itself the opt-in for the semantic differences between Java and Rust regex. " +
-          "Expressions without a native Rust implementation (`regexp_extract`, " +
-          "`regexp_extract_all`, `regexp_instr`) fall through to the JVM codegen dispatcher " +
-          s"under `$REGEXP_ENGINE_RUST` so users still get Comet acceleration with full " +
-          "Spark semantics.")
-      .stringConf
-      .transform(_.toLowerCase(Locale.ROOT))
-      .checkValues(Set(REGEXP_ENGINE_RUST, REGEXP_ENGINE_JAVA))
-      .createWithDefault(REGEXP_ENGINE_JAVA)
+      .createWithDefault(true)
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")

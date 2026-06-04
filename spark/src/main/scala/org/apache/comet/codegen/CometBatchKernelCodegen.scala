@@ -103,8 +103,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
   /**
    * Plan-time predicate. `None` greenlights the serde to emit the codegen proto; `Some(reason)`
-   * forces a Spark fallback (typically `withInfo(...) + None`) so the operator falls back cleanly
-   * rather than crashing the Janino compile at execute time.
+   * forces a Spark fallback (typically `withFallbackReason(...) + None`) so the operator falls
+   * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
    * [[isSupportedDataType]], rejects aggregates / generators / `CodegenFallback` (other than
@@ -199,7 +199,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
             t)
           throw t
       }
-    logInfo(
+    logDebug(
       s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
         s"-> ${boundExpr.dataType}  inputs=" +
         inputSchema
@@ -365,15 +365,37 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         val nullCheck =
           if (inputOrdinals.isEmpty) "false"
           else inputOrdinals.map(nullCheckCall).mkString(" || ")
-        s"""
-           |if ($nullCheck) {
-           |  output.setNull(i);
-           |} else {
-           |  $subExprsCode
-           |  ${ev.code}
-           |  $writeSnippet
-           |}
-         """.stripMargin
+        // `NullIntolerant` only constrains "any input null -> output null"; it does NOT promise
+        // that non-null inputs always produce non-null output. `MakeTimestamp(failOnError=false)`
+        // is `NullIntolerant=true` but its `doGenCode` catches `DateTimeException` for invalid
+        // year/month/day/hour/min/sec components and sets `ev.isNull = true`. Honor `ev.isNull`
+        // post-eval whenever the expression is nullable; skip the guard only when the root is
+        // statically non-nullable (`ev.isNull` is then a literal `false`).
+        if (boundExpr.nullable) {
+          s"""
+             |if ($nullCheck) {
+             |  output.setNull(i);
+             |} else {
+             |  $subExprsCode
+             |  ${ev.code}
+             |  if (${ev.isNull}) {
+             |    output.setNull(i);
+             |  } else {
+             |    $writeSnippet
+             |  }
+             |}
+           """.stripMargin
+        } else {
+          s"""
+             |if ($nullCheck) {
+             |  output.setNull(i);
+             |} else {
+             |  $subExprsCode
+             |  ${ev.code}
+             |  $writeSnippet
+             |}
+           """.stripMargin
+        }
       case _ =>
         // NonNullableOutputShortCircuit: when `nullable = false`, drop the `if (ev.isNull)`
         // guard at source level rather than relying on JIT folding.

@@ -24,9 +24,9 @@ import scala.math.min
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
@@ -61,7 +61,7 @@ trait MathBase {
             .newBuilder(),
           inner).build())
     } else {
-      withInfo(expr, left, right)
+      withFallbackReason(expr, left, right)
       None
     }
   }
@@ -92,7 +92,7 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!supportedDataType(expr.left.dataType)) {
-      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
+      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
     createMathExpression(
@@ -114,7 +114,7 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!supportedDataType(expr.left.dataType)) {
-      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
+      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
     createMathExpression(
@@ -136,7 +136,7 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!supportedDataType(expr.left.dataType)) {
-      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
+      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
     createMathExpression(
@@ -163,7 +163,7 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     val rightExpr =
       if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
     if (!supportedDataType(expr.left.dataType)) {
-      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
+      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
     val divideExpr = createMathExpression(
@@ -200,7 +200,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!supportedDataType(expr.left.dataType)) {
-      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
+      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
 
@@ -264,11 +264,11 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!supportedDataType(expr.left.dataType)) {
-      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
+      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
     if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
+      withFallbackReason(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
 
@@ -297,7 +297,7 @@ object CometRound extends CometExpressionSerde[Round] {
     lazy val childExpr = exprToProtoInternal(r.child, inputs, binding)
     r.child.dataType match {
       case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withInfo(r, "Decimal type has negative scale")
+        withFallbackReason(r, "Decimal type has negative scale")
         None
       case _ if scaleV == null =>
         exprToProtoInternal(Literal(null), inputs, binding)
@@ -318,7 +318,7 @@ object CometRound extends CometExpressionSerde[Round] {
         // I.e. 6.13171162472835E18 == 6.1317116247283497E18. However, toString() does not.
         // That results in round(6.1317116247283497E18, -5) == 6.1317116247282995E18 instead
         // of 6.1317116247283999E18.
-        withInfo(r, "Comet does not support Spark's BigDecimal rounding")
+        withFallbackReason(r, "Comet does not support Spark's BigDecimal rounding")
         None
       case _ =>
         // `scale` must be Int64 type in DataFusion
@@ -330,7 +330,7 @@ object CometRound extends CometExpressionSerde[Round] {
             r.ansiEnabled,
             childExpr,
             scaleExpr)
-        optExprWithInfo(optExpr, r, r.child)
+        optExprWithFallbackReason(optExpr, r, r.child)
     }
 
   }
@@ -352,7 +352,7 @@ object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] {
           .setUnaryMinus(builder)
           .build())
     } else {
-      withInfo(expr, expr.child)
+      withFallbackReason(expr, expr.child)
       None
     }
   }

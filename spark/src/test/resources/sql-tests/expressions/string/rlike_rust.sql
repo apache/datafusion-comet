@@ -16,7 +16,8 @@
 -- under the License.
 
 -- Test RLIKE with Rust regexp engine
--- Config: spark.comet.exec.regexp.engine=rust
+-- Opt in to the native (rust) regexp engine. Without this, it runs through the codegen dispatcher.
+-- Config: spark.comet.expression.RLike.allowIncompatible=true
 
 statement
 CREATE TABLE test_rlike_enabled(s string) USING parquet

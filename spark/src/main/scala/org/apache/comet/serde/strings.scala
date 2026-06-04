@@ -21,84 +21,16 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
-
-/**
- * Routing decision for a regex expression. Each regex serde delegates to [[RegexpRoute.choose]]
- * to pick between the native Rust regex engine, the JVM codegen dispatcher, or Spark fallback.
- */
-private sealed trait RegexpRoute
-private object RegexpRoute {
-
-  /** Run the native Rust regex implementation. */
-  case object Native extends RegexpRoute
-
-  /**
-   * Route through the Arrow-direct codegen dispatcher. The dispatcher Janino-compiles Spark's own
-   * `doGenCode` for the expression, so semantics match Spark exactly.
-   */
-  case object JvmCodegen extends RegexpRoute
-
-  /** Decline to run natively; the operator falls back to Spark with the given reason. */
-  case class Fallback(reason: String) extends RegexpRoute
-
-  /**
-   * SupportLevel returned by serdes whose route is [[Native]]. Surfaced as `Incompatible` so the
-   * standard gating in `QueryPlanSerde` can recognize `spark.comet.exec.regexp.engine=rust` as
-   * the opt-in (via `optedInBy`) without each serde repeating the check.
-   */
-  val nativeIncompatible: Incompatible =
-    Incompatible(
-      Some("Rust regexp engine has different semantics from Java regexp"),
-      Some(s"${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_RUST}"))
-
-  /**
-   * Pick a route given the user's config and whether a native Rust implementation exists for the
-   * expression. `engine=java` (default) routes through the codegen dispatcher when
-   * [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] is true; otherwise Spark fallback.
-   * `engine=rust` runs native if available, otherwise transparently falls back to the JVM codegen
-   * dispatcher when it is enabled, and only declines (Spark fallback) when neither the native
-   * path nor the dispatcher can serve the expression.
-   */
-  def choose(exprName: String, hasNative: Boolean): RegexpRoute = {
-    val engine = CometConf.COMET_REGEXP_ENGINE.get()
-    val codegenEnabled = CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()
-
-    engine match {
-      case CometConf.REGEXP_ENGINE_RUST =>
-        if (hasNative) {
-          Native
-        } else if (codegenEnabled) {
-          JvmCodegen
-        } else {
-          Fallback(
-            s"$exprName has no native Rust implementation and " +
-              s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false, so neither the rust " +
-              "engine nor the JVM codegen dispatcher can serve this expression.")
-        }
-
-      case CometConf.REGEXP_ENGINE_JAVA =>
-        if (codegenEnabled) {
-          JvmCodegen
-        } else {
-          Fallback(
-            s"$exprName requires ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true when " +
-              s"${CometConf.COMET_REGEXP_ENGINE.key}=${CometConf.REGEXP_ENGINE_JAVA}. " +
-              "The codegen dispatcher is experimental and disabled by default.")
-        }
-
-      case other => Fallback(s"Unknown ${CometConf.COMET_REGEXP_ENGINE.key}=$other")
-    }
-  }
-}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.shims.CometTypeShim
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -116,27 +48,26 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
     val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
     val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
     val optExpr = scalarFunctionExprToProto("repeat", leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, leftCast, rightCast)
+    optExprWithFallbackReason(optExpr, expr, leftCast, rightCast)
   }
 }
 
 class CometCaseConversionBase[T <: Expression](function: String)
     extends CometScalarFunction[T](function) {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Results can vary depending on locale and character set." +
-      s" Requires `${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true` to enable.")
+  override def getSupportLevel(expr: T): SupportLevel = Compatible()
 
   override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (!CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
-      withInfo(
-        expr,
-        "Comet is not compatible with Spark for case conversion in " +
-          s"locale-specific cases. Set ${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true " +
-          "to enable it anyway.")
-      return None
+    if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
+      // Native scalar function: faster but does not match Spark for locale-specific characters
+      // (e.g. Turkish dotted/dotless I). Opt-in.
+      super.convert(expr, inputs, binding)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
+      // Comet pipeline. This guarantees Spark-compatible behavior across 3.4 / 3.5 / 4.0.
+      // Falls through to Spark when the dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
-    super.convert(expr, inputs, binding)
   }
 }
 
@@ -155,20 +86,41 @@ object CometLength extends CometScalarFunction[Length]("length") {
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Treats hyphen as a word separator (e.g. `robert rose-smith` produces `Robert Rose-Smith`" +
-      " instead of Spark's `Robert Rose-smith`)" +
-      " (https://github.com/apache/datafusion-comet/issues/1052)")
-
-  override def getSupportLevel(expr: InitCap): SupportLevel = {
-    // Behavior differs from Spark. One example is that for the input "robert rose-smith", Spark
-    // will produce "Robert Rose-smith", but Comet will produce "Robert Rose-Smith".
-    // https://github.com/apache/datafusion-comet/issues/1052
-    Incompatible(None)
-  }
+  override def getSupportLevel(expr: InitCap): SupportLevel = Compatible()
 
   override def convert(expr: InitCap, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    super.convert(expr, inputs, binding)
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      // Native path: faster but treats hyphen as a word separator (e.g.
+      // `robert rose-smith` produces `Robert Rose-Smith` instead of Spark's `Robert Rose-smith`).
+      // https://github.com/apache/datafusion-comet/issues/1052
+      super.convert(expr, inputs, binding)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
+      // Comet pipeline. This guarantees Spark-compatible behavior across 3.4 / 3.5 / 4.0.
+      // Falls through to Spark when the dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
+
+object CometStringReplace extends CometScalarFunction[StringReplace]("replace") {
+
+  override def getSupportLevel(expr: StringReplace): SupportLevel = Compatible()
+
+  override def convert(
+      expr: StringReplace,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      // The native DataFusion `replace` avoids the JVM allocations of the codegen
+      // dispatcher but is not Spark-compatible for an empty search string, so it is
+      // only used when incompatibility is explicitly allowed.
+      super.convert(expr, inputs, binding)
+    } else {
+      // Run Spark's own generated code inside the Comet pipeline so the result matches Spark
+      // exactly. Falls back to Spark when the codegen dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
   }
 }
 
@@ -188,11 +140,11 @@ object CometSubstring extends CometExpressionSerde[Substring] {
             builder.setLen(len.asInstanceOf[Int])
             Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
           case None =>
-            withInfo(expr, expr.str)
+            withFallbackReason(expr, expr.str)
             None
         }
       case _ =>
-        withInfo(expr, "Substring pos and len must be literals")
+        withFallbackReason(expr, "Substring pos and len must be literals")
         None
     }
   }
@@ -210,7 +162,7 @@ object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
     val countExpr = exprToProtoInternal(countCast, inputs, binding)
     val optExpr =
       scalarFunctionExprToProto("substring_index", strExpr, delimExpr, countExpr)
-    optExprWithInfo(optExpr, expr, expr.strExpr, expr.delimExpr, expr.countExpr)
+    optExprWithFallbackReason(optExpr, expr, expr.strExpr, expr.delimExpr, expr.countExpr)
   }
 }
 
@@ -231,11 +183,11 @@ object CometLeft extends CometExpressionSerde[Left] {
             builder.setLen(lenValue.asInstanceOf[Int])
             Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
           case None =>
-            withInfo(expr, expr.str)
+            withFallbackReason(expr, expr.str)
             None
         }
       case _ =>
-        withInfo(expr, "LEFT len must be a literal")
+        withFallbackReason(expr, "LEFT len must be a literal")
         None
     }
   }
@@ -273,12 +225,12 @@ object CometRight extends CometExpressionSerde[Right] {
               builder.setLen(lenInt)
               Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
             case None =>
-              withInfo(expr, expr.str)
+              withFallbackReason(expr, expr.str)
               None
           }
         }
       case _ =>
-        withInfo(expr, "RIGHT len must be a literal")
+        withFallbackReason(expr, "RIGHT len must be a literal")
         None
     }
   }
@@ -293,16 +245,32 @@ object CometRight extends CometExpressionSerde[Right] {
   }
 }
 
-object CometConcat extends CometScalarFunction[Concat]("concat") {
+object CometConcat extends CometScalarFunction[Concat]("concat") with CometTypeShim {
   private val unsupportedReason = "CONCAT supports only string input parameters"
+
+  // Spark 4.0 widens Concat to accept collated strings and preserves the collation in the merged
+  // result type. The native concat UDF always produces UTF8 (UTF8_BINARY semantics), so a
+  // non-default collation diverges from Spark.
+  private val collationReason =
+    "concat does not support non-UTF8_BINARY collations " +
+      "(https://github.com/apache/datafusion-comet/issues/2190)"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
+
   override def getSupportLevel(expr: Concat): SupportLevel = {
-    if (expr.children.forall(_.dataType == DataTypes.StringType)) {
-      Compatible()
-    } else {
+    // Use isInstanceOf rather than `== DataTypes.StringType` so that collated strings (a
+    // StringType with a non-default collationId, which is not == the default StringType) are still
+    // recognised as string input and routed to the collation check below rather than reported as
+    // an unsupported input type.
+    if (!expr.children.forall(_.dataType.isInstanceOf[StringType])) {
       Unsupported(Some(unsupportedReason))
+    } else if (hasNonDefaultStringCollation(expr.dataType) ||
+      expr.children.exists(c => hasNonDefaultStringCollation(c.dataType))) {
+      Incompatible(Some(collationReason))
+    } else {
+      Compatible()
     }
   }
 }
@@ -318,7 +286,7 @@ object CometConcatWs extends CometExpressionSerde[ConcatWs] {
 
       case _ if expr.children.forall(_.foldable) =>
         // Fall back to Spark for all-literal args so ConstantFolding can handle it
-        withInfo(expr, "all arguments are foldable")
+        withFallbackReason(expr, "all arguments are foldable")
         None
 
       case _ =>
@@ -340,82 +308,46 @@ object CometLike extends CometExpressionSerde[Like] {
         binding,
         (builder, binaryExpr) => builder.setLike(binaryExpr))
     } else {
-      withInfo(expr, s"custom escape character ${expr.escapeChar} not supported in LIKE")
+      withFallbackReason(
+        expr,
+        s"custom escape character ${expr.escapeChar} not supported in LIKE")
       None
     }
   }
 }
 
+/**
+ * `rlike` runs Spark's own implementation through the codegen dispatcher by default, for
+ * byte-exact results. The native (rust) regexp engine is faster but has different semantics from
+ * Java regexp, so it is opt-in via `spark.comet.expression.RLike.allowIncompatible`; any case it
+ * does not cover (a non-scalar pattern) falls through to the codegen dispatcher via
+ * [[CometScalaUDF]].
+ */
 object CometRLike extends CometExpressionSerde[RLike] {
 
-  override def getSupportLevel(expr: RLike): SupportLevel =
-    RegexpRoute.choose("rlike", hasNative = true) match {
-      case RegexpRoute.Native => RegexpRoute.nativeIncompatible
-      case RegexpRoute.JvmCodegen => Compatible(None)
-      case RegexpRoute.Fallback(reason) => Unsupported(Some(reason))
-    }
+  override def getSupportLevel(expr: RLike): SupportLevel = Compatible()
 
-  override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    RegexpRoute.choose("rlike", hasNative = true) match {
-      case RegexpRoute.Native => convertViaNativeRegex(expr, inputs, binding)
-      case RegexpRoute.JvmCodegen => CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
-      case RegexpRoute.Fallback(reason) =>
-        withInfo(expr, reason)
-        None
+  override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      expr.right match {
+        case Literal(_, DataTypes.StringType) =>
+          // Native path: the Rust regexp engine has different semantics from Java regexp.
+          return createBinaryExpr(
+            expr,
+            expr.left,
+            expr.right,
+            inputs,
+            binding,
+            (builder, binaryExpr) => builder.setRlike(binaryExpr))
+        case _ =>
+        // Non-scalar pattern: the native path cannot handle it, fall through to the dispatcher.
+      }
     }
-
-  private def convertViaNativeRegex(
-      expr: RLike,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr.right match {
-      case Literal(_, DataTypes.StringType) =>
-        createBinaryExpr(
-          expr,
-          expr.left,
-          expr.right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setRlike(binaryExpr))
-      case _ =>
-        withInfo(expr, "Only scalar regexp patterns are supported on the native path")
-        None
-    }
+    // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the Comet
+    // pipeline. Falls back to Spark when the dispatcher is disabled.
+    CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
   }
 }
-
-/**
- * Regex expression with no native Rust path: always routes through the JVM codegen dispatcher, or
- * falls back to Spark when the engine selector or codegen flag forbids it.
- */
-abstract class CometRegexpCodegenOnly[T <: Expression](exprName: String)
-    extends CometExpressionSerde[T] {
-
-  override def getSupportLevel(expr: T): SupportLevel =
-    RegexpRoute.choose(exprName, hasNative = false) match {
-      case RegexpRoute.JvmCodegen => Compatible(None)
-      case RegexpRoute.Fallback(reason) => Unsupported(Some(reason))
-      case RegexpRoute.Native => Unsupported(Some(s"$exprName has no native Rust implementation"))
-    }
-
-  override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    RegexpRoute.choose(exprName, hasNative = false) match {
-      case RegexpRoute.JvmCodegen => CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
-      case RegexpRoute.Fallback(reason) =>
-        withInfo(expr, reason)
-        None
-      case RegexpRoute.Native =>
-        withInfo(expr, s"$exprName has no native Rust implementation")
-        None
-    }
-}
-
-object CometRegExpExtract extends CometRegexpCodegenOnly[RegExpExtract]("regexp_extract")
-
-object CometRegExpExtractAll
-    extends CometRegexpCodegenOnly[RegExpExtractAll]("regexp_extract_all")
-
-object CometRegExpInStr extends CometRegexpCodegenOnly[RegExpInStr]("regexp_instr")
 
 object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
@@ -474,112 +406,90 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
   }
 }
 
+/**
+ * `regexp_replace` runs Spark's own implementation through the codegen dispatcher by default, for
+ * byte-exact results. The native (rust) regexp engine is faster but has different semantics from
+ * Java regexp, so it is opt-in via `spark.comet.expression.RegExpReplace.allowIncompatible` and
+ * only for an offset of 1; any other case falls through to the codegen dispatcher.
+ */
 object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `regexp_replace` with an offset of 1 (no offset)")
+  override def getSupportLevel(expr: RegExpReplace): SupportLevel = Compatible()
 
-  override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
-    expr.pos match {
-      case Literal(value, DataTypes.IntegerType) if value == 1 =>
-        RegexpRoute.choose("regexp_replace", hasNative = true) match {
-          case RegexpRoute.Native => RegexpRoute.nativeIncompatible
-          case RegexpRoute.JvmCodegen => Compatible(None)
-          case RegexpRoute.Fallback(reason) => Unsupported(Some(reason))
-        }
-      case _ =>
-        Unsupported(Some("Comet only supports regexp_replace with an offset of 1 (no offset)."))
-    }
+  private def nativeSupported(expr: RegExpReplace): Boolean = expr.pos match {
+    case Literal(value, DataTypes.IntegerType) if value == 1 => true
+    case _ => false
   }
 
   override def convert(
       expr: RegExpReplace,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    RegexpRoute.choose("regexp_replace", hasNative = true) match {
-      case RegexpRoute.Native => convertViaNativeRegex(expr, inputs, binding)
-      case RegexpRoute.JvmCodegen => CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
-      case RegexpRoute.Fallback(reason) =>
-        withInfo(expr, reason)
-        None
-    }
-  }
-
-  private def convertViaNativeRegex(
-      expr: RegExpReplace,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr.regexp match {
-      case _: Literal =>
-        val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
-        val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
-        val replacementExpr = exprToProtoInternal(expr.rep, inputs, binding)
-        // DataFusion's regexp_replace stops at the first match. We need to add the 'g' flag
-        // to apply the regex globally to match Spark behavior.
-        val flagsExpr = exprToProtoInternal(Literal("g"), inputs, binding)
-        val optExpr = scalarFunctionExprToProto(
-          "regexp_replace",
-          subjectExpr,
-          patternExpr,
-          replacementExpr,
-          flagsExpr)
-        optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
-      case _ =>
-        withInfo(expr, "Only scalar regexp patterns are supported on the native path")
-        None
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+      val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+      val replacementExpr = exprToProtoInternal(expr.rep, inputs, binding)
+      // DataFusion's regexp_replace stops at the first match. We need to add the 'g' flag
+      // to apply the regex globally to match Spark behavior.
+      val flagsExpr = exprToProtoInternal(Literal("g"), inputs, binding)
+      val optExpr = scalarFunctionExprToProto(
+        "regexp_replace",
+        subjectExpr,
+        patternExpr,
+        replacementExpr,
+        flagsExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
+      // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
 }
 
 /**
- * Serde for StringSplit expression. This is a custom Comet function (not a built-in DataFusion
- * function), so we need to include the return type in the protobuf to avoid DataFusion registry
- * lookup failures.
+ * Serde for StringSplit expression. `split` runs Spark's own implementation through the codegen
+ * dispatcher by default, for byte-exact results. The native (rust) regexp engine is faster but
+ * has different semantics from Java regexp, so it is opt-in via
+ * `spark.comet.expression.StringSplit.allowIncompatible`.
+ *
+ * The native path is a custom Comet function (not a built-in DataFusion function), so the return
+ * type is included in the protobuf to avoid DataFusion registry lookup failures.
  */
 object CometStringSplit extends CometExpressionSerde[StringSplit] {
 
-  override def getSupportLevel(expr: StringSplit): SupportLevel =
-    RegexpRoute.choose("split", hasNative = true) match {
-      case RegexpRoute.Native => RegexpRoute.nativeIncompatible
-      case RegexpRoute.JvmCodegen => Compatible(None)
-      case RegexpRoute.Fallback(reason) => Unsupported(Some(reason))
-    }
+  override def getSupportLevel(expr: StringSplit): SupportLevel = Compatible()
 
   override def convert(
       expr: StringSplit,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] =
-    RegexpRoute.choose("split", hasNative = true) match {
-      case RegexpRoute.Native => convertViaNativeRegex(expr, inputs, binding)
-      case RegexpRoute.JvmCodegen => CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
-      case RegexpRoute.Fallback(reason) =>
-        withInfo(expr, reason)
-        None
-    }
-
-  private def convertViaNativeRegex(
-      expr: StringSplit,
-      inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    expr.regex match {
-      case _: Literal =>
-        val strExpr = exprToProtoInternal(expr.str, inputs, binding)
-        val regexExpr = exprToProtoInternal(expr.regex, inputs, binding)
-        val limitExpr = exprToProtoInternal(expr.limit, inputs, binding)
-        val optExpr = scalarFunctionExprToProtoWithReturnType(
-          "split",
-          expr.dataType,
-          false,
-          strExpr,
-          regexExpr,
-          limitExpr)
-        optExprWithInfo(optExpr, expr, expr.str, expr.regex, expr.limit)
-      case _ =>
-        withInfo(expr, "Only scalar regex patterns are supported on the native path")
-        None
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      val strExpr = exprToProtoInternal(expr.str, inputs, binding)
+      val regexExpr = exprToProtoInternal(expr.regex, inputs, binding)
+      val limitExpr = exprToProtoInternal(expr.limit, inputs, binding)
+      val optExpr = scalarFunctionExprToProtoWithReturnType(
+        "split",
+        expr.dataType,
+        false,
+        strExpr,
+        regexExpr,
+        limitExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.str, expr.regex, expr.limit)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
+      // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
 }
+
+// These have no native (rust) implementation, so they always run through the codegen dispatcher.
+object CometRegExpExtract extends CometCodegenDispatch[RegExpExtract]
+
+object CometRegExpExtractAll extends CometCodegenDispatch[RegExpExtractAll]
+
+object CometRegExpInStr extends CometCodegenDispatch[RegExpInStr]
 
 object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
 
@@ -604,7 +514,7 @@ object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
       false,
       jsonExpr,
       pathExpr)
-    optExprWithInfo(optExpr, expr, expr.json, expr.path)
+    optExprWithFallbackReason(optExpr, expr, expr.json, expr.path)
   }
 }
 
@@ -626,11 +536,11 @@ trait CommonStringExprs {
         if (binExpr.isDefined) {
           CometCast.castToProto(expr, None, DataTypes.StringType, binExpr.get, CometEvalMode.TRY)
         } else {
-          withInfo(expr, bin)
+          withFallbackReason(expr, bin)
           None
         }
       case _ =>
-        withInfo(expr, "Comet only supports decoding with 'utf-8'.")
+        withFallbackReason(expr, "Comet only supports decoding with 'utf-8'.")
         None
     }
   }

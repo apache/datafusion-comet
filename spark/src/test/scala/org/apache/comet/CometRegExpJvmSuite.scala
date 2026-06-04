@@ -19,17 +19,13 @@
 
 package org.apache.comet
 
-import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
+// No per-expression `allowIncompatible` is set, so the regex family runs through the codegen
+// dispatcher (Spark's own code, enabled by default) rather than the native rust path.
 class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-
-  override protected def sparkConf: SparkConf =
-    super.sparkConf
-      .set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
-      .set(CometConf.COMET_REGEXP_ENGINE.key, CometConf.REGEXP_ENGINE_JAVA)
 
   // Patterns that the Rust regex crate cannot handle. Using one of these proves
   // the JVM path was taken: if the pattern reached native, native would have
@@ -391,17 +387,14 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("engine=rust falls through to JVM dispatcher for expressions with no native path") {
-    withSQLConf(CometConf.COMET_REGEXP_ENGINE.key -> CometConf.REGEXP_ENGINE_RUST) {
-      withSubjects("abc123def", "no match", null, "xyz789") {
-        // regexp_extract / regexp_extract_all / regexp_instr have no native rust path; under
-        // engine=rust they should still run on Comet via the JVM codegen dispatcher rather than
-        // falling back to Spark.
-        checkSparkAnswerAndOperator(
-          sql("SELECT s, regexp_extract(s, '([a-z]+)(\\\\d+)', 2) FROM t"))
-        checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '\\\\d+', 0) FROM t"))
-        checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '\\\\d+', 0) FROM t"))
-      }
+  test("expressions with no native path always run via the JVM dispatcher") {
+    withSubjects("abc123def", "no match", null, "xyz789") {
+      // regexp_extract / regexp_extract_all / regexp_instr have no native rust path, so they
+      // always run on Comet via the JVM codegen dispatcher rather than falling back to Spark.
+      checkSparkAnswerAndOperator(
+        sql("SELECT s, regexp_extract(s, '([a-z]+)(\\\\d+)', 2) FROM t"))
+      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '\\\\d+', 0) FROM t"))
+      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '\\\\d+', 0) FROM t"))
     }
   }
 }

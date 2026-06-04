@@ -16,8 +16,6 @@
 -- under the License.
 
 -- Test RLIKE via JVM regex engine
--- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
--- Config: spark.comet.exec.regexp.engine=java
 
 statement
 CREATE TABLE test_rlike_java(s string) USING parquet
