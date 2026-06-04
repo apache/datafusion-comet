@@ -78,7 +78,7 @@ pub use csv_funcs::*;
 pub use datetime_funcs::{
     spark_day_name, spark_month_name, spark_to_time, SparkDateDiff, SparkDateFromUnixDate,
     SparkDateTrunc, SparkHour, SparkHoursTransform, SparkMakeDate, SparkMakeTime, SparkMinute,
-    SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp, TimestampTruncExpr,
+    SparkNextDay, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp, TimestampTruncExpr,
 };
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;

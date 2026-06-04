@@ -688,7 +688,7 @@ object CometSize extends CometExpressionSerde[Size] {
     for {
       isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
       sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
-      emptyLiteralExprProto <- createLiteralExprProto(SQLConf.get.legacySizeOfNull)
+      emptyLiteralExprProto <- createLiteralExprProto(expr.legacySizeOfNull)
     } yield {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
