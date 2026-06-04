@@ -286,37 +286,26 @@ case class CometExecRule(session: SparkSession)
         convertToComet(op, CometScanWrapper).getOrElse(op)
 
       case scan: InMemoryTableScanExec =>
-        val cachedBuffers = scan.relation.cacheBuilder.cachedColumnBuffers
-        val firstBatchOpt = cachedBuffers.take(1).headOption
-        val expectedBatchClass =
-          "org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"
+        val usesCometCacheSerializer =
+          scan.relation.cacheBuilder.serializer
+            .isInstanceOf[org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer]
 
         if (CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)) {
-          firstBatchOpt match {
-            case Some(firstBatch) if firstBatch.getClass.getName == expectedBatchClass =>
-              convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
-
-            case Some(firstBatch) =>
-              withFallbackReason(
-                scan,
-                s"Comet in-memory cache requires $expectedBatchClass, " +
-                  s"but found ${firstBatch.getClass.getName}")
-              scan
-
-            case None =>
-              withFallbackReason(
-                scan,
-                "Comet in-memory cache rewrite skipped because cached buffer is empty")
-              scan
+          if (usesCometCacheSerializer) {
+            convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
+          } else {
+            withFallbackReason(
+              scan,
+              "Comet in-memory cache requires ArrowCachedBatchSerializer, " +
+                s"but found ${scan.relation.cacheBuilder.serializer.getClass.getName}")
+            scan
           }
         } else {
-          firstBatchOpt match {
-            case Some(firstBatch) if firstBatch.getClass.getName == expectedBatchClass =>
-              withFallbackReason(
-                scan,
-                s"Native support for operator InMemoryTableScanExec is disabled. " +
-                  s"Set ${CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key}=true to enable it.")
-            case _ =>
+          if (usesCometCacheSerializer) {
+            withFallbackReason(
+              scan,
+              s"Native support for operator InMemoryTableScanExec is disabled. " +
+                s"Set ${CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key}=true to enable it.")
           }
 
           if (shouldApplySparkToColumnar(conf, scan)) {

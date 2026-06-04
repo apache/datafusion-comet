@@ -63,12 +63,22 @@ case class CometInMemoryTableScanExec(
   override def vectorTypes: Option[Seq[String]] =
     serializer.vectorTypes(scanOutput, conf)
 
-  // Decode only the requested columns from the cached batches and update scan output metrics.
+  // Apply Spark's cache batch filter before decoding. Spark's InMemoryTableScanExec does this in
+  // filteredCachedBatches(), but that method is private. Reusing the serializer's buildFilter here
+  // keeps Comet on the same stats-based pruning path instead of decoding every cached batch.
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numOutputRows = longMetric("numOutputRows")
 
+    val filteredBuffers =
+      if (originalPlan.predicates.nonEmpty) {
+        val filter = serializer.buildFilter(originalPlan.predicates, relationOutput)
+        cachedBuffers.mapPartitionsWithIndex(filter)
+      } else {
+        cachedBuffers
+      }
+
     serializer
-      .convertCachedBatchToColumnarBatch(cachedBuffers, relationOutput, scanOutput, conf)
+      .convertCachedBatchToColumnarBatch(filteredBuffers, relationOutput, scanOutput, conf)
       .map { cb =>
         numOutputRows += cb.numRows()
         cb
