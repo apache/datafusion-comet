@@ -19,7 +19,7 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DayName, Expression, MonthName}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DayName, Expression, MonthName, StringSplitSQL}
 
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
@@ -55,5 +55,24 @@ trait CometExprShim4x {
         scalarFunctionExprToProtoWithReturnType("monthname", m.dataType, false, childExpr)
       optExprWithFallbackReason(nameExpr, m, m.child)
     case _ => None
+  }
+
+  /**
+   * `split_part` lowers to `element_at(StringSplitSQL(...), partNum)`. StringSplitSQL uses a
+   * literal delimiter instead of a regex pattern, unlike `split` / `StringSplit`.
+   */
+  protected def convertStringSplitSQL(
+      expr: StringSplitSQL,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val strExpr = exprToProtoInternal(expr.str, inputs, binding)
+    val delimiterExpr = exprToProtoInternal(expr.delimiter, inputs, binding)
+    val splitExpr = scalarFunctionExprToProtoWithReturnType(
+      "split_sql",
+      expr.dataType,
+      false,
+      strExpr,
+      delimiterExpr)
+    optExprWithFallbackReason(splitExpr, expr, expr.str, expr.delimiter)
   }
 }

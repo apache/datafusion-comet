@@ -133,6 +133,7 @@ impl PhysicalExpr for ListExtract {
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let child_value = self.child.evaluate(batch)?.into_array(batch.num_rows())?;
         let ordinal_value = self.ordinal.evaluate(batch)?.into_array(batch.num_rows())?;
+        let element_type = self.data_type(&batch.schema())?;
 
         let default_value = self
             .default_value
@@ -140,9 +141,9 @@ impl PhysicalExpr for ListExtract {
             .map(|d| {
                 d.evaluate(batch).map(|value| match value {
                     ColumnarValue::Scalar(scalar)
-                        if !scalar.data_type().equals_datatype(child_value.data_type()) =>
+                        if !scalar.data_type().equals_datatype(&element_type) =>
                     {
-                        scalar.cast_to(child_value.data_type())
+                        scalar.cast_to(&element_type)
                     }
                     ColumnarValue::Scalar(scalar) => Ok(scalar),
                     v => Err(DataFusionError::Execution(format!(
@@ -151,7 +152,7 @@ impl PhysicalExpr for ListExtract {
                 })
             })
             .transpose()?
-            .unwrap_or(self.data_type(&batch.schema())?.try_into())?;
+            .unwrap_or(element_type.try_into())?;
 
         // Create error wrapper closure that has access to self
         let error_wrapper = |error: SparkError| self.wrap_error_with_context(error);

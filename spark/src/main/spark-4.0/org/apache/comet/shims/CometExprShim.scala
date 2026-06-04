@@ -188,6 +188,9 @@ trait CometExprShim extends CommonStringExprs with CometExprShim4x {
       case _: DayName | _: MonthName =>
         convertDayMonthName(expr, inputs, binding)
 
+      case s: StringSplitSQL =>
+        convertStringSplitSQL(s, inputs, binding)
+
       case _ => None
     }
   }

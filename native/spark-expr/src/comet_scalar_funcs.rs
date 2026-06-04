@@ -197,6 +197,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_split);
             make_comet_scalar_udf!("split", func, without data_type)
         }
+        "split_sql" => {
+            let func = Arc::new(crate::string_funcs::spark_split_sql);
+            make_comet_scalar_udf!("split_sql", func, without data_type)
+        }
         "get_json_object" => {
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)

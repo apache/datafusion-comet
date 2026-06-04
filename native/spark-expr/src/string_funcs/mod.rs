@@ -22,5 +22,5 @@ mod substring;
 
 pub use contains::SparkContains;
 pub use get_json_object::spark_get_json_object;
-pub use split::spark_split;
+pub use split::{spark_split, spark_split_sql};
 pub use substring::SubstringExpr;
