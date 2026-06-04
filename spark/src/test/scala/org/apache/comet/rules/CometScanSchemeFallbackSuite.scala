@@ -92,7 +92,7 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
       val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
       assert(
         cometScans.isEmpty,
-        s"`fake://` is not object_store-readable; the native scan must fall back to Spark, " +
+        "`fake://` is not object_store-readable; the native scan must fall back to Spark, " +
           s"but Comet claimed it:\n$transformed")
       assert(
         sparkScans.size == 1,
@@ -124,7 +124,7 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
       val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
       assert(
         cometScans.size == 1,
-        s"`hdfs://` is natively readable by default; Comet must claim the scan, " +
+        "`hdfs://` is natively readable by default; Comet must claim the scan, " +
           s"but it fell back to Spark:\n$transformed")
       assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
     }
