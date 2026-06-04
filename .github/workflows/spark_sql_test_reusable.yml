@@ -121,6 +121,21 @@ jobs:
       image: amd64/rust
     steps:
       - uses: actions/checkout@v6
+      - name: Free up disk space (container)
+        # Mirror apache/spark's dev/free_disk_space_container. The amd64/rust
+        # container inherits GitHub's tool-cache via the /__t mount; strip the
+        # entries we never use (CodeQL, Go, Node) to free ~5-10 GB before the
+        # Spark clone, Maven dep tree, sbt build cache, and per-test-suite
+        # warehouse dirs all start fighting for the runner's disk.
+        shell: bash
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h || true
+          rm -rf /__t/CodeQL || true
+          rm -rf /__t/go     || true
+          rm -rf /__t/node   || true
+          echo "Disk usage after cleanup:"
+          df -h || true
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -165,14 +180,8 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-          # Skew Comet's memory budget toward the forked test JVM. SBT
-          # (build driver, not where the tests run) gets 3 GB; the forked
-          # test JVM gets 5 GB via Spark's `HEAP_SIZE` env in SparkBuild.scala.
-          # Total nominal = 3 GB SBT + 5 GB forked test heap + ~1.3 GB
-          # metaspace; over 7 GB, but peak coincidence is between a small
-          # driver and the big test JVM rather than two equal-sized JVMs.
           SBT_MEM: "3072"
-          HEAP_SIZE: "5g"
+          HEAP_SIZE: "3g"
           # Cap forked test JVM direct memory. Without this, -XX:MaxDirectMemorySize
           # defaults to ≈ -Xmx (5 GB), letting Netty / DirectByteBuffer / shuffle
           # buffers grow alongside the heap and push host RSS past the 7 GB
