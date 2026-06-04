@@ -175,7 +175,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   private[comet] val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(
       classOf[Ascii] -> CometScalarFunction("ascii"),
-      classOf[BitLength] -> CometScalarFunction("bit_length"),
+      classOf[BitLength] -> CometBitLength,
       classOf[Chr] -> CometScalarFunction("char"),
       classOf[ConcatWs] -> CometConcatWs,
       classOf[Concat] -> CometConcat,
@@ -186,7 +186,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Length] -> CometLength,
       classOf[Like] -> CometLike,
       classOf[Lower] -> CometLower,
-      classOf[OctetLength] -> CometScalarFunction("octet_length"),
+      classOf[OctetLength] -> CometOctetLength,
       classOf[RegExpReplace] -> CometRegExpReplace,
       classOf[Reverse] -> CometReverse,
       classOf[RLike] -> CometRLike,
@@ -198,7 +198,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[StringLPad] -> CometStringLPad,
       classOf[StringSpace] -> CometScalarFunction("space"),
       classOf[StringSplit] -> CometStringSplit,
-      classOf[StringTranslate] -> CometScalarFunction("translate"),
+      classOf[StringTranslate] -> CometStringTranslate,
       classOf[StringTrim] -> CometScalarFunction("trim"),
       classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
       classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),

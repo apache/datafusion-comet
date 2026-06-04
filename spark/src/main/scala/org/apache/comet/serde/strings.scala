@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BitLength, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, OctetLength, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -82,6 +82,31 @@ object CometLength extends CometScalarFunction[Length]("length") {
     case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
     case _ => Compatible()
   }
+}
+
+object CometBitLength extends CometScalarFunction[BitLength]("bit_length") {
+  override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
+
+  override def getSupportLevel(expr: BitLength): SupportLevel = expr.child.dataType match {
+    case _: BinaryType => Unsupported(Some("bit_length on BinaryType is not supported"))
+    case _ => Compatible()
+  }
+}
+
+object CometOctetLength extends CometScalarFunction[OctetLength]("octet_length") {
+  override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
+
+  override def getSupportLevel(expr: OctetLength): SupportLevel = expr.child.dataType match {
+    case _: BinaryType => Unsupported(Some("octet_length on BinaryType is not supported"))
+    case _ => Compatible()
+  }
+}
+
+object CometStringTranslate extends CometScalarFunction[StringTranslate]("translate") {
+  override def getSupportLevel(expr: StringTranslate): SupportLevel = Incompatible(
+    Some(
+      "DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and" +
+        " substitutes U+0000 instead of treating it as a deletion sentinel"))
 }
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
