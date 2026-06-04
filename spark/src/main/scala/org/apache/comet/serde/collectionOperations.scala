@@ -23,15 +23,25 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Reverse}
 import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.shims.CometTypeShim
 
-object CometReverse extends CometScalarFunction[Reverse]("reverse") {
+object CometReverse extends CometScalarFunction[Reverse]("reverse") with CometTypeShim {
+
+  // Spark 4.0 widens the string branch of Reverse to accept collated strings and propagates the
+  // collation through dataType. The native reverse UDF reverses code units and produces UTF8
+  // (UTF8_BINARY semantics), so a non-default collation diverges from Spark.
+  private val collationReason =
+    "reverse does not support non-UTF8_BINARY collations " +
+      "(https://github.com/apache/datafusion-comet/issues/2190)"
 
   override def getIncompatibleReasons(): Seq[String] =
-    CometArrayReverse.getIncompatibleReasons()
+    CometArrayReverse.getIncompatibleReasons() :+ collationReason
 
   override def getSupportLevel(expr: Reverse): SupportLevel = {
     if (expr.child.dataType.isInstanceOf[ArrayType]) {
       CometArrayReverse.getSupportLevel(expr)
+    } else if (hasNonDefaultStringCollation(expr.child.dataType)) {
+      Incompatible(Some(collationReason))
     } else {
       Compatible()
     }

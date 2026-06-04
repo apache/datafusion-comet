@@ -209,8 +209,6 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq("Falls back to Spark in ANSI mode.")
-
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
