@@ -516,7 +516,11 @@ impl DeltaSyntheticColumnsStream {
         let mut dropped: usize = 0;
         if self.emit_is_row_deleted || self.drop_deleted {
             // Skip deleted entries that fall before this batch (defensive; for correct
-            // sequential input `next_delete_idx` already points past them).
+            // sequential input `next_delete_idx` already points past them). This tolerant
+            // skip deliberately replaces the hard "predates batch start" error the former
+            // DeltaDvFilterExec raised here: for correct input neither path ever fires, and the
+            // skip can only drop a stale delete, never mis-drop a live row -- so it's the safer
+            // of the two if the (can't-happen) physical-order invariant is ever violated.
             while self.next_delete_idx < self.deleted.len()
                 && self.deleted[self.next_delete_idx] < batch_start
             {

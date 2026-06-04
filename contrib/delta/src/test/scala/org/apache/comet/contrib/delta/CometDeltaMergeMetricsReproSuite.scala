@@ -29,6 +29,13 @@ import org.apache.spark.sql.functions.floor
 // output file is a benign file-layout difference (delete result still correct) or a
 // real bug. Asserts the delete RESULT is correct (data), and logs numTargetFilesAdded
 // for native vs vanilla so we can see the file-count divergence directly.
+//
+// Conclusion: it's a benign write-layout artifact, not a correctness issue. Comet's native
+// scan of the delete-anti-join output partitions the surviving rows differently than vanilla
+// Spark, so the MERGE writes them into a different number of output files. The row data is
+// identical (asserted below) -- only the file packing differs. That's why the regression
+// de-flake stops asserting numTargetFilesAdded for this (non-partitioned, no-CDF) config
+// rather than treating the unstable count as a correctness signal.
 class CometDeltaMergeMetricsReproSuite extends CometDeltaTestBase {
 
   test("delete-only MERGE with duplicate matches: native result correct; file-count observed") {

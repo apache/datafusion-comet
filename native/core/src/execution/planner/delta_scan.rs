@@ -286,6 +286,9 @@ pub(crate) fn plan_delta_scan(
         // original (narrower) physical parquet type and relies on read-time promotion to the
         // table's current widened type (e.g. INT32->INT64, FLOAT->DOUBLE, INT32->DOUBLE). Delta
         // only ever permits *widening* conversions, so the promotion is always lossless and safe.
+        // It's also inert outside the widening case: a non-widened Delta table never presents a
+        // physical type narrower than its logical type, so the flag only ever engages on a genuine
+        // type-widening read -- enabling it unconditionally for Delta scans changes nothing else.
         // With this false, the schema adapter rejects exactly those three pairs, failing
         // TypeWidening{...}Suite's non-partitioned data-column reads (partition columns are read
         // from metadata strings via parse_delta_partition_scalar, so they were unaffected).
