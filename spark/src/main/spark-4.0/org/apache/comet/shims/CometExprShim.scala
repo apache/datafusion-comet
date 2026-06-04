@@ -167,8 +167,8 @@ trait CometExprShim extends CommonStringExprs with CometExprShim4x {
             val exprProto = exprToProtoInternal(lengthOfJsonArray, inputs, binding)
             if (exprProto.isEmpty) {
               lengthOfJsonArray
-                .getTagValue(CometExplainInfo.EXTENSION_INFO)
-                .foreach(reasons => s.setTagValue(CometExplainInfo.EXTENSION_INFO, reasons))
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .foreach(reasons => s.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
             }
             exprProto
           case _ => None
