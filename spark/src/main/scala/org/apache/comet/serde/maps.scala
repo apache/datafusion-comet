@@ -133,7 +133,9 @@ object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
   }
 }
 
-object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from_entries") {
+object CometMapFromEntries
+    extends CometScalarFunction[MapFromEntries]("map_from_entries")
+    with CodegenDispatchFallback {
   val keyUnsupportedReason =
     "`BinaryType` is not supported as a map key in `map_from_entries`"
   val valueUnsupportedReason =

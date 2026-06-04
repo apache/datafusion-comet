@@ -172,10 +172,6 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
 
 object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
 
-  // Spark-compatible json behavior is delivered by separate work; do not pre-empt it by routing
-  // the Incompatible result through the JVM codegen dispatcher.
-  override def allowIncompatCodegenDispatch: Boolean = false
-
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Partially implemented and not comprehensively tested")
 
@@ -246,10 +242,6 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
 }
 
 object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
-
-  // Spark-compatible to_csv behavior is delivered by separate work; do not pre-empt it by routing
-  // the Incompatible result through the JVM codegen dispatcher.
-  override def allowIncompatCodegenDispatch: Boolean = false
 
   private val incompatibleDataTypes = Seq(DateType, TimestampType, TimestampNTZType, BinaryType)
 
