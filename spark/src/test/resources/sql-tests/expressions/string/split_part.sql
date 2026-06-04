@@ -50,3 +50,7 @@ SELECT split_part(CAST(NULL AS STRING), '.', 1), split_part('abc', CAST(NULL AS 
 -- part number zero follows element_at semantics
 query expect_error(INVALID_INDEX_OF_ZERO)
 SELECT split_part('a.b', '.', 0)
+
+-- StringSplitSQL is collation-aware in Spark. Comet does not support non-default collations yet.
+query expect_fallback(StringSplitSQL does not support non-UTF8_BINARY collations)
+SELECT split_part('Hello' COLLATE UTF8_LCASE, 'L' COLLATE UTF8_LCASE, 2)
