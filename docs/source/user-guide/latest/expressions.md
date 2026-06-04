@@ -373,7 +373,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | --- | --- | --- |
 | `element_at` | ✅ | MapType input falls back |
 | `map` | 🔜 | Constructs a map |
-| `map_concat` | ✅ | Concatenates maps |
+| `map_concat` | ✅ |  |
 | `map_contains_key` | ✅ |  |
 | `map_entries` | ✅ |  |
 | `map_from_arrays` | ✅ |  |
