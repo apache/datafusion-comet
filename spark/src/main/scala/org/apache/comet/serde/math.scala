@@ -243,8 +243,6 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
   }
 }
 
-// Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
-// doGenCode runs inside the Comet pipeline, matching Spark exactly.
 object CometHypot extends CometCodegenDispatch[Hypot]
 
 object CometNaNvl extends CometCodegenDispatch[NaNvl]

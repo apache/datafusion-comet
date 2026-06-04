@@ -164,6 +164,4 @@ object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from
 
 object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map")
 
-// Routed through the JVM codegen dispatcher: no native implementation, so Spark's own doGenCode
-// runs inside the Comet pipeline, matching Spark exactly (including last-wins key resolution).
 object CometMapConcat extends CometCodegenDispatch[MapConcat]
