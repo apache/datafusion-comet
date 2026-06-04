@@ -431,9 +431,41 @@ object CometConvertTimezone extends CometExpressionSerde[ConvertTimezone] {
   }
 }
 
-object CometNextDay extends CometScalarFunction[NextDay]("next_day")
+object CometNextDay extends CometExpressionSerde[NextDay] {
 
-object CometMakeDate extends CometScalarFunction[MakeDate]("make_date")
+  /**
+   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on a malformed
+   * `dayOfWeek` rather than returning NULL. The resolved flag is passed to native via the
+   * `ScalarFunc.fail_on_error` field.
+   */
+  override def convert(expr: NextDay, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "next_day",
+      DateType,
+      expr.failOnError,
+      childExpr: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometMakeDate extends CometExpressionSerde[MakeDate] {
+
+  /**
+   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on an invalid
+   * `(year, month, day)` triple rather than returning NULL. The resolved flag is passed to native
+   * via the `ScalarFunc.fail_on_error` field.
+   */
+  override def convert(expr: MakeDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "make_date",
+      DateType,
+      expr.failOnError,
+      childExpr: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+  }
+}
 
 object CometSecondsToTimestamp
     extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
