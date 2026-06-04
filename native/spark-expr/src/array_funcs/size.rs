@@ -279,9 +279,6 @@ mod tests {
         assert_eq!(result, ScalarValue::Int32(Some(-1)));
     }
 
-    // TODO: Add map array test once Arrow MapArray API constraints are resolved
-    // Currently MapArray doesn't allow nulls in entries which makes testing complex
-    // The core size() implementation supports maps correctly
     #[test]
     fn test_spark_size_map_array() {
         use arrow::array::{Int32Array, MapArray, StringArray};
@@ -332,6 +329,75 @@ mod tests {
         assert_eq!(result.value(1), 1);
         assert_eq!(result.value(2), 0);
         assert_eq!(result.value(3), -1);
+    }
+
+    #[test]
+    fn test_spark_size_scalar_map() {
+        use arrow::array::{Int32Array, MapArray, StringArray};
+
+        let keys = StringArray::from(vec![Some("a"), Some("b")]);
+        let values = Int32Array::from(vec![Some(1), Some(2)]);
+        let entry_offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 2].into());
+
+        let key_field = Arc::new(Field::new("key", DataType::Utf8, false));
+        let value_field = Arc::new(Field::new("value", DataType::Int32, true));
+
+        let entries = arrow::array::StructArray::new(
+            arrow::datatypes::Fields::from(vec![key_field, value_field]),
+            vec![Arc::new(keys), Arc::new(values)],
+            None,
+        );
+
+        let map_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(arrow::datatypes::Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int32, true),
+            ])),
+            false,
+        ));
+
+        let map_array = MapArray::try_new(map_field, entry_offsets, entries, None, false).unwrap();
+        let scalar = ScalarValue::Map(Arc::new(map_array));
+        let result = spark_size_scalar(&scalar).unwrap();
+        assert_eq!(result, ScalarValue::Int32(Some(2)));
+    }
+
+    #[test]
+    fn test_spark_size_scalar_null_map() {
+        use arrow::array::{Int32Array, MapArray, StringArray};
+
+        let keys = StringArray::from(vec![Some("a")]);
+        let values = Int32Array::from(vec![Some(1)]);
+        let entry_offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 1].into());
+
+        let key_field = Arc::new(Field::new("key", DataType::Utf8, false));
+        let value_field = Arc::new(Field::new("value", DataType::Int32, true));
+
+        let entries = arrow::array::StructArray::new(
+            arrow::datatypes::Fields::from(vec![key_field, value_field]),
+            vec![Arc::new(keys), Arc::new(values)],
+            None,
+        );
+
+        let map_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(arrow::datatypes::Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int32, true),
+            ])),
+            false,
+        ));
+
+        let mut null_buffer = NullBufferBuilder::new(1);
+        null_buffer.append(false);
+
+        let map_array =
+            MapArray::try_new(map_field, entry_offsets, entries, null_buffer.finish(), false)
+                .unwrap();
+        let scalar = ScalarValue::Map(Arc::new(map_array));
+        let result = spark_size_scalar(&scalar).unwrap();
+        assert_eq!(result, ScalarValue::Int32(Some(-1)));
     }
 
     #[test]
