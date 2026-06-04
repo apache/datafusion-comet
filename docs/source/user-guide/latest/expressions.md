@@ -586,7 +586,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `to_char` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `to_number` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
 | `to_varchar` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
-| `translate` | ✅ |  |
+| `translate` | ✅ | Falls back by default; opt-in via allowIncompatible ([#4463](https://github.com/apache/datafusion-comet/issues/4463)) |
 | `trim` | ✅ |  |
 | `try_to_binary` | 🔜 | Lowers to `TryEval(...)`, which falls back |
 | `try_to_number` | 🔜 | TRY variant of `to_number` |
