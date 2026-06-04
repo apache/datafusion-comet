@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, UrlCodec}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, TryEval, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
@@ -38,7 +38,9 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
         "read_side_padding"),
       ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"),
       ("encode", UrlCodec.getClass) -> CometUrlEncodeStaticInvoke,
-      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke)
+      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke,
+      ("aesEncrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch,
+      ("aesDecrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch)
 
   override def convert(
       expr: StaticInvoke,
@@ -83,3 +85,9 @@ object CometUrlDecodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     optExprWithFallbackReason(optExpr, expr, expr.children: _*)
   }
 }
+
+/** Routes a [[StaticInvoke]] through the JVM codegen dispatcher; used for AES. */
+object CometStaticInvokeCodegenDispatch extends CometCodegenDispatch[StaticInvoke]
+
+/** Routes [[TryEval]] through the JVM codegen dispatcher; used for `try_aes_decrypt`. */
+object CometTryEval extends CometCodegenDispatch[TryEval]
