@@ -124,6 +124,13 @@ class CometNativeShuffleWriter[K, V](
     // breakdown matches what the split-driver flow showed.
     val nativeMetrics = CometMetricNode(shuffleWriterSQLMetrics, Seq(spec.childMetricNode))
 
+    // The leaf scans execute inside this writer's single plan rather than a separate native
+    // stage RDD, so the usual CometExecRDD.compute() bridge (operators.scala) never runs for
+    // them. Report their bytes/rows to the task's input metrics here instead.
+    if (ctx.hasScanInput) {
+      Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+    }
+
     val cometIter = new CometExecIterator(
       CometExec.newIterId,
       leafIterators,
