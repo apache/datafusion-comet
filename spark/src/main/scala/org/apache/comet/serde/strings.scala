@@ -484,8 +484,8 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
  * `get_json_object` runs Spark's own implementation through the codegen dispatcher by default,
  * for byte-exact results. The native (rust) path is faster but incompatible with Spark for
  * single-quoted JSON and unescaped control characters, so it is opt-in via
- * `spark.comet.expr.GetJsonObject.allowIncompatible`; otherwise it rides the codegen dispatcher
- * via [[CometCodegenDispatch]].
+ * `spark.comet.expression.GetJsonObject.allowIncompatible`; otherwise it rides the codegen
+ * dispatcher via [[CometCodegenDispatch]].
  */
 object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
 

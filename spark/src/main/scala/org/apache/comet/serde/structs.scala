@@ -118,8 +118,9 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
  * `to_json` runs Spark's own implementation through the codegen dispatcher by default, for
  * byte-exact compatibility. The native (rust) path is faster but only covers struct inputs of
  * supported types with no options, so it is opt-in via
- * `spark.comet.expr.StructsToJson.allowIncompatible`; any case it does not cover (unsupported
- * types or options) falls through to the codegen dispatcher via [[CometCodegenDispatch]].
+ * `spark.comet.expression.StructsToJson.allowIncompatible`; any case it does not cover
+ * (unsupported types or options) falls through to the codegen dispatcher via
+ * [[CometCodegenDispatch]].
  */
 object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
 
@@ -176,8 +177,8 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
 /**
  * `from_json` runs Spark's own implementation through the codegen dispatcher by default. The
  * native (rust) path is partially implemented and not comprehensively tested, so it is opt-in via
- * `spark.comet.expr.JsonToStructs.allowIncompatible` and only for schemas it supports; any other
- * case falls through to the codegen dispatcher via [[CometCodegenDispatch]].
+ * `spark.comet.expression.JsonToStructs.allowIncompatible` and only for schemas it supports; any
+ * other case falls through to the codegen dispatcher via [[CometCodegenDispatch]].
  */
 object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] {
 

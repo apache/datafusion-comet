@@ -35,11 +35,11 @@ two ways:
 
 ## Expression coverage
 
-| SQL               | Native (rust) path                                                           | Opt-in config                                      |
-| ----------------- | ---------------------------------------------------------------------------- | -------------------------------------------------- |
-| `get_json_object` | Supported, with gaps on single-quoted JSON and unescaped control characters  | `spark.comet.expr.GetJsonObject.allowIncompatible` |
-| `from_json`       | Supported with restrictions (PERMISSIVE mode only, simple schema types only) | `spark.comet.expr.JsonToStructs.allowIncompatible` |
-| `to_json`         | Supported for struct inputs only, no options                                 | `spark.comet.expr.StructsToJson.allowIncompatible` |
+| SQL               | Native (rust) path                                                           | Opt-in config                                            |
+| ----------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `get_json_object` | Supported, with gaps on single-quoted JSON and unescaped control characters  | `spark.comet.expression.GetJsonObject.allowIncompatible` |
+| `from_json`       | Supported with restrictions (PERMISSIVE mode only, simple schema types only) | `spark.comet.expression.JsonToStructs.allowIncompatible` |
+| `to_json`         | Supported for struct inputs only, no options                                 | `spark.comet.expression.StructsToJson.allowIncompatible` |
 
 When the native path is enabled but an expression or input case has no native
 implementation (for example `to_json` with map or array inputs, or `from_json`
@@ -51,5 +51,5 @@ case.
 - You want the faster native path and your inputs avoid the known compatibility
   gaps above.
 - Enable it per expression, for example
-  `spark.comet.expr.GetJsonObject.allowIncompatible=true`. Cases the native path
+  `spark.comet.expression.GetJsonObject.allowIncompatible=true`. Cases the native path
   does not cover still fall back to the codegen dispatcher.
