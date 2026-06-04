@@ -275,6 +275,16 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
 
+  val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.inMemoryCache.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to enable Comet native execution for in-memory cached tables. " +
+          "When disabled or when spark.comet.enabled=false, Spark's default cache " +
+          "serializer and execution path will be used.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)

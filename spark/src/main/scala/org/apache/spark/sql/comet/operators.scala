@@ -612,7 +612,8 @@ abstract class CometNativeExec extends CometExec {
           _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
           _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
           _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
-          _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
+          _: CometSparkToColumnarExec | _: CometLocalTableScanExec |
+          _: CometInMemoryTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.

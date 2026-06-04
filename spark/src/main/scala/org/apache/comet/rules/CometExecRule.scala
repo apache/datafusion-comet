@@ -29,11 +29,13 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.CometInMemoryTableScanExec
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -85,6 +87,7 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[InMemoryTableScanExec] -> CometInMemoryTableScanExec,
       classOf[WindowExec] -> CometWindowExec)
 
   /**
@@ -281,6 +284,47 @@ case class CometExecRule(session: SparkSession)
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
         convertToComet(op, CometScanWrapper).getOrElse(op)
+
+      case scan: InMemoryTableScanExec =>
+        val cachedBuffers = scan.relation.cacheBuilder.cachedColumnBuffers
+        val firstBatchOpt = cachedBuffers.take(1).headOption
+        val expectedBatchClass =
+          "org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"
+
+        if (CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)) {
+          firstBatchOpt match {
+            case Some(firstBatch) if firstBatch.getClass.getName == expectedBatchClass =>
+              convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
+
+            case Some(firstBatch) =>
+              withFallbackReason(
+                scan,
+                s"Comet in-memory cache requires $expectedBatchClass, " +
+                  s"but found ${firstBatch.getClass.getName}")
+              scan
+
+            case None =>
+              withFallbackReason(
+                scan,
+                "Comet in-memory cache rewrite skipped because cached buffer is empty")
+              scan
+          }
+        } else {
+          firstBatchOpt match {
+            case Some(firstBatch) if firstBatch.getClass.getName == expectedBatchClass =>
+              withFallbackReason(
+                scan,
+                s"Native support for operator InMemoryTableScanExec is disabled. " +
+                  s"Set ${CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key}=true to enable it.")
+            case _ =>
+          }
+
+          if (shouldApplySparkToColumnar(conf, scan)) {
+            convertToComet(scan, CometSparkToColumnarExec).getOrElse(scan)
+          } else {
+            scan
+          }
+        }
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
