@@ -481,28 +481,19 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 }
 
 /**
- * `get_json_object` runs on the native (rust) engine when selected, where it is incompatible with
- * Spark for single-quoted JSON and unescaped control characters. Otherwise it rides the codegen
- * dispatcher (the default `java` engine) via [[CometCodegenDispatch]], which runs Spark's own
- * implementation for byte-exact results.
+ * `get_json_object` runs Spark's own implementation through the codegen dispatcher by default,
+ * for byte-exact results. The native (rust) path is faster but incompatible with Spark for
+ * single-quoted JSON and unescaped control characters, so it is opt-in via
+ * `spark.comet.expr.GetJsonObject.allowIncompatible`; otherwise it rides the codegen dispatcher
+ * via [[CometCodegenDispatch]].
  */
 object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
-
-  private val incompatReason =
-    "Spark allows single-quoted JSON and unescaped control characters which Comet does not" +
-      " support"
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
-
-  override def getSupportLevel(expr: GetJsonObject): SupportLevel =
-    if (JsonEngine.nativeSelected) Incompatible(Some(incompatReason))
-    else super.getSupportLevel(expr)
 
   override def convert(
       expr: GetJsonObject,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] =
-    if (JsonEngine.nativeSelected) {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
       val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
       val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
       val optExpr = scalarFunctionExprToProtoWithReturnType(

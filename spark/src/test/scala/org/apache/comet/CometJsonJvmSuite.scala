@@ -25,9 +25,10 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 class CometJsonJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
+  // No per-expression `allowIncompatible` is set, so all JSON expressions run through the
+  // codegen dispatcher (Spark's own code) rather than the native rust path.
   override protected def sparkConf: SparkConf =
     super.sparkConf
-      .set(CometConf.COMET_JSON_ENGINE.key, CometConf.JSON_ENGINE_JAVA)
       .set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
 
   private val rows = Seq(

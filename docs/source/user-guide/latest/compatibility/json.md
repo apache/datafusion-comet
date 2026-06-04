@@ -19,35 +19,37 @@ under the License.
 
 # JSON Compatibility
 
-Comet supports two engines for evaluating JSON expressions (`get_json_object`,
-`from_json`, `to_json`), selected by the `spark.comet.exec.json.engine`
-configuration entry:
+Comet can evaluate JSON expressions (`get_json_object`, `from_json`, `to_json`)
+two ways:
 
-- `java` (default): routes evaluation through Comet's Arrow-direct codegen
-  dispatcher so Spark's own `doGenCode` for the expression runs inside the Comet
-  pipeline. Byte-exact compatibility with Spark, at the cost of a JNI roundtrip
-  per batch. This rides the codegen dispatcher
-  (`spark.comet.exec.scalaUDF.codegen.enabled`, enabled by default). If the
+- **Codegen dispatcher (default):** Spark's own `doGenCode` for the expression
+  runs inside the Comet pipeline (via Comet's Arrow-direct codegen dispatcher),
+  giving byte-exact compatibility with Spark at the cost of a JNI roundtrip per
+  batch. This rides the codegen dispatcher
+  (`spark.comet.exec.scalaUDF.codegen.enabled`, enabled by default); if the
   dispatcher is disabled, the operator falls back to Spark.
-- `rust`: native DataFusion implementation. Faster, but has known compatibility
-  gaps with Spark on certain inputs. An expression or input case with no native
-  implementation falls back to the `java` engine.
+- **Native (rust) path:** the native DataFusion implementation. Faster, but has
+  known compatibility gaps with Spark on certain inputs, so it is **opt-in per
+  expression** via the expression's `allowIncompatible` config. Any expression or
+  input case with no native implementation falls back to the codegen dispatcher.
 
 ## Expression coverage
 
-| SQL               | `rust` engine                                                                | `java` engine |
-| ----------------- | ---------------------------------------------------------------------------- | ------------- |
-| `get_json_object` | Supported, with gaps on single-quoted JSON and unescaped control characters  | Compatible    |
-| `from_json`       | Supported with restrictions (PERMISSIVE mode only, simple schema types only) | Compatible    |
-| `to_json`         | Supported for struct inputs only, no options                                 | Compatible    |
+| SQL               | Native (rust) path                                                           | Opt-in config                                      |
+| ----------------- | ---------------------------------------------------------------------------- | -------------------------------------------------- |
+| `get_json_object` | Supported, with gaps on single-quoted JSON and unescaped control characters  | `spark.comet.expr.GetJsonObject.allowIncompatible` |
+| `from_json`       | Supported with restrictions (PERMISSIVE mode only, simple schema types only) | `spark.comet.expr.JsonToStructs.allowIncompatible` |
+| `to_json`         | Supported for struct inputs only, no options                                 | `spark.comet.expr.StructsToJson.allowIncompatible` |
 
-When the `rust` engine is selected but an expression or input case has no native
+When the native path is enabled but an expression or input case has no native
 implementation (for example `to_json` with map or array inputs, or `from_json`
-with an unsupported schema), Comet falls back to the `java` engine for that case.
+with an unsupported schema), Comet falls back to the codegen dispatcher for that
+case.
 
-## When to use the `rust` engine
+## When to use the native path
 
 - You want the faster native path and your inputs avoid the known compatibility
   gaps above.
-- Enable it with `spark.comet.exec.json.engine=rust`. Cases the native path does
-  not cover still fall back to the `java` engine.
+- Enable it per expression, for example
+  `spark.comet.expr.GetJsonObject.allowIncompatible=true`. Cases the native path
+  does not cover still fall back to the codegen dispatcher.

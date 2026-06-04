@@ -39,8 +39,8 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(
-        // This suite exercises the native (rust) JSON path. The default engine is now `java`.
-        CometConf.COMET_JSON_ENGINE.key -> CometConf.JSON_ENGINE_RUST,
+        // This suite exercises the native (rust) JSON path, which is opt-in per expression via
+        // `allowIncompatible`. By default these expressions run through the codegen dispatcher.
         CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true",
         CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
         testFun
@@ -76,13 +76,12 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     withTable("t") {
       sql("CREATE TABLE t(a INT, b STRING) USING parquet")
       sql("INSERT INTO t VALUES (1, 'hello')")
-      // The native (rust) path does not support to_json with options or array/map types. With the
-      // rust engine selected, these cases fall back to the codegen (java) engine, which runs
+      // The native (rust) path does not support to_json with options or array/map types. Even with
+      // allowIncompatible enabled, these cases fall back to the codegen dispatcher, which runs
       // Spark's own implementation inside the Comet pipeline rather than falling back to Spark.
       checkSparkAnswerAndOperator(
         "SELECT to_json(named_struct('a', a, 'b', b), map('timestampFormat', 'dd/MM/yyyy')) FROM t")
-      checkSparkAnswerAndOperator(
-        "SELECT to_json(named_struct('b', array(b))) FROM t")
+      checkSparkAnswerAndOperator("SELECT to_json(named_struct('b', array(b))) FROM t")
     }
   }
 

@@ -31,16 +31,6 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
-/**
- * Whether the native (rust) JSON engine is selected. When it is not, or when a JSON expression
- * has no native implementation for a given case, the serde falls through to the codegen
- * dispatcher (the default `java` engine) via [[CometCodegenDispatch]].
- */
-private[serde] object JsonEngine {
-  def nativeSelected: Boolean =
-    CometConf.COMET_JSON_ENGINE.get() == CometConf.JSON_ENGINE_RUST
-}
-
 object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
 
   private val duplicateNamesReason =
@@ -125,24 +115,22 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
 }
 
 /**
- * `to_json` runs on the native (rust) engine when selected and the child is a struct of supported
- * types with no options. Any other case (unsupported types, options, or the default `java`
- * engine) falls through to the codegen dispatcher via [[CometCodegenDispatch]], which runs
- * Spark's own implementation.
+ * `to_json` runs Spark's own implementation through the codegen dispatcher by default, for
+ * byte-exact compatibility. The native (rust) path is faster but only covers struct inputs of
+ * supported types with no options, so it is opt-in via
+ * `spark.comet.expr.StructsToJson.allowIncompatible`; any case it does not cover (unsupported
+ * types or options) falls through to the codegen dispatcher via [[CometCodegenDispatch]].
  */
 object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
 
   private def nativeSupported(expr: StructsToJson): Boolean =
-    JsonEngine.nativeSelected && expr.options.isEmpty && isSupportedType(expr.child.dataType)
-
-  override def getSupportLevel(expr: StructsToJson): SupportLevel =
-    if (nativeSupported(expr)) Compatible() else super.getSupportLevel(expr)
+    expr.options.isEmpty && isSupportedType(expr.child.dataType)
 
   override def convert(
       expr: StructsToJson,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] =
-    if (nativeSupported(expr)) {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
       val ignoreNullFields = SQLConf.get.jsonGeneratorIgnoreNullFields
       exprToProtoInternal(expr.child, inputs, binding) match {
         case Some(p) =>
@@ -186,38 +174,22 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
 }
 
 /**
- * `from_json` runs on the native (rust) engine when selected and the target schema is one the
- * native path supports, where it is incompatible (partially implemented). Any other case (a
- * schema the native path does not support, or the default `java` engine) falls through to the
- * codegen dispatcher via [[CometCodegenDispatch]], which runs Spark's own implementation.
+ * `from_json` runs Spark's own implementation through the codegen dispatcher by default. The
+ * native (rust) path is partially implemented and not comprehensively tested, so it is opt-in via
+ * `spark.comet.expr.JsonToStructs.allowIncompatible` and only for schemas it supports; any other
+ * case falls through to the codegen dispatcher via [[CometCodegenDispatch]].
  */
 object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "The native (rust) engine is partially implemented and not comprehensively tested")
-
   private def nativeSupported(expr: JsonToStructs): Boolean =
-    JsonEngine.nativeSelected && expr.schema != null && isSupportedSchema(expr.schema)
-
-  override def getSupportLevel(expr: JsonToStructs): SupportLevel =
-    if (nativeSupported(expr)) {
-      // the native path is partially implemented and not comprehensively tested yet
-      Incompatible()
-    } else {
-      super.getSupportLevel(expr)
-    }
+    expr.schema != null && isSupportedSchema(expr.schema)
 
   override def convert(
       expr: JsonToStructs,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
-    if (expr.schema == null) {
-      withFallbackReason(expr, "from_json requires explicit schema")
-      return None
-    }
-
-    if (!nativeSupported(expr)) {
+    if (!(CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr))) {
       return super.convert(expr, inputs, binding)
     }
 
