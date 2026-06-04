@@ -36,7 +36,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
-import org.apache.comet.serde.{Compatible, Incompatible}
+import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -1631,6 +1631,31 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       TimestampType,
       BinaryType)
     testArrayCastMatrix(types, ArrayType(_), generateArrays(100, _))
+  }
+
+  test("cast ArrayType(DateType) to unsupported ArrayType falls back") {
+    val fromType = ArrayType(DateType)
+    val unsupportedElementTypes =
+      Seq(BooleanType, ByteType, ShortType, LongType, FloatType, DoubleType, DecimalType(10, 2))
+    val input = generateArrays(100, DateType)
+
+    withTempPath { dir =>
+      val data = roundtripParquet(input, dir).coalesce(1)
+
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        unsupportedElementTypes.foreach { toElementType =>
+          val toType = ArrayType(toElementType)
+          val expectedMessage = s"Cast from $fromType to $toType is not supported"
+
+          assert(
+            CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) ==
+              Unsupported(Some(expectedMessage)))
+          checkSparkAnswerAndFallbackReason(
+            data.select(col("a").cast(toType).as("converted")),
+            expectedMessage)
+        }
+      }
+    }
   }
 
   // https://github.com/apache/datafusion-comet/issues/3906
