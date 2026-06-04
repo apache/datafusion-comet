@@ -30,9 +30,3 @@ jobs:
     name: CI
     uses: ./.github/workflows/ci.yml
     secrets: inherit
-    with:
-      # Force every gated job to run on fork-CI: contributor pushes don't necessarily
-      # touch paths that match ci.yml's filters (e.g. when iterating on the fork-CI
-      # workflow files themselves), so honour the Spark-style "run the full matrix"
-      # contract instead of skipping silently.
-      force_all: true
