@@ -151,8 +151,6 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
           if toElementType != DataTypes.IntegerType && toElementType != DataTypes.StringType =>
         unsupported(fromType, toType)
-      case (dt: ArrayType, DataTypes.StringType) if dt.elementType == DataTypes.BinaryType =>
-        Incompatible()
       case (dt: ArrayType, DataTypes.StringType) =>
         isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode)
       case (dt: ArrayType, dt1: ArrayType) =>
@@ -245,9 +243,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible(
           Some(
-            "There can be differences in precision. " +
-              "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
-              "instead of 1.4E-45"))
+            "String formatting can differ for floating-point values near precision limits " +
+              "or when scientific notation is used"))
       case d: DecimalType if d.scale < 0 =>
         // Negative-scale decimals require spark.sql.legacy.allowNegativeScaleOfDecimal=true.
         // When that config is enabled, Spark formats them using Java BigDecimal.toString()
