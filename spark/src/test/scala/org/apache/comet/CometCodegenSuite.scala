@@ -19,12 +19,16 @@
 
 package org.apache.comet
 
+import scala.util.Random
+
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
+import org.apache.spark.sql.catalyst.expressions.{CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
@@ -1021,6 +1025,77 @@ class CometCodegenSuite
     }
   }
 
+  private def kernelMapIntString(expr: Expression): Map[Int, String] =
+    runKernel(expr, 1) { v =>
+      val map = v.getMap(0)
+      val keys = map.keyArray()
+      val values = map.valueArray()
+      (0 until map.numElements())
+        .map(i => keys.getInt(i) -> values.getUTF8String(i).toString)
+        .toMap
+    }
+
+  test("constant-folded map_concat output round-trips every key through the kernel (#4539)") {
+    // map_concat(map(1,'a',2,'b'), map(3,'c')) is all-literal, so Spark's optimizer constant-folds
+    // it to a Literal(MapType) holding an ArrayBasedMapData. The MapType output writer must marshal
+    // every entry into the Arrow MapVector; the reported bug corrupts the last key (3 -> 0).
+    def s(str: String): Literal = Literal(UTF8String.fromString(str), StringType)
+    val map1 =
+      CreateMap(Seq(Literal(1), s("a"), Literal(2), s("b")), useStringTypeWhenEmpty = false)
+    val map2 = CreateMap(Seq(Literal(3), s("c")), useStringTypeWhenEmpty = false)
+    val folded =
+      Literal.create(MapConcat(Seq(map1, map2)).eval(null), MapType(IntegerType, StringType))
+    assert(kernelMapIntString(folded) === Map(1 -> "a", 2 -> "b", 3 -> "c"))
+  }
+
+  test("constant-folded array output writes every element past the pre-sized child (#4539)") {
+    // A single-row array with far more elements than the list child's numRows-derived initial
+    // capacity. The element child is written at a cumulative index, so a bare `set` overflows the
+    // pre-sized buffer once the row's element count exceeds it; `setSafe` grows it. Sibling of the
+    // map_concat case for ArrayType.
+    val n = 16
+    val elems = (0 until n).map(i => Literal(i * 10, IntegerType))
+    val folded =
+      Literal.create(CreateArray(elems).eval(null), ArrayType(IntegerType, containsNull = false))
+
+    val got = runKernel(folded, 1) { v =>
+      val arr = v.getArray(0)
+      (0 until arr.numElements()).map(arr.getInt)
+    }
+    assert(got === (0 until n).map(_ * 10))
+  }
+
+  test(
+    "constant-folded Array<Struct<Int, String>> writes struct fields past the pre-sized child " +
+      "(#4539)") {
+    // The struct sits inside an array, so its fields inherit the array's cumulative index. The
+    // fixed-width Int field would overflow with a bare `set`; propagating `nested` into the struct
+    // branch makes it `setSafe`. Guards the struct-nested-in-collection path.
+    val n = 16
+    def structAt(i: Int): Expression =
+      CreateNamedStruct(
+        Seq(
+          Literal("a"),
+          Literal(i, IntegerType),
+          Literal("b"),
+          Literal(UTF8String.fromString(s"v$i"), StringType)))
+    val structType = new StructType()
+      .add("a", IntegerType, nullable = false)
+      .add("b", StringType, nullable = false)
+    val folded = Literal.create(
+      CreateArray((0 until n).map(structAt)).eval(null),
+      ArrayType(structType, containsNull = false))
+
+    val got = runKernel(folded, 1) { v =>
+      val arr = v.getArray(0)
+      (0 until arr.numElements()).map { i =>
+        val r = arr.getStruct(i, 2)
+        r.getInt(0) -> r.getUTF8String(1).toString
+      }
+    }
+    assert(got === (0 until n).map(i => i -> s"v$i"))
+  }
+
   test("array_distinct on Array<Struct<Int, String>> retains element identity across hash set") {
     // Fuzz signal: cardinality(array_distinct(arr_of_struct)) returns 1 where Spark returns 2.
     // Hypothesis: the kernel's InputStruct wrapper backing array_distinct's element reads is
@@ -1153,6 +1228,174 @@ class CometCodegenSuite
   // Runtime coverage for nullable nested `getStruct` / `getArray` / `getMap` element reads is
   // exercised through HOFs in `CometCodegenHOFSuite`. Static emitter assertions live in
   // `CometCodegenSourceSuite`.
+
+  /**
+   * Dynamically sized collection output (regression family for #4539). Each UDF takes a scalar
+   * seed and returns a collection whose per-row size is a function of the seed, so the output
+   * writer fills each collection's child vector at a cumulative index that `numRows` does not
+   * bound. Before #4539 the fixed-width child writes used a bare `set`, which ran off the end of
+   * the pre-sized buffer; with Comet's unsafe Arrow memory the overflow corrupted neighboring
+   * entries (or, under NMT, aborted the JVM). Scalar input keeps the read side off the
+   * complex-input deserializer, isolating coverage to the writer.
+   *
+   * A small batch size makes the child's `numRows`-derived pre-size tiny relative to the per-row
+   * element counts, so the larger rows reliably push past it. Randomized type/shape coverage of
+   * the same writer lives in `CometCodegenFuzzSuite`.
+   */
+  private val collectionOutputSeeds: Seq[String] = {
+    val rng = new Random(42)
+    (0 until 256).map { i =>
+      if (i % 17 == 0) "NULL" // null result
+      else if (i % 13 == 0) "0" // empty collection
+      else (rng.nextInt(80) - 39).toString // mix of small and larger-than-batch sizes
+    }
+  }
+
+  private def withSeedTable(f: => Unit): Unit = {
+    withTable("t") {
+      sql("CREATE TABLE t (seed INT) USING parquet")
+      collectionOutputSeeds.grouped(64).foreach { batch =>
+        sql(s"INSERT INTO t VALUES ${batch.map(s => s"($s)").mkString(", ")}")
+      }
+      f
+    }
+  }
+
+  private case class CollectionOutputCase(label: String, register: () => String)
+
+  private val collectionOutputCases: Seq[CollectionOutputCase] = Seq(
+    // Fixed-width element with nulls: the exact nested write #4539 corrupted.
+    CollectionOutputCase(
+      "Array<Int> with null elements",
+      () => {
+        val n = "arrout_int"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else
+              (0 until (math.abs(i.intValue) % 40)).map(j =>
+                if (j % 4 == 0) null else java.lang.Integer.valueOf(i + j)))
+        n
+      }),
+    CollectionOutputCase(
+      "Array<Long>",
+      () => {
+        val n = "arrout_long"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else (0 until (math.abs(i.intValue) % 40)).map(j => (i.toLong + j) * 1000000000L))
+        n
+      }),
+    CollectionOutputCase(
+      "Array<String> with null elements",
+      () => {
+        val n = "arrout_str"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else
+              (0 until (math.abs(i.intValue) % 40)).map(j =>
+                if (j % 3 == 0) null else s"v${i}_$j"))
+        n
+      }),
+    CollectionOutputCase(
+      "Array<Decimal>",
+      () => {
+        val n = "arrout_dec"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else
+              (0 until (math.abs(i.intValue) % 40)).map(j =>
+                java.math.BigDecimal.valueOf((i + j).toLong)))
+        n
+      }),
+    CollectionOutputCase(
+      "Array<Binary>",
+      () => {
+        val n = "arrout_bin"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else
+              (0 until (math.abs(i.intValue) % 40)).map(j =>
+                if (j % 5 == 0) null else s"b${i}_$j".getBytes("UTF-8")))
+        n
+      }),
+    CollectionOutputCase(
+      "Map<Int, Int>",
+      () => {
+        val n = "mapout_ii"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else (0 until (math.abs(i.intValue) % 40)).map(j => j -> (i + j)).toMap)
+        n
+      }),
+    CollectionOutputCase(
+      "Map<String, Int>",
+      () => {
+        val n = "mapout_si"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else (0 until (math.abs(i.intValue) % 40)).map(j => s"k$j" -> (i + j)).toMap)
+        n
+      }),
+    CollectionOutputCase(
+      "Array<Array<Int>>",
+      () => {
+        val n = "arrout_arr"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else (0 until (math.abs(i.intValue) % 40)).map(j => (0 to j).map(_ + i)))
+        n
+      }),
+    CollectionOutputCase(
+      "Map<Int, Array<Int>>",
+      () => {
+        val n = "mapout_iarr"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else (0 until (math.abs(i.intValue) % 40)).map(j => j -> (0 to j).map(_ + i)).toMap)
+        n
+      }),
+    CollectionOutputCase(
+      "Array<Struct<Int, String>>",
+      () => {
+        val n = "arrout_struct"
+        spark.udf.register(
+          n,
+          (i: java.lang.Integer) =>
+            if (i == null) null
+            else (0 until (math.abs(i.intValue) % 40)).map(j => IntStr(i + j, s"v$j")))
+        n
+      }))
+
+  for (c <- collectionOutputCases) {
+    test(s"dynamically-sized ${c.label} output round-trips through codegen dispatch (#4539)") {
+      val udf = c.register()
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "8") {
+        withSeedTable {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(sql(s"SELECT $udf(seed) FROM t"))
+          }
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -1165,3 +1408,6 @@ private case class NameAgePair(name: String, age: Int)
 private case class NameItems(name: String, items: Seq[Int])
 
 private case class XyPair(x: Int, y: String)
+
+/** Element type for the `Array<Struct<Int, String>>` dynamically-sized output case. */
+private case class IntStr(a: Int, b: String)

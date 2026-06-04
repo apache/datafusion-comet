@@ -242,7 +242,7 @@ jobs:
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.1'
-      spark-full: '4.1.1'
+      spark-full: '4.1.2'
       java: 17
 
   iceberg_1_8:
