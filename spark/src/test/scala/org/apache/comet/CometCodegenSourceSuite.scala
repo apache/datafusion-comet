@@ -393,6 +393,46 @@ class CometCodegenSourceSuite extends AnyFunSuite {
         CodeFormatter.format(result.code))
   }
 
+  test("nullable NullIntolerant root keeps post-eval isNull guard inside short-circuit (#4554)") {
+    // `NullIntolerant` only constrains "null in -> null out". An expression can still set
+    // `ev.isNull = true` from non-null inputs — `MakeTimestamp(failOnError = false)` does this in
+    // its `doGenCode` catch block when year/month/day/hour/min/sec components are out of range
+    // (issue #4554). The dispatcher previously assumed NullIntolerant + non-null inputs implied a
+    // non-null output and dropped the post-eval guard; that wrote stale `ev.value` bytes for
+    // every invalid row. The short-circuit on input nulls must coexist with a post-eval
+    // `if (ev.isNull) setNull` check whenever the expression itself is nullable.
+    val expr = MakeTimestamp(
+      BoundReference(0, IntegerType, nullable = true),
+      BoundReference(1, IntegerType, nullable = true),
+      BoundReference(2, IntegerType, nullable = true),
+      BoundReference(3, IntegerType, nullable = true),
+      BoundReference(4, IntegerType, nullable = true),
+      BoundReference(5, DecimalType(8, 6), nullable = true),
+      timezone = None,
+      timeZoneId = Some("UTC"),
+      failOnError = false)
+    assert(expr.nullable, "MakeTimestamp(failOnError=false) must be nullable for this test")
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val decCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector"),
+      nullable = true)
+    val result = CometBatchKernelCodegen.generateSource(
+      expr,
+      IndexedSeq(intCol, intCol, intCol, intCol, intCol, decCol))
+    val src = result.body
+    val formatted = CodeFormatter.format(result.code)
+    // Two distinct setNull sites must exist: the input-null short-circuit before `ev.code` runs,
+    // and the post-eval guard that propagates `ev.isNull = true` set by MakeTimestamp's catch
+    // block on invalid components. Pre-fix there was only one (the input short-circuit).
+    val setNullOccurrences = "output\\.setNull\\(i\\);".r.findAllIn(src).length
+    assert(
+      setNullOccurrences >= 2,
+      "expected at least two setNull sites (input short-circuit + post-eval ev.isNull guard); " +
+        s"found $setNullOccurrences. Source:\n$formatted")
+  }
+
   test("ArrayType(StringType) output emits ListVector startNewValue/endValue recursion") {
     // CreateArray over a BoundReference(StringType) produces ArrayType(StringType). emitWrite's
     // ArrayType case should emit:
@@ -448,6 +488,46 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       ".valueArray()").foreach { marker =>
       assert(src.contains(marker), s"expected $marker in MapType output emission; got:\n$src")
     }
+  }
+
+  test("nested fixed-width map children grow with setSafe, not set (#4539)") {
+    // Map<Int, Int> output: both key and value are fixed-width children of the entries struct.
+    // Their element count is the data-dependent sum of per-row map sizes, not bounded by numRows,
+    // and is unknown until the write loop has evaluated each row, so the writes must use `setSafe`
+    // to grow on demand. A bare `set` throws once a row's entries exceed the child's initial
+    // capacity (issue #4539: the literal map's third key overflowed the pre-sized IntVector).
+    val expr = CreateMap(
+      Seq(
+        Literal(1, IntegerType),
+        Literal(10, IntegerType),
+        Literal(2, IntegerType),
+        Literal(20, IntegerType)))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq.empty).body
+    assert(
+      src.contains(".setSafe("),
+      s"expected setSafe for nested fixed-width writes; got:\n$src")
+    // `.set(` is a bare fixed-width write; `setSafe(` / `setNull(` / `setIndexDefined(` do not
+    // match this literal. There must be none into the nested children.
+    assert(
+      !src.contains(".set("),
+      s"expected no bare fixed-width set into map children; got:\n$src")
+  }
+
+  test("top-level scalar output keeps the pre-sized set fast path") {
+    // The root output vector is pre-sized to numRows and written once per row, so it uses the
+    // bare `set` fast path rather than paying for setSafe's per-write capacity check. This pins
+    // the boundary the #4539 fix draws: setSafe is for nested children only.
+    val expr = Add(BoundReference(0, IntegerType, nullable = false), Literal(1, IntegerType))
+    val intSpec = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = false)
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(intSpec)).body
+    assert(
+      src.contains("output.set("),
+      s"expected bare set for the pre-sized root output; got:\n$src")
+    assert(
+      !src.contains(".setSafe("),
+      s"expected no setSafe for a scalar root output; got:\n$src")
   }
 
   test("ArrayType output elides isNullAt on the element loop when containsNull is false") {
