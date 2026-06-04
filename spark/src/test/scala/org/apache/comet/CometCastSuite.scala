@@ -1559,7 +1559,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DoubleType,
       BinaryType,
       DecimalType(10, 2),
-      DecimalType(38, 18)).foreach { dt =>
+      DecimalType(38, 18),
+      DataTypes.TimestampNTZType).foreach { dt =>
       val input = generateArrays(100, dt)
       castTest(input, StringType, hasIncompatibleType = hasIncompatibleType(input.schema))
     }
@@ -1629,6 +1630,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // cover this type fully.
       DateType,
       TimestampType,
+      DataTypes.TimestampNTZType,
       BinaryType)
     testArrayCastMatrix(types, ArrayType(_), generateArrays(100, _))
   }
@@ -1792,6 +1794,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             withEdgeCaseRows(buildRows(generateTimestampLiterals())).asJava,
             stringSchema)
           .select(col("a").cast(ArrayType(TimestampType)).as("a"))
+      case dt if dt == DataTypes.TimestampNTZType =>
+        val stringSchema = StructType(Seq(StructField("a", ArrayType(StringType), true)))
+        spark
+          .createDataFrame(
+            withEdgeCaseRows(buildRows(generateTimestampLiterals())).asJava,
+            stringSchema)
+          .select(col("a").cast(ArrayType(DataTypes.TimestampNTZType)).as("a"))
       case FloatType =>
         spark.createDataFrame(
           withEdgeCaseRows(buildRows(generateSafeFloatValues())).asJava,
