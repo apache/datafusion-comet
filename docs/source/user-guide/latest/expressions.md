@@ -466,8 +466,8 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `aes_decrypt` | 🔜 | Falls back; `StaticInvoke` not allowlisted; planned via codegen dispatch ([#4558](https://github.com/apache/datafusion-comet/issues/4558)) |
-| `aes_encrypt` | 🔜 | Falls back; planned via codegen dispatch ([#4558](https://github.com/apache/datafusion-comet/issues/4558)); nondeterministic IV by default |
+| `aes_decrypt` | ✅ | Routed through the JVM codegen dispatcher |
+| `aes_encrypt` | ✅ | Routed through the JVM codegen dispatcher; nondeterministic IV by default |
 | `assert_true` | 🔜 | Lowers to `RaiseError`, which falls back |
 | `current_catalog` | ✅ | Resolved to a literal by the analyzer (`ReplaceCurrentLike`) |
 | `current_database` | ✅ | Resolved to a literal by the analyzer (`ReplaceCurrentLike`) |
@@ -485,7 +485,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `session_user` | ✅ | Alias of `current_user`; resolved to a literal by the analyzer |
 | `spark_partition_id` | ✅ |  |
 | `to_variant_object` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `try_aes_decrypt` | 🔜 | Falls back; planned via codegen dispatch ([#4558](https://github.com/apache/datafusion-comet/issues/4558)) |
+| `try_aes_decrypt` | ✅ | Routed through the JVM codegen dispatcher |
 | `try_parse_json` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `try_variant_get` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `typeof` | ✅ | Foldable; resolved to a literal before Comet sees the plan |
