@@ -392,9 +392,14 @@ mod tests {
         let mut null_buffer = NullBufferBuilder::new(1);
         null_buffer.append(false);
 
-        let map_array =
-            MapArray::try_new(map_field, entry_offsets, entries, null_buffer.finish(), false)
-                .unwrap();
+        let map_array = MapArray::try_new(
+            map_field,
+            entry_offsets,
+            entries,
+            null_buffer.finish(),
+            false,
+        )
+        .unwrap();
         let scalar = ScalarValue::Map(Arc::new(map_array));
         let result = spark_size_scalar(&scalar).unwrap();
         assert_eq!(result, ScalarValue::Int32(Some(-1)));
