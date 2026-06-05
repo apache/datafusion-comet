@@ -200,6 +200,24 @@ trait CometDeltaTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
       s"expected fallback (no CometDeltaNativeScanExec) but plan was:\n$plan")
   }
 
+  /**
+   * Assert the Phase 1b "kernel reads" path actually engaged: the native `DeltaScan` proto
+   * driving the planner must carry `kernel_read = true`, which is what routes the native side to
+   * `DeltaKernelScanExec` (proven to read correctly by the Rust unit tests) instead of the
+   * ParquetSource + DV-sweep stack. The Spark plan alone can't show this -- both paths produce a
+   * `CometDeltaNativeScanExec` -- so we inspect the serialized native operator.
+   */
+  protected def assertKernelReadEngaged(tablePath: String): Unit = {
+    val df = spark.read.format("delta").load(tablePath)
+    df.collect() // materialize so AQE / Comet rules finalize the plan
+    val plan = df.queryExecution.executedPlan
+    val scans = collect(plan) { case s: CometDeltaNativeScanExec => s }
+    assert(scans.nonEmpty, s"expected CometDeltaNativeScanExec in plan, got:\n$plan")
+    assert(
+      scans.head.nativeOp.getDeltaScan.getCommon.getKernelRead,
+      s"expected kernel_read=true in the native DeltaScan proto, but it was false\nplan:\n$plan")
+  }
+
   protected def normalizeRow(row: Row): Seq[Any] =
     row.toSeq.map(normalizeValue)
 

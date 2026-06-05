@@ -66,4 +66,17 @@ object DeltaConf {
       .intConf
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
+
+  val COMET_DELTA_KERNEL_READ_ENABLED: ConfigEntry[Boolean] =
+    ConfigBuilder("spark.comet.delta.kernelRead.enabled")
+      .category(CATEGORY)
+      .doc(
+        "Experimental (Phase 1b): read Delta data files through delta-kernel-rs's own " +
+          "read + transform + deletion-vector path (DeltaKernelScanExec), bridging the " +
+          "result into Comet's Arrow plan, instead of the ParquetSource + DV-sweep + " +
+          "synthetic-columns stack. Currently only plain tables (no column mapping, " +
+          "partitions, or row-tracking) take this path; everything else stays on the " +
+          "default reader regardless of this flag. Off by default.")
+      .booleanConf
+      .createWithDefault(false)
 }

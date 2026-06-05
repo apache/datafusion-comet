@@ -37,6 +37,29 @@ import org.apache.spark.sql.functions._
  */
 class CometDeltaNativeSuite extends CometDeltaTestBase {
 
+  test("kernel-read path (Phase 1b): plain table reads correctly and engages DeltaKernelScanExec") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("kernel_read_smoke") { tablePath =>
+      val ss = spark
+      import ss.implicits._
+      (0 until 10)
+        .map(i => (i.toLong, s"name_$i", i * 1.5))
+        .toDF("id", "name", "score")
+        .repartition(1)
+        .write
+        .format("delta")
+        .save(tablePath)
+
+      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
+        // Correctness: the kernel-read result matches vanilla Spark (and stays on the native
+        // CometDeltaNativeScanExec, i.e. no Spark-side fallback).
+        assertDeltaNativeMatches(tablePath, identity)
+        // Routing: the native proto carries kernel_read=true, so DeltaKernelScanExec ran.
+        assertKernelReadEngaged(tablePath)
+      }
+    }
+  }
+
   test("read a tiny unpartitioned delta table via the native scan") {
     assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
     withDeltaTable("smoke") { tablePath =>

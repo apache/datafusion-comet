@@ -35,10 +35,12 @@
 //! crate exposes plain Rust functions that core calls directly under
 //! `#[cfg(feature = "contrib-delta")]`.
 
+pub mod arrow_bridge;
 pub mod dv_reader;
 pub mod engine;
 pub mod error;
 pub mod jni;
+pub mod kernel_scan;
 pub mod missing_file_tolerant;
 pub mod planner;
 pub mod predicate;

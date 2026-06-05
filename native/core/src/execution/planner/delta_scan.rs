@@ -44,7 +44,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion_comet_proto::spark_operator::{DeltaScan, Operator};
+use datafusion_comet_proto::spark_operator::{DeltaScan, DeltaScanCommon, Operator};
 
 use crate::execution::operators::ExecutionError;
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -54,6 +54,71 @@ use crate::execution::planner::PlanCreationResult;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
+
+/// Build a `DeltaKernelScanExec` for the Phase 1b "kernel reads" path. The per-file inputs come
+/// straight off the existing proto (`DeltaScanTask` path/size/record_count/dv); no new proto
+/// message. Phase 1b only supports plain tables -- the driver leaves `kernel_read` false for
+/// column-mapping / partitioned / row-tracking tables, and this guards defensively.
+fn plan_delta_kernel_scan(
+    spark_plan: &Operator,
+    scan: &DeltaScan,
+    common: &DeltaScanCommon,
+    required_schema: &SchemaRef,
+) -> PlanCreationResult {
+    use comet_contrib_delta::jni::delta_storage_config_from_map;
+    use comet_contrib_delta::kernel_scan::{DeltaKernelScanExec, KernelScanFile};
+
+    if !common.column_mappings.is_empty()
+        || !common.partition_schema.is_empty()
+        || common.emit_row_index
+        || common.emit_is_row_deleted
+        || common.emit_row_id
+        || common.emit_row_commit_version
+        || !common.metadata_column_names.is_empty()
+    {
+        return Err(GeneralError(
+            "DeltaScan.kernel_read is only supported for plain tables in Phase 1b \
+             (no column mapping, partitions, synthetic, or metadata columns)"
+                .into(),
+        ));
+    }
+
+    let object_store_options: HashMap<String, String> = common
+        .object_store_options
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let storage_config = delta_storage_config_from_map(&object_store_options);
+
+    let files: Vec<KernelScanFile> = scan
+        .tasks
+        .iter()
+        .map(|t| KernelScanFile {
+            path: t.file_path.clone(),
+            size: t.file_size as i64,
+            record_count: t.record_count.map(|c| c as i64),
+            dv: t.dv.clone(),
+        })
+        .collect();
+
+    let table_root = if scan.table_root.is_empty() {
+        common.table_root.clone()
+    } else {
+        scan.table_root.clone()
+    };
+
+    let exec = Arc::new(DeltaKernelScanExec::new(
+        Arc::clone(required_schema),
+        table_root,
+        storage_config,
+        files,
+    ));
+    Ok((
+        vec![],
+        vec![],
+        Arc::new(SparkPlan::new(spark_plan.plan_id, exec, vec![])),
+    ))
+}
 
 pub(crate) fn plan_delta_scan(
     planner: &PhysicalPlanner,
@@ -67,6 +132,15 @@ pub(crate) fn plan_delta_scan(
 
     let required_schema: SchemaRef =
         convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
+
+    // Iceberg-style "kernel reads" path (Phase 1b). When the driver sets `kernel_read`, route to
+    // `DeltaKernelScanExec` -- kernel reads each file + applies the DV, and the result is bridged
+    // into this arrow plan -- instead of the ParquetSource + DV-sweep + synthetic-columns stack
+    // below. Old path stays the default.
+    if common.kernel_read {
+        return plan_delta_kernel_scan(spark_plan, scan, common, &required_schema);
+    }
+
     let mut data_schema: SchemaRef =
         convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
     let partition_schema: SchemaRef =
