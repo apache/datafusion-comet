@@ -18,6 +18,7 @@
 use arrow::array::RecordBatch;
 use arrow::compute::interleave_record_batch;
 use datafusion::common::DataFusionError;
+use datafusion::physical_plan::metrics::Time;
 
 /// A helper struct to produce shuffled batches.
 /// This struct takes ownership of the buffered batches and partition indices from the
@@ -85,18 +86,19 @@ impl<'a> PartitionedBatchIterator<'a> {
             pos: 0,
         }
     }
-}
 
-impl Iterator for PartitionedBatchIterator<'_> {
-    type Item = datafusion::common::Result<RecordBatch>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Returns the next shuffled batch, recording the gather cost into `interleave_time`.
+    pub(crate) fn next(
+        &mut self,
+        interleave_time: &Time,
+    ) -> Option<datafusion::common::Result<RecordBatch>> {
         if self.pos >= self.indices.len() {
             return None;
         }
 
         let indices_end = std::cmp::min(self.pos + self.batch_size, self.indices.len());
         let indices = &self.indices[self.pos..indices_end];
+        let _timer = interleave_time.timer();
         match interleave_record_batch(&self.record_batches, indices) {
             Ok(batch) => {
                 self.pos = indices_end;
