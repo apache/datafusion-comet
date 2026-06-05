@@ -28,13 +28,11 @@ use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
-    operators::{
-        ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, SchemaAlignExec, ShuffleScanExec,
-    },
+    operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
-    shuffle::ShuffleWriterExec,
+    shuffle::{SchemaAlignExec, ShuffleWriterExec},
 };
 use crate::jvm_bridge::{jni_call, JVMClasses};
 use arrow::compute::CastOptions;
