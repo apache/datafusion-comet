@@ -480,31 +480,32 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
   }
 }
 
-object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
-
-  private val incompatReason =
-    "Spark allows single-quoted JSON and unescaped control characters which Comet does not" +
-      " support"
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
-
-  override def getSupportLevel(expr: GetJsonObject): SupportLevel =
-    Incompatible(Some(incompatReason))
+/**
+ * `get_json_object` runs Spark's own implementation through the codegen dispatcher by default,
+ * for byte-exact results. The native (rust) path is faster but incompatible with Spark for
+ * single-quoted JSON and unescaped control characters, so it is opt-in via
+ * `spark.comet.expression.GetJsonObject.allowIncompatible`; otherwise it rides the codegen
+ * dispatcher via [[CometCodegenDispatch]].
+ */
+object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
 
   override def convert(
       expr: GetJsonObject,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
-    val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
-    val optExpr = scalarFunctionExprToProtoWithReturnType(
-      "get_json_object",
-      expr.dataType,
-      false,
-      jsonExpr,
-      pathExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.json, expr.path)
-  }
+      binding: Boolean): Option[Expr] =
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
+      val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
+      val optExpr = scalarFunctionExprToProtoWithReturnType(
+        "get_json_object",
+        expr.dataType,
+        false,
+        jsonExpr,
+        pathExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.json, expr.path)
+    } else {
+      super.convert(expr, inputs, binding)
+    }
 }
 
 trait CommonStringExprs {

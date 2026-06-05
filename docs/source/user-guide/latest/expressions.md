@@ -338,7 +338,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | --- | --- | --- |
 | `from_json` | ✅ | Falls back by default; opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json)) |
 | `get_json_object` | ✅ | Some inputs need allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
-| `json_array_length` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `json_array_length` | ✅ | Single-quoted/trailing JSON needs allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#json_array_length)) |
 | `json_object_keys` | 🔜 | [#3161](https://github.com/apache/datafusion-comet/issues/3161) |
 | `json_tuple` | 🔜 | [#3160](https://github.com/apache/datafusion-comet/issues/3160) |
 | `schema_of_json` | 🔜 | [#3163](https://github.com/apache/datafusion-comet/issues/3163) |
@@ -466,8 +466,8 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `aes_decrypt` | 🔜 | Falls back; `StaticInvoke` not allowlisted; planned via codegen dispatch ([#4558](https://github.com/apache/datafusion-comet/issues/4558)) |
-| `aes_encrypt` | 🔜 | Falls back; planned via codegen dispatch ([#4558](https://github.com/apache/datafusion-comet/issues/4558)); nondeterministic IV by default |
+| `aes_decrypt` | ✅ | Routed through the JVM codegen dispatcher |
+| `aes_encrypt` | ✅ | Routed through the JVM codegen dispatcher; nondeterministic IV by default |
 | `assert_true` | 🔜 | Lowers to `RaiseError`, which falls back |
 | `current_catalog` | ✅ | Resolved to a literal by the analyzer (`ReplaceCurrentLike`) |
 | `current_database` | ✅ | Resolved to a literal by the analyzer (`ReplaceCurrentLike`) |
@@ -485,7 +485,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `session_user` | ✅ | Alias of `current_user`; resolved to a literal by the analyzer |
 | `spark_partition_id` | ✅ |  |
 | `to_variant_object` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `try_aes_decrypt` | 🔜 | Falls back; planned via codegen dispatch ([#4558](https://github.com/apache/datafusion-comet/issues/4558)) |
+| `try_aes_decrypt` | ✅ | Routed through the JVM codegen dispatcher |
 | `try_parse_json` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `try_variant_get` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `typeof` | ✅ | Foldable; resolved to a literal before Comet sees the plan |

@@ -23,7 +23,7 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, HigherOrderFunction, LambdaFunction, Literal, NamedLambdaVariable, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -107,9 +107,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
-   * [[isSupportedDataType]], rejects aggregates / generators / `CodegenFallback` (other than
-   * HOFs, which are admitted), and gates total nested-field count on
-   * `spark.sql.codegen.maxFields`.
+   * [[isSupportedDataType]], rejects aggregates / generators / `Unevaluable`, and gates total
+   * nested-field count on `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
     if (!isSupportedDataType(boundExpr.dataType)) {
@@ -127,12 +126,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         s"codegen dispatch: too many nested fields ($totalFields > " +
           s"spark.sql.codegen.maxFields=$maxFields)")
     }
-    // HOFs are `CodegenFallback` but admitted: `CodegenFallback.doGenCode` emits one
-    // `((Expression) references[N]).eval(row)` call site per HOF. The kernel dispatches to the
-    // HOF's interpreted `eval`, which mutates `NamedLambdaVariable.value` per element and reads
-    // the input array through the kernel's typed Arrow getters. Per-task `boundExpr` isolation
-    // in `CometScalaUDFCodegen.kernelCache` prevents concurrent partitions from racing on the
-    // lambda variable's `AtomicReference`. See `CometCodegenHOFSuite`.
+    // `CodegenFallback` expressions are admitted. `CodegenFallback.doGenCode` emits one
+    // `((Expression) references[N]).eval(row)` call site per expression. The kernel dispatches
+    // to the expression's interpreted `eval` against `row` aliased to `this`, so the eval reads
+    // through the kernel's typed Arrow getters. This covers `HigherOrderFunction` (which mutates
+    // `NamedLambdaVariable.value` per element; see `CometCodegenHOFSuite`) as well as other
+    // CodegenFallback expressions like `JsonToStructs` / `StructsToJson` whose `eval(row)`
+    // simply calls `row.get(0, dataType)`. Per-task `boundExpr` isolation in
+    // `CometScalaUDFCodegen.kernelCache` prevents concurrent partitions from racing on shared
+    // state inside the expression.
     //
     // Nondeterministic / stateful expressions are accepted: each cache entry holds one kernel
     // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
@@ -150,10 +152,6 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
-      case _: HigherOrderFunction => false
-      case _: LambdaFunction => false
-      case _: NamedLambdaVariable => false
-      case _: CodegenFallback => true
       case u: Unevaluable if isCodegenInertUnevaluable(u) => false
       case _: Unevaluable => true
       case _ => false
@@ -161,7 +159,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       case Some(bad) =>
         return Some(
           s"codegen dispatch: expression ${bad.getClass.getSimpleName} not supported " +
-            "(aggregate, generator, codegen-fallback, or unevaluable)")
+            "(aggregate, generator, or unevaluable)")
       case None =>
     }
     val badRef = boundExpr.collectFirst {
