@@ -19,8 +19,8 @@ under the License.
 
 # JSON Compatibility
 
-Comet can evaluate JSON expressions (`get_json_object`, `from_json`, `to_json`)
-two ways:
+Comet can evaluate JSON expressions (`get_json_object`, `from_json`, `to_json`,
+`json_array_length`) two ways:
 
 - **Codegen dispatcher (default):** Spark's own `doGenCode` for the expression
   runs inside the Comet pipeline (via Comet's Arrow-direct codegen dispatcher),
@@ -35,11 +35,12 @@ two ways:
 
 ## Expression coverage
 
-| SQL               | Native (rust) path                                                           | Opt-in config                                            |
-| ----------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `get_json_object` | Supported, with gaps on single-quoted JSON and unescaped control characters  | `spark.comet.expression.GetJsonObject.allowIncompatible` |
-| `from_json`       | Supported with restrictions (PERMISSIVE mode only, simple schema types only) | `spark.comet.expression.JsonToStructs.allowIncompatible` |
-| `to_json`         | Supported for struct inputs only, no options                                 | `spark.comet.expression.StructsToJson.allowIncompatible` |
+| SQL                 | Native (rust) path                                                                             | Opt-in config                                                |
+| ------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `get_json_object`   | Supported, with gaps on single-quoted JSON and unescaped control characters                    | `spark.comet.expression.GetJsonObject.allowIncompatible`     |
+| `from_json`         | Supported with restrictions (PERMISSIVE mode only, simple schema types only)                   | `spark.comet.expression.JsonToStructs.allowIncompatible`     |
+| `to_json`           | Supported for struct inputs only, no options                                                   | `spark.comet.expression.StructsToJson.allowIncompatible`     |
+| `json_array_length` | Supported, with gaps on single-quoted JSON, unescaped control characters, and trailing content | `spark.comet.expression.LengthOfJsonArray.allowIncompatible` |
 
 When the native path is enabled but an expression or input case has no native
 implementation (for example `to_json` with map or array inputs, or `from_json`
