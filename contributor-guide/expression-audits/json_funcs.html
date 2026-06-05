@@ -565,6 +565,14 @@ under the License.
 <li><p>Known incompatibility: Spark accepts single-quoted JSON and unescaped control characters; Comet’s native parser (built on <code class="docutils literal notranslate"><span class="pre">serde_json</span></code>) rejects both, so those inputs require <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GetJsonObject.allowIncompatible=true</span></code> and may still produce different results. Non-default Spark 4.0 string collations are not propagated (https://github.com/apache/datafusion-comet/issues/2190).</p></li>
 </ul>
 </section>
+<section id="json-array-length">
+<h2>json_array_length<a class="headerlink" href="#json-array-length" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">LengthOfJsonArray</span></code>: <code class="docutils literal notranslate"><span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ExpectsInputTypes</span> <span class="pre">with</span> <span class="pre">CodegenFallback</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(StringType)</span> <span class="pre">-&gt;</span> <span class="pre">IntegerType</span></code>. Returns NULL for NULL input, invalid JSON, or non-array JSON; otherwise the number of top-level array elements.</p></li>
+<li><p>Runs through the codegen dispatcher by default for byte-exact Spark compatibility.</p></li>
+<li><p>Known incompatibility: the native path (built on <code class="docutils literal notranslate"><span class="pre">serde_json</span></code>) requires strict JSON, so single-quoted JSON, unescaped control characters, and trailing content require <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.LengthOfJsonArray.allowIncompatible=true</span></code> and may still produce different results.</p></li>
+</ul>
+</section>
 <section id="to-json">
 <h2>to_json<a class="headerlink" href="#to-json" title="Link to this heading">#</a></h2>
 <ul class="simple">

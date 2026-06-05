@@ -423,6 +423,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="cast.html">Cast</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="../json.html">JSON Compatibility</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../spark-versions.html">Spark Version Compatibility</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
@@ -534,17 +535,6 @@ under the License.
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">CreateNamedStruct</span></code> with duplicate field names is not supported</p></li>
-</ul>
-</section>
-<section id="jsontostructs">
-<h2>JsonToStructs<a class="headerlink" href="#jsontostructs" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">JsonToStructs</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.JsonToStructs.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Partially implemented and not comprehensively tested</p></li>
-</ul>
-<p>The following cases are not supported by Comet:</p>
-<ul class="simple">
-<li><p>Requires an explicit schema</p></li>
 </ul>
 </section>
 <section id="structstocsv">

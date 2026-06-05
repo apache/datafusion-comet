@@ -423,6 +423,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="compatibility/expressions/cast.html">Cast</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="compatibility/json.html">JSON Compatibility</a></li>
 <li class="toctree-l1"><a class="reference internal" href="compatibility/spark-versions.html">Spark Version Compatibility</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
@@ -1532,8 +1533,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p>Some inputs need allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#get-json-object"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">json_array_length</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
+<td><p>✅</p></td>
+<td><p>Single-quoted/trailing JSON needs allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#json-array-length"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">json_object_keys</span></code></p></td>
 <td><p>🔜</p></td>

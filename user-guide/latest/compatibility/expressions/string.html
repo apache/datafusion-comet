@@ -423,6 +423,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="cast.html">Cast</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="../json.html">JSON Compatibility</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../spark-versions.html">Spark Version Compatibility</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
@@ -538,13 +539,6 @@ under the License.
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p>CONCAT supports only string input parameters</p></li>
-</ul>
-</section>
-<section id="getjsonobject">
-<h2>GetJsonObject<a class="headerlink" href="#getjsonobject" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">GetJsonObject</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GetJsonObject.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Spark allows single-quoted JSON and unescaped control characters which Comet does not support</p></li>
 </ul>
 </section>
 <section id="left">
