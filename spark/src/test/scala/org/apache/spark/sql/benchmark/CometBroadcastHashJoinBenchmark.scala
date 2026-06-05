@@ -23,7 +23,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.CometSparkSessionExtensions
 
 /**
  * Benchmark to measure performance of Comet's BroadcastHashJoin across common Spark join shapes
@@ -48,12 +48,7 @@ object CometBroadcastHashJoinBenchmark extends CometBenchmarkBase {
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()
-
-    sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
-    sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
-    sparkSession.conf.set(SQLConf.ANSI_ENABLED.key, "false")
     sparkSession.conf.set("spark.sql.shuffle.partitions", "2")
-
     sparkSession
   }
 
