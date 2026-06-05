@@ -1025,25 +1025,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     commonBuilder.addAllFinalOutputIndices(
       finalOutputIndices.map(i => Integer.valueOf(i)).asJava)
 
-    // "Kernel reads" (Phase 1b plain tables; Phase 1c #44 adds top-level column mapping in BOTH
-    // name and id mode): route to DeltaKernelScanExec only when the flag is on AND the table is in
-    // the supported subset. Still on the default reader (and the native side guards defensively):
-    // partitions, row-tracking / synthetic columns, metadata columns, and nested-typed columns.
-    // The proto's required_schema carries logical names and column_mappings carries the
-    // logical<->physical pairs (both modes), which is what the native kernel path needs to read by
-    // physical name then relabel. id-mode schemas additionally carry parquet field ids, so kernel
-    // can fall back to field-id matching if a parquet physical name ever diverges.
-    val requiredSchemaHasNested = scan.requiredSchema.fields.exists(_.dataType match {
-      case _: StructType | _: ArrayType | _: MapType => true
-      case _ => false
-    })
-    val kernelReadEligible =
-      DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf) &&
-        !requiredSchemaHasNested &&
-        relation.partitionSchema.isEmpty &&
-        !emitRowIndex && !emitIsRowDeleted && !emitRowId && !emitRowCommitVersion &&
-        metadataColumnNamesEmitted.isEmpty
-    commonBuilder.setKernelRead(kernelReadEligible)
 
     // Projection vector maps output positions to (file_data_schema ++ partition_schema)
     // indices. Spark's `FileSourceScanExec` splits its visible schema into
@@ -1105,6 +1086,28 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     val projectionVector: Seq[Int] = requiredIndexes ++ partitionTailIndexes
     commonBuilder.addAllProjectionVector(
       projectionVector.map(idx => idx.toLong.asInstanceOf[java.lang.Long]).toIterable.asJava)
+
+    // "Kernel reads" (Phase 1b plain; #44 top-level column mapping name+id; #45 partitions):
+    // route to DeltaKernelScanExec when the flag is on and the table is in the currently-supported
+    // subset. The remaining gates are interim scaffolding -- the goal is to grow kernel-read
+    // coverage until the old path can be deleted, so these shrink over time, they aren't a
+    // permanent fallback. The native side SPLITS the proto required_schema into data columns (read
+    // from parquet) and partition columns (injected as constants), so projections and partition
+    // filters need no special handling. Still on the default reader for now: row-tracking /
+    // synthetic columns, metadata columns, nested-typed columns, and queries that read zero data
+    // columns (e.g. only partition columns / count(*)) -- the read has no column to drive the
+    // per-file row count.
+    val requiredSchemaHasNested = scan.requiredSchema.fields.exists(_.dataType match {
+      case _: StructType | _: ArrayType | _: MapType => true
+      case _ => false
+    })
+    val kernelReadEligible =
+      DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf) &&
+        !requiredSchemaHasNested &&
+        scan.requiredSchema.fields.nonEmpty &&
+        !emitRowIndex && !emitIsRowDeleted && !emitRowId && !emitRowCommitVersion &&
+        metadataColumnNamesEmitted.isEmpty
+    commonBuilder.setKernelRead(kernelReadEligible)
 
     // Pushed-down data filters, gated by Spark's parquet filter pushdown config (same as
     // CometNativeScan). See `addPushedDataFilters`.

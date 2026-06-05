@@ -119,6 +119,32 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
     }
   }
 
+  test("kernel-read path (Phase 1c #45): partitioned table with projections + filters") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("kernel_read_part") { tablePath =>
+      val ss = spark
+      import ss.implicits._
+      (0 until 12)
+        .map(i => (i.toLong, s"name_$i", i % 3))
+        .toDF("id", "name", "part")
+        .write
+        .format("delta")
+        .partitionBy("part")
+        .save(tablePath)
+
+      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
+        // The scan outputs data ++ partition; the kernel exec reproduces that, so projections
+        // and partition filters all work without special handling.
+        assertDeltaNativeMatches(tablePath, identity) // SELECT *
+        assertKernelReadEngaged(tablePath)
+        assertDeltaNativeMatches(tablePath, _.select("id")) // data-only projection
+        assertDeltaNativeMatches(tablePath, _.select("id", "part")) // data + partition
+        assertDeltaNativeMatches(tablePath, _.select("part", "name")) // reordered
+        assertDeltaNativeMatches(tablePath, _.where("part = 1")) // partition filter
+      }
+    }
+  }
+
   test("read a tiny unpartitioned delta table via the native scan") {
     assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
     withDeltaTable("smoke") { tablePath =>

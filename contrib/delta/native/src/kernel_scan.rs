@@ -53,9 +53,12 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
 
+use datafusion::common::ScalarValue;
+
 use crate::arrow_bridge::{comet_schema_to_kernel, kernel_batch_to_comet};
 use crate::dv_reader::{map_dv_error_to_datafusion, normalize_table_root, read_dv_indexes};
 use crate::engine::{get_or_create_engine, DeltaStorageConfig};
+use crate::planner::{parse_delta_partition_scalar, SessionTimezone};
 use crate::proto::DeltaDvDescriptor;
 
 /// Read one Delta data file via kernel and return Arrow `RecordBatch`es already in the table's
@@ -149,6 +152,10 @@ pub struct KernelScanFile {
     pub record_count: Option<i64>,
     /// Deletion-vector descriptor (absent = no DV). Decoded executor-side via `dv_reader`.
     pub dv: Option<DeltaDvDescriptor>,
+    /// Partition values for this file: `(column name, value)` where value is `None` for a NULL
+    /// partition. Empty for unpartitioned tables. These are injected as constant columns after
+    /// the parquet read (partition columns aren't stored in the data files).
+    pub partition_values: Vec<(String, Option<String>)>,
 }
 
 /// Iceberg-style "kernel reads" scan operator (Phase 1b). Reads each Delta data file through
@@ -164,14 +171,24 @@ pub struct KernelScanFile {
 /// `spike_transform_renames_physical_to_logical` test). Partitions / row-tracking / nested / id
 /// mode are still guarded to the old path.
 pub struct DeltaKernelScanExec {
-    /// Comet (arrow-58) output schema = the projected/required schema, in LOGICAL names.
+    /// Comet (arrow-58) output schema = data columns (logical names) followed by partition
+    /// columns, matching Spark's `requiredSchema ++ partitionSchema` file-scan output.
     output_schema: ArrowSchemaRef,
-    /// Schema to read from parquet, in PHYSICAL names. Equals `output_schema` for plain tables;
-    /// differs (renamed) under column mapping.
+    /// Schema to read from parquet, in PHYSICAL names (data columns only -- partition columns
+    /// aren't stored in the files). Equals `read_logical_schema` for plain tables; differs
+    /// (renamed) under column mapping.
     physical_schema: ArrowSchemaRef,
+    /// Logical schema the read + transform produces (data columns only, logical names). The
+    /// transform relabels `physical_schema` -> this; partition columns are appended afterward to
+    /// reach `output_schema`.
+    read_logical_schema: ArrowSchemaRef,
     /// Whether a physical->logical transform must be applied (column mapping active). When false
-    /// the read is pass-through (`physical_schema == output_schema`).
+    /// the read is pass-through.
     needs_transform: bool,
+    /// Partition columns (arrow-58), appended as constants after the read. Empty = unpartitioned.
+    partition_schema: ArrowSchemaRef,
+    /// Session timezone, for parsing TIMESTAMP partition values to the correct instant.
+    session_timezone: String,
     /// Normalised table root (trailing slash) used to resolve relative DV paths + the engine.
     table_root: String,
     /// Storage credentials/options for the kernel engine.
@@ -183,10 +200,14 @@ pub struct DeltaKernelScanExec {
 }
 
 impl DeltaKernelScanExec {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         output_schema: ArrowSchemaRef,
         physical_schema: ArrowSchemaRef,
+        read_logical_schema: ArrowSchemaRef,
         needs_transform: bool,
+        partition_schema: ArrowSchemaRef,
+        session_timezone: String,
         table_root: String,
         storage_config: DeltaStorageConfig,
         files: Vec<KernelScanFile>,
@@ -200,7 +221,10 @@ impl DeltaKernelScanExec {
         Self {
             output_schema,
             physical_schema,
+            read_logical_schema,
             needs_transform,
+            partition_schema,
+            session_timezone,
             table_root,
             storage_config,
             files,
@@ -218,8 +242,9 @@ impl DeltaKernelScanExec {
         let engine = get_or_create_engine(&table_root_url, &self.storage_config)
             .map_err(|e| DataFusionError::Execution(format!("kernel scan engine: {e}")))?;
         // Schemas come from the proto (already arrow-58), converted to kernel -- no Snapshot.
-        // `logical` carries the output (logical) names; `physical` the parquet (physical) names.
-        let logical_schema = comet_schema_to_kernel(&self.output_schema)
+        // `logical` carries the DATA logical names (partition columns are appended after the read,
+        // not produced by it); `physical` the parquet (physical) names.
+        let logical_schema = comet_schema_to_kernel(&self.read_logical_schema)
             .map_err(|e| DataFusionError::Execution(format!("kernel scan logical schema: {e}")))?;
         let physical_schema = comet_schema_to_kernel(&self.physical_schema)
             .map_err(|e| DataFusionError::Execution(format!("kernel scan physical schema: {e}")))?;
@@ -272,10 +297,52 @@ impl DeltaKernelScanExec {
             .map_err(|e| DataFusionError::Execution(format!("kernel read of {}: {e}", file.path)))?;
 
             for batch in &kernel_batches {
-                out.push(kernel_batch_to_comet(batch).map_err(DataFusionError::from)?);
+                let data_batch = kernel_batch_to_comet(batch).map_err(DataFusionError::from)?;
+                out.push(self.append_partition_columns(data_batch, &file.partition_values)?);
             }
         }
         Ok(out)
+    }
+
+    /// Append partition columns as constants (partition values are stored in the Add action, not
+    /// the data file). Produces a batch matching `output_schema` (data ++ partition). No-op for
+    /// unpartitioned tables.
+    fn append_partition_columns(
+        &self,
+        data_batch: arrow::array::RecordBatch,
+        partition_values: &[(String, Option<String>)],
+    ) -> DFResult<arrow::array::RecordBatch> {
+        if self.partition_schema.fields().is_empty() {
+            return Ok(data_batch);
+        }
+        let num_rows = data_batch.num_rows();
+        let parsed_tz = SessionTimezone::parse(&self.session_timezone);
+        let mut columns = data_batch.columns().to_vec();
+        for pf in self.partition_schema.fields() {
+            let raw = partition_values
+                .iter()
+                .find(|(name, _)| name == pf.name())
+                .and_then(|(_, v)| v.as_ref());
+            let scalar = match raw {
+                Some(v) => parse_delta_partition_scalar(
+                    v,
+                    pf.data_type(),
+                    &parsed_tz,
+                    &self.session_timezone,
+                )
+                .map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "kernel scan partition value parse for '{}': {e}",
+                        pf.name()
+                    ))
+                })?,
+                // Absent or explicitly-NULL partition value -> a typed NULL constant.
+                None => ScalarValue::try_from(pf.data_type())?,
+            };
+            columns.push(scalar.to_array_of_size(num_rows)?);
+        }
+        arrow::array::RecordBatch::try_new(Arc::clone(&self.output_schema), columns)
+            .map_err(DataFusionError::from)
     }
 }
 
@@ -483,12 +550,16 @@ mod tests {
             size,
             record_count: Some(7),
             dv: None,
+            partition_values: vec![],
         }];
 
         let exec = DeltaKernelScanExec::new(
             Arc::clone(&output_schema),
-            output_schema, // plain table: physical == logical
-            false,         // no transform
+            Arc::clone(&output_schema), // plain table: physical == logical
+            output_schema,              // read_logical == output (no partitions)
+            false,                      // no transform
+            Arc::new(Schema58::empty()),
+            "UTC".to_string(),
             url.as_str().to_string(),
             DeltaStorageConfig::default(),
             files,
@@ -553,12 +624,16 @@ mod tests {
             size,
             record_count: Some(3),
             dv: None,
+            partition_values: vec![],
         }];
 
         let exec = DeltaKernelScanExec::new(
             Arc::clone(&output),
             physical,
-            true, // column mapping -> needs transform
+            Arc::clone(&output), // read_logical == output (no partitions)
+            true,                // column mapping -> needs transform
+            Arc::new(S58::empty()),
+            "UTC".to_string(),
             url.as_str().to_string(),
             DeltaStorageConfig::default(),
             files,

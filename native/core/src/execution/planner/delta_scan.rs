@@ -84,8 +84,7 @@ fn plan_delta_kernel_scan(
                 | DataType::Map(_, _)
         )
     });
-    if !common.partition_schema.is_empty()
-        || common.emit_row_index
+    if common.emit_row_index
         || common.emit_is_row_deleted
         || common.emit_row_id
         || common.emit_row_commit_version
@@ -93,27 +92,60 @@ fn plan_delta_kernel_scan(
         || has_nested
     {
         return Err(GeneralError(
-            "DeltaScan.kernel_read supports plain + top-level column-mapped tables only \
-             (no partitions, row-tracking, metadata columns, or nested types yet)"
+            "DeltaScan.kernel_read supports plain + top-level column-mapped + partitioned tables \
+             only (no row-tracking, metadata columns, or nested types yet)"
                 .into(),
         ));
     }
 
-    // Column mapping (name + id mode): read each file by its PHYSICAL column name, then relabel to
-    // logical via the identity transform in DeltaKernelScanExec. `required_schema` carries logical
-    // names; derive the physical read schema by renaming each top-level field to its physical name
-    // (from column_mappings). Field-id metadata is preserved so kernel can still match by field id
-    // if a parquet physical name ever diverges from the column-mapping physical name (id mode).
+    let partition_schema: SchemaRef =
+        convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
+
+    // The proto `required_schema` already contains the requested data columns followed by the
+    // partition columns (Spark's `requiredSchema ++ partitionFieldsForRequired`). Partition
+    // columns aren't stored in the data files, so SPLIT `required_schema` by partition-column
+    // name: read the data fields from parquet, inject the partition fields as constants, and the
+    // exec reassembles them into `required_schema` order. (Splitting by name also covers the case
+    // where a partition column appears among the data fields.)
+    let partition_names: std::collections::HashSet<&str> = partition_schema
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .collect();
+    let data_fields: Vec<_> = required_schema
+        .fields()
+        .iter()
+        .filter(|f| !partition_names.contains(f.name().as_str()))
+        .cloned()
+        .collect();
+    let partition_fields: Vec<_> = required_schema
+        .fields()
+        .iter()
+        .filter(|f| partition_names.contains(f.name().as_str()))
+        .cloned()
+        .collect();
+
+    // Reading ONLY partition columns leaves no data column to drive the per-file row count -- the
+    // partition constants would have no length. Defer that case to the old path for now.
+    if data_fields.is_empty() && !partition_fields.is_empty() {
+        return Err(GeneralError(
+            "DeltaScan.kernel_read: reading only partition columns not supported yet".into(),
+        ));
+    }
+
+    // Data columns are read from parquet. Under column mapping the read schema uses PHYSICAL
+    // names and an identity transform relabels to the logical `read_logical_schema`; field-id
+    // metadata is preserved so kernel can match by field id (id mode).
     let logical_to_physical: HashMap<String, String> = common
         .column_mappings
         .iter()
         .map(|cm| (cm.logical_name.clone(), cm.physical_name.clone()))
         .collect();
+    let read_logical_schema: SchemaRef = Arc::new(Schema::new(data_fields.clone()));
     let physical_schema: SchemaRef = if logical_to_physical.is_empty() {
-        Arc::clone(required_schema)
+        Arc::clone(&read_logical_schema)
     } else {
-        let fields: Vec<_> = required_schema
-            .fields()
+        let fields: Vec<_> = data_fields
             .iter()
             .map(|f| match logical_to_physical.get(f.name()) {
                 Some(physical) => Arc::new(
@@ -126,6 +158,11 @@ fn plan_delta_kernel_scan(
         Arc::new(Schema::new(fields))
     };
     let needs_transform = !logical_to_physical.is_empty();
+
+    // Final output = `required_schema` (data ++ partition, in order). The exec injects exactly the
+    // partition columns present in the output.
+    let output_schema: SchemaRef = Arc::clone(required_schema);
+    let partition_output_schema: SchemaRef = Arc::new(Schema::new(partition_fields));
 
     let object_store_options: HashMap<String, String> = common
         .object_store_options
@@ -142,6 +179,11 @@ fn plan_delta_kernel_scan(
             size: t.file_size as i64,
             record_count: t.record_count.map(|c| c as i64),
             dv: t.dv.clone(),
+            partition_values: t
+                .partition_values
+                .iter()
+                .map(|pv| (pv.name.clone(), pv.value.clone()))
+                .collect(),
         })
         .collect();
 
@@ -152,9 +194,12 @@ fn plan_delta_kernel_scan(
     };
 
     let exec = Arc::new(DeltaKernelScanExec::new(
-        Arc::clone(required_schema),
+        output_schema,
         physical_schema,
+        read_logical_schema,
         needs_transform,
+        partition_output_schema,
+        common.session_timezone.clone(),
         table_root,
         storage_config,
         files,
