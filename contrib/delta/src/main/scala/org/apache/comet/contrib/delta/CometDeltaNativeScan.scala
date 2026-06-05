@@ -1087,26 +1087,26 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     commonBuilder.addAllProjectionVector(
       projectionVector.map(idx => idx.toLong.asInstanceOf[java.lang.Long]).toIterable.asJava)
 
-    // "Kernel reads" (Phase 1b plain; #44 top-level column mapping name+id; #45 partitions):
-    // route to DeltaKernelScanExec when the flag is on and the table is in the currently-supported
-    // subset. The remaining gates are interim scaffolding -- the goal is to grow kernel-read
-    // coverage until the old path can be deleted, so these shrink over time, they aren't a
-    // permanent fallback. The native side SPLITS the proto required_schema into data columns (read
-    // from parquet) and partition columns (injected as constants), so projections and partition
-    // filters need no special handling. Still on the default reader for now: row-tracking /
-    // synthetic columns, metadata columns, nested-typed columns, and queries that read zero data
-    // columns (e.g. only partition columns / count(*)) -- the read has no column to drive the
-    // per-file row count.
+    // "Kernel reads" (Phase 1b plain; #44 column mapping name+id; #45 partitions; #46 row-tracking
+    // + metadata): route to DeltaKernelScanExec when the flag is on and the table is in the
+    // currently-supported subset. The remaining gates are interim scaffolding -- the goal is to
+    // grow coverage until the old path can be deleted, so they shrink over time, they aren't a
+    // permanent fallback. The native side SPLITS required_schema into data (read) + partition
+    // (injected) columns, and stacks the existing DeltaSyntheticColumnsExec on top for synthetics
+    // / metadata / DV. Still on the default reader: nested-typed columns, and scans that read zero
+    // data columns (only partition or only synthetic columns) -- nothing drives the row count.
     val requiredSchemaHasNested = scan.requiredSchema.fields.exists(_.dataType match {
       case _: StructType | _: ArrayType | _: MapType => true
       case _ => false
     })
+    val hasDataColumn = scan.requiredSchema.fields.exists { f =>
+      !isSynthetic(f) &&
+        !relation.partitionSchema.fieldNames.exists(_.equalsIgnoreCase(f.name))
+    }
     val kernelReadEligible =
       DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf) &&
         !requiredSchemaHasNested &&
-        scan.requiredSchema.fields.nonEmpty &&
-        !emitRowIndex && !emitIsRowDeleted && !emitRowId && !emitRowCommitVersion &&
-        metadataColumnNamesEmitted.isEmpty
+        hasDataColumn
     commonBuilder.setKernelRead(kernelReadEligible)
 
     // Pushed-down data filters, gated by Spark's parquet filter pushdown config (same as

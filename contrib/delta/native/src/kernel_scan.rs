@@ -185,6 +185,10 @@ pub struct DeltaKernelScanExec {
     /// Whether a physical->logical transform must be applied (column mapping active). When false
     /// the read is pass-through.
     needs_transform: bool,
+    /// Whether to apply the deletion vector here (drop deleted rows). `true` for a standalone read.
+    /// `false` when a `DeltaSyntheticColumnsExec` wraps this exec and applies the DV itself (so it
+    /// can also surface `is_row_deleted` / compute row positions against the full physical rows).
+    apply_dv: bool,
     /// Partition columns (arrow-58), appended as constants after the read. Empty = unpartitioned.
     partition_schema: ArrowSchemaRef,
     /// Session timezone, for parsing TIMESTAMP partition values to the correct instant.
@@ -201,17 +205,24 @@ pub struct DeltaKernelScanExec {
 
 impl DeltaKernelScanExec {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         output_schema: ArrowSchemaRef,
         physical_schema: ArrowSchemaRef,
         read_logical_schema: ArrowSchemaRef,
         needs_transform: bool,
+        apply_dv: bool,
         partition_schema: ArrowSchemaRef,
         session_timezone: String,
         table_root: String,
         storage_config: DeltaStorageConfig,
         files: Vec<KernelScanFile>,
     ) -> Self {
+        // Single DataFusion partition: the Spark side (CometDeltaNativeScanExec) already splits
+        // files across Spark partitions and injects each partition's file subset, consuming one
+        // DataFusion partition per Spark partition. For DV / row-tracking tables it sets
+        // `oneTaskPerPartition`, so each Spark partition (hence this exec) sees a single file --
+        // which is what lets the wrapping DeltaSyntheticColumnsExec compute per-file row positions.
         let plan_properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&output_schema)),
             Partitioning::UnknownPartitioning(1),
@@ -223,6 +234,7 @@ impl DeltaKernelScanExec {
             physical_schema,
             read_logical_schema,
             needs_transform,
+            apply_dv,
             partition_schema,
             session_timezone,
             table_root,
@@ -233,9 +245,12 @@ impl DeltaKernelScanExec {
         }
     }
 
-    /// Read + DV-filter + bridge every file to arrow-58. Eager (collects into a `Vec`) -- Phase
-    /// 1b proves correctness; lazy per-file streaming is a 1c hardening step. The blocking kernel
-    /// reads run on the calling task thread, matching how Comet drives scan operators.
+    /// Read + (optionally) DV-filter + bridge EVERY file given to this exec to arrow-58. A single
+    /// DataFusion partition: the Spark side (CometDeltaNativeScanExec) splits files across Spark
+    /// partitions and injects each partition's subset, so `self.files` already holds just this
+    /// partition's files. For DV / row-tracking tables it injects one file per Spark partition, so
+    /// the wrapping DeltaSyntheticColumnsExec computes row positions against a single file. Eager
+    /// (collects into a `Vec`); the blocking kernel reads run on the calling task thread.
     fn read_all(&self) -> DFResult<Vec<arrow::array::RecordBatch>> {
         let table_root_url = normalize_table_root(&self.table_root)
             .map_err(|e| DataFusionError::Execution(format!("kernel scan table root: {e}")))?;
@@ -262,9 +277,10 @@ impl DeltaKernelScanExec {
 
         let mut out: Vec<arrow::array::RecordBatch> = Vec::new();
         for file in &self.files {
-            // Decode the DV (if any) into a keep-mask sized to the file's physical rows.
-            let selection_vector = match &file.dv {
-                Some(desc) => {
+            // Decode the DV (if any) into a keep-mask, UNLESS apply_dv is off -- then all physical
+            // rows pass through and a wrapping DeltaSyntheticColumnsExec drops/flags them.
+            let selection_vector = match (&file.dv, self.apply_dv) {
+                (Some(desc), true) => {
                     let deleted = read_dv_indexes(desc, &table_root_url)
                         .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                     let n = file.record_count.ok_or_else(|| {
@@ -281,7 +297,7 @@ impl DeltaKernelScanExec {
                     }
                     Some(mask)
                 }
-                None => None,
+                _ => None,
             };
 
             let kernel_batches = read_file_via_kernel(
@@ -558,6 +574,7 @@ mod tests {
             Arc::clone(&output_schema), // plain table: physical == logical
             output_schema,              // read_logical == output (no partitions)
             false,                      // no transform
+            true,                       // apply_dv
             Arc::new(Schema58::empty()),
             "UTC".to_string(),
             url.as_str().to_string(),
@@ -632,6 +649,7 @@ mod tests {
             physical,
             Arc::clone(&output), // read_logical == output (no partitions)
             true,                // column mapping -> needs transform
+            true,                // apply_dv
             Arc::new(S58::empty()),
             "UTC".to_string(),
             url.as_str().to_string(),

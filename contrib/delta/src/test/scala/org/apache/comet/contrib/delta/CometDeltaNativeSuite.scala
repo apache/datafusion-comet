@@ -145,6 +145,32 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
     }
   }
 
+  test("kernel-read path (Phase 1c #46): _metadata columns + DELETE via deletion vectors") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("kernel_read_synth") { tablePath =>
+      val ss = spark
+      import ss.implicits._
+      (0 until 20)
+        .map(i => (i.toLong, s"v_$i"))
+        .toDF("id", "v")
+        .repartition(1)
+        .write
+        .format("delta")
+        .option("delta.enableDeletionVectors", "true")
+        .save(tablePath)
+
+      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
+        // _metadata.* triggers the DeltaSyntheticColumnsExec stacked on the kernel read.
+        assertDeltaNativeMatches(tablePath, _.select($"id", $"_metadata.file_path"))
+        // DELETE reads the table emitting is_row_deleted, exercising the kernel read (apply_dv off)
+        // + synthetic exec composition. Then the surviving rows (DV applied) must match vanilla.
+        spark.sql(s"DELETE FROM delta.`$tablePath` WHERE id % 4 = 0")
+        assertDeltaNativeMatches(tablePath, identity)
+        assertKernelReadEngaged(tablePath)
+      }
+    }
+  }
+
   test("read a tiny unpartitioned delta table via the native scan") {
     assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
     withDeltaTable("smoke") { tablePath =>

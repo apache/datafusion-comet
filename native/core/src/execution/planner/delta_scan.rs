@@ -84,17 +84,9 @@ fn plan_delta_kernel_scan(
                 | DataType::Map(_, _)
         )
     });
-    if common.emit_row_index
-        || common.emit_is_row_deleted
-        || common.emit_row_id
-        || common.emit_row_commit_version
-        || !common.metadata_column_names.is_empty()
-        || has_nested
-    {
+    if has_nested {
         return Err(GeneralError(
-            "DeltaScan.kernel_read supports plain + top-level column-mapped + partitioned tables \
-             only (no row-tracking, metadata columns, or nested types yet)"
-                .into(),
+            "DeltaScan.kernel_read does not support nested-typed columns yet".into(),
         ));
     }
 
@@ -125,11 +117,12 @@ fn plan_delta_kernel_scan(
         .cloned()
         .collect();
 
-    // Reading ONLY partition columns leaves no data column to drive the per-file row count -- the
-    // partition constants would have no length. Defer that case to the old path for now.
-    if data_fields.is_empty() && !partition_fields.is_empty() {
+    // A read with no data columns (only partition columns, or only synthetics) leaves nothing to
+    // drive the per-file row count, so partition/synthetic constants would have no length. Defer
+    // that case to the old path for now.
+    if data_fields.is_empty() {
         return Err(GeneralError(
-            "DeltaScan.kernel_read: reading only partition columns not supported yet".into(),
+            "DeltaScan.kernel_read: a scan reading no data columns is not supported yet".into(),
         ));
     }
 
@@ -193,21 +186,126 @@ fn plan_delta_kernel_scan(
         scan.table_root.clone()
     };
 
-    let exec = Arc::new(DeltaKernelScanExec::new(
+    // Synthetic columns (row_index / is_row_deleted / row_id / row_commit_version) and `_metadata.*`
+    // are computed by the existing DeltaSyntheticColumnsExec stacked ON TOP of the kernel read --
+    // exactly as the old path stacks it on the parquet read. When wrapped, the kernel exec does NOT
+    // drop DV rows (apply_dv = false); the synthetic exec drops them or surfaces `is_row_deleted`,
+    // computing row positions against the full physical rows. DeltaKernelScanExec is one partition
+    // per file, so the per-partition vectors below align by file/task order.
+    let need_synthetics = common.emit_row_index
+        || common.emit_is_row_deleted
+        || common.emit_row_id
+        || common.emit_row_commit_version
+        || !common.metadata_column_names.is_empty();
+
+    let kernel_exec = Arc::new(DeltaKernelScanExec::new(
         output_schema,
         physical_schema,
         read_logical_schema,
         needs_transform,
+        !need_synthetics, // apply_dv here only when the synthetic exec isn't doing it
         partition_output_schema,
         common.session_timezone.clone(),
-        table_root,
+        table_root.clone(),
         storage_config,
         files,
     ));
+
+    let scan_exec: Arc<dyn datafusion::physical_plan::ExecutionPlan> = if need_synthetics {
+        use comet_contrib_delta::synthetic_columns::{
+            DeltaSyntheticColumnsExec, TaskMetadata, ROW_INDEX_COLUMN_NAME,
+        };
+        let has_dv = scan.tasks.iter().any(|t| t.dv.is_some());
+        let drop_deleted = has_dv && !common.emit_is_row_deleted;
+        // Only pass real DV descriptors when the exec flags or drops; else `None`s (never decode).
+        let dvs_for_exec: Vec<Option<comet_contrib_delta::proto::DeltaDvDescriptor>> =
+            if common.emit_is_row_deleted || drop_deleted {
+                scan.tasks.iter().map(|t| t.dv.clone()).collect()
+            } else {
+                vec![None; scan.tasks.len()]
+            };
+        let base_row_ids: Vec<Option<i64>> = scan.tasks.iter().map(|t| t.base_row_id).collect();
+        let default_commit_versions: Vec<Option<i64>> = scan
+            .tasks
+            .iter()
+            .map(|t| t.default_row_commit_version)
+            .collect();
+        let task_metadata: Vec<TaskMetadata> = scan
+            .tasks
+            .iter()
+            .map(|t| TaskMetadata {
+                file_path: Some(t.file_path.clone()),
+                file_size: Some(t.file_size as i64),
+                byte_range_start: t.byte_range_start.map(|v| v as i64),
+                byte_range_end: t.byte_range_end.map(|v| v as i64),
+                modification_time_millis: t.modification_time,
+                base_row_id: t.base_row_id,
+                default_row_commit_version: t.default_row_commit_version,
+            })
+            .collect();
+        let row_index_alias = if common.row_index_column_alias.is_empty() {
+            ROW_INDEX_COLUMN_NAME
+        } else {
+            common.row_index_column_alias.as_str()
+        };
+        let synth_root = comet_contrib_delta::dv_reader::normalize_table_root(&table_root)
+            .map_err(|e| GeneralError(format!("DeltaScan table_root: {e}")))?;
+        Arc::new(
+            DeltaSyntheticColumnsExec::new(
+                kernel_exec,
+                dvs_for_exec,
+                synth_root,
+                base_row_ids,
+                default_commit_versions,
+                common.emit_row_index,
+                common.emit_is_row_deleted,
+                common.emit_row_id,
+                common.emit_row_commit_version,
+                drop_deleted,
+                row_index_alias,
+                common.metadata_column_names.clone(),
+                task_metadata,
+            )
+            .map_err(|e| GeneralError(format!("DeltaSyntheticColumnsExec: {e}")))?,
+        )
+    } else {
+        kernel_exec
+    };
+
+    // Reorder to the user-visible layout when synthetics aren't already a suffix.
+    let scan_exec: Arc<dyn datafusion::physical_plan::ExecutionPlan> =
+        if common.final_output_indices.is_empty() {
+            scan_exec
+        } else {
+            let wrapped_schema = scan_exec.schema();
+            let n = wrapped_schema.fields().len();
+            let projections: Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError> = common
+                .final_output_indices
+                .iter()
+                .map(|idx| {
+                    if *idx < 0 || (*idx as usize) >= n {
+                        return Err(GeneralError(format!(
+                            "final_output_indices entry {idx} out of range \
+                             (wrapped schema has {n} fields)"
+                        )));
+                    }
+                    let field = wrapped_schema.field(*idx as usize);
+                    let col: Arc<dyn PhysicalExpr> =
+                        Arc::new(Column::new(field.name(), *idx as usize));
+                    Ok((col, field.name().clone()))
+                })
+                .collect();
+            Arc::new(
+                ProjectionExec::try_new(projections?, scan_exec).map_err(|e| {
+                    GeneralError(format!("final_output_indices ProjectionExec: {e}"))
+                })?,
+            )
+        };
+
     Ok((
         vec![],
         vec![],
-        Arc::new(SparkPlan::new(spark_plan.plan_id, exec, vec![])),
+        Arc::new(SparkPlan::new(spark_plan.plan_id, scan_exec, vec![])),
     ))
 }
 
