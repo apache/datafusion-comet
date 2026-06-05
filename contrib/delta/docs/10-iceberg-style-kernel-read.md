@@ -99,7 +99,58 @@ The executor stage replaces today's `init_datasource_exec` + DV-sweep exec + ren
 projection with a single kernel-backed scan exec plus a thin adapter, exactly the shape of
 `IcebergScanExec::execute_with_tasks`.
 
-## 4. The crux: distributing kernel's read
+## 3a. Spike 0 result (GATE — resolved: GO, with a refined design)
+
+Examined `delta_kernel` 0.19.2 source (`src/scan/{mod,state,state_info}.rs`,
+`src/expressions/mod.rs`, `src/transforms.rs`). Verdict: **feasible now, no upstream
+dependency required**, but **not** the pure "ship the scan task" model Iceberg uses.
+
+What's public and usable on an executor without the `Snapshot`:
+
+- `scan::state::transform_to_logical(engine, physical_data, physical_schema, logical_schema,
+  transform)` — applies the transform via kernel's expression evaluator. This is what does
+  column mapping (**including nested**), partition injection, and row-tracking. Handing this to
+  kernel removes our buggy parquet-schema-adapter physicalisation entirely.
+- `scan::state::DvInfo::get_selection_vector(engine, table_root)` — the DV mask.
+- `engine.parquet_handler().read_parquet_files(...)` — the physical read.
+- `scan::state::ScanFile` is `pub` and its serializable fields (`path`, `size`, `dv_info`,
+  `partition_values: HashMap<String,String>`) are exactly what the driver already pulls out via
+  `visit_scan_files`.
+- `expressions::Transform` builder (`with_replaced_field`, `with_inserted_field`,
+  `with_dropped_field`) + `Expression`/`Scalar` for **building** a transform.
+
+The one real gap: `ScanFile.transform` is an `ExpressionRef` that is **not serde-serializable**,
+and kernel's internal transform-spec builder (`TransformSpec` / `get_state_info` in
+`state_info.rs`) is `pub(crate)`. So we cannot ship kernel's *own* computed transform across the
+JNI/proto boundary, the way Iceberg ships a `FileScanTask`.
+
+**Design implication (revised from §4):** the executor **rebuilds an equivalent transform** from
+serializable inputs (logical + physical schema, the column-mapping metadata the contrib already
+extracts, per-file `partition_values`, and `base_row_id`) using the public `Transform`/`Expression`
+API, then applies it via the public `transform_to_logical` + `get_selection_vector`. The
+transform *application* is kernel's (correct nested handling); only the small, declarative
+transform *spec* is ours.
+
+**Net effect on the deletion:**
+
+- Deleted as planned: `dv_reader.rs` (→ `get_selection_vector`), `synthetic_columns.rs` (the
+  DV-sweep + all synthetic columns → kernel's `GenerateRowId` / `MetadataDerivedColumn` transform
+  + DV mask), and the historically-buggy nested-name physicalisation (→ `transform_to_logical`).
+- Added (smaller, safer): `DeltaKernelScanExec` (~200-300 LOC, like `iceberg_scan.rs`), a
+  transform-spec builder over the public `Transform` API (~200-400 LOC, declarative expression
+  construction rather than schema-tree rewriting with pruning), and a Spark-parity adapter
+  (~100-200 LOC, like `IcebergStreamWrapper`).
+- Still a large net reduction (~−1900 deleted vs ~−500 to −900 added), and the deleted code is
+  the riskiest part (DV offset accounting + the buggy physicalisation), replaced by kernel's
+  correct application.
+
+**Parallel (non-blocking) upstream ask:** request that kernel-rs make the transform spec
+serializable/public (or `Expression` serde). The JVM `delta-kernel-spark` connector already
+distributes the read this way; the Rust kernel lacking it is the only reason we rebuild the
+transform instead of shipping kernel's. If that lands, the transform-spec builder we add now
+deletes too, reaching the full Iceberg-clean shape.
+
+## 4. The crux (original framing): distributing kernel's read
 
 `Scan::execute(engine)` is a **single-node** iterator over *all* files. Spark needs the read
 distributed across executors. This is the one genuinely hard part, and it is the gate for the
