@@ -98,8 +98,10 @@ impl<'a> PartitionedBatchIterator<'a> {
 
         let indices_end = std::cmp::min(self.pos + self.batch_size, self.indices.len());
         let indices = &self.indices[self.pos..indices_end];
-        let _timer = interleave_time.timer();
-        match interleave_record_batch(&self.record_batches, indices) {
+        let mut timer = interleave_time.timer();
+        let result = interleave_record_batch(&self.record_batches, indices);
+        timer.stop();
+        match result {
             Ok(batch) => {
                 self.pos = indices_end;
                 Some(Ok(batch))
