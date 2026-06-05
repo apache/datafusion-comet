@@ -291,6 +291,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Least.enabled` | Enable Comet acceleration for `Least` | true |
 | `spark.comet.expression.Left.enabled` | Enable Comet acceleration for `Left` | true |
 | `spark.comet.expression.Length.enabled` | Enable Comet acceleration for `Length` | true |
+| `spark.comet.expression.LengthOfJsonArray.enabled` | Enable Comet acceleration for `LengthOfJsonArray` | true |
 | `spark.comet.expression.LessThan.enabled` | Enable Comet acceleration for `LessThan` | true |
 | `spark.comet.expression.LessThanOrEqual.enabled` | Enable Comet acceleration for `LessThanOrEqual` | true |
 | `spark.comet.expression.Like.enabled` | Enable Comet acceleration for `Like` | true |

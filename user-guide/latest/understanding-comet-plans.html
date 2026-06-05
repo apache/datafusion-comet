@@ -660,6 +660,46 @@ operators were arranged after Comet’s serialization). See the
 this output.</p>
 </section>
 </section>
+<section id="programmatic-access-to-fallback-reasons">
+<h2>Programmatic Access to Fallback Reasons<a class="headerlink" href="#programmatic-access-to-fallback-reasons" title="Link to this heading">#</a></h2>
+<p>The configs above route fallback reasons to logs or the SQL UI. If you want
+the reasons for a specific query as data — for example, to assert in a test
+or to drive a custom report — use <code class="docutils literal notranslate"><span class="pre">org.apache.comet.ExtendedExplainInfo</span></code>
+directly. It is the same class that backs <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.format</span></code>, and
+it works on any Spark version because it does not rely on the Spark 4.0
+<code class="docutils literal notranslate"><span class="pre">extendedExplainProviders</span></code> extension point.</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">import</span><span class="w"> </span><span class="nn">org</span><span class="p">.</span><span class="nn">apache</span><span class="p">.</span><span class="nn">comet</span><span class="p">.</span><span class="nc">ExtendedExplainInfo</span>
+
+<span class="kd">val</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SELECT ...&quot;</span><span class="p">)</span>
+<span class="kd">val</span><span class="w"> </span><span class="n">plan</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">df</span><span class="p">.</span><span class="n">queryExecution</span><span class="p">.</span><span class="n">executedPlan</span>
+<span class="kd">val</span><span class="w"> </span><span class="n">info</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="nc">ExtendedExplainInfo</span><span class="p">()</span>
+
+<span class="c1">// Sorted, deduplicated list of fallback reasons across the whole plan.</span>
+<span class="kd">val</span><span class="w"> </span><span class="n">reasons</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">info</span><span class="p">.</span><span class="n">getFallbackReasons</span><span class="p">(</span><span class="n">plan</span><span class="p">)</span>
+
+<span class="c1">// Formatted string. Honors spark.comet.explain.format:</span>
+<span class="c1">//   - &quot;verbose&quot;  -&gt; the full plan annotated with per-node fallback reasons</span>
+<span class="c1">//   - &quot;fallback&quot; -&gt; just the list of reasons</span>
+<span class="kd">val</span><span class="w"> </span><span class="n">formatted</span><span class="p">:</span><span class="w"> </span><span class="nc">String</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">info</span><span class="p">.</span><span class="n">generateExtendedInfo</span><span class="p">(</span><span class="n">plan</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">val</span> <span class="n">df</span> <span class="o">=</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;SELECT from_unixtime(eventTime) FROM events&quot;</span><span class="p">)</span>
+
+<span class="n">val</span> <span class="n">plan</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">queryExecution</span><span class="o">.</span><span class="n">executedPlan</span>
+<span class="n">val</span> <span class="n">info</span> <span class="o">=</span> <span class="n">new</span> <span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">ExtendedExplainInfo</span><span class="p">()</span>
+<span class="n">println</span><span class="p">(</span><span class="n">info</span><span class="o">.</span><span class="n">generateExtendedInfo</span><span class="p">(</span><span class="n">plan</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>Output</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Project</span> <span class="p">[</span><span class="n">COMET</span><span class="p">:</span> <span class="n">from_unixtime</span><span class="p">(</span><span class="n">eventTime</span><span class="c1">#5L, yyyy-MM-dd HH:mm:ss, Some(GMT)) is not fully compatible with Spark. To enable it anyway, set spark.comet.expression.FromUnixTime.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]</span>
+<span class="o">+-</span> <span class="n">CometNativeColumnarToRow</span>
+   <span class="o">+-</span> <span class="n">CometNativeScan</span> <span class="n">parquet</span>
+
+<span class="n">Comet</span> <span class="n">accelerated</span> <span class="mi">1</span> <span class="n">out</span> <span class="n">of</span> <span class="mi">2</span> <span class="n">eligible</span> <span class="n">operators</span> <span class="p">(</span><span class="mi">50</span><span class="o">%</span><span class="p">)</span><span class="o">.</span> <span class="n">Final</span> <span class="n">plan</span> <span class="n">contains</span> <span class="mi">1</span> <span class="n">transitions</span> <span class="n">between</span> <span class="n">Spark</span> <span class="ow">and</span> <span class="n">Comet</span><span class="o">.</span>
+</pre></div>
+</div>
+</section>
 <section id="comet-operator-reference">
 <h2>Comet Operator Reference<a class="headerlink" href="#comet-operator-reference" title="Link to this heading">#</a></h2>
 <p>The following sections describe the Comet nodes you will see in plans, grouped
