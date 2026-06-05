@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use comet_contrib_delta::planner::{build_delta_partitioned_files, ColumnMappingFilterRewriter};
 use comet_contrib_delta::IgnoreMissingFileSource;
-use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{TransformedResult, TreeNode};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileScanConfig, FileScanConfigBuilder};
@@ -55,10 +55,14 @@ use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 
-/// Build a `DeltaKernelScanExec` for the Phase 1b "kernel reads" path. The per-file inputs come
-/// straight off the existing proto (`DeltaScanTask` path/size/record_count/dv); no new proto
-/// message. Phase 1b only supports plain tables -- the driver leaves `kernel_read` false for
-/// column-mapping / partitioned / row-tracking tables, and this guards defensively.
+/// Build a `DeltaKernelScanExec` for the "kernel reads" path. The per-file inputs come straight
+/// off the existing proto (`DeltaScanTask` path/size/record_count/dv); no new proto message.
+///
+/// Phase 1b: plain tables. Phase 1c (#44): + top-level name-mode column mapping (read with the
+/// physical names, then an identity transform relabels to logical via the schema pair). Still
+/// guarded to the old path (and the driver leaves `kernel_read` false for them): partitions,
+/// row-tracking / synthetic columns, metadata columns, id-mode mapping (`use_field_id`), and
+/// nested-typed columns (nested physical rename isn't handled here yet).
 fn plan_delta_kernel_scan(
     spark_plan: &Operator,
     scan: &DeltaScan,
@@ -68,20 +72,58 @@ fn plan_delta_kernel_scan(
     use comet_contrib_delta::jni::delta_storage_config_from_map;
     use comet_contrib_delta::kernel_scan::{DeltaKernelScanExec, KernelScanFile};
 
-    if !common.column_mappings.is_empty()
-        || !common.partition_schema.is_empty()
+    let has_nested = required_schema.fields().iter().any(|f| {
+        matches!(
+            f.data_type(),
+            DataType::Struct(_)
+                | DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::ListView(_)
+                | DataType::LargeListView(_)
+                | DataType::FixedSizeList(_, _)
+                | DataType::Map(_, _)
+        )
+    });
+    if !common.partition_schema.is_empty()
         || common.emit_row_index
         || common.emit_is_row_deleted
         || common.emit_row_id
         || common.emit_row_commit_version
         || !common.metadata_column_names.is_empty()
+        || common.use_field_id
+        || has_nested
     {
         return Err(GeneralError(
-            "DeltaScan.kernel_read is only supported for plain tables in Phase 1b \
-             (no column mapping, partitions, synthetic, or metadata columns)"
+            "DeltaScan.kernel_read supports plain + top-level name-mode column-mapped tables only \
+             (no partitions, row-tracking, metadata columns, id-mode mapping, or nested types yet)"
                 .into(),
         ));
     }
+
+    // Column mapping: read each file by its PHYSICAL column name, then relabel to logical via the
+    // identity transform in DeltaKernelScanExec. `required_schema` already carries logical names;
+    // derive the physical read schema by renaming each top-level field to its physical name.
+    let logical_to_physical: HashMap<String, String> = common
+        .column_mappings
+        .iter()
+        .map(|cm| (cm.logical_name.clone(), cm.physical_name.clone()))
+        .collect();
+    let physical_schema: SchemaRef = if logical_to_physical.is_empty() {
+        Arc::clone(required_schema)
+    } else {
+        let fields: Vec<_> = required_schema
+            .fields()
+            .iter()
+            .map(|f| match logical_to_physical.get(f.name()) {
+                Some(physical) => {
+                    Arc::new(Field::new(physical, f.data_type().clone(), f.is_nullable()))
+                }
+                None => Arc::clone(f),
+            })
+            .collect();
+        Arc::new(Schema::new(fields))
+    };
+    let needs_transform = !logical_to_physical.is_empty();
 
     let object_store_options: HashMap<String, String> = common
         .object_store_options
@@ -109,6 +151,8 @@ fn plan_delta_kernel_scan(
 
     let exec = Arc::new(DeltaKernelScanExec::new(
         Arc::clone(required_schema),
+        physical_schema,
+        needs_transform,
         table_root,
         storage_config,
         files,

@@ -60,6 +60,37 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
     }
   }
 
+  test("kernel-read path (Phase 1c #44): name-mode column-mapped table") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("kernel_read_cm") { tablePath =>
+      val ss = spark
+      import ss.implicits._
+      (0 until 8)
+        .map(i => (i.toLong, s"name_$i", i * 1.5))
+        .toDF("id", "name", "score")
+        .repartition(1)
+        .write
+        .format("delta")
+        .option("delta.columnMapping.mode", "name")
+        .option("delta.minReaderVersion", "2")
+        .option("delta.minWriterVersion", "5")
+        .save(tablePath)
+      // Rename so a logical name diverges from its physical name (the real column-mapping case).
+      spark.sql(s"ALTER TABLE delta.`$tablePath` RENAME COLUMN name TO full_name")
+
+      // Force name-mode resolution: with parquet field-id read off, the kernel-read path reads by
+      // physical name and relabels to logical via the identity transform.
+      withSQLConf(
+        DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true",
+        "spark.sql.parquet.fieldId.read.enabled" -> "false") {
+        assertDeltaNativeMatches(tablePath, identity)
+        assertKernelReadEngaged(tablePath)
+        // Projection of the renamed column also reads correctly.
+        assertDeltaNativeMatches(tablePath, _.select("id", "full_name"))
+      }
+    }
+  }
+
   test("read a tiny unpartitioned delta table via the native scan") {
     assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
     withDeltaTable("smoke") { tablePath =>

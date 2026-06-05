@@ -1025,13 +1025,21 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     commonBuilder.addAllFinalOutputIndices(
       finalOutputIndices.map(i => Integer.valueOf(i)).asJava)
 
-    // Phase 1b "kernel reads": route to DeltaKernelScanExec only when the flag is on AND this is
-    // a plain table. Column mapping, partitions, row-tracking / synthetic columns, and metadata
-    // columns aren't handled by the kernel-read path yet, so those tables stay on the default
-    // reader regardless of the flag. The native side also guards defensively.
+    // "Kernel reads" (Phase 1b plain tables; Phase 1c #44 adds top-level name-mode column
+    // mapping): route to DeltaKernelScanExec only when the flag is on AND the table is in the
+    // supported subset. Still on the default reader (and the native side guards defensively):
+    // partitions, row-tracking / synthetic columns, metadata columns, id-mode column mapping
+    // (useFieldIdActive), and nested-typed columns. In name mode the proto's required_schema
+    // carries logical names and column_mappings carries the logical<->physical pairs, which is
+    // exactly what the native kernel path needs to read by physical name then relabel.
+    val requiredSchemaHasNested = scan.requiredSchema.fields.exists(_.dataType match {
+      case _: StructType | _: ArrayType | _: MapType => true
+      case _ => false
+    })
     val kernelReadEligible =
       DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf) &&
-        !columnMappingActive &&
+        !useFieldIdActive &&
+        !requiredSchemaHasNested &&
         relation.partitionSchema.isEmpty &&
         !emitRowIndex && !emitIsRowDeleted && !emitRowId && !emitRowCommitVersion &&
         metadataColumnNamesEmitted.isEmpty

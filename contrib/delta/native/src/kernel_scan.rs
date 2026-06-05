@@ -157,11 +157,21 @@ pub struct KernelScanFile {
 /// columns stack on the kernel-read path; built by core's `plan_delta_scan` when
 /// `DeltaScanCommon.kernel_read` is set. Single output partition: partition 0 reads every file.
 ///
-/// Phase 1b scope: no column mapping, no partition columns, no row-tracking (`transform = None`).
-/// Those re-add a kernel `Transform`, rebuilt executor-side via kernel's public API, in Phase 1c.
+/// Phase 1b scope: plain tables (`physical_schema == output_schema`, `transform = None`). Phase
+/// 1c (#44) adds top-level name-mode column mapping: read with `physical_schema` (physical
+/// names), then an identity transform relabels to `output_schema` (logical names) -- the
+/// physical->logical rename is driven by the schema pair through kernel's evaluator (see the
+/// `spike_transform_renames_physical_to_logical` test). Partitions / row-tracking / nested / id
+/// mode are still guarded to the old path.
 pub struct DeltaKernelScanExec {
-    /// Comet (arrow-58) output schema = the projected/required schema.
+    /// Comet (arrow-58) output schema = the projected/required schema, in LOGICAL names.
     output_schema: ArrowSchemaRef,
+    /// Schema to read from parquet, in PHYSICAL names. Equals `output_schema` for plain tables;
+    /// differs (renamed) under column mapping.
+    physical_schema: ArrowSchemaRef,
+    /// Whether a physical->logical transform must be applied (column mapping active). When false
+    /// the read is pass-through (`physical_schema == output_schema`).
+    needs_transform: bool,
     /// Normalised table root (trailing slash) used to resolve relative DV paths + the engine.
     table_root: String,
     /// Storage credentials/options for the kernel engine.
@@ -175,6 +185,8 @@ pub struct DeltaKernelScanExec {
 impl DeltaKernelScanExec {
     pub fn new(
         output_schema: ArrowSchemaRef,
+        physical_schema: ArrowSchemaRef,
+        needs_transform: bool,
         table_root: String,
         storage_config: DeltaStorageConfig,
         files: Vec<KernelScanFile>,
@@ -187,6 +199,8 @@ impl DeltaKernelScanExec {
         ));
         Self {
             output_schema,
+            physical_schema,
+            needs_transform,
             table_root,
             storage_config,
             files,
@@ -203,9 +217,23 @@ impl DeltaKernelScanExec {
             .map_err(|e| DataFusionError::Execution(format!("kernel scan table root: {e}")))?;
         let engine = get_or_create_engine(&table_root_url, &self.storage_config)
             .map_err(|e| DataFusionError::Execution(format!("kernel scan engine: {e}")))?;
-        // Schema comes from the proto (already arrow-58), converted to kernel -- no Snapshot.
-        let kernel_schema = comet_schema_to_kernel(&self.output_schema)
-            .map_err(|e| DataFusionError::Execution(format!("kernel scan schema: {e}")))?;
+        // Schemas come from the proto (already arrow-58), converted to kernel -- no Snapshot.
+        // `logical` carries the output (logical) names; `physical` the parquet (physical) names.
+        let logical_schema = comet_schema_to_kernel(&self.output_schema)
+            .map_err(|e| DataFusionError::Execution(format!("kernel scan logical schema: {e}")))?;
+        let physical_schema = comet_schema_to_kernel(&self.physical_schema)
+            .map_err(|e| DataFusionError::Execution(format!("kernel scan physical schema: {e}")))?;
+
+        // Under column mapping the physical names differ from the logical ones; an identity
+        // transform makes kernel's evaluator relabel physical -> logical via the schema pair.
+        // Plain tables pass `None` (pure pass-through).
+        let transform: Option<ExpressionRef> = if self.needs_transform {
+            Some(Arc::new(delta_kernel::expressions::Expression::transform(
+                delta_kernel::expressions::Transform::new_top_level(),
+            )))
+        } else {
+            None
+        };
 
         let mut out: Vec<arrow::array::RecordBatch> = Vec::new();
         for file in &self.files {
@@ -237,9 +265,9 @@ impl DeltaKernelScanExec {
                 &file.path,
                 file.size,
                 selection_vector,
-                None, // Phase 1b: no column mapping / partitions / row-tracking
-                kernel_schema.clone(),
-                kernel_schema.clone(),
+                transform.clone(),
+                physical_schema.clone(),
+                logical_schema.clone(),
             )
             .map_err(|e| DataFusionError::Execution(format!("kernel read of {}: {e}", file.path)))?;
 
@@ -458,7 +486,9 @@ mod tests {
         }];
 
         let exec = DeltaKernelScanExec::new(
-            output_schema,
+            Arc::clone(&output_schema),
+            output_schema, // plain table: physical == logical
+            false,         // no transform
             url.as_str().to_string(),
             DeltaStorageConfig::default(),
             files,
@@ -484,5 +514,147 @@ mod tests {
             .collect();
         assert_eq!(ids, vec![0, 1, 2, 3, 4, 5, 6]);
         assert_eq!(batches[0].schema().field(0).name(), "id");
+    }
+
+    // Phase 1c (#44): DeltaKernelScanExec with top-level name-mode column mapping. The parquet
+    // holds a physical name ("col-abc"); the exec reads with the physical schema, applies the
+    // identity transform, and the output is relabeled to the logical name ("id"). Exercises the
+    // full exec path (read + transform + arrow bridge) end to end.
+    #[tokio::test]
+    async fn kernel_scan_exec_column_mapping_renames() {
+        use arrow::array::{Array as _, Int64Array as Int64_58};
+        use arrow::datatypes::{DataType as DT58, Field as F58, Schema as S58};
+        use delta_kernel::arrow::array::{Int64Array as Int64_57, RecordBatch as RB57};
+        use delta_kernel::arrow::datatypes::{DataType as DT57, Field as F57, Schema as S57};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let table_dir = tmp.path();
+        let parquet_path = table_dir.join("part-00000.parquet");
+        let physical_arrow = Arc::new(S57::new(vec![F57::new("col-abc", DT57::Int64, true)]));
+        let batch = RB57::try_new(
+            physical_arrow.clone(),
+            vec![Arc::new(Int64_57::from(vec![7i64, 8, 9]))],
+        )
+        .unwrap();
+        let file = std::fs::File::create(&parquet_path).unwrap();
+        let mut writer =
+            delta_kernel::parquet::arrow::ArrowWriter::try_new(file, physical_arrow, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
+
+        let url = crate::scan::normalize_url(table_dir.to_str().unwrap()).unwrap();
+
+        // output (logical) names "id"; physical (parquet) names "col-abc".
+        let output = Arc::new(S58::new(vec![F58::new("id", DT58::Int64, true)]));
+        let physical = Arc::new(S58::new(vec![F58::new("col-abc", DT58::Int64, true)]));
+        let files = vec![KernelScanFile {
+            path: "part-00000.parquet".to_string(),
+            size,
+            record_count: Some(3),
+            dv: None,
+        }];
+
+        let exec = DeltaKernelScanExec::new(
+            Arc::clone(&output),
+            physical,
+            true, // column mapping -> needs transform
+            url.as_str().to_string(),
+            DeltaStorageConfig::default(),
+            files,
+        );
+        let stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
+        let batches = datafusion::physical_plan::common::collect(stream)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            batches[0].schema().field(0).name(),
+            "id",
+            "column-mapped physical name should be relabeled to the logical name"
+        );
+        let c = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64_58>()
+            .unwrap();
+        assert_eq!(
+            (0..c.len()).map(|i| c.value(i)).collect::<Vec<_>>(),
+            vec![7, 8, 9]
+        );
+    }
+
+    // Phase 1c spike: prove the physical->logical *rename* needed for column mapping can be driven
+    // from the public kernel API. We read a parquet whose physical column name is "phys_id" (as a
+    // column-mapped Delta table stores it) but pass a logical schema naming it "id". Kernel's
+    // get_transform_expr builds the transform from public Transform/Expression methods only; here
+    // we feed an identity Transform and check whether the evaluator relabels physical -> logical
+    // via the output schema (no explicit per-field rename spec exists in kernel). No Delta log is
+    // needed -- read_file_via_kernel only does a raw parquet read + transform.
+    #[test]
+    fn spike_transform_renames_physical_to_logical() {
+        use crate::engine::create_engine;
+        use crate::scan::normalize_url;
+        use delta_kernel::arrow::array::{Array as _, Int64Array, RecordBatch as RB57};
+        use delta_kernel::arrow::datatypes::{DataType as ADt, Field as AField, Schema as ASchema};
+        use delta_kernel::expressions::{Expression, Transform};
+        use delta_kernel::schema::{DataType as KDt, StructField, StructType};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let table_dir = tmp.path();
+        let parquet_path = table_dir.join("part-00000.parquet");
+        let arrow_schema = Arc::new(ASchema::new(vec![AField::new("phys_id", ADt::Int64, true)]));
+        let batch = RB57::try_new(
+            arrow_schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![10i64, 20, 30]))],
+        )
+        .unwrap();
+        let file = std::fs::File::create(&parquet_path).unwrap();
+        let mut writer =
+            delta_kernel::parquet::arrow::ArrowWriter::try_new(file, arrow_schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
+
+        let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
+        let engine = create_engine(&url, &DeltaStorageConfig::default()).unwrap();
+
+        // physical schema = the parquet's physical name; logical schema = the table's logical name.
+        let physical = Arc::new(
+            StructType::try_new(vec![StructField::new("phys_id", KDt::LONG, true)]).unwrap(),
+        );
+        let logical =
+            Arc::new(StructType::try_new(vec![StructField::new("id", KDt::LONG, true)]).unwrap());
+
+        // Identity transform (no field changes) -- does the evaluator relabel via the output schema?
+        let transform = Arc::new(Expression::transform(Transform::new_top_level()));
+
+        let batches = read_file_via_kernel(
+            &engine,
+            &url,
+            "part-00000.parquet",
+            size,
+            None,
+            Some(transform),
+            physical,
+            logical,
+        )
+        .unwrap();
+
+        // The decisive assertion: the output column must be renamed to the LOGICAL name "id".
+        assert_eq!(
+            batches[0].schema().field(0).name(),
+            "id",
+            "expected physical 'phys_id' to be relabeled to logical 'id' via the transform"
+        );
+        let col = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(
+            (0..col.len()).map(|i| col.value(i)).collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
     }
 }
