@@ -68,7 +68,9 @@ use datafusion::physical_plan::{
 use datafusion::common::ScalarValue;
 
 use crate::arrow_bridge::{comet_schema_to_kernel, kernel_batch_to_comet};
-use crate::dv_reader::{map_dv_error_to_datafusion, normalize_table_root, read_dv_indexes};
+use crate::dv_reader::{
+    map_dv_error_to_datafusion, map_file_read_error, normalize_table_root, read_dv_indexes,
+};
 use crate::engine::{get_or_create_engine, DeltaStorageConfig};
 use crate::planner::{parse_delta_partition_scalar, SessionTimezone};
 use crate::proto::DeltaDvDescriptor;
@@ -435,7 +437,7 @@ impl DeltaKernelScanExec {
                 physical_schema.clone(),
                 logical_schema.clone(),
             )
-            .map_err(|e| DataFusionError::Execution(format!("kernel read of {}: {e}", file.path)))?;
+            .map_err(|e| map_file_read_error(e, &file.path))?;
 
             for batch in &kernel_batches {
                 let data_batch = kernel_batch_to_comet(batch).map_err(DataFusionError::from)?;

@@ -162,6 +162,35 @@ pub fn map_dv_error_to_datafusion(err: DeltaError, desc: &DeltaDvDescriptor) -> 
     DataFusionError::Execution(format!("DV decode: {msg}"))
 }
 
+/// True if the (lowercased) error text looks like a missing-file failure -- the same tokens
+/// [`map_dv_error_to_datafusion`] keys on. Deliberately specific so a non-IO error isn't
+/// misclassified as a missing file.
+fn looks_like_missing_file(msg_lower: &str) -> bool {
+    msg_lower.contains("file not found")
+        || msg_lower.contains("no such file")
+        || msg_lower.contains("not found:")
+}
+
+/// Map a per-file read failure from `read_file_via_kernel` into a `DataFusionError` carrying the
+/// structured `SparkError` the JVM shim needs. A failure to read a Delta data file (corrupt/short
+/// parquet footer, decode error, IO) must surface as `SparkError::CannotReadFile` so the shim
+/// raises Spark's `cannotReadFilesError` ("Encountered error while reading file ...", a
+/// `[FAILED_READ_FILE]` SparkException on Spark 4.x) -- matching vanilla Spark+Delta and the old
+/// ParquetSource path (#4536). A genuinely missing file still maps to `FileNotFound`, as on the DV
+/// path. Without this, a corrupt file surfaces a raw "Arrow error: EOF ..." (probe Gap 2 / SC-8810).
+pub fn map_file_read_error(err: delta_kernel::Error, file_path: &str) -> DataFusionError {
+    let msg = err.to_string();
+    if looks_like_missing_file(&msg.to_ascii_lowercase()) {
+        return DataFusionError::External(Box::new(SparkError::FileNotFound {
+            message: file_path.to_string(),
+        }));
+    }
+    DataFusionError::External(Box::new(SparkError::CannotReadFile {
+        file_path: file_path.to_string(),
+        message: msg,
+    }))
+}
+
 /// Resolve the table-root `Url` once. Kernel requires the URL to end in `/` so
 /// that `absolute_path`'s join doesn't replace the last segment -- this is the
 /// same trailing-slash invariant `scan::normalize_url` enforces on the driver.
@@ -255,5 +284,36 @@ mod tests {
     fn normalize_table_root_preserves_trailing_slash() {
         let u = normalize_table_root("file:///tmp/t/").unwrap();
         assert_eq!(u.as_str(), "file:///tmp/t/");
+    }
+
+    // A corrupt/truncated parquet (e.g. the kernel "EOF: footer metadata" error) must become a
+    // typed CannotReadFile carrying the data-file path, so the JVM shim raises Spark's
+    // cannotReadFilesError (FAILED_READ_FILE) instead of leaking a raw Arrow error (probe Gap 2).
+    #[test]
+    fn map_file_read_error_corrupt_maps_to_cannot_read_file() {
+        let err = delta_kernel::Error::generic("EOF: footer metadata requires 8 bytes");
+        match map_file_read_error(err, "file:///t/part-0.parquet") {
+            DataFusionError::External(e) => match e.downcast_ref::<SparkError>() {
+                Some(SparkError::CannotReadFile { file_path, message }) => {
+                    assert_eq!(file_path, "file:///t/part-0.parquet");
+                    assert!(message.contains("footer metadata"), "kept the underlying cause");
+                }
+                other => panic!("expected CannotReadFile, got {other:?}"),
+            },
+            other => panic!("expected External SparkError, got {other:?}"),
+        }
+    }
+
+    // A genuinely missing data file still maps to FileNotFound, like the DV path.
+    #[test]
+    fn map_file_read_error_missing_maps_to_file_not_found() {
+        let err = delta_kernel::Error::generic("File not found: /t/part-0.parquet");
+        match map_file_read_error(err, "file:///t/part-0.parquet") {
+            DataFusionError::External(e) => assert!(matches!(
+                e.downcast_ref::<SparkError>(),
+                Some(SparkError::FileNotFound { .. })
+            )),
+            other => panic!("expected External SparkError, got {other:?}"),
+        }
     }
 }
