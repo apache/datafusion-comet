@@ -1662,6 +1662,19 @@ index ede5d285932..c9a8abb5a94 100644
    import testImplicits._
  
    before {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionAnsiErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionAnsiErrorsSuite.scala
+index 64bb5a289b3..9041a2dfb2c 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionAnsiErrorsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionAnsiErrorsSuite.scala
+@@ -291,7 +291,7 @@ class QueryExecutionAnsiErrorsSuite extends QueryTest
+       sql("create table patterns(pattern string) using parquet")
+       sql("insert into patterns values ('yyyyMMddHHMIss')")
+       checkError(
+-        exception = intercept[SparkRuntimeException] {
++        exception = intercept[SparkException] {
+           sql("select to_timestamp('20231225143045', pattern) from patterns").collect()
+         },
+         condition = "INVALID_DATETIME_PATTERN.WITH_SUGGESTION",
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
 index fcecaf25d4c..e5a511022cc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
