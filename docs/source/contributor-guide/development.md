@@ -660,6 +660,52 @@ make          # Build everything and update generated docs
 make test     # Run tests (optional but recommended)
 ```
 
+## Forked-Branch CI
+
+Comet runs PR CI on the contributor's fork rather than on `apache/datafusion-comet`. The heavy build/test matrix consumes the fork owner's GitHub Actions minutes and runners; the upstream repo only hosts a thin `Build` check that links to the fork's run. The design mirrors Apache Spark's fork-CI bridge.
+
+### Flow
+
+```mermaid
+flowchart TD
+    subgraph fork["Forked repo (contributor)"]
+        P([push to any branch]) --> BM["build_main.yml — job: Run"]
+        BM -->|workflow_call| BAT["build_and_test.yml (reusable):<br/>ci.yml fan-out, force_all=true"]
+        BAT --> CR["check runs:<br/>Run / CI / Preflight, per-Spark-version matrix, ..."]
+    end
+
+    subgraph up["Upstream repo (apache/datafusion-comet)"]
+        PRT([pull_request_target]) --> N["notify_test_workflow.yml"]
+        SCH([schedule: every 15 min]) --> U["update_build_status.yml"]
+        N -->|create| B(["Build check on PR"])
+        U -->|"PATCH status / conclusion"| B
+    end
+
+    BM -.->|"① find run (id: build_main.yml)"| N
+    CR -.->|"② link check-run view"| N
+    BM -.->|"③ poll run status"| U
+```
+
+### Workflow responsibilities
+
+- **`build_main.yml`** (fork) — triggers on `push` to any branch and calls `build_and_test.yml`. Contributor pushes to their fork run here, on the fork's runners.
+- **`build_and_test.yml`** (fork, reusable) — invokes `ci.yml` with `force_all: true`, so the full per-Spark-version matrix runs even when changed paths don't match `ci.yml`'s filters (e.g. when iterating on the workflow files themselves).
+- **`notify_test_workflow.yml`** (upstream) — runs on `pull_request_target` for opened/reopened/synchronize. Looks up the matching `build_main.yml` run on the PR head's fork+branch, then creates a `Build` check on the PR pointing at the fork's check-run view (`Run / CI / Preflight`). If the run can't be found, it reports `action_required` with instructions for the contributor to enable GitHub Actions on their fork.
+- **`update_build_status.yml`** (upstream) — runs on a 15-minute cron, walks open PRs, and `PATCH`es each `Build` check's status/conclusion from the corresponding fork run. This is what eventually flips the upstream check from "queued" to "success/failure".
+
+### Contributor checklist
+
+If the upstream `Build` check fails with **"Workflow run detection failed"**:
+
+1. Ensure GitHub Actions is enabled on your fork (Settings → Actions → "Allow all actions").
+2. Rebase onto the latest upstream `main` and force-push — `notify_test_workflow.yml` looks up the run by `(fork owner, fork repo, branch, head sha)`, and a stale base can prevent the match:
+   ```sh
+   git fetch upstream
+   git rebase upstream/main
+   git push origin <branch> --force
+   ```
+3. If the fork's run is healthy but the upstream check stays "queued" longer than ~15 minutes, the cron job in `update_build_status.yml` may have skipped a cycle — pushing a follow-up commit re-triggers `notify_test_workflow.yml` immediately.
+
 ## How to format `.md` document
 
 We are using `prettier` to format `.md` files.
