@@ -294,6 +294,31 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("regexp_replace: invalid group reference surfaces the original Spark exception") {
+    // Mirrors Spark's StringFunctionsSuite "RegExpReplace throws the right exception when replace
+    // fails on a particular row": a replacement that references a group the pattern does not
+    // define makes Spark's codegen raise SparkRuntimeException(INVALID_REGEXP_REPLACE). The
+    // codegen dispatcher runs that same Spark code inside native execution, so the original
+    // SparkRuntimeException must surface unwrapped rather than as a CometNativeException.
+    assume(org.apache.comet.CometSparkSessionExtensions.isSpark40Plus)
+    withSubjects("first last") {
+      val df =
+        sql("SELECT regexp_replace(s, '(?<first>[a-zA-Z]+) (?<last>[a-zA-Z]+)', '$3 $1') FROM t")
+      val e = intercept[Throwable](df.collect())
+      val chain = Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toList
+      val names = chain.map(_.getClass.getName)
+      // The original Spark exception must survive: re-thrown unwrapped, not flattened into a
+      // CometNativeException at the JNI boundary.
+      assert(
+        names.contains("org.apache.spark.SparkRuntimeException"),
+        s"expected SparkRuntimeException in the cause chain, got: $names")
+      assert(
+        !names.contains("org.apache.comet.CometNativeException"),
+        s"native exception leaked across the boundary: $names")
+      assert(e.getMessage.contains("INVALID_REGEXP_REPLACE"))
+    }
+  }
+
   // ========== regexp_instr tests ==========
 
   test("regexp_instr: basic position finding") {
