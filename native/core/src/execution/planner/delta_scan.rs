@@ -90,19 +90,20 @@ fn plan_delta_kernel_scan(
         || common.emit_row_id
         || common.emit_row_commit_version
         || !common.metadata_column_names.is_empty()
-        || common.use_field_id
         || has_nested
     {
         return Err(GeneralError(
-            "DeltaScan.kernel_read supports plain + top-level name-mode column-mapped tables only \
-             (no partitions, row-tracking, metadata columns, id-mode mapping, or nested types yet)"
+            "DeltaScan.kernel_read supports plain + top-level column-mapped tables only \
+             (no partitions, row-tracking, metadata columns, or nested types yet)"
                 .into(),
         ));
     }
 
-    // Column mapping: read each file by its PHYSICAL column name, then relabel to logical via the
-    // identity transform in DeltaKernelScanExec. `required_schema` already carries logical names;
-    // derive the physical read schema by renaming each top-level field to its physical name.
+    // Column mapping (name + id mode): read each file by its PHYSICAL column name, then relabel to
+    // logical via the identity transform in DeltaKernelScanExec. `required_schema` carries logical
+    // names; derive the physical read schema by renaming each top-level field to its physical name
+    // (from column_mappings). Field-id metadata is preserved so kernel can still match by field id
+    // if a parquet physical name ever diverges from the column-mapping physical name (id mode).
     let logical_to_physical: HashMap<String, String> = common
         .column_mappings
         .iter()
@@ -115,9 +116,10 @@ fn plan_delta_kernel_scan(
             .fields()
             .iter()
             .map(|f| match logical_to_physical.get(f.name()) {
-                Some(physical) => {
-                    Arc::new(Field::new(physical, f.data_type().clone(), f.is_nullable()))
-                }
+                Some(physical) => Arc::new(
+                    Field::new(physical, f.data_type().clone(), f.is_nullable())
+                        .with_metadata(f.metadata().clone()),
+                ),
                 None => Arc::clone(f),
             })
             .collect();

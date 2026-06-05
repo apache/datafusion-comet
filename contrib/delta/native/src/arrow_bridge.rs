@@ -36,15 +36,87 @@ use arrow::error::ArrowError;
 use delta_kernel::arrow::array::{Array as _, RecordBatch as RecordBatch57};
 use delta_kernel::arrow::datatypes::{Field as Field57, Schema as Schema57};
 use delta_kernel::engine::arrow_conversion::TryFromArrow;
-use delta_kernel::schema::{SchemaRef, StructType};
+use delta_kernel::schema::{
+    ArrayType, DataType as KernelDataType, MapType, MetadataValue, SchemaRef, StructField,
+    StructType,
+};
 use delta_kernel::{DeltaResult, Error};
 use std::sync::Arc;
+
+/// Arrow's parquet field-id metadata key (set by the writer / Comet's `translateDeltaFieldIdToParquet`).
+const ARROW_FIELD_ID_KEY: &str = "PARQUET:field_id";
+/// Kernel's field-id metadata key -- what `get_indices` matches on for id-mode column mapping.
+const KERNEL_FIELD_ID_KEY: &str = "parquet.field.id";
+
+/// Recursively copy arrow's `PARQUET:field_id` onto kernel's `parquet.field.id` key so kernel can
+/// match parquet columns by field id (Delta id-mode column mapping, including nested fields).
+/// No-op for schemas without field ids (plain / name-mode tables).
+fn with_kernel_field_ids(field: &Field58) -> Field58 {
+    use arrow::datatypes::DataType as Dt;
+    let new_dt = match field.data_type() {
+        Dt::Struct(fs) => Dt::Struct(
+            fs.iter()
+                .map(|f| Arc::new(with_kernel_field_ids(f.as_ref())))
+                .collect(),
+        ),
+        Dt::List(f) => Dt::List(Arc::new(with_kernel_field_ids(f.as_ref()))),
+        Dt::LargeList(f) => Dt::LargeList(Arc::new(with_kernel_field_ids(f.as_ref()))),
+        Dt::Map(f, sorted) => Dt::Map(Arc::new(with_kernel_field_ids(f.as_ref())), *sorted),
+        other => other.clone(),
+    };
+    let mut md = field.metadata().clone();
+    if let Some(fid) = md.get(ARROW_FIELD_ID_KEY).cloned() {
+        md.entry(KERNEL_FIELD_ID_KEY.to_string()).or_insert(fid);
+    }
+    Field58::new(field.name(), new_dt, field.is_nullable()).with_metadata(md)
+}
+
+/// Kernel only matches id-mode column mapping when a field's `parquet.field.id` metadata is a
+/// `MetadataValue::Number` (see `arrow_utils::match_parquet_fields`). The arrow / FFI bridge can
+/// only carry *string* metadata, so the bridged kernel schema has the field id as a string. This
+/// recursively re-types those field-id values to numbers (no-op when absent).
+fn numericize_field_ids(st: &StructType) -> StructType {
+    let fields: Vec<StructField> = st
+        .fields()
+        .map(|f| {
+            let mut nf = f.clone();
+            if let Some(MetadataValue::String(s)) = nf.metadata.get(KERNEL_FIELD_ID_KEY) {
+                if let Ok(n) = s.parse::<i64>() {
+                    nf.metadata
+                        .insert(KERNEL_FIELD_ID_KEY.to_string(), MetadataValue::Number(n));
+                }
+            }
+            nf.data_type = numericize_datatype(&nf.data_type);
+            nf
+        })
+        .collect();
+    // try_new only fails on duplicate field names, which a valid arrow schema can't contain.
+    StructType::try_new(fields).expect("rebuild kernel struct with numeric field ids")
+}
+
+fn numericize_datatype(dt: &KernelDataType) -> KernelDataType {
+    match dt {
+        KernelDataType::Struct(st) => KernelDataType::Struct(Box::new(numericize_field_ids(st))),
+        KernelDataType::Variant(st) => KernelDataType::Variant(Box::new(numericize_field_ids(st))),
+        KernelDataType::Array(at) => KernelDataType::Array(Box::new(ArrayType::new(
+            numericize_datatype(at.element_type()),
+            at.contains_null(),
+        ))),
+        KernelDataType::Map(mt) => KernelDataType::Map(Box::new(MapType::new(
+            numericize_datatype(mt.key_type()),
+            numericize_datatype(mt.value_type()),
+            mt.value_contains_null(),
+        ))),
+        KernelDataType::Primitive(_) => dt.clone(),
+    }
+}
 
 /// Convert a Comet (arrow-58) `Schema` into a kernel (arrow-57) `StructType`, which is what
 /// `read_file_via_kernel` needs for the physical/logical schemas. Each field crosses the
 /// arrow-version boundary via the C Data Interface schema struct (metadata only, no buffers),
 /// then kernel's own `TryFromArrow` does the arrow->kernel mapping -- so nested/decimal/
-/// timestamp fidelity matches kernel exactly rather than a hand-rolled type match.
+/// timestamp fidelity matches kernel exactly rather than a hand-rolled type match. Field ids are
+/// remapped to kernel's key first so id-mode column mapping matches by field id.
 ///
 /// This is the executor-side source of the kernel schema: it comes from the proto's
 /// `required_schema` (already converted to an arrow-58 `Schema` upstream), NOT from a kernel
@@ -52,7 +124,8 @@ use std::sync::Arc;
 pub fn comet_schema_to_kernel(schema: &Schema58) -> DeltaResult<SchemaRef> {
     let mut kernel_fields: Vec<Field57> = Vec::with_capacity(schema.fields().len());
     for field in schema.fields() {
-        let ffi_58 = arrow::ffi::FFI_ArrowSchema::try_from(field.as_ref())
+        let field = with_kernel_field_ids(field.as_ref());
+        let ffi_58 = arrow::ffi::FFI_ArrowSchema::try_from(&field)
             .map_err(|e| Error::generic(format!("schema bridge export failed: {e}")))?;
         // SAFETY: identical C Data Interface ABI across arrow 57/58 (size asserted in
         // `kernel_batch_to_comet`). The arrow-58-installed `release` callback travels with the
@@ -66,6 +139,8 @@ pub fn comet_schema_to_kernel(schema: &Schema58) -> DeltaResult<SchemaRef> {
     let arrow_57_schema = Schema57::new(kernel_fields);
     let struct_type = StructType::try_from_arrow(&arrow_57_schema)
         .map_err(|e| Error::generic(format!("arrow->kernel schema conversion failed: {e}")))?;
+    // Field ids arrive as strings (arrow metadata is string-only); kernel needs them numeric.
+    let struct_type = numericize_field_ids(&struct_type);
     Ok(Arc::new(struct_type))
 }
 

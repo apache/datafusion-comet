@@ -91,6 +91,34 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
     }
   }
 
+  test("kernel-read path (Phase 1c #44): id-mode column-mapped table") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("kernel_read_cm_id") { tablePath =>
+      val ss = spark
+      import ss.implicits._
+      (0 until 8)
+        .map(i => (i.toLong, s"name_$i", i * 1.5))
+        .toDF("id", "name", "score")
+        .repartition(1)
+        .write
+        .format("delta")
+        .option("delta.columnMapping.mode", "id")
+        .option("delta.minReaderVersion", "2")
+        .option("delta.minWriterVersion", "5")
+        .save(tablePath)
+      // Rename so a logical name diverges from its physical name.
+      spark.sql(s"ALTER TABLE delta.`$tablePath` RENAME COLUMN name TO full_name")
+
+      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
+        // id-mode reads through the same rename-then-relabel kernel path; field ids ride along on
+        // the physical schema as a fallback matcher.
+        assertDeltaNativeMatches(tablePath, identity)
+        assertKernelReadEngaged(tablePath)
+        assertDeltaNativeMatches(tablePath, _.select("id", "full_name"))
+      }
+    }
+  }
+
   test("read a tiny unpartitioned delta table via the native scan") {
     assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
     withDeltaTable("smoke") { tablePath =>

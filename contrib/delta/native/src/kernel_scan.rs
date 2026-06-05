@@ -657,4 +657,77 @@ mod tests {
             vec![10, 20, 30]
         );
     }
+
+    // Phase 1c (#44 id-mode): kernel matches parquet columns by FIELD ID, not name. The parquet
+    // holds physical name "col-xyz" with parquet field id 1; we request a field carrying the SAME
+    // field id but a DIFFERENT name ("id"). The read therefore can only succeed via field-id
+    // matching (a name match is impossible), proving comet_schema_to_kernel's PARQUET:field_id ->
+    // numeric parquet.field.id remap engages kernel's id matcher. The read output keeps the parquet
+    // physical name (the logical relabel is the transform's job in the exec), so we assert on data.
+    #[test]
+    fn id_mode_matches_parquet_by_field_id() {
+        use crate::arrow_bridge::comet_schema_to_kernel;
+        use crate::engine::create_engine;
+        use crate::scan::normalize_url;
+        use arrow::datatypes::{DataType as DT58, Field as F58, Schema as S58};
+        use delta_kernel::arrow::array::{Array as _, Int64Array as Int64_57, RecordBatch as RB57};
+        use delta_kernel::arrow::datatypes::{DataType as DT57, Field as F57, Schema as S57};
+        use std::collections::HashMap;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let table_dir = tmp.path();
+        let parquet_path = table_dir.join("part-00000.parquet");
+
+        // Parquet column: physical name "col-xyz", field id 1 (written into the parquet footer).
+        let mut pmd = HashMap::new();
+        pmd.insert("PARQUET:field_id".to_string(), "1".to_string());
+        let parquet_arrow =
+            Arc::new(S57::new(vec![F57::new("col-xyz", DT57::Int64, true).with_metadata(pmd)]));
+        let batch = RB57::try_new(
+            parquet_arrow.clone(),
+            vec![Arc::new(Int64_57::from(vec![100i64, 200, 300]))],
+        )
+        .unwrap();
+        let file = std::fs::File::create(&parquet_path).unwrap();
+        let mut writer =
+            delta_kernel::parquet::arrow::ArrowWriter::try_new(file, parquet_arrow, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
+
+        let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
+        let engine = create_engine(&url, &DeltaStorageConfig::default()).unwrap();
+
+        // Requested schema: logical name "id" carrying the SAME field id (different name).
+        let mut rmd = HashMap::new();
+        rmd.insert("PARQUET:field_id".to_string(), "1".to_string());
+        let requested = S58::new(vec![F58::new("id", DT58::Int64, true).with_metadata(rmd)]);
+        let kernel_schema = comet_schema_to_kernel(&requested).unwrap();
+
+        let batches = read_file_via_kernel(
+            &engine,
+            &url,
+            "part-00000.parquet",
+            size,
+            None,
+            None,
+            kernel_schema.clone(),
+            kernel_schema,
+        )
+        .unwrap();
+
+        // Data matched by field id (a name match was impossible: "id" != "col-xyz"). Before the
+        // numeric-field-id remap this column came back all-null; now it carries the real values.
+        // read_file_via_kernel returns kernel (arrow-57) batches -- the arrow-58 bridge is the
+        // exec's job -- so we downcast with arrow-57 here.
+        let c = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64_57>()
+            .expect("field-id-matched column should be the real Int64 data, not a null column");
+        assert_eq!(
+            (0..c.len()).map(|i| c.value(i)).collect::<Vec<_>>(),
+            vec![100, 200, 300]
+        );
+    }
 }
