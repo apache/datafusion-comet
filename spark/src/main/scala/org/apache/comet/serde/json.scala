@@ -19,18 +19,30 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.LengthOfJsonArray
+import org.apache.spark.sql.catalyst.expressions.{Attribute, LengthOfJsonArray}
 
-object CometLengthOfJsonArray
-    extends CometScalarFunction[LengthOfJsonArray]("json_array_length") {
+import org.apache.comet.CometConf
+import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
 
-  private val IncompatibleReason: String =
-    "Spark's lenient JSON parser allows single quotes, unescaped controls, " +
-      "and trailing content, " +
-      "while Comet's serde_json requires strict JSON."
+/**
+ * `json_array_length` runs Spark's own implementation through the codegen dispatcher by default,
+ * for byte-exact results. The native (rust) path is faster but incompatible with Spark for
+ * single-quoted JSON, unescaped control characters, and trailing content, so it is opt-in via
+ * `spark.comet.expression.LengthOfJsonArray.allowIncompatible`; otherwise it rides the codegen
+ * dispatcher via [[CometCodegenDispatch]].
+ */
+object CometLengthOfJsonArray extends CometCodegenDispatch[LengthOfJsonArray] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(IncompatibleReason)
-
-  override def getSupportLevel(expr: LengthOfJsonArray): SupportLevel = Incompatible(
-    Some(IncompatibleReason))
+  override def convert(
+      expr: LengthOfJsonArray,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] =
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+      val optExpr = scalarFunctionExprToProto("json_array_length", childExpr: _*)
+      optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    } else {
+      super.convert(expr, inputs, binding)
+    }
 }
