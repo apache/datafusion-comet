@@ -31,14 +31,26 @@
 //! schemas / transform) without reconstructing the kernel `Snapshot` -- no per-executor log
 //! replay.
 
-use delta_kernel::arrow::array::RecordBatch;
+use delta_kernel::arrow::array::{new_null_array, RecordBatch};
+use delta_kernel::arrow::compute::cast as arrow57_cast;
+use delta_kernel::arrow::datatypes::{
+    DataType as DataType57, Field as Field57, Schema as Schema57, TimeUnit as TimeUnit57,
+};
+use delta_kernel::engine::arrow_conversion::TryIntoArrow;
 use delta_kernel::engine::arrow_data::ArrowEngineData;
+use delta_kernel::parquet::arrow::arrow_reader::{
+    ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
+};
+use delta_kernel::parquet::arrow::ProjectionMask;
+use delta_kernel::parquet::basic::Type as ParquetPhysicalType;
+use delta_kernel::parquet::schema::types::SchemaDescriptor;
 use delta_kernel::scan::state::transform_to_logical;
 use delta_kernel::schema::SchemaRef;
-use delta_kernel::{DeltaResult, Engine, Error, ExpressionRef, FileMeta};
+use delta_kernel::{DeltaResult, Engine, EngineData, Error, ExpressionRef};
 use url::Url;
 
 use std::any::Any;
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -88,28 +100,67 @@ pub fn read_file_via_kernel(
     logical_schema: SchemaRef,
 ) -> DeltaResult<Vec<RecordBatch>> {
     let file_url = table_root.join(file_path)?;
+    // `file_size` is currently unused: we read the whole object through the storage handler, which
+    // sizes the request itself. Kept in the signature for callers / future range reads.
+    let _ = file_size;
 
-    let meta = FileMeta {
-        location: file_url,
-        last_modified: 0,
-        size: file_size
-            .try_into()
-            .map_err(|_| Error::generic("negative Delta file size"))?,
+    // We read the parquet ourselves rather than via kernel's `parquet_handler().read_parquet_files`
+    // because kernel 0.19 reads with a default `ArrowReaderOptions`, leaving INT96 timestamps at
+    // nanosecond resolution. Spark writes TIMESTAMP (LTZ) as INT96 by default, and i64 nanoseconds
+    // overflow at ~year 2262, so any later timestamp reads back as garbage (9999-12-31 -> 1816).
+    // Mirroring Comet's canonical parquet path (`coerce_int96="us"`), we supply a schema that types
+    // INT96 columns as microseconds so the reader coerces them on read.
+    let arrow_physical: Schema57 = physical_schema
+        .as_ref()
+        .try_into_arrow()
+        .map_err(Error::Arrow)?;
+
+    // Fetch the data file's bytes through kernel's storage layer (object_store under the hood). This
+    // is the same sync entry point `dv_reader` uses, so it runs on the engine's background executor
+    // and works for local / S3 / Azure alike without spinning up a nested tokio runtime.
+    let mut bytes_iter = engine.storage_handler().read_files(vec![(file_url, None)])?;
+    let data = bytes_iter
+        .next()
+        .ok_or_else(|| Error::generic(format!("no bytes read for Delta file {file_path}")))??;
+
+    // Load metadata once, build a supplied schema with INT96 columns coerced to microseconds, and
+    // rebuild the reader metadata against it (the DataFusion `coerce_int96_to_resolution` recipe).
+    let base_meta = ArrowReaderMetadata::load(&data, ArrowReaderOptions::new())?;
+    let options = match coerce_int96_to_micros(base_meta.parquet_schema(), base_meta.schema()) {
+        Some(supplied) => ArrowReaderOptions::new().with_schema(Arc::new(supplied)),
+        None => ArrowReaderOptions::new(),
     };
+    let reader_meta = ArrowReaderMetadata::try_new(base_meta.metadata().clone(), options)?;
+    let builder = ParquetRecordBatchReaderBuilder::new_with_metadata(data, reader_meta);
 
-    // TODO(Phase 1b): thread the pushed predicate here once row-index support lands upstream
-    // (kernel disables read-time predicate pushdown until then -- see kernel issue #860).
-    let read_iter = engine
-        .parquet_handler()
-        .read_parquet_files(&[meta], physical_schema.clone(), None)?;
+    // Project to just the physical (data) columns we need, matched by name. Column mapping has
+    // already renamed `arrow_physical`'s fields to physical names, which equal the parquet column
+    // names, so a name match reproduces kernel's column selection. (Nested column mapping is still
+    // guarded to the old path -- see #47 -- so top-level name matching suffices here.)
+    let mask = ProjectionMask::columns(
+        builder.parquet_schema(),
+        arrow_physical.fields().iter().map(|f| f.name().as_str()),
+    );
+    let reader = builder.with_projection(mask).build()?;
 
     let mut out: Vec<RecordBatch> = Vec::new();
-    for read_result in read_iter {
-        let read_result = read_result?;
+    for batch in reader {
+        let batch = batch?;
+        // Reorder the projected columns into `arrow_physical` order and reconcile types -- e.g. the
+        // INT96 coercion yields `Timestamp(us, None)` while the table wants `Timestamp(us, "UTC")`,
+        // a metadata-only relabel. Stands in for kernel's `fixup_parquet_read`.
+        let physical_batch = align_batch_to_schema(batch, &arrow_physical)?;
+        let physical_data: Box<dyn EngineData> = Box::new(ArrowEngineData::new(physical_batch));
+
         // Physical -> logical: column mapping (incl. nested), partition injection, row-tracking.
         // Kernel's expression evaluator does this; no Comet-side physicalisation.
-        let logical =
-            transform_to_logical(engine, read_result, &physical_schema, &logical_schema, transform.clone())?;
+        let logical = transform_to_logical(
+            engine,
+            physical_data,
+            &physical_schema,
+            &logical_schema,
+            transform.clone(),
+        )?;
         let len = logical.len();
 
         // Split the file-wide selection vector: the first `len` flags belong to this batch,
@@ -136,6 +187,80 @@ pub fn read_file_via_kernel(
     }
 
     Ok(out)
+}
+
+/// Build a supplied arrow schema that retypes INT96 columns as `Timestamp(Microsecond, ...)` so the
+/// parquet reader coerces them on read instead of defaulting to nanoseconds (which overflows i64 for
+/// timestamps after ~year 2262). Mirrors DataFusion's `coerce_int96_to_resolution` / Comet's
+/// `coerce_int96="us"`, but for the arrow-57 kernel pins. Returns `None` when the file has no INT96
+/// columns (nothing to override). Top-level only: nested column mapping is still guarded to the old
+/// path (#47), so nested INT96 columns don't reach this path.
+fn coerce_int96_to_micros(
+    parquet_schema: &SchemaDescriptor,
+    file_schema: &Schema57,
+) -> Option<Schema57> {
+    let int96_top: HashSet<&str> = parquet_schema
+        .columns()
+        .iter()
+        .filter(|c| c.physical_type() == ParquetPhysicalType::INT96)
+        .filter_map(|c| c.path().parts().first().map(String::as_str))
+        .collect();
+    if int96_top.is_empty() {
+        return None;
+    }
+    let mut changed = false;
+    let fields: Vec<Arc<Field57>> = file_schema
+        .fields()
+        .iter()
+        .map(|f| {
+            // Only retype a top-level primitive Timestamp column that originated as INT96.
+            if int96_top.contains(f.name().as_str()) {
+                if let DataType57::Timestamp(unit, tz) = f.data_type() {
+                    if *unit != TimeUnit57::Microsecond {
+                        changed = true;
+                        return Arc::new(
+                            Field57::new(
+                                f.name(),
+                                DataType57::Timestamp(TimeUnit57::Microsecond, tz.clone()),
+                                f.is_nullable(),
+                            )
+                            .with_metadata(f.metadata().clone()),
+                        );
+                    }
+                }
+            }
+            f.clone()
+        })
+        .collect();
+    changed.then(|| Schema57::new_with_metadata(fields, file_schema.metadata().clone()))
+}
+
+/// Reorder `batch`'s columns to match `target` (by field name) and cast each to the target field
+/// type. Stands in for kernel's `fixup_parquet_read`: the projected read returns columns in file
+/// order with the parquet-inferred types (e.g. INT96 coerced to `Timestamp(us, None)`), and the
+/// transform evaluator expects them in `physical_schema` order/types (e.g. `Timestamp(us, "UTC")`).
+/// Timestamp tz relabels and other widening casts are metadata-/value-preserving here. A target
+/// column absent from the file is synthesised as all-NULL -- Delta schema evolution reads a column
+/// added in a later commit as NULL in the older data files that predate it (same as kernel's reader).
+fn align_batch_to_schema(batch: RecordBatch, target: &Schema57) -> DeltaResult<RecordBatch> {
+    let num_rows = batch.num_rows();
+    let mut columns = Vec::with_capacity(target.fields().len());
+    for field in target.fields() {
+        let col = match batch.schema().index_of(field.name()) {
+            Ok(idx) => {
+                let col = batch.column(idx);
+                if col.data_type() == field.data_type() {
+                    Arc::clone(col)
+                } else {
+                    arrow57_cast(col, field.data_type()).map_err(Error::Arrow)?
+                }
+            }
+            // Schema evolution: this column was added after these rows were written -> read as NULL.
+            Err(_) => new_null_array(field.data_type(), num_rows),
+        };
+        columns.push(col);
+    }
+    RecordBatch::try_new(Arc::new(target.clone()), columns).map_err(Error::Arrow)
 }
 
 /// One Delta data file's worth of per-file inputs the driver ships to the executor: enough to
@@ -751,20 +876,22 @@ mod tests {
         );
     }
 
-    // Phase 1c (#44 id-mode): kernel matches parquet columns by FIELD ID, not name. The parquet
-    // holds physical name "col-xyz" with parquet field id 1; we request a field carrying the SAME
-    // field id but a DIFFERENT name ("id"). The read therefore can only succeed via field-id
-    // matching (a name match is impossible), proving comet_schema_to_kernel's PARQUET:field_id ->
-    // numeric parquet.field.id remap engages kernel's id matcher. The read output keeps the parquet
-    // physical name (the logical relabel is the transform's job in the exec), so we assert on data.
+    // Phase 1c (#44 id-mode): the kernel-read path reads a column by its PHYSICAL name (the name
+    // stored in the parquet file), then relabels it to the logical name via the transform. For an
+    // id-mode table the driver supplies the physical name in `column_mappings` (delta_scan.rs renames
+    // the read schema to `cm.physical_name`), so a name match reproduces what kernel's field-id
+    // matcher used to do -- physical names are unique UUIDs, so matching by name is equivalent. The
+    // parquet column carries a field id in its footer (as a real id-mode file would); this test
+    // proves that field-id metadata on the schema doesn't disturb the name-based read + relabel.
     #[test]
-    fn id_mode_matches_parquet_by_field_id() {
+    fn id_mode_reads_by_physical_name_then_relabels() {
         use crate::arrow_bridge::comet_schema_to_kernel;
         use crate::engine::create_engine;
         use crate::scan::normalize_url;
         use arrow::datatypes::{DataType as DT58, Field as F58, Schema as S58};
         use delta_kernel::arrow::array::{Array as _, Int64Array as Int64_57, RecordBatch as RB57};
         use delta_kernel::arrow::datatypes::{DataType as DT57, Field as F57, Schema as S57};
+        use delta_kernel::expressions::{Expression, Transform};
         use std::collections::HashMap;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -791,11 +918,16 @@ mod tests {
         let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
         let engine = create_engine(&url, &DeltaStorageConfig::default()).unwrap();
 
-        // Requested schema: logical name "id" carrying the SAME field id (different name).
-        let mut rmd = HashMap::new();
-        rmd.insert("PARQUET:field_id".to_string(), "1".to_string());
-        let requested = S58::new(vec![F58::new("id", DT58::Int64, true).with_metadata(rmd)]);
-        let kernel_schema = comet_schema_to_kernel(&requested).unwrap();
+        // Physical schema = the parquet's physical name "col-xyz" (+ its field id); logical schema =
+        // the table's logical name "id". The identity transform relabels physical -> logical.
+        let mut pmd58 = HashMap::new();
+        pmd58.insert("PARQUET:field_id".to_string(), "1".to_string());
+        let physical_arrow =
+            S58::new(vec![F58::new("col-xyz", DT58::Int64, true).with_metadata(pmd58)]);
+        let physical = comet_schema_to_kernel(&physical_arrow).unwrap();
+        let logical_arrow = S58::new(vec![F58::new("id", DT58::Int64, true)]);
+        let logical = comet_schema_to_kernel(&logical_arrow).unwrap();
+        let transform = Arc::new(Expression::transform(Transform::new_top_level()));
 
         let batches = read_file_via_kernel(
             &engine,
@@ -803,24 +935,163 @@ mod tests {
             "part-00000.parquet",
             size,
             None,
-            None,
-            kernel_schema.clone(),
-            kernel_schema,
+            Some(transform),
+            physical,
+            logical,
         )
         .unwrap();
 
-        // Data matched by field id (a name match was impossible: "id" != "col-xyz"). Before the
-        // numeric-field-id remap this column came back all-null; now it carries the real values.
-        // read_file_via_kernel returns kernel (arrow-57) batches -- the arrow-58 bridge is the
-        // exec's job -- so we downcast with arrow-57 here.
+        // The column was read by physical name "col-xyz" and relabeled to logical "id"; the data is
+        // the real values. read_file_via_kernel returns kernel (arrow-57) batches -- the arrow-58
+        // bridge is the exec's job -- so we downcast with arrow-57 here.
+        assert_eq!(
+            batches[0].schema().field(0).name(),
+            "id",
+            "expected physical 'col-xyz' to be relabeled to logical 'id'"
+        );
         let c = batches[0]
             .column(0)
             .as_any()
             .downcast_ref::<Int64_57>()
-            .expect("field-id-matched column should be the real Int64 data, not a null column");
+            .expect("name-matched column should be the real Int64 data, not a null column");
         assert_eq!(
             (0..c.len()).map(|i| c.value(i)).collect::<Vec<_>>(),
             vec![100, 200, 300]
         );
+    }
+
+    // INT96 coercion: Spark writes TIMESTAMP (LTZ) as parquet INT96, which arrow-rs reads as
+    // Timestamp(Nanosecond) by default -- overflowing i64 for any instant after ~year 2262.
+    // `coerce_int96_to_micros` retypes INT96 columns to microseconds so the reader coerces on read.
+    #[test]
+    fn coerce_int96_to_micros_retypes_only_int96_timestamps() {
+        use delta_kernel::arrow::datatypes::{DataType as DT, Field as F, TimeUnit};
+        use delta_kernel::parquet::basic::{Repetition, Type as PhysType};
+        use delta_kernel::parquet::schema::types::Type as PType;
+
+        // Parquet schema: one INT96 column "ts", one INT64 column "id".
+        let ts = PType::primitive_type_builder("ts", PhysType::INT96)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .unwrap();
+        let id = PType::primitive_type_builder("id", PhysType::INT64)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .unwrap();
+        let message = PType::group_type_builder("schema")
+            .with_fields(vec![Arc::new(id), Arc::new(ts)])
+            .build()
+            .unwrap();
+        let descr = SchemaDescriptor::new(Arc::new(message));
+
+        // arrow schema as arrow-rs infers it from that parquet: INT96 -> Timestamp(Nanosecond).
+        let inferred = Schema57::new(vec![
+            F::new("id", DT::Int64, true),
+            F::new("ts", DT::Timestamp(TimeUnit::Nanosecond, None), true),
+        ]);
+
+        let coerced = coerce_int96_to_micros(&descr, &inferred)
+            .expect("a file with an INT96 column must produce a coerced schema");
+        // The INT96 column is now microseconds; the plain Int64 column is untouched.
+        assert_eq!(coerced.field(0).data_type(), &DT::Int64);
+        assert_eq!(
+            coerced.field(1).data_type(),
+            &DT::Timestamp(TimeUnit::Microsecond, None)
+        );
+
+        // A schema with no INT96 columns needs no override.
+        let no_int96 = SchemaDescriptor::new(Arc::new(
+            PType::group_type_builder("schema")
+                .with_fields(vec![Arc::new(
+                    PType::primitive_type_builder("id", PhysType::INT64)
+                        .with_repetition(Repetition::OPTIONAL)
+                        .build()
+                        .unwrap(),
+                )])
+                .build()
+                .unwrap(),
+        ));
+        let plain = Schema57::new(vec![F::new("id", DT::Int64, true)]);
+        assert!(coerce_int96_to_micros(&no_int96, &plain).is_none());
+    }
+
+    // `align_batch_to_schema` reorders columns by name and casts each to the target type -- e.g. the
+    // tz relabel Timestamp(us, None) -> Timestamp(us, "UTC") that follows INT96 coercion.
+    #[test]
+    fn align_batch_to_schema_reorders_and_casts() {
+        use delta_kernel::arrow::array::{
+            Array as _, Int64Array, RecordBatch as RB57, TimestampMicrosecondArray,
+        };
+        use delta_kernel::arrow::datatypes::{DataType as DT, Field as F, Schema as S, TimeUnit};
+
+        // Read batch: columns in FILE order [ts, id], ts has no timezone.
+        let read_schema = Arc::new(S::new(vec![
+            F::new("ts", DT::Timestamp(TimeUnit::Microsecond, None), true),
+            F::new("id", DT::Int64, true),
+        ]));
+        let read_batch = RB57::try_new(
+            read_schema,
+            vec![
+                Arc::new(TimestampMicrosecondArray::from(vec![253402300799000000i64])),
+                Arc::new(Int64Array::from(vec![7i64])),
+            ],
+        )
+        .unwrap();
+
+        // Target: [id, ts] order, ts wants a UTC timezone.
+        let target = Schema57::new(vec![
+            F::new("id", DT::Int64, true),
+            F::new(
+                "ts",
+                DT::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+        ]);
+
+        let aligned = align_batch_to_schema(read_batch, &target).unwrap();
+        assert_eq!(aligned.schema().field(0).name(), "id");
+        assert_eq!(aligned.schema().field(1).name(), "ts");
+        assert_eq!(
+            aligned.schema().field(1).data_type(),
+            &DT::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+        // The extreme value survives intact (it would be garbage if read as nanoseconds).
+        let ts = aligned
+            .column(1)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+        assert_eq!(ts.value(0), 253402300799000000);
+        let id = aligned
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(id.value(0), 7);
+    }
+
+    // Schema evolution: a column added in a later commit is absent from older data files. The read
+    // (projected by name) returns no such column, and `align_batch_to_schema` must synthesise an
+    // all-NULL column rather than error -- matching kernel's reader and Delta's read semantics.
+    #[test]
+    fn align_batch_to_schema_nullfills_missing_column() {
+        use delta_kernel::arrow::array::{Array as _, Int64Array, RecordBatch as RB57};
+        use delta_kernel::arrow::datatypes::{DataType as DT, Field as F, Schema as S};
+
+        // Older file has only "id"; the table schema added "extra" later.
+        let read_schema = Arc::new(S::new(vec![F::new("id", DT::Int64, true)]));
+        let read_batch = RB57::try_new(read_schema, vec![Arc::new(Int64Array::from(vec![1i64, 2]))])
+            .unwrap();
+        let target = Schema57::new(vec![
+            F::new("id", DT::Int64, true),
+            F::new("extra", DT::Utf8, true),
+        ]);
+
+        let aligned = align_batch_to_schema(read_batch, &target).unwrap();
+        assert_eq!(aligned.num_columns(), 2);
+        assert_eq!(aligned.schema().field(1).name(), "extra");
+        let extra = aligned.column(1);
+        assert_eq!(extra.len(), 2);
+        assert_eq!(extra.null_count(), 2, "added column should read as all-NULL");
     }
 }
