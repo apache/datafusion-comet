@@ -199,4 +199,28 @@ mod tests {
         assert_eq!(fields[2].name(), "score");
         assert_eq!(fields[2].data_type(), &KDataType::DOUBLE);
     }
+
+    // Phase 1c (#44 id-mode/nested) spike: does field metadata survive the FFI schema bridge?
+    // Kernel matches parquet columns by the `parquet.field.id` metadata key for id-mode column
+    // mapping, so id-mode feasibility hinges on the field-id metadata flowing arrow-58 -> FFI ->
+    // arrow-57 -> kernel. If this passes, id-mode is mostly a matter of putting the right key on
+    // the schema; if it fails, the kernel schema must be built without the FFI round-trip.
+    #[test]
+    fn spike_field_metadata_survives_schema_bridge() {
+        use arrow::datatypes::{DataType as DataType58, Field as F58};
+        use std::collections::HashMap;
+
+        let mut md = HashMap::new();
+        md.insert("parquet.field.id".to_string(), "5".to_string());
+        let schema58 =
+            Schema58::new(vec![F58::new("id", DataType58::Int64, true).with_metadata(md)]);
+
+        let kernel = comet_schema_to_kernel(&schema58).unwrap();
+        let field = kernel.fields().next().unwrap();
+        assert!(
+            field.metadata.contains_key("parquet.field.id"),
+            "field-id metadata should survive the FFI schema bridge; got {:?}",
+            field.metadata
+        );
+    }
 }
