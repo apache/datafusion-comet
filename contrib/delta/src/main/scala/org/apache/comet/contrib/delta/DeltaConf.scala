@@ -71,12 +71,13 @@ object DeltaConf {
     ConfigBuilder("spark.comet.delta.kernelRead.enabled")
       .category(CATEGORY)
       .doc(
-        "Experimental (Phase 1b): read Delta data files through delta-kernel-rs's own " +
-          "read + transform + deletion-vector path (DeltaKernelScanExec), bridging the " +
-          "result into Comet's Arrow plan, instead of the ParquetSource + DV-sweep + " +
-          "synthetic-columns stack. Currently only plain tables (no column mapping, " +
-          "partitions, or row-tracking) take this path; everything else stays on the " +
-          "default reader regardless of this flag. Off by default.")
+        "Read Delta data files through delta-kernel-rs's own read + transform + " +
+          "deletion-vector path (DeltaKernelScanExec) instead of the ParquetSource + " +
+          "DV-sweep + synthetic-columns stack. delta-kernel shares Comet's Arrow version " +
+          "(58), so kernel batches flow straight into the plan with no bridge. Handles " +
+          "plain tables, column mapping (name + id, including nested), partitions, " +
+          "deletion vectors, row-tracking, _metadata columns, and INT96 timestamps. On " +
+          "by default; set to false to fall back to the legacy reader.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 }
