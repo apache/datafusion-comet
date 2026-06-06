@@ -183,12 +183,10 @@ pub fn parse_delta_partition_scalar(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::datatypes::{Field, TimeUnit};
-    use datafusion::common::tree_node::TreeNode;
+    use datafusion::arrow::datatypes::TimeUnit;
 
     // ---- parse_fixed_offset ----
 

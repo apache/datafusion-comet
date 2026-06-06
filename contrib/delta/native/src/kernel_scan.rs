@@ -300,12 +300,11 @@ pub struct KernelScanFile {
 /// synthetic-columns stack on the kernel-read path; built by core's `plan_delta_scan` when
 /// `DeltaScanCommon.kernel_read` is set. Single output partition: partition 0 reads every file.
 ///
-/// Phase 1b scope: plain tables (`physical_schema == output_schema`, `transform = None`). Phase
-/// 1c (#44) adds top-level name-mode column mapping: read with `physical_schema` (physical
-/// names), then an identity transform relabels to `output_schema` (logical names) -- the
-/// physical->logical rename is driven by the schema pair through kernel's evaluator (see the
-/// `spike_transform_renames_physical_to_logical` test). Partitions / row-tracking / nested / id
-/// mode are still guarded to the old path.
+/// Column mapping (name- and id-mode, including nested struct fields): read with
+/// `physical_schema` (physical names), then an identity transform relabels to `output_schema`
+/// (logical names). The physical->logical rename is driven by the schema pair through kernel's
+/// evaluator; partitions, row-tracking, and DVs are all handled here -- this is the sole Delta
+/// read path (the old ParquetSource + DV-sweep stack was removed).
 pub struct DeltaKernelScanExec {
     /// Comet (arrow-58) output schema = data columns (logical names) followed by partition
     /// columns, matching Spark's `requiredSchema ++ partitionSchema` file-scan output.
@@ -629,7 +628,7 @@ impl ExecutionPlan for DeltaKernelScanExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{create_engine, DeltaStorageConfig};
+    use crate::engine::{get_or_create_engine, DeltaStorageConfig};
     use crate::scan::normalize_url;
     use delta_kernel::arrow::array::{Array, Int64Array, RecordBatch};
     use delta_kernel::arrow::datatypes::{DataType as ArrowDataType, Field, Schema as ArrowSchema};
@@ -681,10 +680,12 @@ mod tests {
         (tmp, url, size)
     }
 
-    // Drains the kernel SchemaRef + a freshly built engine for the table at `url`.
-    fn engine_and_schema(url: &Url) -> (crate::engine::DeltaEngine, delta_kernel::schema::SchemaRef) {
-        let engine = create_engine(url, &DeltaStorageConfig::default()).unwrap();
-        let snapshot = Snapshot::builder_for(url.clone()).build(&engine).unwrap();
+    // Drains the kernel SchemaRef + a shared engine for the table at `url`.
+    fn engine_and_schema(
+        url: &Url,
+    ) -> (Arc<crate::engine::DeltaEngine>, delta_kernel::schema::SchemaRef) {
+        let engine = get_or_create_engine(url, &DeltaStorageConfig::default()).unwrap();
+        let snapshot = Snapshot::builder_for(url.clone()).build(engine.as_ref()).unwrap();
         let schema = snapshot.schema();
         (engine, schema)
     }
@@ -710,7 +711,7 @@ mod tests {
         let (engine, schema) = engine_and_schema(&url);
 
         let batches = read_file_via_kernel(
-            &engine,
+            engine.as_ref(),
             &url,
             "part-00000.parquet",
             size,
@@ -734,7 +735,7 @@ mod tests {
         // Keep 0,2,3,5,6; drop 1 and 4.
         let mask = vec![true, false, true, true, false, true, true];
         let batches = read_file_via_kernel(
-            &engine,
+            engine.as_ref(),
             &url,
             "part-00000.parquet",
             size,
@@ -877,263 +878,6 @@ mod tests {
         );
     }
 
-    // Phase 1c spike: prove the physical->logical *rename* needed for column mapping can be driven
-    // from the public kernel API. We read a parquet whose physical column name is "phys_id" (as a
-    // column-mapped Delta table stores it) but pass a logical schema naming it "id". Kernel's
-    // get_transform_expr builds the transform from public Transform/Expression methods only; here
-    // we feed an identity Transform and check whether the evaluator relabels physical -> logical
-    // via the output schema (no explicit per-field rename spec exists in kernel). No Delta log is
-    // needed -- read_file_via_kernel only does a raw parquet read + transform.
-    #[test]
-    fn spike_transform_renames_physical_to_logical() {
-        use crate::engine::create_engine;
-        use crate::scan::normalize_url;
-        use delta_kernel::arrow::array::{Array as _, Int64Array, RecordBatch as RB57};
-        use delta_kernel::arrow::datatypes::{DataType as ADt, Field as AField, Schema as ASchema};
-        use delta_kernel::expressions::{Expression, ExpressionStructPatch};
-        use delta_kernel::schema::{DataType as KDt, StructField, StructType};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let table_dir = tmp.path();
-        let parquet_path = table_dir.join("part-00000.parquet");
-        let arrow_schema = Arc::new(ASchema::new(vec![AField::new("phys_id", ADt::Int64, true)]));
-        let batch = RB57::try_new(
-            arrow_schema.clone(),
-            vec![Arc::new(Int64Array::from(vec![10i64, 20, 30]))],
-        )
-        .unwrap();
-        let file = std::fs::File::create(&parquet_path).unwrap();
-        let mut writer =
-            delta_kernel::parquet::arrow::ArrowWriter::try_new(file, arrow_schema, None).unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-        let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
-
-        let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
-        let engine = create_engine(&url, &DeltaStorageConfig::default()).unwrap();
-
-        // physical schema = the parquet's physical name; logical schema = the table's logical name.
-        let physical = Arc::new(
-            StructType::try_new(vec![StructField::new("phys_id", KDt::LONG, true)]).unwrap(),
-        );
-        let logical =
-            Arc::new(StructType::try_new(vec![StructField::new("id", KDt::LONG, true)]).unwrap());
-
-        // Identity transform (no field changes) -- does the evaluator relabel via the output schema?
-        let transform = Arc::new(Expression::struct_patch(ExpressionStructPatch::new_top_level()));
-
-        let batches = read_file_via_kernel(
-            &engine,
-            &url,
-            "part-00000.parquet",
-            size,
-            None,
-            Some(transform),
-            physical,
-            logical,
-        )
-        .unwrap();
-
-        // The decisive assertion: the output column must be renamed to the LOGICAL name "id".
-        assert_eq!(
-            batches[0].schema().field(0).name(),
-            "id",
-            "expected physical 'phys_id' to be relabeled to logical 'id' via the transform"
-        );
-        let col = batches[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap();
-        assert_eq!(
-            (0..col.len()).map(|i| col.value(i)).collect::<Vec<_>>(),
-            vec![10, 20, 30]
-        );
-    }
-
-    // #47 SPIKE: does the kernel-read path relabel NESTED struct field names physical->logical?
-    // We write a parquet whose struct `s` has a nested field with the PHYSICAL name "phys_a", and
-    // pass a logical schema naming that nested field "log_a". If kernel's identity transform relabels
-    // recursively, the output nested field is "log_a"; if it only renames top level (as
-    // evaluate_struct_patch_expression reads), the nested field comes back "phys_a" -- meaning we
-    // must do the nested physical->logical relabel ourselves (e.g. Comet's spark_parquet_convert).
-    #[test]
-    fn spike_nested_struct_rename() {
-        use crate::engine::create_engine;
-        use crate::scan::normalize_url;
-        use delta_kernel::arrow::array::{
-            Array as _, ArrayRef, Int64Array, RecordBatch as RB, StructArray,
-        };
-        use delta_kernel::arrow::datatypes::{
-            DataType as ADt, Field as AField, Fields, Schema as ASchema,
-        };
-        use delta_kernel::expressions::{Expression, ExpressionStructPatch};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let table_dir = tmp.path();
-        let parquet_path = table_dir.join("part-00000.parquet");
-
-        // Parquet: top-level struct "s" whose nested field uses its PHYSICAL name "phys_a".
-        let inner = Arc::new(AField::new("phys_a", ADt::Int64, true));
-        let struct_dt = ADt::Struct(Fields::from(vec![Arc::clone(&inner)]));
-        let arrow_schema = Arc::new(ASchema::new(vec![AField::new("s", struct_dt, true)]));
-        let child: ArrayRef = Arc::new(Int64Array::from(vec![10i64, 20]));
-        let struct_arr = StructArray::new(Fields::from(vec![inner]), vec![child], None);
-        let batch = RB::try_new(arrow_schema.clone(), vec![Arc::new(struct_arr)]).unwrap();
-        let file = std::fs::File::create(&parquet_path).unwrap();
-        let mut writer =
-            delta_kernel::parquet::arrow::ArrowWriter::try_new(file, arrow_schema, None).unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-        let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
-
-        let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
-        let engine = create_engine(&url, &DeltaStorageConfig::default()).unwrap();
-
-        // physical: s: struct<phys_a>; logical: s: struct<log_a> (nested name differs).
-        let physical_arrow = ASchema::new(vec![AField::new(
-            "s",
-            ADt::Struct(Fields::from(vec![Arc::new(AField::new(
-                "phys_a",
-                ADt::Int64,
-                true,
-            ))])),
-            true,
-        )]);
-        let logical_arrow = ASchema::new(vec![AField::new(
-            "s",
-            ADt::Struct(Fields::from(vec![Arc::new(AField::new(
-                "log_a",
-                ADt::Int64,
-                true,
-            ))])),
-            true,
-        )]);
-        let physical = arrow_to_kernel_schema(&physical_arrow).unwrap();
-        let logical = arrow_to_kernel_schema(&logical_arrow).unwrap();
-        let transform = Arc::new(Expression::struct_patch(ExpressionStructPatch::new_top_level()));
-
-        let batches = read_file_via_kernel(
-            &engine,
-            &url,
-            "part-00000.parquet",
-            size,
-            None,
-            Some(transform),
-            physical,
-            logical,
-        )
-        .unwrap();
-
-        let top = batches[0].schema().field(0).clone();
-        let nested_name = match top.data_type() {
-            ADt::Struct(fields) => fields[0].name().clone(),
-            other => panic!("expected a struct column, got {other:?}"),
-        };
-        assert_eq!(
-            nested_name, "log_a",
-            "SPIKE RESULT: nested field came back as '{nested_name}'. If 'phys_a', kernel's \
-             transform does NOT relabel nested fields -> the kernel-read path must relabel nested \
-             physical->logical itself (reuse Comet's spark_parquet_convert)."
-        );
-    }
-
-    // #47 SPIKE 2: nested PRUNING. The parquet struct `s` has TWO physical fields (phys_a, phys_b);
-    // the required schema wants only ONE (log_a <- phys_a). Does the current read path (top-level
-    // ProjectionMask + align + transform) drop phys_b, or do we need leaf-level projection? The
-    // result drives whether the design needs ProjectionMask::leaves over the physical leaf paths.
-    #[test]
-    fn spike_nested_struct_prune() {
-        use crate::engine::create_engine;
-        use crate::scan::normalize_url;
-        use delta_kernel::arrow::array::{
-            Array as _, ArrayRef, Int64Array, RecordBatch as RB, StringArray, StructArray,
-        };
-        use delta_kernel::arrow::datatypes::{
-            DataType as ADt, Field as AField, Fields, Schema as ASchema,
-        };
-        use delta_kernel::expressions::{Expression, ExpressionStructPatch};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let table_dir = tmp.path();
-        let parquet_path = table_dir.join("part-00000.parquet");
-
-        // Parquet struct "s" with two physical nested fields: phys_a (int64), phys_b (utf8).
-        let fa = Arc::new(AField::new("phys_a", ADt::Int64, true));
-        let fb = Arc::new(AField::new("phys_b", ADt::Utf8, true));
-        let struct_dt = ADt::Struct(Fields::from(vec![Arc::clone(&fa), Arc::clone(&fb)]));
-        let arrow_schema = Arc::new(ASchema::new(vec![AField::new("s", struct_dt, true)]));
-        let ca: ArrayRef = Arc::new(Int64Array::from(vec![10i64, 20]));
-        let cb: ArrayRef = Arc::new(StringArray::from(vec!["x", "y"]));
-        let struct_arr = StructArray::new(Fields::from(vec![fa, fb]), vec![ca, cb], None);
-        let batch = RB::try_new(arrow_schema.clone(), vec![Arc::new(struct_arr)]).unwrap();
-        let file = std::fs::File::create(&parquet_path).unwrap();
-        let mut writer =
-            delta_kernel::parquet::arrow::ArrowWriter::try_new(file, arrow_schema, None).unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-        let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
-
-        let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
-        let engine = create_engine(&url, &DeltaStorageConfig::default()).unwrap();
-
-        // physical (pruned): s: struct<phys_a>; logical (pruned): s: struct<log_a>.
-        let physical_arrow = ASchema::new(vec![AField::new(
-            "s",
-            ADt::Struct(Fields::from(vec![Arc::new(AField::new(
-                "phys_a",
-                ADt::Int64,
-                true,
-            ))])),
-            true,
-        )]);
-        let logical_arrow = ASchema::new(vec![AField::new(
-            "s",
-            ADt::Struct(Fields::from(vec![Arc::new(AField::new(
-                "log_a",
-                ADt::Int64,
-                true,
-            ))])),
-            true,
-        )]);
-        let physical = arrow_to_kernel_schema(&physical_arrow).unwrap();
-        let logical = arrow_to_kernel_schema(&logical_arrow).unwrap();
-        let transform = Arc::new(Expression::struct_patch(ExpressionStructPatch::new_top_level()));
-
-        let result = read_file_via_kernel(
-            &engine,
-            &url,
-            "part-00000.parquet",
-            size,
-            None,
-            Some(transform),
-            physical,
-            logical,
-        );
-
-        match result {
-            Ok(batches) => {
-                let top = batches[0].schema().field(0).clone();
-                match top.data_type() {
-                    ADt::Struct(fields) => {
-                        let names: Vec<_> = fields.iter().map(|f| f.name().clone()).collect();
-                        assert_eq!(
-                            names,
-                            vec!["log_a".to_string()],
-                            "SPIKE RESULT: pruning WORKS with top-level ProjectionMask; nested \
-                             struct came back as {names:?}"
-                        );
-                    }
-                    other => panic!("expected a struct column, got {other:?}"),
-                }
-            }
-            Err(e) => panic!(
-                "SPIKE RESULT: pruning does NOT work with top-level ProjectionMask (need \
-                 leaf-level projection / struct pruning). Error: {e}"
-            ),
-        }
-    }
-
     // Phase 1c (#44 id-mode): the kernel-read path reads a column by its PHYSICAL name (the name
     // stored in the parquet file), then relabels it to the logical name via the transform. For an
     // id-mode table the driver supplies the physical name in `column_mappings` (delta_scan.rs renames
@@ -1143,7 +887,6 @@ mod tests {
     // proves that field-id metadata on the schema doesn't disturb the name-based read + relabel.
     #[test]
     fn id_mode_reads_by_physical_name_then_relabels() {
-        use crate::engine::create_engine;
         use crate::scan::normalize_url;
         use arrow::datatypes::{DataType as DT58, Field as F58, Schema as S58};
         use delta_kernel::arrow::array::{Array as _, Int64Array as Int64_57, RecordBatch as RB57};
@@ -1173,7 +916,7 @@ mod tests {
         let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
 
         let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
-        let engine = create_engine(&url, &DeltaStorageConfig::default()).unwrap();
+        let engine = get_or_create_engine(&url, &DeltaStorageConfig::default()).unwrap();
 
         // Physical schema = the parquet's physical name "col-xyz" (+ its field id); logical schema =
         // the table's logical name "id". The identity transform relabels physical -> logical.
@@ -1187,7 +930,7 @@ mod tests {
         let transform = Arc::new(Expression::struct_patch(ExpressionStructPatch::new_top_level()));
 
         let batches = read_file_via_kernel(
-            &engine,
+            engine.as_ref(),
             &url,
             "part-00000.parquet",
             size,

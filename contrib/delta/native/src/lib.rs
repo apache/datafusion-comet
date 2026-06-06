@@ -56,6 +56,6 @@ pub mod proto {
     };
 }
 
-pub use engine::{create_engine, DeltaStorageConfig};
+pub use engine::DeltaStorageConfig;
 pub use error::{DeltaError, DeltaResult};
 pub use scan::{list_delta_files, plan_delta_scan, DeltaFileEntry, DeltaScanPlan};

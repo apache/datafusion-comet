@@ -192,14 +192,6 @@ fn engine_key(url: &Url, config: &DeltaStorageConfig) -> EngineKey {
     (scheme, authority, config.clone())
 }
 
-// Suppress dead_code: the standalone constructor stays useful for tests that want
-// to exercise a fresh engine without polluting the cache.
-#[allow(dead_code)]
-pub fn create_engine(table_url: &Url, config: &DeltaStorageConfig) -> DeltaResult<DeltaEngine> {
-    let store = create_object_store(table_url, config)?;
-    Ok(DefaultEngine::builder(store).build())
-}
-
 /// Return a shared `DeltaEngine` for the given URL+config, building one on first use.
 ///
 /// LRU-bounded: when the cache is full, the least-recently-used entry is evicted.

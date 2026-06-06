@@ -101,8 +101,37 @@ and flips to a failure when closed.
   `fs.abfss.` for those schemes, not `fs.azure.` — so Hadoop-style Azure account
   keys / OAuth / MSI creds (historically under `fs.azure.*`) are not extracted
   for ADLS Gen2 URIs.
+- **A2d. DV-read + synthetic-columns paths ignore `storage_config`.** The
+  executor-side data read threads creds correctly (`delta_scan.rs` reads
+  `common.object_store_options` → `delta_storage_config_from_map` →
+  `DeltaKernelScanExec.storage_config` → `get_or_create_engine`). But the
+  deletion-vector read (`dv_reader::read_dv_indexes`) is called with a hardcoded
+  `DeltaStorageConfig::default()` from BOTH executor DV sites —
+  `DeltaKernelScanExec::read_all` (kernel_scan.rs, where `self.storage_config` is
+  in scope but unused) and `DeltaSyntheticColumnsExec` (synthetic_columns.rs,
+  which carries only `table_root_url`, not the config at all). So on a
+  statically-credentialed S3/Azure table WITH deletion vectors, the data read
+  succeeds but the DV read uses a credential-less engine (separate cache key →
+  separate engine) and fails. To close: give `read_dv_indexes` a
+  `&DeltaStorageConfig`, pass `&self.storage_config` from `DeltaKernelScanExec`,
+  and add a `storage_config` field to `DeltaSyntheticColumnsExec` threaded from
+  the core planner.
+- **A2e. Dynamic credential providers not resolved (static keys only).**
+  `extract_storage_config` (jni.rs) reads only STATIC keys (`fs.s3a.access.key` /
+  `secret.key` / `session.token` / `endpoint` / `endpoint.region` /
+  `path.style.access`, and the Azure account/key/bearer equivalents). The Hadoop
+  credential-provider chain — `SimpleAWSCredentialsProvider` /
+  `TemporaryAWSCredentialsProvider` / `AssumedRoleCredentialProvider` /
+  `IAMInstanceCredentialsProvider` (IRSA / IMDS / web-identity) — is NOT walked.
+  The PR1 helper that did this (`core::parquet::objectstore::s3::resolve_static_credentials`)
+  lives in core and isn't exposed through `comet-contrib-spi`. See the TODO at
+  `jni.rs` (`planDeltaScan`). Tables relying on role-based / instance-profile
+  creds fail unless static keys are also present. `object_store` builders are
+  constructed with `::new()` (not `from_env()`), so ambient env vars /
+  `~/.aws/credentials` are not read either.
 - **Correctness:** Reads fail (no creds) rather than producing wrong data.
-- **Guard:** `CometDeltaCredentialAuditSuite`, `jni::tests`.
+- **Guard:** `CometDeltaCredentialAuditSuite`, `jni::tests`. (A2d/A2e not yet
+  guarded — to be added by the post-cleanup full credential audit.)
 
 ### A3. Path-based CDF reads decline to native (`DeltaCDFRelation`)
 
