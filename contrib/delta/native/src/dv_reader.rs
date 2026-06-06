@@ -64,17 +64,19 @@ use crate::proto::DeltaDvDescriptor;
 /// per-process LRU cache (size 32) bounds tokio-thread fan-out across many
 /// executor tasks against the same table root.
 ///
-/// `DeltaStorageConfig::default()` is sufficient for `file://` and any S3/Azure
-/// store whose credentials come from the ambient environment (the typical
-/// executor path -- the same defaults the driver uses on the no-options code
-/// path). When the engine cache later supports per-table storage config
-/// plumbed from `object_store_options`, swap this for the matching config.
+/// `config` carries the table's storage credentials -- the same `DeltaStorageConfig`
+/// the data read threads from `object_store_options`. DV reads against a credentialed
+/// S3/Azure store therefore use the same engine the data read does, not an empty
+/// `default()` that would miss static creds. Engines are keyed by
+/// `(scheme, authority, config)` in `get_or_create_engine`, so a matching config
+/// reuses the data read's cached engine instead of building a credential-less second one.
 pub fn read_dv_indexes(
     proto_dv: &DeltaDvDescriptor,
     table_root_url: &Url,
+    config: &DeltaStorageConfig,
 ) -> DeltaResult<Vec<u64>> {
     let descriptor = proto_to_kernel_descriptor(proto_dv)?;
-    let engine = get_or_create_engine(table_root_url, &DeltaStorageConfig::default())?;
+    let engine = get_or_create_engine(table_root_url, config)?;
     let storage = Engine::storage_handler(&*engine);
     descriptor
         .row_indexes(storage, table_root_url)

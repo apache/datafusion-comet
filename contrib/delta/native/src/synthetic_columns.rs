@@ -62,6 +62,7 @@ use futures::{Stream, StreamExt};
 use url::Url;
 
 use crate::dv_reader::{map_dv_error_to_datafusion, read_dv_indexes};
+use crate::engine::DeltaStorageConfig;
 use crate::proto::DeltaDvDescriptor;
 
 /// Delta's internal name for the row-index column.
@@ -223,6 +224,11 @@ pub struct DeltaSyntheticColumnsExec {
     /// Trailing-slash-normalised table-root URL for DV decode (only consulted
     /// when `emit_is_row_deleted` is true and some partition has `Some` DV).
     table_root_url: Url,
+    /// Storage credentials for the executor-side DV read, threaded from the
+    /// driver's `object_store_options` (same config the data read uses). Without
+    /// it, DV reads against a credentialed S3/Azure store would build a
+    /// credential-less engine and fail -- see `dv_reader::read_dv_indexes`.
+    storage_config: DeltaStorageConfig,
     /// `AddFile.baseRowId` per partition; `None` when the table doesn't have row
     /// tracking enabled for this file. Required to be present (Some(_)) on every
     /// partition when `emit_row_id` is true.
@@ -265,6 +271,7 @@ impl DeltaSyntheticColumnsExec {
         input: Arc<dyn ExecutionPlan>,
         dv_descriptors_by_partition: Vec<Option<DeltaDvDescriptor>>,
         table_root_url: Url,
+        storage_config: DeltaStorageConfig,
         base_row_ids_by_partition: Vec<Option<i64>>,
         default_row_commit_versions_by_partition: Vec<Option<i64>>,
         emit_row_index: bool,
@@ -323,6 +330,7 @@ impl DeltaSyntheticColumnsExec {
             input,
             dv_descriptors_by_partition,
             table_root_url,
+            storage_config,
             base_row_ids_by_partition,
             default_row_commit_versions_by_partition,
             emit_row_index,
@@ -395,6 +403,7 @@ impl ExecutionPlan for DeltaSyntheticColumnsExec {
             Arc::clone(&children[0]),
             self.dv_descriptors_by_partition.clone(),
             self.table_root_url.clone(),
+            self.storage_config.clone(),
             self.base_row_ids_by_partition.clone(),
             self.default_row_commit_versions_by_partition.clone(),
             self.emit_row_index,
@@ -423,8 +432,10 @@ impl ExecutionPlan for DeltaSyntheticColumnsExec {
         // (`emit_is_row_deleted`) or to physically drop them (`drop_deleted`).
         let deleted = if self.emit_is_row_deleted || self.drop_deleted {
             match self.dv_descriptors_by_partition.get(partition) {
-                Some(Some(desc)) => read_dv_indexes(desc, &self.table_root_url)
-                    .map_err(|e| map_dv_error_to_datafusion(e, desc))?,
+                Some(Some(desc)) => {
+                    read_dv_indexes(desc, &self.table_root_url, &self.storage_config)
+                        .map_err(|e| map_dv_error_to_datafusion(e, desc))?
+                }
                 _ => Vec::new(),
             }
         } else {
@@ -1080,6 +1091,7 @@ mod tests {
             inner,
             vec![None, None],
             Url::parse("file:///tmp/").unwrap(),
+            DeltaStorageConfig::default(),
             vec![None, None],
             vec![None, None],
             true,

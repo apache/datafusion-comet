@@ -250,7 +250,7 @@ fn plan_delta_kernel_scan(
         partition_output_schema,
         common.session_timezone.clone(),
         table_root.clone(),
-        storage_config,
+        storage_config.clone(),
         files,
     ));
 
@@ -298,6 +298,7 @@ fn plan_delta_kernel_scan(
                 kernel_exec,
                 dvs_for_exec,
                 synth_root,
+                storage_config,
                 base_row_ids,
                 default_commit_versions,
                 common.emit_row_index,

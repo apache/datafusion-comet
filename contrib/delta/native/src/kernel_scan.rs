@@ -405,7 +405,7 @@ impl DeltaKernelScanExec {
                 let n = self.file_row_count(engine.as_ref(), &table_root_url, file)?;
                 let live = match (&file.dv, self.apply_dv) {
                     (Some(desc), true) => {
-                        let deleted = read_dv_indexes(desc, &table_root_url)
+                        let deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config)
                             .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                         n - deleted.iter().filter(|&&i| (i as usize) < n).count()
                     }
@@ -448,7 +448,7 @@ impl DeltaKernelScanExec {
             // rows pass through and a wrapping DeltaSyntheticColumnsExec drops/flags them.
             let selection_vector = match (&file.dv, self.apply_dv) {
                 (Some(desc), true) => {
-                    let deleted = read_dv_indexes(desc, &table_root_url)
+                    let deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config)
                         .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                     let n = file.record_count.ok_or_else(|| {
                         DataFusionError::Execution(format!(
