@@ -1102,16 +1102,12 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // (injected) columns, and stacks the existing DeltaSyntheticColumnsExec on top for synthetics
     // / metadata / DV. Still on the default reader: nested-typed columns, and scans that read zero
     // data columns (only partition or only synthetic columns) -- nothing drives the row count.
-    val hasDataColumn = scan.requiredSchema.fields.exists { f =>
-      !isSynthetic(f) &&
-        !relation.partitionSchema.fieldNames.exists(_.equalsIgnoreCase(f.name))
-    }
-    // Nested-typed columns now take the kernel-read path: the native planner physicalises
+    // Nested-typed columns take the kernel-read path: the native planner physicalises
     // required_schema at every nesting level from the recursive column_mappings, kernel's transform
     // relabels nested physical->logical, and align_batch_to_schema prunes nested children (#47).
-    val kernelReadEligible =
-      DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf) &&
-        hasDataColumn
+    // Zero-data-column reads (partition-only, e.g. groupBy(partition).agg(count("*"))) also take it:
+    // the native exec drives the row count from record_count / the parquet footer (#48).
+    val kernelReadEligible = DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf)
     commonBuilder.setKernelRead(kernelReadEligible)
 
     // Pushed-down data filters, gated by Spark's parquet filter pushdown config (same as

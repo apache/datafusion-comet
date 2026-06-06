@@ -174,14 +174,9 @@ fn plan_delta_kernel_scan(
         .cloned()
         .collect();
 
-    // A read with no data columns (only partition columns, or only synthetics) leaves nothing to
-    // drive the per-file row count, so partition/synthetic constants would have no length. Defer
-    // that case to the old path for now.
-    if data_fields.is_empty() {
-        return Err(GeneralError(
-            "DeltaScan.kernel_read: a scan reading no data columns is not supported yet".into(),
-        ));
-    }
+    // A read with no data columns (e.g. `groupBy(partition).agg(count("*"))`) reads nothing from
+    // parquet; `DeltaKernelScanExec::read_all` drives the per-file row count from `record_count`
+    // (the parquet footer as a fallback) and emits empty-data batches of that length.
 
     // Data columns are read from parquet. `read_logical_schema` is the pure-logical schema the
     // read produces after relabeling (the kernel transform's output); `physical_schema` is the same

@@ -392,6 +392,38 @@ impl DeltaKernelScanExec {
             .map_err(|e| DataFusionError::Execution(format!("kernel scan table root: {e}")))?;
         let engine = get_or_create_engine(&table_root_url, &self.storage_config)
             .map_err(|e| DataFusionError::Execution(format!("kernel scan engine: {e}")))?;
+
+        // Zero data columns (partition-only reads, e.g. `groupBy(partition).agg(count("*"))`):
+        // nothing to read from parquet. Drive each file's row count from `record_count` (Delta
+        // numRecords; parquet footer fallback), emit an empty-data batch of that length, and append
+        // partition constants. When the DV is applied here it just shortens the count; a wrapping
+        // DeltaSyntheticColumnsExec (apply_dv off) instead gets the full physical count and
+        // drops/flags rows itself.
+        if self.physical_schema.fields().is_empty() {
+            let empty_schema = Arc::new(arrow::datatypes::Schema::empty());
+            let mut out = Vec::new();
+            for file in &self.files {
+                let n = self.file_row_count(engine.as_ref(), &table_root_url, file)?;
+                let live = match (&file.dv, self.apply_dv) {
+                    (Some(desc), true) => {
+                        let deleted = read_dv_indexes(desc, &table_root_url)
+                            .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
+                        n - deleted.iter().filter(|&&i| (i as usize) < n).count()
+                    }
+                    _ => n,
+                };
+                let opts = arrow::array::RecordBatchOptions::new().with_row_count(Some(live));
+                let batch = arrow::array::RecordBatch::try_new_with_options(
+                    Arc::clone(&empty_schema),
+                    vec![],
+                    &opts,
+                )
+                .map_err(DataFusionError::from)?;
+                out.push(self.append_partition_columns(batch, &file.partition_values)?);
+            }
+            return Ok(out);
+        }
+
         // Schemas come from the proto (already arrow-58), converted to kernel -- no Snapshot.
         // `logical` carries the DATA logical names (partition columns are appended after the read,
         // not produced by it); `physical` the parquet (physical) names.
@@ -456,6 +488,36 @@ impl DeltaKernelScanExec {
             }
         }
         Ok(out)
+    }
+
+    /// Row count for a file with no data columns to read: Delta's `numRecords` stat when present,
+    /// else the parquet footer's row count (always available, one metadata fetch via the storage
+    /// handler). Used only by the zero-data-column path.
+    fn file_row_count(
+        &self,
+        engine: &dyn Engine,
+        table_root_url: &Url,
+        file: &KernelScanFile,
+    ) -> DFResult<usize> {
+        if let Some(rc) = file.record_count {
+            return Ok(rc.max(0) as usize);
+        }
+        let file_url = table_root_url.join(&file.path).map_err(|e| {
+            DataFusionError::Execution(format!("kernel scan file url {}: {e}", file.path))
+        })?;
+        let mut bytes_iter = engine
+            .storage_handler()
+            .read_files(vec![(file_url, None)])
+            .map_err(|e| map_file_read_error(e, &file.path))?;
+        let data = bytes_iter
+            .next()
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!("no bytes read for Delta file {}", file.path))
+            })?
+            .map_err(|e| map_file_read_error(e, &file.path))?;
+        let meta = ArrowReaderMetadata::load(&data, ArrowReaderOptions::new())
+            .map_err(|e| map_file_read_error(delta_kernel::Error::from(e), &file.path))?;
+        Ok(meta.metadata().file_metadata().num_rows().max(0) as usize)
     }
 
     /// Append partition columns as constants (partition values are stored in the Add action, not

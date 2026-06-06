@@ -126,6 +126,31 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
     }
   }
 
+  test("kernel-read path (#48): zero-data-column read (partition-only count)") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("kernel_read_partonly") { tablePath =>
+      val ss = spark
+      import ss.implicits._
+      (0 until 12)
+        .map(i => (i.toLong, i % 3, s"v$i"))
+        .toDF("id", "grp", "v")
+        .write
+        .format("delta")
+        .partitionBy("grp")
+        .save(tablePath)
+      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
+        // Partition-only aggregate: no data column is read, so the row count is driven from
+        // record_count (the parquet footer as fallback) -- exercises the #48 zero-data-column path.
+        assertDeltaNativeMatches(
+          tablePath,
+          _.groupBy("grp").agg(count("*").as("c")).orderBy("grp"))
+        assertKernelReadEngaged(tablePath)
+        // A bare row count over the partition column also reads no data columns.
+        assertDeltaNativeMatches(tablePath, _.select("grp").orderBy("grp"))
+      }
+    }
+  }
+
   test("kernel-read path (Phase 1c #44): id-mode column-mapped table") {
     assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
     withDeltaTable("kernel_read_cm_id") { tablePath =>
