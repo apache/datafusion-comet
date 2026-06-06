@@ -205,7 +205,6 @@ fn plan_delta_kernel_scan(
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    let storage_config = delta_storage_config_from_map(&object_store_options);
 
     let files: Vec<KernelScanFile> = scan
         .tasks
@@ -228,6 +227,14 @@ fn plan_delta_kernel_scan(
     } else {
         scan.table_root.clone()
     };
+
+    // S3 bucket (URL host) for per-bucket credential resolution; None for non-S3.
+    let s3_bucket = url::Url::parse(&table_root)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "s3" | "s3a"))
+        .and_then(|u| u.host_str().map(|h| h.to_string()));
+    let storage_config =
+        delta_storage_config_from_map(&object_store_options, s3_bucket.as_deref());
 
     // Synthetic columns (row_index / is_row_deleted / row_id / row_commit_version) and `_metadata.*`
     // are computed by the existing DeltaSyntheticColumnsExec stacked ON TOP of the kernel read --

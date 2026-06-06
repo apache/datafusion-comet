@@ -59,7 +59,9 @@ datafusion = { version = "53.1.0", default-features = false, features = ["parque
 # not re-exported under `datafusion::datasource`, so it must be named via this crate.
 datafusion-datasource = { version = "53.1.0" }
 arrow = { version = "58.1.0", features = ["prettyprint", "ffi", "chrono-tz"] }
-object_store = { version = "0.13.1" }
+# Match core Comet's object_store features (native/Cargo.toml) so the Azure/GCS
+# builders reachable via `object_store::parse_url` mirror core's non-S3 read path.
+object_store = { version = "0.13.1", features = ["aws", "azure", "gcp", "http"] }
 url = "2.5.4"
 parquet = { version = "58.1.0", default-features = false, features = ["experimental"] }
 futures = "0.3"

@@ -39,23 +39,28 @@ import org.apache.comet.objectstore.NativeConfig
 //      access/secret/session keys on top of the extracted options. Falls
 //      back gracefully when hadoop-aws isn't on the classpath.
 //
-// Gaps documented (asserted as missing so the test forces a positive case
-// when fixed):
-//   * GCS keys (`fs.gs.*`) are extracted to the options map only when the
-//     URI scheme is `gs` -- but `delta_storage_config_from_map` on the
-//     native side has no `gcp_*` fields, so they get dropped further down.
-//   * Per-bucket S3 keys (`fs.s3a.bucket.<name>.*`) ARE extracted by
-//     NativeConfig but native maps only the global `fs.s3a.access.key` /
-//     `fs.s3a.secret.key`. Per-bucket creds silently fall back to global.
-//   * Hadoop-style Azure account keys (`fs.azure.account.key.<account>`,
-//     OAuth, MSI, SAS tokens) ARE extracted for wasb/wasbs/abfss but
-//     **not for the bare `abfs` scheme** — NativeConfig only registers
-//     `fs.abfs.` for `abfs`. And even when extracted, native only checks
-//     the three kernel-style `azure_*` keys.
+// Credential-handling model (parity with core Comet's
+// `parquet_support::prepare_object_store_with_configs`):
+//   * S3 (`s3` / `s3a`): Hadoop `fs.s3a.*` keys -- global AND per-bucket
+//     (`fs.s3a.bucket.<bucket>.*`) -- are bridged to the native
+//     `DeltaStorageConfig` by `delta_storage_config_from_map`, per-bucket
+//     winning for the table's bucket (see `jni::tests`).
+//   * Azure / GCS: built native-side via `object_store::parse_url`, which
+//     sources credentials from the ambient environment (`AZURE_*` /
+//     `GOOGLE_*` / ADC / instance metadata). Hadoop `fs.azure.*` / `fs.gs.*`
+//     config keys are intentionally NOT bridged -- core doesn't bridge them
+//     either (it also uses `parse_url` for these). So whether NativeConfig
+//     extracts those keys is moot for credentials; the assertions below just
+//     pin the current extractor behavior.
 //
-// Each gap has a matching native-side assertion in
-// `jni::tests::extract_storage_config_known_gaps` -- both must be removed
-// together when the gap is closed.
+// Residual gaps (see `contrib/delta/docs/08-known-limitations.md` A2):
+//   * A2e: Hadoop's explicit S3 credential-provider classes
+//     (`fs.s3a.aws.credentials.provider` = AssumedRole / WebIdentity / ...)
+//     are not honored; object_store's default chain (static keys, else
+//     IMDS / ECS / env) is used instead.
+//   * Layer-2 `augmentWithResolvedAwsCredentials` resolves only the global
+//     provider-chain keys, not per-bucket ones (the static per-bucket path
+//     above already covers per-bucket static keys).
 class CometDeltaCredentialAuditSuite extends AnyFunSuite with Matchers {
 
   // === Layer 1: NativeConfig.extractObjectStoreOptions ===
@@ -101,12 +106,13 @@ class CometDeltaCredentialAuditSuite extends AnyFunSuite with Matchers {
       "fs.azure.account.oauth2.client.id",
       "fs.azure.account.oauth2.client.secret",
       "fs.azure.account.oauth.provider.type")
-    // GAP marker: NativeConfig's abfs/abfss prefix lists are (`fs.abfs.`)
-    // and (`fs.abfss.`, `fs.abfs.`) -- neither matches `fs.azure.`. So
-    // OAuth/Managed-Identity creds (which Hadoop users have always set
-    // under `fs.azure.*`) are dropped. Remove these gap assertions and
-    // flip to positive containment when NativeConfig adds `fs.azure.` to
-    // the abfs/abfss prefix lists.
+    // NativeConfig's abfs/abfss prefix lists are (`fs.abfs.`) and
+    // (`fs.abfss.`, `fs.abfs.`) -- neither matches `fs.azure.`, so those keys
+    // are not extracted for the bare abfs/abfss schemes. This is moot for the
+    // native scan: Azure is built via `object_store::parse_url` + ambient
+    // credentials (env / managed identity), not from `fs.azure.*` config --
+    // the same as core Comet's non-S3 path. These assertions just pin the
+    // current extractor behavior.
     Seq("abfs", "abfss").foreach { scheme =>
       val opts = NativeConfig.extractObjectStoreOptions(
         conf, new URI(s"$scheme://container@acct.dfs.core.windows.net/data"))
@@ -177,9 +183,12 @@ class CometDeltaCredentialAuditSuite extends AnyFunSuite with Matchers {
     assert(augmented("fs.s3a.secret.key") === "EXPLICIT_SK")
   }
 
-  // === Documented gap (Layer 2): per-bucket keys are extracted but the
-  // augmentation function does not produce per-bucket entries. Multi-bucket
-  // tables with provider-resolved creds get only global creds. ===
+  // === Residual gap (Layer 2): STATIC per-bucket keys
+  // (`fs.s3a.bucket.<name>.*`) are now resolved native-side by
+  // `delta_storage_config_from_map` (see `jni::tests`). What remains is that
+  // `augmentWithResolvedAwsCredentials` resolves only the GLOBAL provider-chain
+  // keys, not per-bucket ones -- multi-bucket tables relying on provider-resolved
+  // (not static) creds get only global creds. ===
 
   test("GAP: augmentWithResolvedAwsCredentials does not produce per-bucket keys") {
     val conf = new Configuration()

@@ -83,55 +83,53 @@ The Delta own-suite regression is run via
   `CometNativeColumnarToRowExec`). `applyDppFilters` enforces the same skip.
 - **Commits:** `64cd878a` (no-crash) → in-place rewrite + stable-group pruning.
 
-### A2. Cloud credential plumbing gaps
+### A2. Cloud credential plumbing — brought to core parity
 
-Surfaced by the credential audit (`CometDeltaCredentialAuditSuite`,
-`jni::tests::extract_storage_config_known_gaps`). Each is asserted as a gap today
-and flips to a failure when closed.
+The full credential audit (task #72) aligned the Delta engine with core Comet's
+`parquet_support::prepare_object_store_with_configs`: **S3** bridges Hadoop
+`fs.s3a.*` keys explicitly (object_store can't read them); **Azure / GCS / other**
+schemes are built through `object_store::parse_url`, which sources credentials from
+the ambient environment (`AZURE_*` / `GOOGLE_*` / ADC / instance metadata). A2a–A2d
+are now closed; A2e is the remaining residual.
 
-- **A2a. GCS (`gs://`) not supported native-side.** `NativeConfig` extracts
-  `fs.gs.*` keys, but `DeltaStorageConfig` (native `jni.rs`) has no `gcp_*`
-  fields and `create_object_store` has no `gs`/`gcs` arm, so the keys are
-  dropped. GCS-backed Delta tables can't be natively read with credentials.
-- **A2b. Per-bucket S3 keys not bridged.** `NativeConfig` extracts
-  `fs.s3a.bucket.<name>.*`, but native only maps the global `fs.s3a.access.key` /
-  `fs.s3a.secret.key`; per-bucket creds silently fall back to global.
-- **A2c. `abfs` / `abfss` drop `fs.azure.*`.**
-  `NativeConfig.objectStoreConfigPrefixes` registers only `fs.abfs.` /
-  `fs.abfss.` for those schemes, not `fs.azure.` — so Hadoop-style Azure account
-  keys / OAuth / MSI creds (historically under `fs.azure.*`) are not extracted
-  for ADLS Gen2 URIs.
-- **A2d. DV-read + synthetic-columns paths ignore `storage_config`.** The
-  executor-side data read threads creds correctly (`delta_scan.rs` reads
-  `common.object_store_options` → `delta_storage_config_from_map` →
-  `DeltaKernelScanExec.storage_config` → `get_or_create_engine`). But the
-  deletion-vector read (`dv_reader::read_dv_indexes`) is called with a hardcoded
-  `DeltaStorageConfig::default()` from BOTH executor DV sites —
-  `DeltaKernelScanExec::read_all` (kernel_scan.rs, where `self.storage_config` is
-  in scope but unused) and `DeltaSyntheticColumnsExec` (synthetic_columns.rs,
-  which carries only `table_root_url`, not the config at all). So on a
-  statically-credentialed S3/Azure table WITH deletion vectors, the data read
-  succeeds but the DV read uses a credential-less engine (separate cache key →
-  separate engine) and fails. To close: give `read_dv_indexes` a
-  `&DeltaStorageConfig`, pass `&self.storage_config` from `DeltaKernelScanExec`,
-  and add a `storage_config` field to `DeltaSyntheticColumnsExec` threaded from
-  the core planner.
-- **A2e. Dynamic credential providers not resolved (static keys only).**
-  `extract_storage_config` (jni.rs) reads only STATIC keys (`fs.s3a.access.key` /
-  `secret.key` / `session.token` / `endpoint` / `endpoint.region` /
-  `path.style.access`, and the Azure account/key/bearer equivalents). The Hadoop
-  credential-provider chain — `SimpleAWSCredentialsProvider` /
-  `TemporaryAWSCredentialsProvider` / `AssumedRoleCredentialProvider` /
-  `IAMInstanceCredentialsProvider` (IRSA / IMDS / web-identity) — is NOT walked.
-  The PR1 helper that did this (`core::parquet::objectstore::s3::resolve_static_credentials`)
-  lives in core and isn't exposed through `comet-contrib-spi`. See the TODO at
-  `jni.rs` (`planDeltaScan`). Tables relying on role-based / instance-profile
-  creds fail unless static keys are also present. `object_store` builders are
-  constructed with `::new()` (not `from_env()`), so ambient env vars /
-  `~/.aws/credentials` are not read either.
-- **Correctness:** Reads fail (no creds) rather than producing wrong data.
-- **Guard:** `CometDeltaCredentialAuditSuite`, `jni::tests`. (A2d/A2e not yet
-  guarded — to be added by the post-cleanup full credential audit.)
+- **A2a. GCS (`gs://`) — FIXED.** `create_object_store` now has a `gs`/`gcs` arm
+  (and `az`/`azure`/`abfs`/`abfss`/`wasb`/`wasbs`) that builds via
+  `object_store::parse_url`, exactly as core does for non-S3 schemes. GCS reads
+  resolve credentials from ADC / `GOOGLE_*` env. The `gcp` object_store feature
+  is enabled in the contrib crate (matching core's feature set). No bespoke
+  `fs.gs.*` bridging — core doesn't bridge them either.
+- **A2b. Per-bucket S3 keys — FIXED.** `delta_storage_config_from_map` takes the
+  table's S3 bucket (parsed from the table-root URL in `jni.rs` /
+  `delta_scan.rs`) and prefers `fs.s3a.bucket.<bucket>.<suffix>` over the global
+  `fs.s3a.<suffix>`, matching Hadoop S3A / core semantics. Guarded by
+  `jni::tests::extract_storage_config_matrix`.
+- **A2c. Azure (`abfs`/`abfss`/...) — FIXED via parity.** Azure is built through
+  `object_store::parse_url` + ambient credentials (env / managed identity), the
+  same mechanism core uses. Hadoop `fs.azure.*` config bridging is intentionally
+  not done (core doesn't do it either), so this matches core exactly rather than
+  exceeding it.
+- **A2d. DV-read + synthetic-columns paths ignored `storage_config` — FIXED.**
+  `dv_reader::read_dv_indexes` now takes a `&DeltaStorageConfig`;
+  `DeltaKernelScanExec` passes `&self.storage_config` and `DeltaSyntheticColumnsExec`
+  gained a `storage_config` field threaded from the core planner. DV reads against a
+  credentialed store now reuse the data read's engine instead of building a
+  credential-less one. (Was a real correctness bug for credentialed tables with
+  deletion vectors.)
+- **A2e. RESIDUAL — Hadoop explicit S3 credential-provider classes.**
+  `fs.s3a.aws.credentials.provider` (AssumedRole / WebIdentity / custom provider
+  classes) is not honored: when no static keys are present, object_store's own
+  default chain is used instead (static keys → IMDS / ECS task role / env). This
+  covers instance-profile and IRSA-via-IMDS, but not an explicitly-configured
+  assumed-role / web-identity provider. Closing it means exposing core's
+  `objectstore::s3::create_store` through `comet-contrib-spi` (a core change beyond
+  this contrib PR). A secondary residual: Layer-2
+  `augmentWithResolvedAwsCredentials` resolves only global provider-chain keys, not
+  per-bucket ones (static per-bucket is already handled by A2b).
+- **Correctness:** Where unsupported, reads fail (no creds) rather than producing
+  wrong data.
+- **Guard:** `CometDeltaCredentialAuditSuite`,
+  `jni::tests::{extract_storage_config_matrix, azure_and_gcs_keys_do_not_leak_into_s3_config}`,
+  `engine::tests::create_object_store_{azure,gcs}_via_parse_url`.
 
 ### A3. Path-based CDF reads decline to native (`DeltaCDFRelation`)
 

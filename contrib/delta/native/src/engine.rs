@@ -29,7 +29,6 @@ use url::Url;
 use delta_kernel::engine::default::executor::tokio::TokioBackgroundExecutor;
 use delta_kernel::engine::default::DefaultEngine;
 use object_store::aws::AmazonS3Builder;
-use object_store::azure::MicrosoftAzureBuilder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 
@@ -38,11 +37,14 @@ use super::error::{DeltaError, DeltaResult};
 /// Concrete engine type returned by [`get_or_create_engine`].
 pub type DeltaEngine = DefaultEngine<TokioBackgroundExecutor>;
 
-/// Storage credentials used to construct kernel's engine.
+/// S3 credentials used to construct kernel's engine.
 ///
-/// Mirrors tantivy4java's `DeltaStorageConfig`. Field-per-knob rather than a
-/// generic map so we can validate at the boundary; the Scala side will
-/// populate this from a Spark options map.
+/// Only S3 is field-per-knob: like core Comet (`parquet_support::prepare_object_store_with_configs`),
+/// the Hadoop `fs.s3a.*` keys (incl. per-bucket overrides) are bridged explicitly because
+/// `object_store::parse_url` cannot read them. Azure / GCS / other schemes are built straight
+/// through `object_store::parse_url`, which sources credentials from the ambient environment
+/// (`AZURE_*` / `GOOGLE_*` / ADC / instance metadata) -- matching core's non-S3 path -- so they
+/// need no fields here.
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
 pub struct DeltaStorageConfig {
     pub aws_access_key: Option<String>,
@@ -51,17 +53,14 @@ pub struct DeltaStorageConfig {
     pub aws_region: Option<String>,
     pub aws_endpoint: Option<String>,
     pub aws_force_path_style: bool,
-
-    pub azure_account_name: Option<String>,
-    pub azure_access_key: Option<String>,
-    pub azure_bearer_token: Option<String>,
 }
 
 /// Build an `ObjectStore` for the given URL and credentials.
 ///
-/// Supports `s3://` / `s3a://`, `az://` / `azure://` / `abfs://` / `abfss://`,
-/// and `file://`. Any other scheme is rejected with
-/// [`DeltaError::UnsupportedScheme`].
+/// `s3://` / `s3a://` are built from the bridged `fs.s3a.*` config; `file://` is local.
+/// Azure (`az` / `azure` / `abfs` / `abfss` / `wasb` / `wasbs`) and GCS (`gs` / `gcs`) are
+/// built via `object_store::parse_url` (ambient/env credentials), mirroring core Comet's
+/// non-S3 read path. Any other scheme is rejected with [`DeltaError::UnsupportedScheme`].
 pub fn create_object_store(
     url: &Url,
     config: &DeltaStorageConfig,
@@ -104,23 +103,13 @@ pub fn create_object_store(
 
             Arc::new(builder.build()?)
         }
-        "az" | "azure" | "abfs" | "abfss" => {
-            let container = url.host_str().ok_or_else(|| DeltaError::MissingBucket {
-                url: url.to_string(),
-            })?;
-            let mut builder = MicrosoftAzureBuilder::new().with_container_name(container);
-
-            if let Some(ref account) = config.azure_account_name {
-                builder = builder.with_account(account);
-            }
-            if let Some(ref key) = config.azure_access_key {
-                builder = builder.with_access_key(key);
-            }
-            if let Some(ref token) = config.azure_bearer_token {
-                builder = builder.with_bearer_token_authorization(token);
-            }
-
-            Arc::new(builder.build()?)
+        "az" | "azure" | "abfs" | "abfss" | "wasb" | "wasbs" | "gs" | "gcs" => {
+            // Parity with core's non-S3 path: object_store::parse_url builds the Azure / GCS
+            // store from the URL and ambient credentials (AZURE_* / GOOGLE_* env, ADC,
+            // instance metadata). Hadoop `fs.azure.*` / `fs.gs.*` config bridging is
+            // intentionally not done here -- core doesn't bridge them either.
+            let (store, _path) = object_store::parse_url(url)?;
+            Arc::from(store)
         }
         "file" | "" => Arc::new(LocalFileSystem::new()),
         other => {
@@ -292,7 +281,6 @@ mod tests {
             aws_region: Some("us-west-2".into()),
             aws_endpoint: Some("https://s3.example.com".into()),
             aws_force_path_style: true,
-            ..Default::default()
         };
         let store = create_object_store(&url("s3://my-bucket/path"), &cfg).unwrap();
         assert!(format!("{store:?}").contains("AmazonS3") || format!("{store:?}").contains("S3"));
@@ -314,32 +302,30 @@ mod tests {
     }
 
     #[test]
-    fn create_object_store_azure_requires_container() {
-        let bad = url("abfss:///just-a-path");
-        let err = create_object_store(&bad, &empty_config()).unwrap_err();
-        assert!(matches!(err, DeltaError::MissingBucket { .. }));
+    fn create_object_store_azure_via_parse_url() {
+        // Azure schemes are built through object_store::parse_url (parity with core's
+        // non-S3 path). The account comes from the abfss host; credentials resolve from
+        // the ambient environment at request time, so construction succeeds with no config.
+        let u = url("abfss://container@myacct.dfs.core.windows.net/path");
+        create_object_store(&u, &empty_config()).expect("azure store builds via parse_url");
     }
 
     #[test]
-    fn create_object_store_azure_builds_with_creds() {
-        let cfg = DeltaStorageConfig {
-            azure_account_name: Some("myacct".into()),
-            azure_access_key: Some("key".into()),
-            azure_bearer_token: Some("bearer".into()),
-            ..Default::default()
-        };
-        // Either "az://", "azure://", "abfs://" or "abfss://" should work.
-        for scheme in ["az", "azure", "abfs", "abfss"] {
-            let u = url(&format!("{scheme}://my-container/path"));
-            create_object_store(&u, &cfg).unwrap();
-        }
+    fn create_object_store_gcs_via_parse_url() {
+        // GCS is likewise built through object_store::parse_url; ADC / GOOGLE_* resolve
+        // lazily, so construction succeeds with no explicit config (was UnsupportedScheme
+        // before this gained parity with core).
+        create_object_store(&url("gs://my-bucket/path"), &empty_config())
+            .expect("gcs store builds via parse_url");
     }
 
     #[test]
     fn create_object_store_unsupported_scheme() {
-        let err = create_object_store(&url("gs://bucket/p"), &empty_config()).unwrap_err();
+        // A scheme outside the S3 / Azure / GCS / file arms is rejected before reaching
+        // object_store. `ftp` is never a Delta storage backend.
+        let err = create_object_store(&url("ftp://host/p"), &empty_config()).unwrap_err();
         match err {
-            DeltaError::UnsupportedScheme { scheme, .. } => assert_eq!(scheme, "gs"),
+            DeltaError::UnsupportedScheme { scheme, .. } => assert_eq!(scheme, "ftp"),
             other => panic!("expected UnsupportedScheme, got {other:?}"),
         }
     }
