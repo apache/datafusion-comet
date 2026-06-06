@@ -15,28 +15,24 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Label new issues with requires-triage
+# Reusable workflow invoked by build_main.yml. Modelled on Apache Spark's
+# build_and_test.yml: the heavy work runs wherever the calling push lands,
+# i.e. on the contributor's fork. Delegates the test matrix to the umbrella
+# ci.yml workflow, which fans out to the per-Spark-version reusables.
 
-# CI DISABLED 2026-05-31 — auto-trigger commented out, only manual workflow_dispatch remains.
-# To rollback: remove `workflow_dispatch:` and restore the commented `issues` block below.
+name: Build and test
+
 on:
-  workflow_dispatch:
-  # issues:
-  #   types: [opened]
-
-permissions:
-  issues: write
+  workflow_call:
 
 jobs:
-  add-triage-label:
-    runs-on: ubuntu-slim
-    steps:
-      - uses: actions/github-script@v9
-        with:
-          script: |
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: ['requires-triage']
-            })
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+    with:
+      # Force every gated job to run on fork-CI: contributor pushes don't necessarily
+      # touch paths that match ci.yml's filters (e.g. when iterating on the fork-CI
+      # workflow files themselves), so honour the Spark-style "run the full matrix"
+      # contract instead of skipping silently.
+      force_all: true

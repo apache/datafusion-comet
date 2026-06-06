@@ -15,28 +15,21 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Label new issues with requires-triage
+# Modelled on Apache Spark's build_main.yml. Triggers on push to any branch,
+# which means contributor pushes to a fork run CI on the fork's Actions
+# minutes/runners rather than on apache/datafusion-comet. The bridge to the
+# upstream PR check is notify_test_workflow.yml.
 
-# CI DISABLED 2026-05-31 — auto-trigger commented out, only manual workflow_dispatch remains.
-# To rollback: remove `workflow_dispatch:` and restore the commented `issues` block below.
+name: "Build"
+
 on:
-  workflow_dispatch:
-  # issues:
-  #   types: [opened]
-
-permissions:
-  issues: write
+  push:
+    branches:
+    - '**'
 
 jobs:
-  add-triage-label:
-    runs-on: ubuntu-slim
-    steps:
-      - uses: actions/github-script@v9
-        with:
-          script: |
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: ['requires-triage']
-            })
+  call-build-and-test:
+    permissions:
+      packages: write
+    name: Run
+    uses: ./.github/workflows/build_and_test.yml

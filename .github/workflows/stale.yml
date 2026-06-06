@@ -16,9 +16,12 @@
 # under the License.
 
 name: "Close stale PRs"
+# CI DISABLED 2026-05-31 — schedule commented out, only manual workflow_dispatch remains.
+# To rollback: remove `workflow_dispatch:` and restore the commented `schedule` block below.
 on:
-  schedule:
-    - cron: "30 1 * * *"
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "30 1 * * *"
 
 jobs:
   close-stale-prs:

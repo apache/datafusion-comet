@@ -121,6 +121,21 @@ jobs:
       image: amd64/rust
     steps:
       - uses: actions/checkout@v6
+      - name: Free up disk space (container)
+        # Mirror apache/spark's dev/free_disk_space_container. The amd64/rust
+        # container inherits GitHub's tool-cache via the /__t mount; strip the
+        # entries we never use (CodeQL, Go, Node) to free ~5-10 GB before the
+        # Spark clone, Maven dep tree, sbt build cache, and per-test-suite
+        # warehouse dirs all start fighting for the runner's disk.
+        shell: bash
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h || true
+          rm -rf /__t/CodeQL || true
+          rm -rf /__t/go     || true
+          rm -rf /__t/node   || true
+          echo "Disk usage after cleanup:"
+          df -h || true
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -152,9 +167,10 @@ jobs:
           if [ "${{ inputs.spark-short }}" != "4.0" ] || [ "${{ inputs.java }}" != "21" ]; then
             export SERIAL_SBT_TESTS=1
           fi
-          # Cap parallel forked test JVMs at 1 so that even when
-          # SparkParallelTestGrouping is enabled we don't blow the
-          # 7 GB runner budget (each forked test JVM has -Xmx2g).
+          # Cap parallel forked test JVMs at 1: on a 7 GB runner the 3 GB SBT
+          # controller and a single 5 GB forked test JVM (HEAP_SIZE override
+          # below) already over-commit RAM; any concurrency on top would push
+          # us straight into OOMs.
           NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ inputs.collect-fallback-logs }} \
             build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
               'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
@@ -164,17 +180,35 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-          # Standard GitHub runners have 7 GB RAM; cap SBT heap so forked test
-          # JVMs fit alongside it.
           SBT_MEM: "3072"
-          # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
-          # build_java21.yml and build_java25.yml set this same env var to
-          # process-isolate the V1/V2 Parquet and Orc source suites because
-          # they exhibit cross-suite resource interactions (file-stream and
-          # thread leaks) under the newer JDKs. project/SparkBuild.scala
-          # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
-          # listed suite. Empty value is a safe no-op.
-          DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
+          HEAP_SIZE: "3g"
+          # Cap forked test JVM direct memory. Without this, -XX:MaxDirectMemorySize
+          # defaults to ≈ -Xmx (5 GB), letting Netty / DirectByteBuffer / shuffle
+          # buffers grow alongside the heap and push host RSS past the 7 GB
+          # runner ceiling. JAVA_TOOL_OPTIONS is honoured by every child JVM;
+          # SBT picks it up too but allocates negligible direct memory itself.
+          JAVA_TOOL_OPTIONS: "-XX:MaxDirectMemorySize=1g"
+          # Force these suites into their own forked JVMs so per-suite state
+          # (codegen classes, native pools, shuffle buffers) is reclaimed on
+          # JVM exit instead of accumulating across a single testOnly run:
+          #   * AdaptiveQueryExecSuite — long, codegen- and shuffle-heavy;
+          #     observed to SIGKILL the host on 7 GB runners after ~10 tests.
+          #   * Parquet/Orc V1/V2 source suites — Spark 4.0 only; mirrors
+          #     apache/spark's build_java21.yml / build_java25.yml workaround
+          #     for cross-suite file-stream / thread leaks under newer JDKs.
+          # SparkBuild.scala reads this env var and installs the testGrouping
+          # regardless of SERIAL_SBT_TESTS, so listed suites still get their
+          # own JVM in serial-test mode (only run policy changes).
+          DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.adaptive.AdaptiveQueryExecSuite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || 'org.apache.spark.sql.execution.adaptive.AdaptiveQueryExecSuite' }}
+      - name: Dump kernel + memory state on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo '== /proc/meminfo =='; cat /proc/meminfo 2>/dev/null || true
+          echo '== /proc/swaps ==';   cat /proc/swaps   2>/dev/null || true
+          echo '== top RSS ==';       ps -eo pid,rss,cmd --sort=-rss 2>/dev/null | head -20 || true
+          echo '== dmesg (best effort) ==';
+          dmesg -T 2>/dev/null | tail -200 || cat /var/log/kern.log 2>/dev/null | tail -200 || echo 'kernel log unavailable inside container'
       - name: Upload fallback log
         if: ${{ inputs.collect-fallback-logs }}
         uses: actions/upload-artifact@v7
