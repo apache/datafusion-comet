@@ -19,7 +19,7 @@
 //!
 //! Ported from tantivy4java's `delta_reader/engine.rs` (Apache-2.0) with
 //! minor changes: uses Comet's error type instead of `anyhow`, and uses the
-//! renamed `object_store_kernel` (object_store 0.12) dependency that kernel
+//! `object_store` 0.13 dependency that kernel
 //! requires. Comet's main `object_store = "0.13"` tree is untouched.
 
 use std::collections::HashMap;
@@ -28,10 +28,10 @@ use url::Url;
 
 use delta_kernel::engine::default::executor::tokio::TokioBackgroundExecutor;
 use delta_kernel::engine::default::DefaultEngine;
-use object_store_kernel::aws::AmazonS3Builder;
-use object_store_kernel::azure::MicrosoftAzureBuilder;
-use object_store_kernel::local::LocalFileSystem;
-use object_store_kernel::ObjectStore;
+use object_store::aws::AmazonS3Builder;
+use object_store::azure::MicrosoftAzureBuilder;
+use object_store::local::LocalFileSystem;
+use object_store::ObjectStore;
 
 use super::error::{DeltaError, DeltaResult};
 
@@ -197,7 +197,7 @@ fn engine_key(url: &Url, config: &DeltaStorageConfig) -> EngineKey {
 #[allow(dead_code)]
 pub fn create_engine(table_url: &Url, config: &DeltaStorageConfig) -> DeltaResult<DeltaEngine> {
     let store = create_object_store(table_url, config)?;
-    Ok(DefaultEngine::new(store))
+    Ok(DefaultEngine::builder(store).build())
 }
 
 /// Return a shared `DeltaEngine` for the given URL+config, building one on first use.
@@ -235,7 +235,7 @@ pub fn get_or_create_engine(
         }
     }
     let store = create_object_store(table_url, config)?;
-    let engine = Arc::new(DefaultEngine::new(store));
+    let engine = Arc::new(DefaultEngine::builder(store).build());
     cache.map.insert(key, (Arc::clone(&engine), stamp));
     Ok(engine)
 }

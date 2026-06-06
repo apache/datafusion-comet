@@ -19,8 +19,7 @@
 //!
 //! Kept local rather than folded into `CometError` because `delta_kernel`
 //! lives in an isolated dep subtree — we don't want kernel's error type
-//! leaking into `errors.rs` where it could pull kernel's arrow-57 into the
-//! main error path.
+//! leaking into `errors.rs` and coupling the main error path to kernel.
 
 use thiserror::Error;
 
@@ -50,7 +49,7 @@ pub enum DeltaError {
     MissingBucket { url: String },
 
     #[error("object store construction failed: {0}")]
-    ObjectStore(#[from] object_store_kernel::Error),
+    ObjectStore(#[from] object_store::Error),
 
     #[error("delta kernel error: {0}")]
     Kernel(#[from] delta_kernel::Error),

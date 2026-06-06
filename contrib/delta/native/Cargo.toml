@@ -47,13 +47,9 @@ datafusion-comet-common = { path = "../../../native/common" }
 # crate -- depending on it doesn't drag any Comet logic into the contrib.
 datafusion-comet-jni-bridge = { path = "../../../native/jni-bridge" }
 # Heavy Delta deps -- intentionally live ONLY in this contrib, never in core. delta_kernel
-# 0.19 pins arrow-57 / object_store-0.12 internally; that subtree never exchanges typed
-# values with Comet's arrow-58 / object_store-0.13 -- only plain Rust types cross the
-# boundary (ScanFile, HashMap, etc.).
-delta_kernel = { version = "0.19", default-features = false, features = ["default-engine-rustls", "arrow"] }
-# Second object_store version required by delta_kernel 0.19 (kernel's engine uses 0.12).
-# Renamed so it doesn't collide with Comet's `object_store = "0.13.1"`.
-object_store_kernel = { package = "object_store", version = "0.12", features = ["aws", "azure"] }
+# 0.24 pins the SAME arrow (58) and object_store (0.13) as Comet via the `arrow-58` feature,
+# so kernel RecordBatches flow straight into Comet plans with no arrow-version bridge.
+delta_kernel = { version = "0.24", default-features = false, features = ["default-engine-rustls", "arrow-58"] }
 # Roaring bitmap decoder for Delta deletion vectors (inline + on-disk).
 roaring = "0.10"
 

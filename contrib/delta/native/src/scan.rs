@@ -455,7 +455,7 @@ fn extract_row_tracking_for_selected(
 /// `None` for rows without a DV (no deletion vector attached to that AddFile).
 ///
 /// We extract directly from the RecordBatch instead of via `ScanFile.dv_info`
-/// because kernel 0.19's `DvInfo` only exposes `has_vector()` + `get_row_indexes()`
+/// because kernel's `DvInfo` only exposes `has_vector()` + `get_row_indexes()`
 /// publicly (the descriptor itself is `pub(crate)`), and `get_row_indexes()`
 /// materialises the full bitmap on the DRIVER -- which was the 1 GB long[]
 /// retention bug we're fixing (task #218). Reading the fields from the kernel
