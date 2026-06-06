@@ -91,6 +91,41 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
     }
   }
 
+  test("kernel-read path (#47): nested column-mapped table with a nested rename") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("kernel_read_cm_nested") { tablePath =>
+      spark.sql(
+        s"""CREATE TABLE delta.`$tablePath` (
+           |  id INT,
+           |  s STRUCT<a:INT, b:STRING>,
+           |  arr ARRAY<STRUCT<x:INT>>)
+           |USING delta
+           |TBLPROPERTIES (
+           |  'delta.columnMapping.mode' = 'name',
+           |  'delta.minReaderVersion' = '2',
+           |  'delta.minWriterVersion' = '5')""".stripMargin)
+      spark.sql(
+        s"""INSERT INTO delta.`$tablePath` VALUES
+           |(1, NAMED_STRUCT('a', 10, 'b', 'x'), ARRAY(NAMED_STRUCT('x', 100))),
+           |(2, NULL, ARRAY()),
+           |(3, NAMED_STRUCT('a', 30, 'b', 'z'), ARRAY(NAMED_STRUCT('x', 300), NAMED_STRUCT('x', 301)))
+           |""".stripMargin)
+      // Rename a NESTED field so its logical name diverges from its physical name -- the case that
+      // requires the kernel-read path to physicalise + relabel at every nesting level (#47).
+      spark.sql(s"ALTER TABLE delta.`$tablePath` RENAME COLUMN s.a TO renamed_a")
+
+      withSQLConf(
+        DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true",
+        "spark.sql.parquet.fieldId.read.enabled" -> "false") {
+        assertDeltaNativeMatches(tablePath, _.orderBy("id"))
+        assertKernelReadEngaged(tablePath)
+        // Project into the renamed nested field (nested pruning + relabel on the kernel path).
+        assertDeltaNativeMatches(tablePath, _.select("id", "s.renamed_a").orderBy("id"))
+        assertDeltaNativeMatches(tablePath, _.select("id", "arr").orderBy("id"))
+      }
+    }
+  }
+
   test("kernel-read path (Phase 1c #44): id-mode column-mapped table") {
     assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
     withDeltaTable("kernel_read_cm_id") { tablePath =>

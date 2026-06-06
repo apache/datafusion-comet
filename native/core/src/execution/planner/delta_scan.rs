@@ -44,7 +44,9 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion_comet_proto::spark_operator::{DeltaScan, DeltaScanCommon, Operator};
+use datafusion_comet_proto::spark_operator::{
+    DeltaColumnMapping, DeltaScan, DeltaScanCommon, Operator,
+};
 
 use crate::execution::operators::ExecutionError;
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -54,6 +56,79 @@ use crate::execution::planner::PlanCreationResult;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
+
+/// Recursively rename a logical arrow field to its physical form using a Delta column-mapping tree
+/// (`DeltaColumnMapping` with recursive `children`). Delta only renames struct fields, so structs are
+/// matched by logical name and renamed; arrays and maps are descended through transparently. When
+/// `rename_top` is false the field keeps its own (top-level) name and only its nested struct fields
+/// are physicalised -- the shape the old read path's downstream expects (top-level rename happens via
+/// its rename ProjectionExec). When true the field is physicalised at every level -- the kernel-read
+/// `physical_schema`.
+fn physicalise_field(
+    field: &Arc<Field>,
+    mapping: Option<&DeltaColumnMapping>,
+    rename_top: bool,
+) -> Arc<Field> {
+    let name = match (rename_top, mapping) {
+        (true, Some(m)) if !m.physical_name.is_empty() => m.physical_name.clone(),
+        _ => field.name().clone(),
+    };
+    let children = mapping.map(|m| m.children.as_slice()).unwrap_or(&[]);
+    let dt = physicalise_type(field.data_type(), children);
+    Arc::new(Field::new(name, dt, field.is_nullable()).with_metadata(field.metadata().clone()))
+}
+
+/// Physicalise a data type's nested struct field names using the column-mapping children. Structs
+/// match children by logical name; lists/maps descend transparently (the element / key / value
+/// wrapper field names are never renamed -- Delta column-maps only struct fields).
+fn physicalise_type(dt: &DataType, child_mappings: &[DeltaColumnMapping]) -> DataType {
+    use datafusion::arrow::datatypes::Fields;
+    match dt {
+        DataType::Struct(fields) => {
+            let by_logical: HashMap<&str, &DeltaColumnMapping> = child_mappings
+                .iter()
+                .map(|m| (m.logical_name.as_str(), m))
+                .collect();
+            let new: Vec<Arc<Field>> = fields
+                .iter()
+                .map(|f| physicalise_field(f, by_logical.get(f.name().as_str()).copied(), true))
+                .collect();
+            DataType::Struct(Fields::from(new))
+        }
+        DataType::List(elem) => DataType::List(descend_elem(elem, child_mappings)),
+        DataType::LargeList(elem) => DataType::LargeList(descend_elem(elem, child_mappings)),
+        DataType::Map(entry, sorted) => {
+            // entry is struct<key, value>; pass the child mappings down through the key/value wrapper
+            // (matched by name inside whichever is a struct) without renaming the wrapper fields.
+            if let DataType::Struct(kv) = entry.data_type() {
+                let new_kv: Vec<Arc<Field>> =
+                    kv.iter().map(|f| descend_elem(f, child_mappings)).collect();
+                let new_entry = Field::new(
+                    entry.name(),
+                    DataType::Struct(Fields::from(new_kv)),
+                    entry.is_nullable(),
+                )
+                .with_metadata(entry.metadata().clone());
+                DataType::Map(Arc::new(new_entry), *sorted)
+            } else {
+                dt.clone()
+            }
+        }
+        _ => dt.clone(),
+    }
+}
+
+/// A list element / map key-or-value: keep the wrapper field's own name, physicalise its nested type.
+fn descend_elem(elem: &Arc<Field>, child_mappings: &[DeltaColumnMapping]) -> Arc<Field> {
+    Arc::new(
+        Field::new(
+            elem.name(),
+            physicalise_type(elem.data_type(), child_mappings),
+            elem.is_nullable(),
+        )
+        .with_metadata(elem.metadata().clone()),
+    )
+}
 
 /// Build a `DeltaKernelScanExec` for the "kernel reads" path. The per-file inputs come straight
 /// off the existing proto (`DeltaScanTask` path/size/record_count/dv); no new proto message.
@@ -71,24 +146,6 @@ fn plan_delta_kernel_scan(
 ) -> PlanCreationResult {
     use comet_contrib_delta::jni::delta_storage_config_from_map;
     use comet_contrib_delta::kernel_scan::{DeltaKernelScanExec, KernelScanFile};
-
-    let has_nested = required_schema.fields().iter().any(|f| {
-        matches!(
-            f.data_type(),
-            DataType::Struct(_)
-                | DataType::List(_)
-                | DataType::LargeList(_)
-                | DataType::ListView(_)
-                | DataType::LargeListView(_)
-                | DataType::FixedSizeList(_, _)
-                | DataType::Map(_, _)
-        )
-    });
-    if has_nested {
-        return Err(GeneralError(
-            "DeltaScan.kernel_read does not support nested-typed columns yet".into(),
-        ));
-    }
 
     let partition_schema: SchemaRef =
         convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
@@ -126,31 +183,28 @@ fn plan_delta_kernel_scan(
         ));
     }
 
-    // Data columns are read from parquet. Under column mapping the read schema uses PHYSICAL
-    // names and an identity transform relabels to the logical `read_logical_schema`; field-id
-    // metadata is preserved so kernel can match by field id (id mode).
-    let logical_to_physical: HashMap<String, String> = common
+    // Data columns are read from parquet. `read_logical_schema` is the pure-logical schema the
+    // read produces after relabeling (the kernel transform's output); `physical_schema` is the same
+    // columns with physical names at EVERY nesting level, derived from the recursive column-mapping
+    // tree. The kernel-read primitive reads by physical name, then an identity transform relabels
+    // physical -> logical (recursively, including nested struct fields -- proven by the
+    // `spike_nested_struct_*` tests).
+    let mapping_by_name: HashMap<&str, &DeltaColumnMapping> = common
         .column_mappings
         .iter()
-        .map(|cm| (cm.logical_name.clone(), cm.physical_name.clone()))
+        .map(|cm| (cm.logical_name.as_str(), cm))
         .collect();
     let read_logical_schema: SchemaRef = Arc::new(Schema::new(data_fields.clone()));
-    let physical_schema: SchemaRef = if logical_to_physical.is_empty() {
+    let physical_schema: SchemaRef = if mapping_by_name.is_empty() {
         Arc::clone(&read_logical_schema)
     } else {
         let fields: Vec<_> = data_fields
             .iter()
-            .map(|f| match logical_to_physical.get(f.name()) {
-                Some(physical) => Arc::new(
-                    Field::new(physical, f.data_type().clone(), f.is_nullable())
-                        .with_metadata(f.metadata().clone()),
-                ),
-                None => Arc::clone(f),
-            })
+            .map(|f| physicalise_field(f, mapping_by_name.get(f.name().as_str()).copied(), true))
             .collect();
         Arc::new(Schema::new(fields))
     };
-    let needs_transform = !logical_to_physical.is_empty();
+    let needs_transform = !mapping_by_name.is_empty();
 
     // Final output = `required_schema` (data ++ partition, in order). The exec injects exactly the
     // partition columns present in the output.
@@ -329,6 +383,27 @@ pub(crate) fn plan_delta_scan(
     if common.kernel_read {
         return plan_delta_kernel_scan(spark_plan, scan, common, &required_schema);
     }
+
+    // OLD PATH ONLY: the wire carries a PURE-LOGICAL `required_schema` (consistent at every nesting
+    // level). The old read path's downstream -- a top-level rename `ProjectionExec` plus ordinal-
+    // based nested access (#79) -- expects the historical HYBRID shape: logical top-level names but
+    // PHYSICAL nested names. Reconstruct that from the recursive column-mapping tree so the old path
+    // behaves exactly as before. (The kernel-read path above consumes the pure-logical schema.)
+    let required_schema: SchemaRef = if common.column_mappings.is_empty() {
+        required_schema
+    } else {
+        let mapping_by_name: HashMap<&str, &DeltaColumnMapping> = common
+            .column_mappings
+            .iter()
+            .map(|cm| (cm.logical_name.as_str(), cm))
+            .collect();
+        let fields: Vec<_> = required_schema
+            .fields()
+            .iter()
+            .map(|f| physicalise_field(f, mapping_by_name.get(f.name().as_str()).copied(), false))
+            .collect();
+        Arc::new(Schema::new(fields))
+    };
 
     let mut data_schema: SchemaRef =
         convert_spark_types_to_arrow_schema(common.data_schema.as_slice());

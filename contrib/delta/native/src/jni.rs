@@ -140,7 +140,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
         let physical_to_logical: std::collections::HashMap<String, String> = plan
             .column_mappings
             .iter()
-            .map(|(logical, physical)| (physical.clone(), logical.clone()))
+            .map(|cm| (cm.physical_name.clone(), cm.logical_name.clone()))
             .collect();
 
         let tasks: Vec<DeltaScanTask> = plan
@@ -194,16 +194,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
             })
             .collect();
 
-        let column_mappings: Vec<crate::proto::DeltaColumnMapping> = plan
-            .column_mappings
-            .into_iter()
-            .map(
-                |(logical, physical)| crate::proto::DeltaColumnMapping {
-                    logical_name: logical,
-                    physical_name: physical,
-                },
-            )
-            .collect();
+        // Already the recursive proto form (built from the kernel schema in `scan.rs`).
+        let column_mappings = plan.column_mappings;
 
         let msg = DeltaScanTaskList {
             snapshot_version: plan.version,

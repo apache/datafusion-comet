@@ -868,6 +868,13 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
         else scan.requiredSchema.fields
       base ++ partitionFieldsForRequired ++ extraMetadataFields
     }
+    // PURE-LOGICAL required schema for the proto wire (consistent at every nesting level). The old
+    // read path's hybrid shape (logical top, physical nested) is reconstructed natively from the
+    // recursive column_mappings; the kernel-read path consumes this logical schema directly. Unlike
+    // `requiredSchemaFields` (still physicalised -- it builds `physicalFileDataSchemaFields` for the
+    // old path's reader), this keeps logical names throughout.
+    val requiredSchemaLogicalFields =
+      scan.requiredSchema.fields ++ partitionFieldsForRequired ++ extraMetadataFields
     val physicalFileDataSchemaFields = if (columnMappingActive) {
       val requiredByName = requiredSchemaFields
         .map(f => f.name.toLowerCase(Locale.ROOT) -> f)
@@ -911,8 +918,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       } else physicalFileDataSchemaFields
     val requiredSchemaForProto =
       if (cmModeIsId) {
-        requiredSchemaFields.map(CometDeltaNativeScan.translateDeltaFieldIdToParquet)
-      } else requiredSchemaFields
+        requiredSchemaLogicalFields.map(CometDeltaNativeScan.translateDeltaFieldIdToParquet)
+      } else requiredSchemaLogicalFields
     val partitionSchemaForProto =
       if (cmModeIsId) {
         relation.partitionSchema.fields.map(
@@ -1095,17 +1102,15 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // (injected) columns, and stacks the existing DeltaSyntheticColumnsExec on top for synthetics
     // / metadata / DV. Still on the default reader: nested-typed columns, and scans that read zero
     // data columns (only partition or only synthetic columns) -- nothing drives the row count.
-    val requiredSchemaHasNested = scan.requiredSchema.fields.exists(_.dataType match {
-      case _: StructType | _: ArrayType | _: MapType => true
-      case _ => false
-    })
     val hasDataColumn = scan.requiredSchema.fields.exists { f =>
       !isSynthetic(f) &&
         !relation.partitionSchema.fieldNames.exists(_.equalsIgnoreCase(f.name))
     }
+    // Nested-typed columns now take the kernel-read path: the native planner physicalises
+    // required_schema at every nesting level from the recursive column_mappings, kernel's transform
+    // relabels nested physical->logical, and align_batch_to_schema prunes nested children (#47).
     val kernelReadEligible =
       DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf) &&
-        !requiredSchemaHasNested &&
         hasDataColumn
     commonBuilder.setKernelRead(kernelReadEligible)
 
@@ -1117,16 +1122,10 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       commonBuilder.putObjectStoreOptions(key, value)
     }
 
-    // Phase 4: pass column mapping from kernel through to the native planner.
-    val columnMappings = taskList.getColumnMappingsList.asScala
-    columnMappings.foreach { cm =>
-      commonBuilder.addColumnMappings(
-        OperatorOuterClass.DeltaColumnMapping
-          .newBuilder()
-          .setLogicalName(cm.getLogicalName)
-          .setPhysicalName(cm.getPhysicalName)
-          .build())
-    }
+    // Phase 4: pass column mapping from kernel through to the native planner. Relayed as-is so the
+    // recursive `children` (nested struct-field mappings, #47) are preserved; the native planner
+    // physicalises required_schema at every nesting level from this tree.
+    commonBuilder.addAllColumnMappings(taskList.getColumnMappingsList)
 
     // --- 3. Pack into a DeltaScan with COMMON ONLY (split-mode, Phase 5).
     // Tasks are NOT included in the proto at planning time. They'll be
