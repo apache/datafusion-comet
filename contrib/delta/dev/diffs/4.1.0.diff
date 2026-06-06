@@ -272,12 +272,14 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/MergeIntoMetricsBas
            }
          }
 
-@@ -1039,7 +1045,7 @@ trait MergeIntoMetricsBase
+@@ -1039,7 +1045,9 @@ trait MergeIntoMetricsBase
        overrideExpectedOpMetrics = Seq(
          ((false, true), ("numTargetFilesAdded", 1)),
          ((false, false), (
            "numTargetFilesAdded",
 -          1)
-+          -1) // De-flake: Comet non-partitioned no-CDF delete-with-dups numTargetFilesAdded flakes 1<->2 (result correct, see CometDeltaMergeMetricsReproSuite); -1 stops asserting via the override loop.
++          // De-flake: Comet non-partitioned no-CDF delete-with-dups numTargetFilesAdded flakes
++          // 1<->2 (correct, see CometDeltaMergeMetricsReproSuite); -1 disables the assert.
++          -1)
          )
        )
