@@ -454,9 +454,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     val snapshotVersion: Long =
       DeltaReflection.extractSnapshotVersion(relation).getOrElse(-1L)
 
-    // Phase 2: serialize the data filters so kernel can apply stats-based file
-    // pruning during log replay. The same filters will also be pushed down into
-    // ParquetSource for row-group-level pruning - the two layers are additive.
+    // Serialize the data filters so kernel can apply stats-based file pruning during log replay.
     val predicateBytes: Array[Byte] = serializeSupportedDataFilters(scan)
 
     // Column name list for resolving BoundReference indices to kernel column
@@ -682,162 +680,11 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     commonBuilder.setDataFileConcurrencyLimit(
       DeltaConf.COMET_DELTA_DATA_FILE_CONCURRENCY_LIMIT.get())
 
-    // Schemas. Delta is different from vanilla Parquet: `relation.dataSchema` on a Delta
-    // table INCLUDES partition columns, but the physical parquet files on disk do NOT.
-    // So we compute the actual file schema by subtracting the partition columns from
-    // `relation.dataSchema`. Mirrors what delta-kernel itself reports as the scan schema.
-    val partitionNames =
-      relation.partitionSchema.fields.map(_.name.toLowerCase(Locale.ROOT)).toSet
-    // Materialised row-tracking columns (`_row-id-col-<uuid>` /
-    // `_row-commit-version-col-<uuid>`) are REAL parquet columns written when a file is
-    // rewritten (OPTIMIZE / z-order / compaction / MERGE) to persist stable row IDs.
-    // They are NOT in `relation.dataSchema` (row tracking is metadata, not the logical
-    // schema), but they ARE in `scan.requiredSchema`, matched in the file BY NAME. Add
-    // them to the file data schema so the native parquet reader actually reads them
-    // (returning null for files that don't carry them -- unmaterialised -- which is
-    // exactly what Delta's downstream `coalesce(_metadata.row_id, base_row_id +
-    // row_index)` needs). Treating them as synthetic (the previous behaviour) made the
-    // scan synthesise base_row_id+row_index instead, so row IDs were not stable across
-    // rewrites. See F3 in docs/08-known-limitations.md.
-    // Delta also allows the materialised row-id / row-commit-version columns to have a
-    // CUSTOM physical name, declared in the table config under
-    // `delta.rowTracking.materialized{RowId,RowCommitVersion}ColumnName` (e.g. tables
-    // CONVERTed from parquet, or set explicitly). Those names don't match the
-    // `_row-id-col-*` prefix, so detect them from the table configuration too. Missing
-    // this leaves such a column in `requiredSchema` but NOT in the file data schema, and
-    // `final_output_indices` then points past the native schema -> native plan_delta_scan
-    // index-out-of-bounds panic (RowIdSuite).
-    val customMaterializedColNames: Set[String] =
-      DeltaReflection
-        .extractMetadataConfiguration(relation)
-        .map { cfg =>
-          Seq(
-            DeltaReflection.MaterializedRowIdColumnProp,
-            DeltaReflection.MaterializedRowCommitVersionColumnProp).flatMap(cfg.get).toSet
-        }
-        .getOrElse(Set.empty)
-    val materializedRowTrackingFields: Array[StructField] =
-      scan.requiredSchema.fields
-        .filter(f =>
-          CometDeltaNativeScan.isMaterializedRowTrackingName(f.name) ||
-            customMaterializedColNames.contains(f.name))
-        .map(f => StructField(f.name, f.dataType, f.nullable))
-    val fileDataSchemaFields =
-      relation.dataSchema.fields.filterNot(f =>
-        partitionNames.contains(f.name.toLowerCase(Locale.ROOT))) ++
-        materializedRowTrackingFields
-
-    // When column mapping (id or name) is active, Delta writes parquet files using physical
-    // names at EVERY level of nesting -- struct inner fields, array elements, map keys/values.
-    // `schema2Proto` otherwise serialises the Spark StructField tree with logical names, so the
-    // native parquet reader would look for e.g. `b1` and its inner `c` but the file has
-    // `col-<uuid1>` and `col-<uuid2>`, yielding a null-struct read. Substitute physical names
-    // recursively before serialising so the proto schema matches the on-disk names at every
-    // level. The `column_mappings` proto carries only top-level logical->physical so that
-    // filter column references (expressed with logical names) still translate correctly.
-    // Detect column mapping from the most reliable sources:
-    //  1. Kernel-side proto already populated the flat logical->physical map, OR
-    //  2. `relation.dataSchema` StructField metadata carries the physical-name key (rare --
-    //     HadoopFsRelation strips this on construction, but iceberg-compat paths don't), OR
-    //  3. the Delta snapshot's Metadata.configuration declares `delta.columnMapping.mode`
-    //     not equal to `none`. This is the authoritative source and catches the case where
-    //     (1) and (2) both miss.
-    // A false negative here is silent data-corruption (physicalisation skipped, native reader
-    // looks for logical names in physical-named parquet), so the fallback probe is important.
-    val columnMappingActive = taskList.getColumnMappingsList.asScala.nonEmpty ||
-      relation.dataSchema.fields.exists(
-        _.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) ||
-      DeltaReflection
-        .extractMetadataConfiguration(relation)
-        .flatMap(_.get("delta.columnMapping.mode"))
-        .exists(m => m != null && !m.equalsIgnoreCase("none"))
-    // `relation.dataSchema` has its StructField metadata stripped by Spark's HadoopFsRelation
-    // construction, so nested physical names are invisible. Reuse the snapshot schema fetched
-    // above (or None when column mapping isn't active).
-    val snapshotSchema: Option[StructType] =
-      if (columnMappingActive) snapshotSchemaEarly else None
-    val physicalByLogicalName: Map[String, StructField] =
-      snapshotSchema.map(_.fields.map(f => f.name -> f).toMap).getOrElse(Map.empty)
-    // Preserve the top-level LOGICAL name and substitute only NESTED (struct/map/array) inner
-    // field names with their physical equivalents. The native planner (planner.rs ~1383)
-    // already handles top-level logical->physical substitution using the flat `column_mappings`
-    // proto. Fields not present in the snapshot (e.g. synthetic `_tmp_metadata_row_index`) are
-    // passed through untouched.
-    def physicaliseNestedTypesOnly(f: StructField): StructField =
-      physicalByLogicalName.get(f.name) match {
-        case Some(metaField) =>
-          StructField(f.name, physicaliseDataType(metaField.dataType), f.nullable, f.metadata)
-        case None => f
-      }
-    // For `required_schema` we MUST preserve the field's pruned shape (Spark's
-    // nested column pruning can leave a struct with only the accessed children) while
-    // still rewriting nested names to their physical equivalents. Using the data-schema
-    // helper above (which replaces the whole struct with the snapshot's full shape)
-    // would lose pruning and produce nested children Spark's plan does not expect,
-    // causing GetStructField ordinals to point at the wrong child. Walks `req`'s tree
-    // and pairs each node with the corresponding snapshot node by logical name to find
-    // the physical name; fields not present in the snapshot pass through untouched.
-    def physicaliseDataTypePreserving(req: DataType, snap: DataType): DataType =
-      (req, snap) match {
-        case (rs: StructType, ms: StructType) =>
-          val snapByLogical = ms.fields.map(f => f.name -> f).toMap
-          StructType(rs.fields.map { rf =>
-            snapByLogical.get(rf.name) match {
-              case Some(mf) =>
-                val physName =
-                  if (mf.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
-                    mf.metadata.getString(DeltaReflection.PhysicalNameMetadataKey)
-                  } else rf.name
-                StructField(
-                  physName,
-                  physicaliseDataTypePreserving(rf.dataType, mf.dataType),
-                  rf.nullable,
-                  rf.metadata)
-              case None => rf
-            }
-          })
-        case (ra: ArrayType, ma: ArrayType) =>
-          ArrayType(
-            physicaliseDataTypePreserving(ra.elementType, ma.elementType),
-            ra.containsNull)
-        case (rm: MapType, mm: MapType) =>
-          MapType(
-            physicaliseDataTypePreserving(rm.keyType, mm.keyType),
-            physicaliseDataTypePreserving(rm.valueType, mm.valueType),
-            rm.valueContainsNull)
-        case _ => req
-      }
-    def physicaliseRequiredField(f: StructField): StructField =
-      physicalByLogicalName.get(f.name) match {
-        case Some(metaField) =>
-          StructField(
-            f.name,
-            physicaliseDataTypePreserving(f.dataType, metaField.dataType),
-            f.nullable,
-            f.metadata)
-        case None => f
-      }
-    // `data_schema` describes what we want the native parquet reader to read from
-    // the file. Under column mapping, parquet column matching is by PHYSICAL name
-    // (at every level of nesting). The reader projects by leaf column path -- it
-    // can read just `b.col-d` even if the file's `b` also has `col-c`. To make
-    // that happen, we send data_schema with the SAME shape as the required output:
-    // top-level fields that are required carry the pruned + physicalised nested
-    // shape; non-required top-level fields keep their full physicalised shape (no
-    // read attempt is made for them anyway because they don't appear in
-    // projection_vector). Without this overlay, the reader would emit a struct
-    // with ALL nested children (full file shape), and upstream GetStructField
-    // ordinals -- computed by Catalyst against the PRUNED required_schema --
-    // would pick the wrong child. Manifested as "Invalid comparison Utf8 <= Int32"
-    // on `b.d > 0` (d is INT, ordinal 0 in pruned `b: struct<d>`, but ordinal 0
-    // in the file struct is `c` STRING). #79 fix 2026-05-13.
-    // `requiredSchema` on the wire is the SCAN's output schema -- i.e. data columns the
-    // scan reads from parquet PLUS partition columns it materialises from
-    // PartitionedFile.partition_values. Upstream operators in the native plan tree bind
-    // their column references by index into this schema. For non-partitioned tables
-    // `scan.requiredSchema` is the whole output already; for partitioned tables Spark
-    // gives us just the data half here, so we append the partition fields at the tail to
-    // match the layout indices in `projection_vector` resolve into.
+    // `required_schema` on the wire is the SCAN's output schema -- the data columns the scan reads
+    // from parquet PLUS partition columns it materialises from PartitionedFile.partition_values.
+    // For non-partitioned tables `scan.requiredSchema` is already the whole output; for partitioned
+    // tables Spark gives us just the data half, so append the partition fields at the tail (the
+    // native side splits them back out by name).
     val partitionFieldsForRequired: Array[StructField] = {
       val haveLc = scan.requiredSchema.fields.map(_.name.toLowerCase(Locale.ROOT)).toSet
       relation.partitionSchema.fields.filterNot(f =>
@@ -862,34 +709,11 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
         !scan.requiredSchema.fieldNames.exists(_.equalsIgnoreCase(a.name)) =>
         StructField(a.name, a.dataType, a.nullable)
     }
-    val requiredSchemaFields = {
-      val base =
-        if (columnMappingActive) scan.requiredSchema.fields.map(physicaliseRequiredField)
-        else scan.requiredSchema.fields
-      base ++ partitionFieldsForRequired ++ extraMetadataFields
-    }
-    // PURE-LOGICAL required schema for the proto wire (consistent at every nesting level). The old
-    // read path's hybrid shape (logical top, physical nested) is reconstructed natively from the
-    // recursive column_mappings; the kernel-read path consumes this logical schema directly. Unlike
-    // `requiredSchemaFields` (still physicalised -- it builds `physicalFileDataSchemaFields` for the
-    // old path's reader), this keeps logical names throughout.
+    // Required schema for the proto wire: PURE-LOGICAL at every nesting level. The native
+    // kernel-read planner physicalises it via the recursive `column_mappings`; partition columns
+    // are appended at the tail and split back out by name on the native side.
     val requiredSchemaLogicalFields =
       scan.requiredSchema.fields ++ partitionFieldsForRequired ++ extraMetadataFields
-    val physicalFileDataSchemaFields = if (columnMappingActive) {
-      val requiredByName = requiredSchemaFields
-        .map(f => f.name.toLowerCase(Locale.ROOT) -> f)
-        .toMap
-      fileDataSchemaFields.map { f =>
-        requiredByName.get(f.name.toLowerCase(Locale.ROOT)) match {
-          // Required asks for this field -- adopt its pruned, physicalised shape so
-          // the parquet reader projects only the required nested children.
-          case Some(req) => StructField(f.name, req.dataType, f.nullable, f.metadata)
-          // Field not required -- physicalise the full snapshot shape (used only if
-          // some other consumer references it; harmless when projection_vector skips it).
-          case None => physicaliseNestedTypesOnly(f)
-        }
-      }
-    } else fileDataSchemaFields
 
     // Column-mapping `id` mode: Delta stores the parquet field ID on every
     // StructField (at every level of nesting) under
@@ -911,11 +735,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       org.apache.spark.sql.execution.datasources.parquet.ParquetUtils.hasFieldIds(
         scan.requiredSchema)
     val useFieldIdActive = cmModeIsId || sparkFieldIdReadEnabled
-    val dataSchemaForProto =
-      if (cmModeIsId) {
-        physicalFileDataSchemaFields.map(
-          CometDeltaNativeScan.translateDeltaFieldIdToParquet)
-      } else physicalFileDataSchemaFields
     val requiredSchemaForProto =
       if (cmModeIsId) {
         requiredSchemaLogicalFields.map(CometDeltaNativeScan.translateDeltaFieldIdToParquet)
@@ -954,9 +773,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       "base_row_id",
       "default_row_commit_version")
     val isSynthetic = (f: StructField) => {
-      // Materialised row-tracking columns are NOT synthetic -- they are read from
-      // parquet (see `materializedRowTrackingFields`), so they must stay in the
-      // proto data/required schemas.
+      // Materialised row-tracking columns are NOT synthetic -- they are read from parquet, so they
+      // must stay in the required schema.
       syntheticNames.contains(f.name.toLowerCase(Locale.ROOT))
     }
     // metadataColumnNames includes the Spark `_metadata.*` virtual columns (file_path,
@@ -1008,9 +826,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     val requiredSchemaForProtoStripped =
       if (needsSyntheticEmit) requiredSchemaForProto.filterNot(isSynthetic)
       else requiredSchemaForProto
-    val dataSchemaForProtoStripped =
-      if (needsSyntheticEmit) dataSchemaForProto.filterNot(isSynthetic)
-      else dataSchemaForProto
 
     val requiredSchema = schema2Proto(requiredSchemaForProtoStripped)
     val partitionSchema = schema2Proto(partitionSchemaForProto)
@@ -1031,63 +846,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       finalOutputIndices.map(i => Integer.valueOf(i)).asJava)
 
 
-    // Projection vector maps output positions to (file_data_schema ++ partition_schema)
-    // indices. Spark's `FileSourceScanExec` splits its visible schema into
-    // `requiredSchema` (data-only columns that must be read from parquet) and an
-    // implicit partition tail that is materialised from `PartitionedFile.partition_values`.
-    // The scan's `output` is `requiredSchema ++ partitionSchema` in that order.
-    //
-    // We mirror that layout: first emit one index per required (data) field pointing
-    // into `fileDataSchemaFields`, then append one index per partition field pointing
-    // at `fileDataSchemaFields.length + partitionIdx` so the native side resolves those
-    // positions against `PartitionedFile.partition_values`.
-    //
-    // If `scan.requiredSchema` ever contains a partition column (some Delta code paths
-    // leak one in), we resolve it through the partition tail without re-reading from
-    // parquet.
-    val partitionNameToIndex: Map[String, Int] =
-      relation.partitionSchema.fields.zipWithIndex.map { case (f, i) =>
-        f.name.toLowerCase(Locale.ROOT) -> i
-      }.toMap
-    // Skip synthetic columns from the projection: DeltaSyntheticColumnsExec
-    // appends them after the parquet read. The data-schema seen by native is
-    // `dataSchemaForProtoStripped` (== fileDataSchemaFields with synthetics
-    // filtered out when needsSyntheticEmit). Indexes here must reflect that:
-    // (a) within the data tail, fileDataSchemaFields.indexWhere walks the
-    //     un-stripped fields and skips synthetic positions on the JVM side
-    //     by counting non-synthetic predecessors;
-    // (b) partition-tail indexes start at the STRIPPED data length, not the
-    //     un-stripped length, because that's what native sees on the wire.
-    // Without (b), a non-synthetic data column followed by a synthetic
-    // (e.g. relation.dataSchema = [id, __delta_internal_is_row_deleted] on
-    // a DV-rewritten Delta CDC scan) makes partition indexes overshoot the
-    // native schema length, panicking `ProjectionExprs::from_indices`.
-    // Consistent with `isSynthetic`: materialised row-tracking columns are data
-    // columns (in fileDataSchemaFields), so they must NOT be filtered out here --
-    // otherwise the projection vector wouldn't map them to the parquet read.
-    val isSyntheticFieldName = (name: String) => {
-      syntheticNames.contains(name.toLowerCase(Locale.ROOT))
-    }
-    val nonSyntheticDataIdxByName: Map[String, Int] =
-      fileDataSchemaFields
-        .filterNot(f => needsSyntheticEmit && isSyntheticFieldName(f.name))
-        .zipWithIndex
-        .map { case (f, i) => f.name.toLowerCase(Locale.ROOT) -> i }
-        .toMap
-    val nonSyntheticDataLen = nonSyntheticDataIdxByName.size
-    val requiredIndexes: Seq[Int] = scan.requiredSchema.fields.flatMap { field =>
-      if (needsSyntheticEmit && isSynthetic(field)) None
-      else {
-        val nameLower = field.name.toLowerCase(Locale.ROOT)
-        nonSyntheticDataIdxByName.get(nameLower) match {
-          case Some(idx) => Some(idx)
-          case None =>
-            partitionNameToIndex.get(nameLower).map(p => nonSyntheticDataLen + p)
-        }
-      }
-    }.toSeq
-    val partitionTailIndexes: Seq[Int] =
-      relation.partitionSchema.fields.indices.map(i => nonSyntheticDataLen + i)
 
     // "Kernel reads" (Phase 1b plain; #44 column mapping name+id; #45 partitions; #46 row-tracking
     // + metadata): route to DeltaKernelScanExec when the flag is on and the table is in the
@@ -1325,39 +1083,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
 
 
   /**
-   * Filter `tasks` down to the subset whose partition values satisfy Spark's
-   * `scan.partitionFilters`. Returns the original list unchanged when the scan has no partition
-   * filters.
-   *
-   * Recursively rewrite a `StructField` and its `DataType` so every field name at every level of
-   * nesting reflects the column-mapping physical name stored in its metadata. For fields without
-   * the physical-name metadata (e.g. partition columns, or inner struct fields on a
-   * non-column-mapped table), the logical name is retained. Only reached for nested struct/map/
-   * array elements -- top-level columns keep their logical name (the native planner does that
-   * substitution via the `column_mappings` proto).
-   */
-  private def physicaliseStructField(f: StructField): StructField = {
-    val physName =
-      if (f.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
-        f.metadata.getString(DeltaReflection.PhysicalNameMetadataKey)
-      } else {
-        f.name
-      }
-    StructField(physName, physicaliseDataType(f.dataType), f.nullable, f.metadata)
-  }
-
-  private def physicaliseDataType(dt: DataType): DataType = dt match {
-    case s: StructType => StructType(s.fields.map(physicaliseStructField))
-    case a: ArrayType => ArrayType(physicaliseDataType(a.elementType), a.containsNull)
-    case m: MapType =>
-      MapType(
-        physicaliseDataType(m.keyType),
-        physicaliseDataType(m.valueType),
-        m.valueContainsNull)
-    case other => other
-  }
-
-  /**
    * Compute Spark's `maxSplitBytes` for a Delta scan. Mirrors
    * `org.apache.spark.sql.execution.datasources.FilePartition.maxSplitBytes` verbatim so a
    * Delta-native scan splits files the same way a vanilla `FileSourceScanExec` would. Inputs are
@@ -1501,10 +1226,9 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       af.partitionValues.foreach { case (k, v) =>
         // Under column mapping, Delta stores partition values keyed by the
         // PHYSICAL column name (e.g. `col-<uuid>-part`). Our partition_schema
-        // on the wire uses LOGICAL names, and `build_delta_partitioned_files`
-        // native-side matches by name. Translate when we have a physical
-        // ->logical map (the kernel-path jni.rs already performs the same
-        // translation for its own extraction).
+        // on the wire uses LOGICAL names and the native kernel-read path matches
+        // by name, so translate when we have a physical->logical map (the
+        // kernel-path jni.rs performs the same translation for its own extraction).
         val logicalName = physicalToLogicalPartitionNames.getOrElse(k, k)
         val pvBuilder =
           OperatorOuterClass.DeltaPartitionValue.newBuilder().setName(logicalName)
