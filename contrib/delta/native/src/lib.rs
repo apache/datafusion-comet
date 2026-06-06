@@ -40,7 +40,6 @@ pub mod engine;
 pub mod error;
 pub mod jni;
 pub mod kernel_scan;
-pub mod missing_file_tolerant;
 pub mod planner;
 pub mod predicate;
 pub mod scan;
@@ -58,6 +57,5 @@ pub mod proto {
 }
 
 pub use engine::{create_engine, DeltaStorageConfig};
-pub use missing_file_tolerant::IgnoreMissingFileSource;
 pub use error::{DeltaError, DeltaResult};
 pub use scan::{list_delta_files, plan_delta_scan, DeltaFileEntry, DeltaScanPlan};
