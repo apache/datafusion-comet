@@ -50,6 +50,9 @@ use crate::execution::spark_plan::SparkPlan;
 
 /// Recursively rename a logical arrow field to its physical form using a Delta column-mapping tree
 /// (`DeltaColumnMapping` with recursive `children`). Delta only renames struct fields, so structs are
+/// Column-and-name pairs for a `ProjectionExec` (one entry per projected output column).
+type ProjectionColumns = Vec<(Arc<dyn PhysicalExpr>, String)>;
+
 /// matched by logical name and renamed; arrays and maps are descended through transparently. When
 /// `rename_top` is false the field keeps its own (top-level) name and only its nested struct fields
 /// are physicalised -- the shape the old read path's downstream expects (top-level rename happens via
@@ -319,7 +322,7 @@ fn plan_delta_kernel_scan(
         } else {
             let wrapped_schema = scan_exec.schema();
             let n = wrapped_schema.fields().len();
-            let projections: Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError> = common
+            let projections: Result<ProjectionColumns, ExecutionError> = common
                 .final_output_indices
                 .iter()
                 .map(|idx| {

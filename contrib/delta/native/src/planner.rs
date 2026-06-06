@@ -317,8 +317,8 @@ mod tests {
         .unwrap();
         match s {
             ScalarValue::TimestampMicrosecond(Some(v), None) => {
-                // 2024-01-15 12:30:45 UTC = epoch micros 1705321845_000_000
-                assert_eq!(v, 1705321845_000_000);
+                // 2024-01-15 12:30:45 UTC = epoch micros 1_705_321_845_000_000
+                assert_eq!(v, 1_705_321_845_000_000);
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -353,7 +353,7 @@ mod tests {
         .unwrap();
         match s {
             ScalarValue::TimestampMicrosecond(Some(v), Some(_)) => {
-                assert_eq!(v, 1705338000_000_000);
+                assert_eq!(v, 1_705_338_000_000_000);
             }
             other => panic!("unexpected: {other:?}"),
         }

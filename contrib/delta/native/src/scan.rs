@@ -473,8 +473,8 @@ fn extract_row_tracking_for_selected(
     let bounded_rows = total_rows.min(sel.len());
     let mut out: Vec<(Option<i64>, Option<i64>)> =
         Vec::with_capacity(sel.iter().filter(|b| **b).count());
-    for i in 0..bounded_rows {
-        if !sel[i] {
+    for (i, &keep) in sel.iter().enumerate().take(bounded_rows) {
+        if !keep {
             continue;
         }
         let b = base_arr.and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) });
@@ -539,8 +539,8 @@ fn extract_dv_descriptors_for_selected(
     let bounded_rows = total_rows.min(sel.len());
     let mut out: Vec<Option<crate::proto::DeltaDvDescriptor>> =
         Vec::with_capacity(sel.iter().filter(|b| **b).count());
-    for i in 0..bounded_rows {
-        if !sel[i] {
+    for (i, &keep) in sel.iter().enumerate().take(bounded_rows) {
+        if !keep {
             continue;
         }
         // A row has a DV iff the outer struct is non-null AND storageType is present

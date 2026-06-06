@@ -274,9 +274,10 @@ mod tests {
         l: Expr,
         r: Expr,
     ) -> Expr {
-        let mut be = BinaryExpr::default();
-        be.left = Some(Box::new(l));
-        be.right = Some(Box::new(r));
+        let be = BinaryExpr {
+            left: Some(Box::new(l)),
+            right: Some(Box::new(r)),
+        };
         mk_expr(struct_fn(Box::new(be)))
     }
 
@@ -284,8 +285,9 @@ mod tests {
         struct_fn: impl FnOnce(Box<UnaryExpr>) -> ExprStruct,
         child: Expr,
     ) -> Expr {
-        let mut ue = UnaryExpr::default();
-        ue.child = Some(Box::new(child));
+        let ue = UnaryExpr {
+            child: Some(Box::new(child)),
+        };
         mk_expr(struct_fn(Box::new(ue)))
     }
 
@@ -383,9 +385,11 @@ mod tests {
 
     #[test]
     fn binary_missing_child_falls_back_to_unknown() {
-        let mut be = BinaryExpr::default();
-        be.left = Some(Box::new(bound_ref(0)));
-        // right is None
+        let be = BinaryExpr {
+            left: Some(Box::new(bound_ref(0))),
+            // right is None
+            ..Default::default()
+        };
         let expr = mk_expr(ExprStruct::Eq(Box::new(be)));
         let p = catalyst_to_kernel_predicate(&expr);
         assert!(pred_str(&p).contains("binary_missing_child"));
@@ -417,8 +421,10 @@ mod tests {
 
     #[test]
     fn and_missing_child_falls_back_to_unknown() {
-        let mut be = BinaryExpr::default();
-        be.left = Some(Box::new(bound_ref(0)));
+        let be = BinaryExpr {
+            left: Some(Box::new(bound_ref(0))),
+            ..Default::default()
+        };
         let expr = mk_expr(ExprStruct::And(Box::new(be)));
         let p = catalyst_to_kernel_predicate(&expr);
         assert!(pred_str(&p).contains("and_missing_child"));
@@ -426,8 +432,10 @@ mod tests {
 
     #[test]
     fn or_missing_child_falls_back_to_unknown() {
-        let mut be = BinaryExpr::default();
-        be.right = Some(Box::new(bound_ref(0)));
+        let be = BinaryExpr {
+            right: Some(Box::new(bound_ref(0))),
+            ..Default::default()
+        };
         let expr = mk_expr(ExprStruct::Or(Box::new(be)));
         let p = catalyst_to_kernel_predicate(&expr);
         assert!(pred_str(&p).contains("or_missing_child"));
@@ -462,7 +470,7 @@ mod tests {
 
     #[test]
     fn unary_missing_child_falls_back_to_unknown() {
-        let expr = mk_expr(ExprStruct::IsNull(Box::new(UnaryExpr::default())));
+        let expr = mk_expr(ExprStruct::IsNull(Box::default()));
         let p = catalyst_to_kernel_predicate(&expr);
         assert!(pred_str(&p).contains("missing_child"));
     }
@@ -471,10 +479,11 @@ mod tests {
 
     #[test]
     fn in_translates_with_literal_list() {
-        let mut in_expr = In::default();
-        in_expr.in_value = Some(Box::new(bound_ref(0)));
-        in_expr.lists = vec![lit_int(1), lit_int(2), lit_int(3)];
-        in_expr.negated = false;
+        let in_expr = In {
+            in_value: Some(Box::new(bound_ref(0))),
+            lists: vec![lit_int(1), lit_int(2), lit_int(3)],
+            negated: false,
+        };
         let expr = mk_expr(ExprStruct::In(Box::new(in_expr)));
         let p = catalyst_to_kernel_predicate_with_names(&expr, &["c".to_string()]);
         let s = pred_str(&p);
@@ -483,10 +492,11 @@ mod tests {
 
     #[test]
     fn in_negated_wraps_with_not() {
-        let mut in_expr = In::default();
-        in_expr.in_value = Some(Box::new(bound_ref(0)));
-        in_expr.lists = vec![lit_int(1)];
-        in_expr.negated = true;
+        let in_expr = In {
+            in_value: Some(Box::new(bound_ref(0))),
+            lists: vec![lit_int(1)],
+            negated: true,
+        };
         let expr = mk_expr(ExprStruct::In(Box::new(in_expr)));
         let p = catalyst_to_kernel_predicate_with_names(&expr, &["c".to_string()]);
         let s = pred_str(&p);
@@ -495,9 +505,11 @@ mod tests {
 
     #[test]
     fn in_empty_list_falls_back_to_unknown() {
-        let mut in_expr = In::default();
-        in_expr.in_value = Some(Box::new(bound_ref(0)));
-        in_expr.lists = vec![];
+        let in_expr = In {
+            in_value: Some(Box::new(bound_ref(0))),
+            lists: vec![],
+            ..Default::default()
+        };
         let expr = mk_expr(ExprStruct::In(Box::new(in_expr)));
         let p = catalyst_to_kernel_predicate(&expr);
         assert!(pred_str(&p).contains("in_no_literal_values"));
@@ -515,8 +527,10 @@ mod tests {
 
     #[test]
     fn cast_unwraps_in_predicate_context() {
-        let mut cast = Cast::default();
-        cast.child = Some(Box::new(binary(ExprStruct::Eq, bound_ref(0), lit_int(1))));
+        let cast = Cast {
+            child: Some(Box::new(binary(ExprStruct::Eq, bound_ref(0), lit_int(1)))),
+            ..Default::default()
+        };
         let expr = mk_expr(ExprStruct::Cast(Box::new(cast)));
         let p = catalyst_to_kernel_predicate_with_names(&expr, &["c".to_string()]);
         let s = pred_str(&p);
@@ -525,8 +539,10 @@ mod tests {
 
     #[test]
     fn cast_unwraps_in_expression_context() {
-        let mut cast = Cast::default();
-        cast.child = Some(Box::new(bound_ref(0)));
+        let cast = Cast {
+            child: Some(Box::new(bound_ref(0))),
+            ..Default::default()
+        };
         let expr = mk_expr(ExprStruct::Cast(Box::new(cast)));
         let kernel_expr =
             catalyst_to_kernel_expression_with_names(&expr, &["x".to_string()]);
@@ -536,7 +552,7 @@ mod tests {
 
     #[test]
     fn cast_missing_child_falls_back_to_unknown() {
-        let expr = mk_expr(ExprStruct::Cast(Box::new(Cast::default())));
+        let expr = mk_expr(ExprStruct::Cast(Box::default()));
         let p = catalyst_to_kernel_predicate(&expr);
         assert!(pred_str(&p).contains("cast_missing_child"));
     }
