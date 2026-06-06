@@ -568,8 +568,6 @@ object CometDeltaNativeScanExec {
       common.getTableRoot,
       common.getSnapshotVersion.toString,
       common.getRequiredSchemaList.toString,
-      common.getDataFiltersList.toString,
-      common.getProjectionVectorList.toString,
       common.getColumnMappingsList.toString)
     s"${common.getSource}_${components.mkString("|").hashCode}"
   }

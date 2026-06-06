@@ -1012,10 +1012,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       if (needsSyntheticEmit) dataSchemaForProto.filterNot(isSynthetic)
       else dataSchemaForProto
 
-    val dataSchema = schema2Proto(dataSchemaForProtoStripped)
     val requiredSchema = schema2Proto(requiredSchemaForProtoStripped)
     val partitionSchema = schema2Proto(partitionSchemaForProto)
-    commonBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
     commonBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
     commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
     commonBuilder.setUseFieldId(useFieldIdActive)
@@ -1090,9 +1088,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     }.toSeq
     val partitionTailIndexes: Seq[Int] =
       relation.partitionSchema.fields.indices.map(i => nonSyntheticDataLen + i)
-    val projectionVector: Seq[Int] = requiredIndexes ++ partitionTailIndexes
-    commonBuilder.addAllProjectionVector(
-      projectionVector.map(idx => idx.toLong.asInstanceOf[java.lang.Long]).toIterable.asJava)
 
     // "Kernel reads" (Phase 1b plain; #44 column mapping name+id; #45 partitions; #46 row-tracking
     // + metadata): route to DeltaKernelScanExec when the flag is on and the table is in the
@@ -1110,9 +1105,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     val kernelReadEligible = DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf)
     commonBuilder.setKernelRead(kernelReadEligible)
 
-    // Pushed-down data filters, gated by Spark's parquet filter pushdown config (same as
-    // CometNativeScan). See `addPushedDataFilters`.
-    addPushedDataFilters(commonBuilder, scan, syntheticNames)
+    // (Data-filter pushdown belonged to the removed ParquetSource path; the kernel-read path does
+    // its own stats-based file pruning during log replay, so no pushed predicate is shipped.)
 
     storageOptions.asScala.foreach { case (key, value) =>
       commonBuilder.putObjectStoreOptions(key, value)
@@ -1159,8 +1153,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
 
   /**
    * Serialize the scan's supported data filters into a single predicate proto for kernel's
-   * stats-based file pruning during log replay (the same filters are also pushed into
-   * ParquetSource separately, see `addPushedDataFilters` -- the two layers are additive).
+   * stats-based file pruning during log replay.
    *
    * All supported filters are combined into one AND conjunction. `BoundReference`s carry the
    * column INDEX into `scan.output`; the native side resolves indices to column names via the
@@ -1330,95 +1323,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     }
   }
 
-  /**
-   * Serialize the scan's supported data filters that are safe to push into ParquetSource for
-   * row-group-level pruning, adding them to `commonBuilder`. Gated by Spark's parquet filter
-   * pushdown config (same as CometNativeScan). Filters referencing nested struct/array/map
-   * access, partition columns, or synthetic columns are skipped (see inline comments); they
-   * remain correct because Spark evaluates them post-scan.
-   */
-  private def addPushedDataFilters(
-      commonBuilder: DeltaScanCommon.Builder,
-      scan: CometDeltaScanMarker,
-      syntheticNames: Set[String]): Unit = {
-    if (!(scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
-        CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(scan.conf))) {
-      return
-    }
-    val relation = scan.relation
-    val isSynthetic = (f: StructField) => syntheticNames.contains(f.name.toLowerCase(Locale.ROOT))
-    // Filters referencing nested (struct/array/map) columns aren't safe to push into
-    // `ParquetSource`: DataFusion currently produces "Invalid comparison operation: Utf8 <=
-    // Int32" (or similar) when the filter references an array element through
-    // `GetArrayItem`/`GetStructField`/`GetMapValue`, because the expression tree is walked
-    // against the file schema where the child types don't match the literal. The filter is
-    // still evaluated correctly by Spark post-scan, so dropping it from pushdown keeps the
-    // scan results correct at the cost of some row-group-level pruning.
-    def referencesNestedAccess(e: Expression): Boolean = e.exists {
-      case _: org.apache.spark.sql.catalyst.expressions.GetArrayItem => true
-      case _: org.apache.spark.sql.catalyst.expressions.GetArrayStructFields => true
-      case _: org.apache.spark.sql.catalyst.expressions.GetMapValue => true
-      case _ => false
-    }
-    // Partition columns are NOT in the file's data schema; the native parquet path
-    // evaluates pushed-down filters against the file-data schema only, so a filter
-    // that references a partition column would resolve to an out-of-bounds Bound
-    // index ("Column index N is out of bound. Schema: Field {<file-data-fields>}").
-    // Spark normally separates `partitionFilters` from `dataFilters` at planning
-    // time, but `scan.supportedDataFilters` can still surface filters that touch
-    // both data + partition columns (or pure-partition filters when the optimizer
-    // didn't peel them off cleanly). Skip any filter that references a partition
-    // attribute; partition pruning is handled separately by `prunePartitions`
-    // driver-side via the kernel/AddFile path.
-    val partitionNamesLc: Set[String] =
-      relation.partitionSchema.fields.map(_.name.toLowerCase(Locale.ROOT)).toSet
-    def referencesPartitionColumn(e: Expression): Boolean = e.exists {
-      case a: org.apache.spark.sql.catalyst.expressions.AttributeReference =>
-        partitionNamesLc.contains(a.name.toLowerCase(Locale.ROOT))
-      case _ => false
-    }
-    val dataFilters = new ListBuffer[Expr]()
-    // Filters bind by position into the schema we hand to exprToProto. The native
-    // scan's `required_schema` strips synthetic emit columns -- it's just the
-    // non-synthetic, non-metadata data fields. Bind against that same layout so
-    // Bound indices line up; binding against `scan.output` (which carries appended
-    // _metadata.* attributes) would silently misalign whenever the prefix doesn't
-    // match.
-    val filterBindingInputs: Seq[org.apache.spark.sql.catalyst.expressions.Attribute] =
-      scan.requiredSchema.fields.collect {
-        case f if !isSynthetic(f) =>
-          scan.output.find(_.name.equalsIgnoreCase(f.name)).orNull
-      }.filter(_ != null).toSeq
-    // Skip filters that reference any synthetic column (`__delta_internal_*`,
-    // `_tmp_metadata_row_index`, `_metadata.*`, row-tracking helpers, ...). They
-    // aren't present in the parquet file so the pushed-down evaluation would
-    // either error out ("column N out of bounds") or, worse, evaluate against
-    // unrelated parquet stats and prune rows incorrectly. Spark / Delta's Filter
-    // above the scan handles them after the synthetic exec emits them.
-    def referencesSyntheticColumn(e: Expression): Boolean = e.exists {
-      case a: org.apache.spark.sql.catalyst.expressions.AttributeReference =>
-        val lc = a.name.toLowerCase(Locale.ROOT)
-        syntheticNames.contains(lc) ||
-          lc.startsWith("_row-id-col-") ||
-          lc.startsWith("_row-commit-version-col-")
-      case _ => false
-    }
-    scan.supportedDataFilters.foreach { filter =>
-      if (referencesNestedAccess(filter)) {
-        logInfo(s"CometDeltaNativeScan: skipping pushdown of nested-access filter $filter")
-      } else if (referencesPartitionColumn(filter)) {
-        logInfo(s"CometDeltaNativeScan: skipping pushdown of partition-column filter $filter")
-      } else if (referencesSyntheticColumn(filter)) {
-        logInfo(s"CometDeltaNativeScan: skipping pushdown of synthetic-column filter $filter")
-      } else {
-        exprToProto(filter, filterBindingInputs) match {
-          case Some(proto) => dataFilters += proto
-          case _ => logWarning(s"CometDeltaNativeScan: unsupported data filter $filter")
-        }
-      }
-    }
-    commonBuilder.addAllDataFilters(dataFilters.asJava)
-  }
 
   /**
    * Filter `tasks` down to the subset whose partition values satisfy Spark's

@@ -15,33 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Delta-specific helpers core's `OpStruct::DeltaScan` dispatcher arm composes onto
-//! the standard parquet datasource path:
+//! Delta-specific helpers the kernel-read path uses for partition-value handling:
 //!
-//!   - [`build_delta_partitioned_files`] -- convert a `DeltaScanTask` list into a
-//!     `Vec<PartitionedFile>` (Delta's add.path is already absolute on the driver;
-//!     partition values arrive as strings, parsed here)
 //!   - [`parse_delta_partition_scalar`] -- string -> `ScalarValue` with Delta's TZ
-//!     semantics and the DATE -> TIMESTAMP_NTZ widening fallback
-//!   - [`ColumnMappingFilterRewriter`] -- rewrites pushed-down data filters from
-//!     logical to physical column names when column mapping is active
+//!     semantics and the DATE -> TIMESTAMP_NTZ widening fallback (partition injection
+//!     in `DeltaKernelScanExec::append_partition_columns`)
+//!   - [`SessionTimezone`] -- pre-parsed session timezone, reused across partition parses
 //!
 //! All take pure DataFusion / arrow types so this crate stays free of any
 //! datafusion-comet dependency (no cycle: core can call us, we can't call core).
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
-use datafusion::common::tree_node::{Transformed, TreeNodeRewriter};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::ScalarValue;
-use datafusion::datasource::listing::PartitionedFile;
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::expressions::Column;
-use object_store::path::Path;
-use url::Url;
-
-use crate::proto::DeltaScanTask;
 
 /// Pre-parsed session timezone, computed once per scan and reused across every partition
 /// value parse. Avoids the per-row `chrono_tz::Tz::from_str` lookup
@@ -97,69 +82,6 @@ fn parse_fixed_offset(s: &str) -> Option<chrono::FixedOffset> {
     chrono::FixedOffset::east_opt(sign * secs)
 }
 
-/// Convert `DeltaScanTask`s into DataFusion `PartitionedFile`s. Delta's add.path is
-/// already an absolute URL once kernel has resolved it on the driver.
-pub fn build_delta_partitioned_files(
-    tasks: &[DeltaScanTask],
-    partition_schema: &Schema,
-    session_tz: &str,
-) -> Result<Vec<PartitionedFile>, String> {
-    let parsed_tz = SessionTimezone::parse(session_tz);
-    let mut files = Vec::with_capacity(tasks.len());
-    // Reused scratch map for per-task partition-value lookup. Without it, the inner
-    // `partition_schema.fields()` loop walks `task.partition_values` with `.iter().find()`
-    // for every field -- O(width × values) per task. With it, build the map once per task
-    // and do O(1) gets. `clear()` keeps the allocation across tasks.
-    let mut partition_values_by_name: std::collections::HashMap<&str, &str> =
-        std::collections::HashMap::new();
-    for task in tasks {
-        let url = Url::parse(task.file_path.as_ref())
-            .map_err(|e| format!("Invalid Delta file URL: {e}"))?;
-        let path = Path::from_url_path(url.path())
-            .map_err(|e| format!("from_url_path: {e}"))?;
-
-        let mut partitioned_file = match (task.byte_range_start, task.byte_range_end) {
-            (Some(start), Some(end)) => PartitionedFile::new_with_range(
-                String::new(),
-                task.file_size,
-                start as i64,
-                end as i64,
-            ),
-            _ => PartitionedFile::new(String::new(), task.file_size),
-        };
-        partitioned_file.object_meta.location = path;
-
-        let mut partition_values: Vec<ScalarValue> =
-            Vec::with_capacity(partition_schema.fields().len());
-        partition_values_by_name.clear();
-        for pv in &task.partition_values {
-            if let Some(v) = pv.value.as_deref() {
-                partition_values_by_name.insert(pv.name.as_str(), v);
-            }
-        }
-        for field in partition_schema.fields() {
-            let scalar = match partition_values_by_name.get(field.name().as_str()).copied() {
-                Some(s) => parse_delta_partition_scalar(s, field.data_type(), &parsed_tz, session_tz)
-                    .map_err(|e| {
-                        format!(
-                            "Failed to parse Delta partition value for column '{}': {e}",
-                            field.name()
-                        )
-                    })?,
-                None => ScalarValue::try_from(field.data_type()).map_err(|e| {
-                    format!(
-                        "Failed to build null partition value for column '{}': {e}",
-                        field.name()
-                    )
-                })?,
-            };
-            partition_values.push(scalar);
-        }
-        partitioned_file.partition_values = partition_values;
-        files.push(partitioned_file);
-    }
-    Ok(files)
-}
 
 /// Parse a Delta partition value string into a `ScalarValue`. Honours session TZ for
 /// TIMESTAMP columns. Delta writes TIMESTAMP partition values in the JVM default TZ
@@ -261,45 +183,6 @@ pub fn parse_delta_partition_scalar(
     }
 }
 
-/// Rewrites Column references in a PhysicalExpr from logical names/indices (in
-/// required_schema) to physical names/indices (in data_schema). Used when Delta column
-/// mapping is active so pushed-down data filters match the DataSourceExec's physical
-/// names.
-pub struct ColumnMappingFilterRewriter<'a> {
-    pub logical_to_physical: &'a HashMap<String, String>,
-    pub data_schema: &'a SchemaRef,
-}
-
-impl TreeNodeRewriter for ColumnMappingFilterRewriter<'_> {
-    type Node = Arc<dyn PhysicalExpr>;
-
-    fn f_down(
-        &mut self,
-        node: Self::Node,
-    ) -> datafusion::common::Result<Transformed<Self::Node>> {
-        if let Some(column) = node.as_any().downcast_ref::<Column>() {
-            if let Some(physical_name) = self.logical_to_physical.get(column.name()) {
-                if let Some(idx) = self
-                    .data_schema
-                    .fields()
-                    .iter()
-                    .position(|f| f.name() == physical_name)
-                {
-                    return Ok(Transformed::yes(Arc::new(Column::new(physical_name, idx))));
-                }
-                log::warn!(
-                    "Column mapping: physical name '{}' for logical '{}' not found in \
-                     data_schema; filter may fail at execution time",
-                    physical_name,
-                    column.name()
-                );
-            }
-            Ok(Transformed::no(node))
-        } else {
-            Ok(Transformed::no(node))
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -478,148 +361,4 @@ mod tests {
         }
     }
 
-    // ---- build_delta_partitioned_files ----
-
-    fn task(file_path: &str, partition_values: Vec<(&str, Option<&str>)>) -> DeltaScanTask {
-        use crate::proto::DeltaPartitionValue;
-        DeltaScanTask {
-            file_path: file_path.into(),
-            file_size: 1000,
-            partition_values: partition_values
-                .into_iter()
-                .map(|(n, v)| DeltaPartitionValue {
-                    name: n.into(),
-                    value: v.map(|s| s.into()),
-                })
-                .collect(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn build_files_empty_input() {
-        let pschema = Schema::new(vec![Field::new("p", DataType::Int32, true)]);
-        let files = build_delta_partitioned_files(&[], &pschema, "UTC").unwrap();
-        assert!(files.is_empty());
-    }
-
-    #[test]
-    fn build_files_no_partition_columns() {
-        let pschema = Schema::new(Vec::<Field>::new());
-        let tasks = vec![task("file:///tmp/a.parquet", vec![])];
-        let files = build_delta_partitioned_files(&tasks, &pschema, "UTC").unwrap();
-        assert_eq!(files.len(), 1);
-        assert!(files[0].partition_values.is_empty());
-    }
-
-    #[test]
-    fn build_files_single_partition_int() {
-        let pschema = Schema::new(vec![Field::new("p", DataType::Int32, true)]);
-        let tasks = vec![task("file:///tmp/a.parquet", vec![("p", Some("42"))])];
-        let files = build_delta_partitioned_files(&tasks, &pschema, "UTC").unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].partition_values, vec![ScalarValue::Int32(Some(42))]);
-    }
-
-    #[test]
-    fn build_files_missing_partition_value_yields_null() {
-        let pschema = Schema::new(vec![Field::new("p", DataType::Int32, true)]);
-        let tasks = vec![task("file:///tmp/a.parquet", vec![])]; // no value for p
-        let files = build_delta_partitioned_files(&tasks, &pschema, "UTC").unwrap();
-        assert_eq!(files[0].partition_values, vec![ScalarValue::Int32(None)]);
-    }
-
-    #[test]
-    fn build_files_invalid_url_errors() {
-        let pschema = Schema::new(Vec::<Field>::new());
-        let tasks = vec![task("not a url", vec![])];
-        let err = build_delta_partitioned_files(&tasks, &pschema, "UTC").unwrap_err();
-        assert!(err.contains("Invalid Delta file URL"));
-    }
-
-    // ---- ColumnMappingFilterRewriter ----
-
-    #[test]
-    fn cm_rewriter_renames_known_logical_column() {
-        let logical_to_physical: HashMap<String, String> =
-            [("user_id".to_string(), "col-1a2b3c".to_string())]
-                .iter()
-                .cloned()
-                .collect();
-        let data_schema: SchemaRef = Arc::new(Schema::new(vec![
-            Field::new("col-1a2b3c", DataType::Int64, false),
-        ]));
-        let mut rewriter = ColumnMappingFilterRewriter {
-            logical_to_physical: &logical_to_physical,
-            data_schema: &data_schema,
-        };
-        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("user_id", 0));
-        let out = expr.rewrite(&mut rewriter).unwrap().data;
-        let col = out.as_any().downcast_ref::<Column>().unwrap();
-        assert_eq!(col.name(), "col-1a2b3c");
-        assert_eq!(col.index(), 0);
-    }
-
-    #[test]
-    fn cm_rewriter_leaves_unmapped_column_alone() {
-        let logical_to_physical = HashMap::new();
-        let data_schema: SchemaRef = Arc::new(Schema::new(vec![
-            Field::new("other", DataType::Int64, false),
-        ]));
-        let mut rewriter = ColumnMappingFilterRewriter {
-            logical_to_physical: &logical_to_physical,
-            data_schema: &data_schema,
-        };
-        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("other", 0));
-        let out = expr.rewrite(&mut rewriter).unwrap().data;
-        let col = out.as_any().downcast_ref::<Column>().unwrap();
-        assert_eq!(col.name(), "other");
-    }
-
-    #[test]
-    fn cm_rewriter_resolves_correct_index() {
-        let logical_to_physical: HashMap<String, String> =
-            [("logical_b".to_string(), "phys_b".to_string())]
-                .iter()
-                .cloned()
-                .collect();
-        let data_schema: SchemaRef = Arc::new(Schema::new(vec![
-            Field::new("phys_a", DataType::Int64, false),
-            Field::new("phys_b", DataType::Int64, false), // index 1
-            Field::new("phys_c", DataType::Int64, false),
-        ]));
-        let mut rewriter = ColumnMappingFilterRewriter {
-            logical_to_physical: &logical_to_physical,
-            data_schema: &data_schema,
-        };
-        // Even if input index is 0 (from required_schema position), rewriter resolves to
-        // physical schema's index for phys_b which is 1.
-        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("logical_b", 0));
-        let out = expr.rewrite(&mut rewriter).unwrap().data;
-        let col = out.as_any().downcast_ref::<Column>().unwrap();
-        assert_eq!(col.name(), "phys_b");
-        assert_eq!(col.index(), 1, "must resolve to physical schema index");
-    }
-
-    #[test]
-    fn cm_rewriter_logs_warning_for_missing_physical() {
-        // Mapping says logical -> physical, but physical isn't in data_schema.
-        let logical_to_physical: HashMap<String, String> =
-            [("logical".to_string(), "phys_missing".to_string())]
-                .iter()
-                .cloned()
-                .collect();
-        let data_schema: SchemaRef = Arc::new(Schema::new(vec![
-            Field::new("something_else", DataType::Int64, false),
-        ]));
-        let mut rewriter = ColumnMappingFilterRewriter {
-            logical_to_physical: &logical_to_physical,
-            data_schema: &data_schema,
-        };
-        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("logical", 0));
-        // Should not panic; returns the original Column unchanged.
-        let out = expr.rewrite(&mut rewriter).unwrap().data;
-        let col = out.as_any().downcast_ref::<Column>().unwrap();
-        assert_eq!(col.name(), "logical"); // unchanged
-    }
 }

@@ -288,16 +288,16 @@ message IcebergDeleteFile {
 
 // Per-scan invariants. Lives at the head of every Delta scan operator payload.
 message DeltaScanCommon {
-  // Required schema (projection applied to data schema).
+  // Required (output) schema -- pure-logical at every nesting level. The kernel-read path
+  // physicalises it via `column_mappings`; partition columns are split out by name.
   repeated SparkStructField required_schema = 1;
-  // Full data schema of the table (on-disk parquet schema).
-  repeated SparkStructField data_schema = 2;
   // Partition columns (stored in add actions, not in file paths).
   repeated SparkStructField partition_schema = 3;
-  // Pushed-down data filters (Catalyst translated).
-  repeated spark.spark_expression.Expr data_filters = 4;
-  // Column projection indices into (data_schema ++ partition_schema).
-  repeated int64 projection_vector = 5;
+  // Fields 2 (data_schema), 4 (data_filters), 5 (projection_vector) belonged to the removed
+  // legacy ParquetSource read path; the kernel-read path reads only `required_schema` +
+  // `column_mappings`. Reserved so the numbers aren't reused.
+  reserved 2, 4, 5;
+  reserved "data_schema", "data_filters", "projection_vector";
   string session_timezone = 6;
   bool case_sensitive = 7;
   // Cloud storage credentials / options, keyed by Hadoop-style names.
