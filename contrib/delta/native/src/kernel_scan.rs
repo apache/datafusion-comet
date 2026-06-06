@@ -527,36 +527,59 @@ impl DeltaKernelScanExec {
         data_batch: arrow::array::RecordBatch,
         partition_values: &[(String, Option<String>)],
     ) -> DFResult<arrow::array::RecordBatch> {
-        if self.partition_schema.fields().is_empty() {
-            return Ok(data_batch);
-        }
         let num_rows = data_batch.num_rows();
-        let parsed_tz = SessionTimezone::parse(&self.session_timezone);
-        let mut columns = data_batch.columns().to_vec();
-        for pf in self.partition_schema.fields() {
-            let raw = partition_values
-                .iter()
-                .find(|(name, _)| name == pf.name())
-                .and_then(|(_, v)| v.as_ref());
-            let scalar = match raw {
-                Some(v) => parse_delta_partition_scalar(
-                    v,
-                    pf.data_type(),
-                    &parsed_tz,
-                    &self.session_timezone,
-                )
-                .map_err(|e| {
-                    DataFusionError::Execution(format!(
-                        "kernel scan partition value parse for '{}': {e}",
-                        pf.name()
-                    ))
-                })?,
-                // Absent or explicitly-NULL partition value -> a typed NULL constant.
-                None => ScalarValue::try_from(pf.data_type())?,
-            };
-            columns.push(scalar.to_array_of_size(num_rows)?);
+        let mut columns: Vec<arrow::array::ArrayRef> = data_batch.columns().to_vec();
+        if !self.partition_schema.fields().is_empty() {
+            let parsed_tz = SessionTimezone::parse(&self.session_timezone);
+            for pf in self.partition_schema.fields() {
+                let raw = partition_values
+                    .iter()
+                    .find(|(name, _)| name == pf.name())
+                    .and_then(|(_, v)| v.as_ref());
+                let scalar = match raw {
+                    Some(v) => parse_delta_partition_scalar(
+                        v,
+                        pf.data_type(),
+                        &parsed_tz,
+                        &self.session_timezone,
+                    )
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "kernel scan partition value parse for '{}': {e}",
+                            pf.name()
+                        ))
+                    })?,
+                    // Absent or explicitly-NULL partition value -> a typed NULL constant.
+                    None => ScalarValue::try_from(pf.data_type())?,
+                };
+                columns.push(scalar.to_array_of_size(num_rows)?);
+            }
         }
-        arrow::array::RecordBatch::try_new(Arc::clone(&self.output_schema), columns)
+        // Reconcile each column to `output_schema`'s EXACT field type, including NESTED field names
+        // (list element, struct fields, map key/value). The kernel-read batch names nested fields by
+        // Spark convention (e.g. a list element "element"), but `output_schema` -- derived from the
+        // proto `required_schema` -- can carry empty/different nested names. Without this, the emitted
+        // batch's schema != `output_schema` and DataFusion rejects it ("column types must match schema
+        // types" on a partitioned try_new, or an `assert_eq!` / coalesce panic for the unpartitioned
+        // pass-through). The data is already in logical (output) order from the kernel transform, so
+        // this is a metadata-only relabel via `arrow_cast` -- a no-op whenever the types already match.
+        let reconciled: Vec<arrow::array::ArrayRef> = columns
+            .iter()
+            .zip(self.output_schema.fields())
+            .map(|(col, field)| {
+                if col.data_type() == field.data_type() {
+                    Ok(Arc::clone(col))
+                } else {
+                    arrow_cast(col, field.data_type()).map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "kernel scan: reconciling column '{}' to output schema: {e}",
+                            field.name()
+                        ))
+                    })
+                }
+            })
+            .collect::<DFResult<Vec<_>>>()?;
+        arrow::array::RecordBatch::try_new(Arc::clone(&self.output_schema), reconciled)
             .map_err(DataFusionError::from)
     }
 }

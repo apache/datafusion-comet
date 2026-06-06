@@ -316,6 +316,35 @@ The originally-"untriaged" failures resolve into:
   the failing `RowTrackingMergeCommonNameBasedCDCOnSuite` (17/17 pass).
 - **Tracking:** internal task #204.
 
+### B8. Nested array-of-struct / map schema evolution — native panic — FIXED
+
+- **Tests (~95, the dominant family in the 4.1 run):** "schema evolution - array of
+  struct / nested struct / map of struct ..." in `MergeIntoSchemaEvolutionSuite` +
+  `RowTrackingMergeSuite` (e.g. "array of struct with same columns but in different
+  order ... by name/position", "extra nested column in source - update - array of
+  struct", "struct in different order - nested array of struct", "... map struct
+  value ...").
+- **Symptom:** native error/panic reading an `array<struct>` / nested-struct / map
+  column via the kernel-read path: `Invalid argument error: column types must match
+  schema types, expected List(Struct(...)) but found List(Struct(...), field:
+  'element')` (and an equivalent `assert_eq!` / `arrow-select coalesce.rs:539` panic
+  on the unpartitioned pass-through). A *plain* read of a consistent `array<struct>`
+  table is fine; the trigger is the schema-evolution / MERGE read.
+- **Root cause:** the kernel-read batch names nested Arrow fields by Spark convention
+  (list element `"element"`), but `DeltaKernelScanExec.output_schema` -- derived from
+  the proto `required_schema` via `convert_spark_types_to_arrow_schema` -- carries
+  empty nested field names. The emitted batch schema therefore != `output_schema`,
+  which DataFusion rejects. The old ParquetSource path normalized nested names via
+  Comet's `SparkSchemaAdapter`.
+- **Fix:** `DeltaKernelScanExec::append_partition_columns` now reconciles every
+  emitted column to `output_schema`'s exact field type (incl. nested list / struct /
+  map field names) via `arrow_cast` -- a metadata-only relabel, since the data is
+  already in logical (output) order from the kernel transform; applied on both the
+  partitioned and the (previously pass-through) unpartitioned path.
+- **Guard:** `CometDeltaNestedArrayStructReproSuite` (MERGE `array<struct>` with
+  reordered nested fields; proven red→green).
+- **Tracking:** internal task #73.
+
 ---
 
 ## How to use this doc
