@@ -445,6 +445,11 @@ message DeltaScanTaskList {
 message DeltaColumnMapping {
   string logical_name = 1;
   string physical_name = 2;
+  // Column mapping for nested struct fields. Delta only renames struct fields; arrays and maps
+  // are descended through transparently, so a child entry matches a struct field by `logical_name`
+  // whether that struct is the field's type directly or nested inside an array element / map value.
+  // Empty for leaf / non-struct fields.
+  repeated DeltaColumnMapping children = 3;
 }
 
 message Projection {

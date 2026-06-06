@@ -889,6 +889,189 @@ mod tests {
         );
     }
 
+    // #47 SPIKE: does the kernel-read path relabel NESTED struct field names physical->logical?
+    // We write a parquet whose struct `s` has a nested field with the PHYSICAL name "phys_a", and
+    // pass a logical schema naming that nested field "log_a". If kernel's identity transform relabels
+    // recursively, the output nested field is "log_a"; if it only renames top level (as
+    // evaluate_struct_patch_expression reads), the nested field comes back "phys_a" -- meaning we
+    // must do the nested physical->logical relabel ourselves (e.g. Comet's spark_parquet_convert).
+    #[test]
+    fn spike_nested_struct_rename() {
+        use crate::engine::create_engine;
+        use crate::scan::normalize_url;
+        use delta_kernel::arrow::array::{
+            Array as _, ArrayRef, Int64Array, RecordBatch as RB, StructArray,
+        };
+        use delta_kernel::arrow::datatypes::{
+            DataType as ADt, Field as AField, Fields, Schema as ASchema,
+        };
+        use delta_kernel::expressions::{Expression, ExpressionStructPatch};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let table_dir = tmp.path();
+        let parquet_path = table_dir.join("part-00000.parquet");
+
+        // Parquet: top-level struct "s" whose nested field uses its PHYSICAL name "phys_a".
+        let inner = Arc::new(AField::new("phys_a", ADt::Int64, true));
+        let struct_dt = ADt::Struct(Fields::from(vec![Arc::clone(&inner)]));
+        let arrow_schema = Arc::new(ASchema::new(vec![AField::new("s", struct_dt, true)]));
+        let child: ArrayRef = Arc::new(Int64Array::from(vec![10i64, 20]));
+        let struct_arr = StructArray::new(Fields::from(vec![inner]), vec![child], None);
+        let batch = RB::try_new(arrow_schema.clone(), vec![Arc::new(struct_arr)]).unwrap();
+        let file = std::fs::File::create(&parquet_path).unwrap();
+        let mut writer =
+            delta_kernel::parquet::arrow::ArrowWriter::try_new(file, arrow_schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
+
+        let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
+        let engine = create_engine(&url, &DeltaStorageConfig::default()).unwrap();
+
+        // physical: s: struct<phys_a>; logical: s: struct<log_a> (nested name differs).
+        let physical_arrow = ASchema::new(vec![AField::new(
+            "s",
+            ADt::Struct(Fields::from(vec![Arc::new(AField::new(
+                "phys_a",
+                ADt::Int64,
+                true,
+            ))])),
+            true,
+        )]);
+        let logical_arrow = ASchema::new(vec![AField::new(
+            "s",
+            ADt::Struct(Fields::from(vec![Arc::new(AField::new(
+                "log_a",
+                ADt::Int64,
+                true,
+            ))])),
+            true,
+        )]);
+        let physical = arrow_to_kernel_schema(&physical_arrow).unwrap();
+        let logical = arrow_to_kernel_schema(&logical_arrow).unwrap();
+        let transform = Arc::new(Expression::struct_patch(ExpressionStructPatch::new_top_level()));
+
+        let batches = read_file_via_kernel(
+            &engine,
+            &url,
+            "part-00000.parquet",
+            size,
+            None,
+            Some(transform),
+            physical,
+            logical,
+        )
+        .unwrap();
+
+        let top = batches[0].schema().field(0).clone();
+        let nested_name = match top.data_type() {
+            ADt::Struct(fields) => fields[0].name().clone(),
+            other => panic!("expected a struct column, got {other:?}"),
+        };
+        assert_eq!(
+            nested_name, "log_a",
+            "SPIKE RESULT: nested field came back as '{nested_name}'. If 'phys_a', kernel's \
+             transform does NOT relabel nested fields -> the kernel-read path must relabel nested \
+             physical->logical itself (reuse Comet's spark_parquet_convert)."
+        );
+    }
+
+    // #47 SPIKE 2: nested PRUNING. The parquet struct `s` has TWO physical fields (phys_a, phys_b);
+    // the required schema wants only ONE (log_a <- phys_a). Does the current read path (top-level
+    // ProjectionMask + align + transform) drop phys_b, or do we need leaf-level projection? The
+    // result drives whether the design needs ProjectionMask::leaves over the physical leaf paths.
+    #[test]
+    fn spike_nested_struct_prune() {
+        use crate::engine::create_engine;
+        use crate::scan::normalize_url;
+        use delta_kernel::arrow::array::{
+            Array as _, ArrayRef, Int64Array, RecordBatch as RB, StringArray, StructArray,
+        };
+        use delta_kernel::arrow::datatypes::{
+            DataType as ADt, Field as AField, Fields, Schema as ASchema,
+        };
+        use delta_kernel::expressions::{Expression, ExpressionStructPatch};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let table_dir = tmp.path();
+        let parquet_path = table_dir.join("part-00000.parquet");
+
+        // Parquet struct "s" with two physical nested fields: phys_a (int64), phys_b (utf8).
+        let fa = Arc::new(AField::new("phys_a", ADt::Int64, true));
+        let fb = Arc::new(AField::new("phys_b", ADt::Utf8, true));
+        let struct_dt = ADt::Struct(Fields::from(vec![Arc::clone(&fa), Arc::clone(&fb)]));
+        let arrow_schema = Arc::new(ASchema::new(vec![AField::new("s", struct_dt, true)]));
+        let ca: ArrayRef = Arc::new(Int64Array::from(vec![10i64, 20]));
+        let cb: ArrayRef = Arc::new(StringArray::from(vec!["x", "y"]));
+        let struct_arr = StructArray::new(Fields::from(vec![fa, fb]), vec![ca, cb], None);
+        let batch = RB::try_new(arrow_schema.clone(), vec![Arc::new(struct_arr)]).unwrap();
+        let file = std::fs::File::create(&parquet_path).unwrap();
+        let mut writer =
+            delta_kernel::parquet::arrow::ArrowWriter::try_new(file, arrow_schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
+
+        let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
+        let engine = create_engine(&url, &DeltaStorageConfig::default()).unwrap();
+
+        // physical (pruned): s: struct<phys_a>; logical (pruned): s: struct<log_a>.
+        let physical_arrow = ASchema::new(vec![AField::new(
+            "s",
+            ADt::Struct(Fields::from(vec![Arc::new(AField::new(
+                "phys_a",
+                ADt::Int64,
+                true,
+            ))])),
+            true,
+        )]);
+        let logical_arrow = ASchema::new(vec![AField::new(
+            "s",
+            ADt::Struct(Fields::from(vec![Arc::new(AField::new(
+                "log_a",
+                ADt::Int64,
+                true,
+            ))])),
+            true,
+        )]);
+        let physical = arrow_to_kernel_schema(&physical_arrow).unwrap();
+        let logical = arrow_to_kernel_schema(&logical_arrow).unwrap();
+        let transform = Arc::new(Expression::struct_patch(ExpressionStructPatch::new_top_level()));
+
+        let result = read_file_via_kernel(
+            &engine,
+            &url,
+            "part-00000.parquet",
+            size,
+            None,
+            Some(transform),
+            physical,
+            logical,
+        );
+
+        match result {
+            Ok(batches) => {
+                let top = batches[0].schema().field(0).clone();
+                match top.data_type() {
+                    ADt::Struct(fields) => {
+                        let names: Vec<_> = fields.iter().map(|f| f.name().clone()).collect();
+                        assert_eq!(
+                            names,
+                            vec!["log_a".to_string()],
+                            "SPIKE RESULT: pruning WORKS with top-level ProjectionMask; nested \
+                             struct came back as {names:?}"
+                        );
+                    }
+                    other => panic!("expected a struct column, got {other:?}"),
+                }
+            }
+            Err(e) => panic!(
+                "SPIKE RESULT: pruning does NOT work with top-level ProjectionMask (need \
+                 leaf-level projection / struct pruning). Error: {e}"
+            ),
+        }
+    }
+
     // Phase 1c (#44 id-mode): the kernel-read path reads a column by its PHYSICAL name (the name
     // stored in the parquet file), then relabels it to the logical name via the transform. For an
     // id-mode table the driver supplies the physical name in `column_mappings` (delta_scan.rs renames
