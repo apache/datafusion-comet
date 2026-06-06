@@ -19,6 +19,14 @@
 
 # Native execution: from proto bytes to Arrow batches
 
+> **SUPERSEDED.** This document describes the legacy ParquetSource + DV-sweep +
+> synthetic-columns + column-mapping-physicalisation execution tree, which has been
+> **removed**. The current read path is `DeltaKernelScanExec` reading each file
+> through delta-kernel-rs (0.24 / arrow-58); see
+> [10-iceberg-style-kernel-read.md](10-iceberg-style-kernel-read.md) and
+> [11-kernel-read-coherence-audit.md](11-kernel-read-coherence-audit.md). Retained
+> for history.
+
 ## Entry point
 
 When a Spark executor processes its partition, it calls into JNI with the

@@ -19,6 +19,16 @@
 
 # Comet Delta Contrib — Design Documentation
 
+> **Current architecture (read this first):** the read path is **"kernel reads"** —
+> each Delta data file is read through `delta-kernel-rs` (0.24, which shares Comet's
+> arrow-58) via `DeltaKernelScanExec`, and the result flows straight into the Comet
+> plan with no arrow bridge. It is the default and the only path. The legacy
+> ParquetSource + DV-sweep + synthetic-columns + column-mapping-physicalisation stack
+> described in docs **02–04** has been **removed**. For the current design see
+> [10-iceberg-style-kernel-read.md](10-iceberg-style-kernel-read.md) and
+> [11-kernel-read-coherence-audit.md](11-kernel-read-coherence-audit.md); docs 02–04
+> are retained for history and describe the superseded design.
+
 This directory contains the design documentation for the native Delta Lake
 scan integration in Comet. It is written for engineers who:
 
@@ -48,13 +58,17 @@ without going through Spark's `DeltaParquetFileFormat`. It plugs into
 Comet's existing plan-rewrite rule (`CometScanRule`) via reflection,
 recognises Delta `LogicalRelation`s, and substitutes them with a native
 scan node. Driver-side, `delta-kernel-rs` resolves the snapshot and
-produces a file list; the result is encoded into a typed proto variant
-and shipped to executors. Executor-side, a DataFusion `ExecutionPlan`
-tree handles parquet reads (with field-ID matching for column mapping),
-deletion-vector filtering, column-mapping rename, and synthesis of
-Delta's "virtual" columns (`row_id`, `__delta_internal_is_row_deleted`,
-etc.). The contrib is gated behind a Maven profile and a Cargo feature;
-default Comet builds are unaware of it.
+produces a per-file list (path, size, deletion-vector descriptor,
+partition values, column-mapping tree) encoded into a typed proto variant
+and shipped to executors. Executor-side, `DeltaKernelScanExec` reads each
+file through delta-kernel's own read + physical→logical transform (column
+mapping incl. nested, partition injection) — kernel and Comet share
+arrow-58, so the batches drop straight into the plan. Deletion vectors are
+decoded from the serializable descriptor, and Delta's "virtual" columns
+(`row_id`, `__delta_internal_is_row_deleted`, etc.) are layered on by
+`DeltaSyntheticColumnsExec`. INT96 timestamps are coerced to micros on read
+(kernel's reader leaves them at nanos). The contrib is gated behind a Maven
+profile and a Cargo feature; default Comet builds are unaware of it.
 
 ## Conceptual model in one diagram
 

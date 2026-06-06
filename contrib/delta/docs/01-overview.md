@@ -19,6 +19,14 @@
 
 # Comet Delta Contrib — Design Overview
 
+> **Note:** the executor-side **read path** described below (ParquetSource +
+> field-id resolution + DV-sweep + synthetic columns + rename ProjectionExec) has
+> been **replaced** by the "kernel reads" path: `DeltaKernelScanExec` reads each
+> file through delta-kernel-rs (0.24 / arrow-58) directly. The driver-side planning,
+> deployment modes, and "what this does NOT touch" sections below are still accurate;
+> for the current execution design see
+> [10-iceberg-style-kernel-read.md](10-iceberg-style-kernel-read.md).
+
 ## Who this is for
 
 You know Spark's DataSource V2 (`TableProvider`, `Scan`, `Batch`, `InputPartition`).

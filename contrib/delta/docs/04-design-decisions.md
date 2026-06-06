@@ -19,6 +19,13 @@
 
 # Design decisions and rejected alternatives
 
+> **Partly superseded.** The read-path decisions here (ParquetSource, field-id vs
+> name resolution, DV-sweep, synthetic-column stacking) reflect the legacy design
+> that has since been **replaced** by the "kernel reads" path. The read path's design
+> rationale now lives in [10-iceberg-style-kernel-read.md](10-iceberg-style-kernel-read.md)
+> and [11-kernel-read-coherence-audit.md](11-kernel-read-coherence-audit.md). The
+> driver-side and integration decisions here remain accurate.
+
 This document captures the "why didn't you just…" questions. Each section
 states the decision, the alternatives we considered, and the reason we chose
 what we chose.

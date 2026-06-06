@@ -15,7 +15,19 @@
   under the License.
 -->
 
-# Plan: Iceberg-style Delta contrib — read *through* delta-kernel-rs
+# Iceberg-style Delta contrib — read *through* delta-kernel-rs
+
+> **Status: IMPLEMENTED and default.** This started as a plan; it is now the only
+> read path. `DeltaKernelScanExec` reads each Delta file through delta-kernel-rs
+> **0.24** (which shares Comet's **arrow-58**, so there is no arrow bridge), handling
+> plain tables, column mapping (name + id, including nested), partitions, deletion
+> vectors, row-tracking, `_metadata`, schema evolution, zero-data-column reads, and
+> INT96 timestamps (coerced to micros on read). The legacy ParquetSource path has
+> been removed. Custom pieces that remain (the INT96-driven custom read +
+> `align_batch_to_schema`, the DV decode, `DeltaSyntheticColumnsExec`, partition
+> injection, column-mapping physicalisation) exist because we reimplement kernel's
+> per-file pipeline rather than call `Scan::execute`; each is tracked for evaluation
+> against upstream delta-kernel behaviour. The original plan follows.
 
 ## 1. Why
 
