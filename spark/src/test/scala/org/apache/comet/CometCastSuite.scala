@@ -1493,6 +1493,57 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast StructType with ArrayType field to StructType") {
+    testSingleLineQuery(
+      """
+        |SELECT named_struct(
+        |  'items', array(1, 2, cast(null as int)),
+        |  'label', 'first') AS s
+        |UNION ALL
+        |SELECT named_struct(
+        |  'items', cast(array() as array<int>),
+        |  'label', cast(null as string)) AS s
+        |UNION ALL
+        |SELECT cast(null as struct<items:array<int>,label:string>) AS s
+        |""".stripMargin,
+      "SELECT CAST(s AS struct<items:array<string>,label:string>) FROM tbl",
+      testName = "cast_struct_array_field_to_struct")
+  }
+
+  test("cast deeply nested StructType to StructType and StringType") {
+    val input =
+      """
+        |SELECT named_struct(
+        |  'outer',
+        |  named_struct(
+        |    'middle', named_struct('value', '1', 'flag', true),
+        |    'numbers', array('2', '3')),
+        |  'note', 'alpha') AS s
+        |UNION ALL
+        |SELECT named_struct(
+        |  'outer',
+        |  named_struct(
+        |    'middle', named_struct('value', cast(null as string), 'flag', false),
+        |    'numbers', array(cast(null as string))),
+        |  'note', cast(null as string)) AS s
+        |UNION ALL
+        |SELECT cast(null as
+        |  struct<outer:struct<middle:struct<value:string,flag:boolean>,numbers:array<string>>,
+        |  note:string>) AS s
+        |""".stripMargin
+
+    testSingleLineQuery(
+      input,
+      "SELECT CAST(s AS " +
+        "struct<outer:struct<middle:struct<value:int,flag:string>,numbers:array<int>>," +
+        "note:string>) FROM tbl",
+      testName = "cast_deep_struct_to_struct")
+    testSingleLineQuery(
+      input,
+      "SELECT CAST(s AS string) FROM tbl",
+      testName = "cast_deep_struct_to_string")
+  }
+
   test("cast between decimals with different precision and scale") {
     val rowData = Seq(
       Row(BigDecimal("12345.6789")),
@@ -1607,6 +1658,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       StringType)
   }
 
+  test("cast ArrayType(StructType) to StringType") {
+    testSingleLineQuery(
+      """
+        |SELECT array(
+        |  named_struct('id', 1, 'score', '10'),
+        |  named_struct('id', 2, 'score', cast(null as string))) AS a
+        |UNION ALL
+        |SELECT array(named_struct('id', cast(null as int), 'score', '30')) AS a
+        |UNION ALL
+        |SELECT cast(array() as array<struct<id:int,score:string>>) AS a
+        |UNION ALL
+        |SELECT cast(null as array<struct<id:int,score:string>>) AS a
+        |""".stripMargin,
+      "SELECT CAST(a AS string) FROM tbl",
+      testName = "cast_array_struct_to_string")
+  }
+
   test("cast ArrayType to ArrayType") {
     val types = Seq(
       BooleanType,
@@ -1630,6 +1698,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataTypes.TimestampNTZType,
       BinaryType)
     testArrayCastMatrix(types, ArrayType(_), generateArrays(100, _))
+  }
+
+  test("cast ArrayType(StructType) to ArrayType(StructType)") {
+    testSingleLineQuery(
+      """
+        |SELECT array(
+        |  named_struct('id', 1, 'score', '10'),
+        |  named_struct('id', 2, 'score', cast(null as string))) AS a
+        |UNION ALL
+        |SELECT array(named_struct('id', cast(null as int), 'score', '30')) AS a
+        |UNION ALL
+        |SELECT cast(array() as array<struct<id:int,score:string>>) AS a
+        |UNION ALL
+        |SELECT cast(null as array<struct<id:int,score:string>>) AS a
+        |""".stripMargin,
+      "SELECT CAST(a AS array<struct<id:bigint,score:int>>) FROM tbl",
+      testName = "cast_array_struct_to_array_struct")
   }
 
   test("cast ArrayType(DateType) to unsupported ArrayType falls back") {
