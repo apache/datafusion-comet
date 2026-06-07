@@ -420,6 +420,15 @@ message DeltaScanTask {
   // the actual DV bitmap on-task via dv_reader::read_dv_indexes -- the driver only ships
   // the path/offset/size, so the per-scan-exec heap stays KB-scale regardless of DV size.
   optional DeltaDvDescriptor dv = 11;
+  // Kernel's own fully-resolved physical->logical transform for THIS file, serialized as JSON
+  // (serde of `delta_kernel::expressions::Expression`). The driver gets it from kernel's scan
+  // enumeration (`ScanMetadata.scan_file_transforms`, one per scan file), where partition values
+  // and `baseRowId` (for row_id `GenerateRowId`) are already baked in as literals. The executor
+  // deserializes it and applies `transform_to_logical` -- so partition injection, column-mapping
+  // relabel (incl. nested), and row-tracking come from kernel rather than Comet-side reconstruction.
+  // Empty when the driver has no kernel transform for this file (e.g. a plain table with no mapping
+  // / partitions / row-tracking -> identity), in which case the executor uses a pass-through read.
+  bytes transform_json = 12;
 }
 
 // Mirrors delta_kernel::actions::deletion_vector::DeletionVectorDescriptor. Carries everything

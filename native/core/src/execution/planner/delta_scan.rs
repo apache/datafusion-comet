@@ -159,6 +159,7 @@ fn plan_delta_kernel_scan(
                 .iter()
                 .map(|pv| (pv.name.clone(), pv.value.clone()))
                 .collect(),
+            transform_json: t.transform_json.clone(),
         })
         .collect();
 

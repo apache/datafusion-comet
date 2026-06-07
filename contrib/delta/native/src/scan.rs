@@ -70,6 +70,12 @@ pub struct DeltaFileEntry {
     /// `AddFile.defaultRowCommitVersion` for row-tracking-enabled tables.
     /// `None` when the table doesn't have row tracking. Constant per file.
     pub default_row_commit_version: Option<i64>,
+    /// Kernel's fully-resolved physical->logical transform for this file, serialized as JSON
+    /// (serde of `delta_kernel::expressions::Expression`). Partition values + `baseRowId` are baked
+    /// in as literals by kernel's `get_transform_expr`. Empty = no transform (plain pass-through).
+    /// The executor deserializes + applies it via `transform_to_logical`, so partition injection /
+    /// column-mapping relabel / row-tracking come from kernel rather than Comet-side reconstruction.
+    pub transform_json: Vec<u8>,
 }
 
 impl DeltaFileEntry {
@@ -352,6 +358,7 @@ pub fn plan_delta_scan_with_predicate(
         dv_descriptor: Option<crate::proto::DeltaDvDescriptor>,
         base_row_id: Option<i64>,
         default_row_commit_version: Option<i64>,
+        transform_json: Vec<u8>,
     }
 
     // Kernel's `visit_scan_files` requires a `fn` callback (not `FnMut`), so any
@@ -362,12 +369,16 @@ pub fn plan_delta_scan_with_predicate(
         row_tracking: Vec<(Option<i64>, Option<i64>)>,
         dv_descriptors: Vec<Option<crate::proto::DeltaDvDescriptor>>,
         next_idx: usize,
+        // First transform-serialization error, surfaced after the walk (the `visit_scan_files`
+        // callback is a plain `fn() -> ()`, so it can't propagate a `Result` directly).
+        transform_err: Option<String>,
     }
     let mut acc = RawEntryAcc {
         entries: Vec::new(),
         row_tracking: Vec::new(),
         dv_descriptors: Vec::new(),
         next_idx: 0,
+        transform_err: None,
     };
     let scan_metadata = scan.scan_metadata(&*engine)?;
 
@@ -395,6 +406,23 @@ pub fn plan_delta_scan_with_predicate(
                     .cloned()
                     .unwrap_or(None);
                 acc.next_idx += 1;
+                // Kernel already resolved this file's transform (partition literals + baseRowId
+                // baked in) onto `scan_file.transform`. Serialize it as JSON for the executor; empty
+                // when kernel has no transform (plain pass-through). Capture the first error to
+                // surface after the walk.
+                let transform_json = match &scan_file.transform {
+                    Some(expr) => match serde_json::to_vec(expr.as_ref()) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            if acc.transform_err.is_none() {
+                                acc.transform_err =
+                                    Some(format!("serialize kernel transform for {}: {e}", scan_file.path));
+                            }
+                            Vec::new()
+                        }
+                    },
+                    None => Vec::new(),
+                };
                 acc.entries.push(RawEntry {
                     path: scan_file.path,
                     size: scan_file.size,
@@ -404,9 +432,13 @@ pub fn plan_delta_scan_with_predicate(
                     dv_descriptor,
                     base_row_id,
                     default_row_commit_version,
+                    transform_json,
                 });
             },
         )?;
+        if let Some(msg) = acc.transform_err.take() {
+            return Err(DeltaError::Internal(msg));
+        }
     }
     let raw = acc.entries;
 
@@ -426,6 +458,7 @@ pub fn plan_delta_scan_with_predicate(
             dv_descriptor: r.dv_descriptor,
             base_row_id: r.base_row_id,
             default_row_commit_version: r.default_row_commit_version,
+            transform_json: r.transform_json,
         });
     }
 

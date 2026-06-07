@@ -201,6 +201,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
                 // scan-file metadata; the BatchFileIndex path sets it from
                 // AddFile.modificationTime equivalently.
                 modification_time: Some(entry.modification_time),
+                // Kernel's fully-resolved physical->logical transform for this file (serde JSON),
+                // extracted in `plan_delta_scan` from `scan_file.transform`. The executor applies it
+                // via `transform_to_logical` (partition injection / column-mapping relabel /
+                // row-tracking baked in). Empty = identity (plain pass-through).
+                transform_json: entry.transform_json,
             })
             .collect();
 

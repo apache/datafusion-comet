@@ -578,6 +578,7 @@ dependencies = [
  "parquet",
  "prost",
  "roaring 0.10.12",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

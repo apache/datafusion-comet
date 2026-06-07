@@ -186,9 +186,17 @@ pub struct KernelScanFile {
     /// Deletion-vector descriptor (absent = no DV). Decoded executor-side via `dv_reader`.
     pub dv: Option<DeltaDvDescriptor>,
     /// Partition values for this file: `(column name, value)` where value is `None` for a NULL
-    /// partition. Empty for unpartitioned tables. These are injected as constant columns after
-    /// the parquet read (partition columns aren't stored in the data files).
+    /// partition. Empty for unpartitioned tables. Used only by the legacy `append_partition_columns`
+    /// path (when `transform_json` is empty); when kernel's transform is shipped it bakes partition
+    /// values in as literals, so this is redundant.
     pub partition_values: Vec<(String, Option<String>)>,
+    /// Kernel's fully-resolved physical->logical transform for this file (serde JSON of
+    /// `delta_kernel::expressions::Expression`), or empty for no transform. When non-empty the
+    /// executor applies it via `transform_to_logical` -- partition injection / column-mapping
+    /// relabel / row-tracking all come from kernel -- and the read targets the kernel LOGICAL schema
+    /// (data + partitions), reconciled to `output_schema` by name. Empty falls back to the legacy
+    /// identity-transform + `append_partition_columns` path.
+    pub transform_json: Vec<u8>,
 }
 
 /// Iceberg-style "kernel reads" scan operator. Reads each Delta data file through
@@ -315,7 +323,7 @@ impl DeltaKernelScanExec {
                     &opts,
                 )
                 .map_err(DataFusionError::from)?;
-                out.push(self.append_partition_columns(batch, &file.partition_values)?);
+                out.push(self.assemble_output_batch(batch, &file.partition_values)?);
             }
             return Ok(out);
         }
@@ -366,13 +374,35 @@ impl DeltaKernelScanExec {
                 _ => None,
             };
 
+            // Kernel's own fully-resolved transform for this file (partition literals + baseRowId for
+            // row_id baked in) takes precedence; the executor applies it via `transform_to_logical`
+            // so partition injection / column-mapping relabel / row-tracking all come from kernel.
+            // Empty falls back to the shared identity transform + Comet-side `append_partition_columns`
+            // (legacy path, kept until the driver ships transforms for every read).
+            let use_shipped_transform = !file.transform_json.is_empty();
+            let file_transform: Option<ExpressionRef> = if use_shipped_transform {
+                Some(Arc::new(
+                    serde_json::from_slice::<delta_kernel::expressions::Expression>(
+                        &file.transform_json,
+                    )
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "kernel scan: deserialize transform for {}: {e}",
+                            file.path
+                        ))
+                    })?,
+                ))
+            } else {
+                transform.clone()
+            };
+
             let kernel_batches = read_file_via_kernel(
                 engine.as_ref(),
                 &table_root_url,
                 &file.path,
                 file.size,
                 selection_vector,
-                transform.clone(),
+                file_transform,
                 physical_schema.clone(),
                 logical_schema.clone(),
             )
@@ -380,9 +410,10 @@ impl DeltaKernelScanExec {
 
             for batch in &kernel_batches {
                 // Kernel pins the same arrow version as Comet (arrow-58), so the kernel batch IS a
-                // Comet batch -- no bridge.
-                let data_batch = batch.clone();
-                out.push(self.append_partition_columns(data_batch, &file.partition_values)?);
+                // Comet batch -- no bridge. Assemble the `output_schema` by name: data (+ partitions
+                // when the shipped transform injected them) come from the kernel batch; any partition
+                // column the transform did NOT inject is appended as a constant.
+                out.push(self.assemble_output_batch(batch.clone(), &file.partition_values)?);
             }
         }
         Ok(out)
@@ -418,75 +449,88 @@ impl DeltaKernelScanExec {
         Ok(meta.metadata().file_metadata().num_rows().max(0) as usize)
     }
 
-    /// Append partition columns as constants (partition values are stored in the Add action, not
-    /// the data file). Produces a batch matching `output_schema` (data ++ partition). No-op for
-    /// unpartitioned tables.
-    fn append_partition_columns(
+    /// Assemble the final `output_schema` batch (data ++ partition, Spark order) from a kernel-read
+    /// batch, BY NAME. For each output field:
+    ///   - present in the kernel batch (data column, or a partition column the shipped transform
+    ///     already injected) -> take it, casting to the output field's EXACT type incl. NESTED field
+    ///     names (list element, struct fields, map key/value -- kernel names nested fields by Spark
+    ///     convention, e.g. a list element "element", but `output_schema` from the proto may carry
+    ///     empty/different nested names; the cast is a metadata-only relabel, a no-op when types match);
+    ///   - otherwise a partition column (legacy path: transform didn't inject it) -> a constant from
+    ///     `partition_values` (typed NULL when absent / explicitly NULL);
+    ///   - otherwise -> error (a data column kernel was asked for but didn't produce).
+    ///
+    /// This unifies the old `append_partition_columns` (legacy identity-transform path) and the
+    /// shipped-transform path: partitions come from kernel when the transform injects them, else from
+    /// the Add action's values.
+    fn assemble_output_batch(
         &self,
-        data_batch: arrow::array::RecordBatch,
+        kernel_batch: arrow::array::RecordBatch,
         partition_values: &[(String, Option<String>)],
     ) -> DFResult<arrow::array::RecordBatch> {
-        let num_rows = data_batch.num_rows();
-        let mut columns: Vec<arrow::array::ArrayRef> = data_batch.columns().to_vec();
-        if !self.partition_schema.fields().is_empty() {
-            let parsed_tz = SessionTimezone::parse(&self.session_timezone);
-            for pf in self.partition_schema.fields() {
+        let num_rows = kernel_batch.num_rows();
+        let kernel_schema = kernel_batch.schema();
+        let parsed_tz = SessionTimezone::parse(&self.session_timezone);
+        let is_partition =
+            |name: &str| self.partition_schema.fields().iter().any(|f| f.name() == name);
+
+        let mut columns: Vec<arrow::array::ArrayRef> =
+            Vec::with_capacity(self.output_schema.fields().len());
+        for out_field in self.output_schema.fields() {
+            if let Some(idx) = kernel_schema
+                .fields()
+                .iter()
+                .position(|f| f.name() == out_field.name())
+            {
+                let col = kernel_batch.column(idx);
+                columns.push(if col.data_type() == out_field.data_type() {
+                    Arc::clone(col)
+                } else {
+                    arrow_cast(col, out_field.data_type()).map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "kernel scan: reconciling column '{}' to output schema: {e}",
+                            out_field.name()
+                        ))
+                    })?
+                });
+            } else if is_partition(out_field.name()) {
                 let raw = partition_values
                     .iter()
-                    .find(|(name, _)| name == pf.name())
+                    .find(|(name, _)| name == out_field.name())
                     .and_then(|(_, v)| v.as_ref());
                 let scalar = match raw {
                     Some(v) => parse_delta_partition_scalar(
                         v,
-                        pf.data_type(),
+                        out_field.data_type(),
                         &parsed_tz,
                         &self.session_timezone,
                     )
                     .map_err(|e| {
                         DataFusionError::Execution(format!(
                             "kernel scan partition value parse for '{}': {e}",
-                            pf.name()
+                            out_field.name()
                         ))
                     })?,
                     // Absent or explicitly-NULL partition value -> a typed NULL constant.
-                    None => ScalarValue::try_from(pf.data_type())?,
+                    None => ScalarValue::try_from(out_field.data_type())?,
                 };
                 columns.push(scalar.to_array_of_size(num_rows)?);
+            } else {
+                return Err(DataFusionError::Execution(format!(
+                    "kernel scan: output column '{}' was not produced by the kernel read and is \
+                     not a partition column",
+                    out_field.name()
+                )));
             }
         }
-        // Reconcile each column to `output_schema`'s EXACT field type, including NESTED field names
-        // (list element, struct fields, map key/value). The kernel-read batch names nested fields by
-        // Spark convention (e.g. a list element "element"), but `output_schema` -- derived from the
-        // proto `required_schema` -- can carry empty/different nested names. Without this, the emitted
-        // batch's schema != `output_schema` and DataFusion rejects it ("column types must match schema
-        // types" on a partitioned try_new, or an `assert_eq!` / coalesce panic for the unpartitioned
-        // pass-through). The data is already in logical (output) order from the kernel transform, so
-        // this is a metadata-only relabel via `arrow_cast` -- a no-op whenever the types already match.
-        let reconciled: Vec<arrow::array::ArrayRef> = columns
-            .iter()
-            .zip(self.output_schema.fields())
-            .map(|(col, field)| {
-                if col.data_type() == field.data_type() {
-                    Ok(Arc::clone(col))
-                } else {
-                    arrow_cast(col, field.data_type()).map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "kernel scan: reconciling column '{}' to output schema: {e}",
-                            field.name()
-                        ))
-                    })
-                }
-            })
-            .collect::<DFResult<Vec<_>>>()?;
         // Carry the row count explicitly: a zero-data-column read (e.g. a MERGE UPDATE that only
-        // touches a struct field, or `count(*)`) yields an empty `reconciled` with an empty
+        // touches a struct field, or `count(*)`) yields an empty `columns` with an empty
         // `output_schema`, and plain `try_new` cannot infer the row count from zero columns ("must
-        // either specify a row count or at least one column"). `num_rows` comes from the input batch
-        // (the zero-data path builds it via `with_row_count`).
+        // either specify a row count or at least one column").
         let opts = arrow::array::RecordBatchOptions::new().with_row_count(Some(num_rows));
         arrow::array::RecordBatch::try_new_with_options(
             Arc::clone(&self.output_schema),
-            reconciled,
+            columns,
             &opts,
         )
         .map_err(DataFusionError::from)
@@ -711,6 +755,7 @@ mod tests {
             record_count: Some(7),
             dv: None,
             partition_values: vec![],
+            transform_json: Vec::new(),
         }];
 
         let exec = DeltaKernelScanExec::new(
@@ -786,6 +831,7 @@ mod tests {
             record_count: Some(3),
             dv: None,
             partition_values: vec![],
+            transform_json: Vec::new(),
         }];
 
         let exec = DeltaKernelScanExec::new(
@@ -903,6 +949,137 @@ mod tests {
         assert_eq!(
             (0..c.len()).map(|i| c.value(i)).collect::<Vec<_>>(),
             vec![100, 200, 300]
+        );
+    }
+
+    // Builds a minimal single-file PARTITIONED Delta table in a tempdir: schema (id: long, part:
+    // string) with partitionColumns=["part"], one add file in partition part="A" whose parquet
+    // holds ONLY the data column `id` (partition columns aren't stored in the data files). Returns
+    // (tempdir, table url, parquet size). Mirrors `build_single_file_table` but partitioned.
+    fn build_partitioned_table() -> (tempfile::TempDir, Url, i64) {
+        let tmp = tempfile::tempdir().unwrap();
+        let table_dir = tmp.path().join("pscan_table");
+        let delta_log = table_dir.join("_delta_log");
+        // Partition data lives under part=A/ by Delta convention.
+        let part_dir = table_dir.join("part=A");
+        std::fs::create_dir_all(&delta_log).unwrap();
+        std::fs::create_dir_all(&part_dir).unwrap();
+
+        // Parquet holds only the data column `id` (0..=4).
+        let arrow_schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Int64,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            arrow_schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![0i64, 1, 2, 3, 4]))],
+        )
+        .unwrap();
+        let parquet_rel = "part=A/part-00000.parquet";
+        let parquet_path = table_dir.join(parquet_rel);
+        let file = std::fs::File::create(&parquet_path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, arrow_schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = std::fs::metadata(&parquet_path).unwrap().len() as i64;
+
+        let commit0 = [
+            r#"{"protocol":{"minReaderVersion":1,"minWriterVersion":2}}"#.to_string(),
+            r#"{"metaData":{"id":"pscan-id","format":{"provider":"parquet","options":{}},"schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}},{\"name\":\"part\",\"type\":\"string\",\"nullable\":true,\"metadata\":{}}]}","partitionColumns":["part"],"configuration":{},"createdTime":1700000000000}}"#.to_string(),
+            format!(
+                r#"{{"add":{{"path":"{parquet_rel}","partitionValues":{{"part":"A"}},"size":{size},"modificationTime":1700000000000,"dataChange":true,"stats":"{{\"numRecords\":5}}"}}}}"#
+            ),
+        ]
+        .join("\n");
+        std::fs::write(delta_log.join("00000000000000000000.json"), commit0).unwrap();
+
+        let url = normalize_url(table_dir.to_str().unwrap()).unwrap();
+        (tmp, url, size)
+    }
+
+    // The Stage-A mechanism end to end at the kernel level: build a partitioned table, get kernel's
+    // OWN per-file transform from the scan (the value the driver ships), round-trip it through serde
+    // JSON exactly as the driver->executor wire does, then apply it via `read_file_via_kernel` with
+    // kernel's physical/logical schemas. The partition column `part` must be INJECTED by the kernel
+    // transform (it isn't in the parquet) with value "A" -- i.e. partitions come from kernel, not
+    // Comet's `append_partition_columns`. This is the foundation the whole synthetic-columns rewrite
+    // builds on, so it guards the serde round-trip + transform application directly.
+    #[test]
+    fn shipped_kernel_transform_injects_partition_column() {
+        use delta_kernel::arrow::array::StringArray;
+        use delta_kernel::expressions::Expression;
+
+        let (_tmp, url, size) = build_partitioned_table();
+        let engine = get_or_create_engine(&url, &DeltaStorageConfig::default()).unwrap();
+        let snapshot = Snapshot::builder_for(url.clone())
+            .build(engine.as_ref())
+            .unwrap();
+
+        // Project the scan to the FULL logical schema (data + partition), exactly as the Stage-A
+        // driver does so kernel emits a partition-injecting transform.
+        let scan = snapshot.scan_builder().build().unwrap();
+        let physical_schema = scan.physical_schema().clone();
+        let logical_schema = scan.logical_schema().clone();
+        // Physical schema is data-only (`id`); logical includes the partition column (`part`).
+        assert_eq!(physical_schema.fields().len(), 1, "physical = data only");
+        assert_eq!(
+            logical_schema.fields().len(),
+            2,
+            "logical = data + partition"
+        );
+
+        // Pull kernel's resolved per-file transform (the value shipped on DeltaScanTask).
+        let mut transforms: Vec<Option<ExpressionRef>> = Vec::new();
+        for meta in scan.scan_metadata(engine.as_ref()).unwrap() {
+            let meta = meta.unwrap();
+            for t in &meta.scan_file_transforms {
+                if t.is_some() {
+                    transforms.push(t.clone());
+                }
+            }
+        }
+        assert_eq!(transforms.len(), 1, "one selected file");
+        let transform = transforms.into_iter().next().unwrap().unwrap();
+
+        // Round-trip the transform through serde JSON exactly as driver -> executor does.
+        let json = serde_json::to_vec(transform.as_ref()).unwrap();
+        let restored: Expression = serde_json::from_slice(&json).unwrap();
+        assert_eq!(&*transform, &restored, "transform survives serde round-trip");
+
+        let batches = read_file_via_kernel(
+            engine.as_ref(),
+            &url,
+            "part=A/part-00000.parquet",
+            size,
+            None,
+            Some(Arc::new(restored)),
+            physical_schema,
+            logical_schema,
+        )
+        .unwrap();
+
+        // Output carries data + the kernel-injected partition column.
+        let schema = batches[0].schema();
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "part");
+        let ids = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("id Int64");
+        assert_eq!(
+            (0..ids.len()).map(|i| ids.value(i)).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+        let parts = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("kernel transform should inject the `part` partition column as Utf8");
+        assert!(
+            (0..parts.len()).all(|i| parts.value(i) == "A"),
+            "partition column injected by kernel transform must equal the file's partition value"
         );
     }
 }
