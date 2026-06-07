@@ -62,6 +62,7 @@ to read more.
    compatibility/regex
    compatibility/operators
    compatibility/expressions/index
+   compatibility/json
    compatibility/spark-versions
 
 .. toctree::

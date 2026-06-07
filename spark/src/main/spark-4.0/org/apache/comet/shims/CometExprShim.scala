@@ -21,7 +21,7 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
-import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
+import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.spark.sql.internal.SQLConf
@@ -38,7 +38,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends CommonStringExprs with CometExprShim4x {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -160,6 +160,20 @@ trait CometExprShim extends CommonStringExprs {
           case _ => None
         }
 
+      case s: StaticInvoke =>
+        (s.staticObject, s.functionName, s.arguments) match {
+          case (cls, "lengthOfJsonArray", Seq(child)) if cls == classOf[JsonExpressionUtils] =>
+            val lengthOfJsonArray = LengthOfJsonArray(child)
+            val exprProto = exprToProtoInternal(lengthOfJsonArray, inputs, binding)
+            if (exprProto.isEmpty) {
+              lengthOfJsonArray
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .foreach(reasons => s.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
+            }
+            exprProto
+          case _ => None
+        }
+
       case ms: MapSort =>
         val keyType = ms.dataType.asInstanceOf[MapType].keyType
         if (!supportedScalarSortElementType(keyType)) {
@@ -182,6 +196,11 @@ trait CometExprShim extends CommonStringExprs {
             childExpr)
           optExprWithFallbackReason(mapSortExpr, ms, ms.child)
         }
+
+      // dayname / monthname (Spark 4.0+) are shared across all 4.x minor versions; see
+      // CometExprShim4x.convertDayMonthName.
+      case _: DayName | _: MonthName =>
+        convertDayMonthName(expr, inputs, binding)
 
       case _ => None
     }

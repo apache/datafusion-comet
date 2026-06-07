@@ -186,19 +186,32 @@ private[codegen] object CometBatchKernelCodegenOutput {
    *
    * Scalars emit `perRow` only. Complex types emit both. Inner setup bubbles up so deep child
    * casts land at the batch prelude.
+   *
+   * `nested` distinguishes the root output vector from a child of a List / Map / Struct.
+   * `allocateOutput` pre-sizes the root to exactly `numRows` and the kernel writes one scalar per
+   * row, so the root's fixed-width `set` is always in bounds. A child's element count is instead
+   * the data-dependent sum of per-row collection sizes, which `numRows` does not bound. We cannot
+   * pre-size the child either: each row's `ArrayData` / `MapData` is produced by Spark's
+   * generated `ev.code` inside the write loop, so the total is unknown until we have already
+   * evaluated every row (counting it first would mean evaluating the tree twice). Nested
+   * fixed-width writes therefore grow on demand with `setSafe`; the String / Binary / Decimal
+   * branches already do, for the same reason.
    */
   private def emitWrite(
       targetVec: String,
       idx: String,
       source: String,
       dataType: DataType,
-      ctx: CodegenContext): OutputEmit = dataType match {
+      ctx: CodegenContext,
+      nested: Boolean = false): OutputEmit = dataType match {
     case BooleanType =>
-      OutputEmit("", s"$targetVec.set($idx, $source ? 1 : 0);")
+      val set = if (nested) "setSafe" else "set"
+      OutputEmit("", s"$targetVec.$set($idx, $source ? 1 : 0);")
     case ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType | DateType |
         TimestampType | TimestampNTZType =>
       // Spark codegen emits the matching primitive Java type; Arrow `set` overloads accept it.
-      OutputEmit("", s"$targetVec.set($idx, $source);")
+      val set = if (nested) "setSafe" else "set"
+      OutputEmit("", s"$targetVec.$set($idx, $source);")
     case dt: DecimalType =>
       // DecimalOutputShortFastPath: precision <= 18 fits in a signed long, so pass the unscaled
       // value to `setSafe(int, long)` and skip the BigDecimal allocation.
@@ -250,7 +263,8 @@ private[codegen] object CometBatchKernelCodegenOutput {
       val childIdx = ctx.freshName("cidx")
       val jVar = ctx.freshName("j")
       val elemSource = emitSpecializedGetterExpr(arrVar, jVar, elementType)
-      val inner = emitWrite(childVar, s"$childIdx + $jVar", elemSource, elementType, ctx)
+      val inner =
+        emitWrite(childVar, s"$childIdx + $jVar", elemSource, elementType, ctx, nested = true)
       val setup =
         (s"$childClass $childVar = ($childClass) $targetVec.getDataVector();" +:
           Seq(inner.setup).filter(_.nonEmpty)).mkString("\n")
@@ -285,7 +299,11 @@ private[codegen] object CometBatchKernelCodegenOutput {
         val childDecl =
           s"$childClass $childVar = ($childClass) $targetVec.getChildByOrdinal($fi);"
         val fieldSource = emitSpecializedGetterExpr(rowVar, fi.toString, field.dataType)
-        val inner = emitWrite(childVar, idx, fieldSource, field.dataType, ctx)
+        // Struct fields are co-indexed with the struct (written at the same `idx`), so a field is
+        // nested exactly when the struct is: top-level struct fields land at the row index and are
+        // pre-sized to numRows (bare `set` is in bounds); a struct nested in an array/map inherits
+        // that parent's cumulative, unbounded index and needs `setSafe`.
+        val inner = emitWrite(childVar, idx, fieldSource, field.dataType, ctx, nested = nested)
         val write =
           if (!field.nullable) {
             inner.perRow
@@ -327,8 +345,10 @@ private[codegen] object CometBatchKernelCodegenOutput {
       val valClass = outputVectorClass(mt.valueType)
       val keySrcExpr = emitSpecializedGetterExpr(keyArr, jVar, mt.keyType)
       val valSrcExpr = emitSpecializedGetterExpr(valArr, jVar, mt.valueType)
-      val keyEmit = emitWrite(keyVar, s"$childIdx + $jVar", keySrcExpr, mt.keyType, ctx)
-      val valEmit = emitWrite(valVar, s"$childIdx + $jVar", valSrcExpr, mt.valueType, ctx)
+      val keyEmit =
+        emitWrite(keyVar, s"$childIdx + $jVar", keySrcExpr, mt.keyType, ctx, nested = true)
+      val valEmit =
+        emitWrite(valVar, s"$childIdx + $jVar", valSrcExpr, mt.valueType, ctx, nested = true)
       val setup =
         (Seq(
           s"$structClass $entriesVar = ($structClass) $targetVec.getDataVector();",

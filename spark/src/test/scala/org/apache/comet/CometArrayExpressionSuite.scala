@@ -1008,6 +1008,24 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/4560
+  test("array_size returns null for null input") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(col array<int>) using parquet")
+      sql(s"insert into $table values(array(1, 2, 3)), (array()), (null)")
+      // array_size lowers to Size(child, legacySizeOfNull = false), so it must return null
+      // for a null input regardless of the legacySizeOfNull conf.
+      Seq("false", "true").foreach { legacy =>
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> legacy,
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select array_size(col) from $table"))
+        }
+      }
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/3375
   test("(ansi) array access out of bounds - GetArrayItem") {
     withSQLConf(
