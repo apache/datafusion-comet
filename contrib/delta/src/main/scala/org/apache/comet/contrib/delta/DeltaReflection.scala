@@ -470,6 +470,29 @@ object DeltaReflection extends Logging {
   }
 
   /**
+   * Is this FileIndex one that carries an EXACT, runtime-determined file SUBSET that kernel log
+   * replay cannot reproduce from the snapshot + a data predicate?
+   *
+   * These are MERGE / UPDATE / DELETE post-join rewrites (`TahoeBatchFileIndex`) and streaming /
+   * CDC reads (`CdcAddFileIndex`, `TahoeRemoveFileIndex`, `TahoeChangeFileIndex`): the file set is
+   * the join's touched files or a per-microbatch delta, NOT the whole snapshot. Kernel enumeration
+   * would return a DIFFERENT (larger) set, so these keep sourcing files from the FileIndex's
+   * `addFiles` (see `buildTaskListFromAddFiles`).
+   *
+   * `PreparedDeltaFileIndex` (regular reads -- the vast majority) is deliberately NOT here: it's the
+   * pruned active file set of a pinned snapshot, which kernel reproduces exactly via log replay +
+   * the shipped data predicate. Those go through `planDeltaScan` so kernel drives enumeration,
+   * partition injection, DV, and row-tracking (the per-file transform) end to end.
+   */
+  def isSubsetFileIndex(location: Any): Boolean = {
+    val cls = location.getClass.getName
+    cls.contains("TahoeBatchFileIndex") ||
+    cls.contains("CdcAddFileIndex") ||
+    cls.contains("TahoeRemoveFileIndex") ||
+    cls.contains("TahoeChangeFileIndex")
+  }
+
+  /**
    * Detect whether the FileIndex carries a non-empty `rowIndexFilters` map. Delta
    * uses this to flag CDC "delete events" / "insert events" reads where the DV
    * bitmap semantics are INVERTED relative to a normal batch read: native

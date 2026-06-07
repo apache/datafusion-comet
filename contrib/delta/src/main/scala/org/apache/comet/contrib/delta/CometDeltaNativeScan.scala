@@ -129,6 +129,30 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     lc.startsWith("_row-id-col-") || lc.startsWith("_row-commit-version-col-")
   }
 
+  // Kernel's marker for a metadata column: field metadata `delta.metadataSpec` whose value is the
+  // spec's text (e.g. "row_id"). Matches `ColumnMetadataKey::MetadataSpec` + `MetadataColumnSpec`
+  // in delta-kernel-rs; it rides through Spark's `StructType.json` into kernel's `StructType` serde.
+  private val KernelMetadataSpecKey = "delta.metadataSpec"
+  private val KernelRowIdSpec = "row_id"
+
+  /**
+   * If `f` is a materialised row-ID column (`_row-id-col-*`), return it re-marked as kernel's RowId
+   * metadata column so kernel resolves it from `delta.rowTracking.materializedRowIdColumnName` by
+   * name (no column-mapping id/physicalName needed) and generates the value. Otherwise return `f`
+   * unchanged. Only invoked under active column mapping (see caller).
+   */
+  private def asKernelRowIdMetadataColumnIfMaterialized(f: StructField): StructField = {
+    if (f.name.toLowerCase(Locale.ROOT).startsWith("_row-id-col-")) {
+      val md = new org.apache.spark.sql.types.MetadataBuilder()
+        .withMetadata(f.metadata)
+        .putString(KernelMetadataSpecKey, KernelRowIdSpec)
+        .build()
+      StructField(f.name, org.apache.spark.sql.types.LongType, nullable = true, md)
+    } else {
+      f
+    }
+  }
+
   /**
    * Translate Delta's `delta.columnMapping.id` metadata key to Spark+parquet's standard
    * `parquet.field.id` key on every StructField at every level of nesting. Required for
@@ -189,16 +213,58 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
    */
   private[delta] def dataReadSchemaJson(
       annotatedSource: Option[StructType],
-      requiredSchema: StructType): String = {
+      requiredSchema: StructType,
+      partitionSchema: StructType = new StructType(),
+      rowTrackingActive: Boolean = false): String = {
+    // `row_id` / `row_commit_version` are SYNTHETIC (kernel doesn't read them; we synthesise from
+    // baseRowId + row_index) ONLY when row tracking is enabled. With it disabled they are ordinary
+    // user data columns -- a table may legitimately have a column named `row_id`. The proto
+    // `required_schema` keeps them in that case (the emit flags are gated on row tracking too), so
+    // the read schema MUST keep them as well, else the executor sees `required_schema` data columns
+    // with no kernel schema shipped ("missing kernel data-column schemas"). Mirror the emit gating.
+    val stripNames =
+      if (rowTrackingActive) SyntheticReadFieldNames
+      else
+        SyntheticReadFieldNames -
+          DeltaReflection.RowIdColumnName.toLowerCase(Locale.ROOT) -
+          DeltaReflection.RowCommitVersionColumnName.toLowerCase(Locale.ROOT)
     val dataFields = requiredSchema.fields.filterNot(f =>
-      SyntheticReadFieldNames.contains(f.name.toLowerCase(Locale.ROOT)))
+      stripNames.contains(f.name.toLowerCase(Locale.ROOT)))
     if (dataFields.isEmpty) {
+      // Zero data columns (partition-only / synthetic-only reads): no kernel read schema; the
+      // executor drives the row count without a parquet read and the partition columns are filled
+      // separately. (Kernel can't drive a zero-column scan, so we don't project partitions here.)
       ""
     } else {
       val byName =
         annotatedSource.map(_.fields.map(f => f.name.toLowerCase(Locale.ROOT) -> f).toMap)
           .getOrElse(Map.empty)
-      val projected = dataFields.map(f => byName.getOrElse(f.name.toLowerCase(Locale.ROOT), f))
+      val pick = (f: StructField) => byName.getOrElse(f.name.toLowerCase(Locale.ROOT), f)
+      // Partition columns aren't in `requiredSchema` (Spark hands us the data half), so append them
+      // when a `partitionSchema` is supplied -- then kernel's per-file transform INJECTS them (the
+      // max-kernel path) instead of Comet appending them. Sourced from the annotated schema by name
+      // so column-mapping physical names / field-ids ride along. The AddFiles route passes an empty
+      // `partitionSchema` (its identity transform can't inject partitions, so partitions stay
+      // Comet-appended there until that route also moves to kernel enumeration).
+      val projected0 = dataFields.map(pick) ++ partitionSchema.fields.map(pick)
+      // Materialised row-id columns (`_row-id-col-*`, added by OPTIMIZE/UPDATE/MERGE) are matched by
+      // NAME and carry NO column-mapping annotation. Under ACTIVE column mapping kernel's logical
+      // with_schema requires both physicalName AND id on every regular field, so shipping the
+      // materialised column as a plain data field fails ("lacks delta.columnMapping.physicalName/id").
+      // The kernel-intended way is to request the RowId METADATA column: mark the field with kernel's
+      // `delta.metadataSpec` = `row_id` (ColumnMetadataKey::MetadataSpec). Kernel then reads
+      // `delta.rowTracking.materializedRowIdColumnName` by name (bypassing CM make_physical), adds a
+      // row_index helper, and emits `GenerateRowId` (coalesce(materialised, baseRowId+row_index)) on
+      // the per-file transform -- so row_id comes from kernel, correct even under CM-id. Only needed
+      // under active CM (detected from a real data field carrying a physicalName); plain tables read
+      // the materialised column fine as a data field, so leave them untouched. RowCommitVersion has
+      // no kernel metadata-column support (Error::unsupported), so `_row-commit-version-col-*` is left
+      // as-is. See state_info.rs RowId handling + CometDeltaRowTrackingMaterializedSuite (M3).
+      val columnMappingActive =
+        projected0.exists(_.metadata.contains(DeltaReflection.PhysicalNameMetadataKey))
+      val projected =
+        if (columnMappingActive) projected0.map(asKernelRowIdMetadataColumnIfMaterialized)
+        else projected0
       StructType(projected).json
     }
   }
@@ -525,17 +591,23 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // --- 1. Get the active file list. ---
     //
     // Two code paths:
-    //   (a) Pre-materialized FileIndex (`TahoeBatchFileIndex`, `CdcAddFileIndex`):
-    //       Delta's streaming micro-batch reads AND MERGE / UPDATE / DELETE
-    //       post-join rewrites both carry an exact `addFiles: Seq[AddFile]` on
-    //       the FileIndex. Kernel log replay against the snapshot would return a
-    //       DIFFERENT file set (the whole snapshot, or a version's deltas), which
-    //       is a correctness hazard -- empty streaming batches, MERGE rewrites
-    //       that see the whole table instead of only touched files. Build the
-    //       DeltaScanTaskList proto directly from those AddFiles, skipping kernel.
-    //   (b) Regular scan against a snapshot: call kernel for log replay as before.
+    //   (a) Exact-subset FileIndex (`TahoeBatchFileIndex`, `CdcAddFileIndex`,
+    //       `TahoeRemoveFileIndex`, `TahoeChangeFileIndex`): Delta's streaming
+    //       micro-batch reads AND MERGE / UPDATE / DELETE post-join rewrites carry
+    //       an exact `addFiles: Seq[AddFile]` on the FileIndex. Kernel log replay
+    //       against the snapshot would return a DIFFERENT file set (the whole
+    //       snapshot, or a version's deltas), which is a correctness hazard --
+    //       empty streaming batches, MERGE rewrites that see the whole table
+    //       instead of only touched files. Build the DeltaScanTaskList proto
+    //       directly from those AddFiles, skipping kernel.
+    //   (b) Regular scan against a snapshot (`PreparedDeltaFileIndex` /
+    //       `TahoeLogFileIndex` -- the vast majority): call kernel for log replay.
+    //       Kernel reproduces the pruned active file set from the pinned snapshot +
+    //       the shipped data predicate, and ships its OWN per-file transform so
+    //       partition injection / column-mapping relabel / row-tracking come from
+    //       kernel rather than Comet-side reconstruction.
     val taskListBytes =
-      if (DeltaReflection.isBatchFileIndex(relation.location)) {
+      if (DeltaReflection.isSubsetFileIndex(relation.location)) {
         // Pass BOTH the scan's partition filters AND data filters through
         // so `refreshedSnapshotFiles` (which queries
         // `snapshot.filesForScan(filters, ...)`) re-applies the same
@@ -595,22 +667,25 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
             return None
         }
       } else {
-        // Non-batch indexes (TahoeLogFileIndex, ...). DV-bearing
-        // PreparedDeltaFileIndex is now classified as a batch index above
-        // (see `isBatchFileIndex`), so its DV-fallback case is already
-        // handled by the `case Some(_)` arm at the top of this match. For
-        // remaining non-batch indexes the Delta-PreprocessTableWithDVs
-        // wrapper detection upstream in `CometScanRule.scanBelowFallsBackForDvs`
-        // is responsible for keeping DV-aware internal reads on vanilla.
+        // Regular reads (`PreparedDeltaFileIndex` / `TahoeLogFileIndex`): kernel enumerates the
+        // pinned snapshot (reproducing Delta's pruned active file set via the shipped data predicate)
+        // and ships its OWN per-file transform, so partition injection / column-mapping relabel /
+        // row-tracking come from kernel. DV-aware INTERNAL reads (Delta-PreprocessTableWithDVs with
+        // inverted row-index-filter semantics) are kept on vanilla upstream by
+        // `CometScanRule.scanBelowFallsBackForDvs`.
         try {
           // The driver's `with_schema` gets the ANALYSIS-TIME read schema (Delta JSON, carrying
           // column-mapping physicalName/id) so kernel resolves the names the query was planned with
           // -> correct under schema-change-since-analysis. Fall back to the live snapshot schema when
-          // there's no stashed reference schema; both carry the annotations kernel needs.
+          // there's no stashed reference schema; both carry the annotations kernel needs. Include the
+          // partition schema so kernel's transform INJECTS partition columns (max-kernel) rather than
+          // Comet appending them.
           val projJson = CometDeltaNativeScan.dataReadSchemaJson(
             scan.deltaMetadata.analyzedSchema.orElse(
               DeltaReflection.extractSnapshotSchema(relation)),
-            scan.requiredSchema)
+            scan.requiredSchema,
+            relation.partitionSchema,
+            rowTrackingActive = rowTrackingEnabled)
           nativeLib.planDeltaScan(
             tableRoot,
             snapshotVersion,
@@ -856,7 +931,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
         // zero data columns => no kernel schemas needed.
         val projJson = CometDeltaNativeScan.dataReadSchemaJson(
           scan.deltaMetadata.analyzedSchema.orElse(DeltaReflection.extractSnapshotSchema(relation)),
-          scan.requiredSchema)
+          scan.requiredSchema,
+          rowTrackingActive = rowTrackingEnabled)
         if (projJson.isEmpty) {
           taskList
         } else {
@@ -965,7 +1041,25 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
    */
   private def serializeSupportedDataFilters(scan: CometDeltaScanMarker): Array[Byte] = {
     val protoFilters = new ListBuffer[Expr]()
-    scan.supportedDataFilters.foreach { filter =>
+    // Kernel's stats-based file pruning evaluates the predicate against DATA-column statistics during
+    // log replay, so it can only reference real data columns. Exclude any filter that touches:
+    //   - a SYNTHETIC column (`__delta_internal_is_row_deleted`, `_tmp_metadata_row_index`,
+    //     `_metadata.*`, ...): not a table column at all -- kernel errors "Predicate references
+    //     unknown column". These are Spark-level filters applied ABOVE the scan, never file-pruning
+    //     predicates.
+    //   - a PARTITION column: partition pruning is done separately in `prunePartitions`; pushing a
+    //     partition predicate into the data-stats predicate also hits kernel's stricter type checks
+    //     (e.g. a generated partition column compared against a literal -> "Timestamp < Int64").
+    // Dropping an unpushable filter only forgoes data skipping for it (Spark still applies it); it
+    // never affects correctness.
+    val partitionNamesLc =
+      scan.relation.partitionSchema.fields.map(_.name.toLowerCase(Locale.ROOT)).toSet
+    def kernelPushable(filter: org.apache.spark.sql.catalyst.expressions.Expression): Boolean =
+      filter.references.forall { a =>
+        val lc = a.name.toLowerCase(Locale.ROOT)
+        !SyntheticReadFieldNames.contains(lc) && !partitionNamesLc.contains(lc)
+      }
+    scan.supportedDataFilters.filter(kernelPushable).foreach { filter =>
       exprToProto(filter, scan.output) match {
         case Some(proto) => protoFilters += proto
         case _ =>

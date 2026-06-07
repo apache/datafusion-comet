@@ -153,23 +153,45 @@ fn scalar_to_kernel_type(s: &Scalar) -> DataType {
         Scalar::Float(_) => DataType::FLOAT,
         Scalar::Double(_) => DataType::DOUBLE,
         Scalar::String(_) => DataType::STRING,
+        Scalar::Timestamp(_) => DataType::TIMESTAMP,
+        Scalar::TimestampNtz(_) => DataType::TIMESTAMP_NTZ,
+        Scalar::Date(_) => DataType::DATE,
         _ => DataType::STRING,
     }
 }
 
 fn catalyst_literal_to_scalar(expr: &Expr) -> Option<Scalar> {
+    use spark_expression::data_type::DataTypeId;
     match expr.expr_struct.as_ref() {
-        Some(ExprStruct::Literal(lit)) => match &lit.value {
-            Some(literal::Value::BoolVal(b)) => Some(Scalar::Boolean(*b)),
-            Some(literal::Value::ByteVal(v)) => Some(Scalar::Byte(*v as i8)),
-            Some(literal::Value::ShortVal(v)) => Some(Scalar::Short(*v as i16)),
-            Some(literal::Value::IntVal(v)) => Some(Scalar::Integer(*v)),
-            Some(literal::Value::LongVal(v)) => Some(Scalar::Long(*v)),
-            Some(literal::Value::FloatVal(v)) => Some(Scalar::Float(*v)),
-            Some(literal::Value::DoubleVal(v)) => Some(Scalar::Double(*v)),
-            Some(literal::Value::StringVal(s)) => Some(Scalar::String(s.clone())),
-            _ => None,
-        },
+        Some(ExprStruct::Literal(lit)) => {
+            // Spark stores TIMESTAMP / TIMESTAMP_NTZ as int64 micros and DATE as int32 days, all in
+            // the int value slots. Honor the declared `datatype` so the kernel scalar carries the
+            // right TYPE: a bare `Scalar::Long`/`Scalar::Integer` makes kernel reject the comparison
+            // against a temporal column ("Invalid comparison: Timestamp < Int64") and abort the scan.
+            let type_id = lit.datatype.as_ref().map(|d| d.type_id);
+            match &lit.value {
+                Some(literal::Value::BoolVal(b)) => Some(Scalar::Boolean(*b)),
+                Some(literal::Value::ByteVal(v)) => Some(Scalar::Byte(*v as i8)),
+                Some(literal::Value::ShortVal(v)) => Some(Scalar::Short(*v as i16)),
+                Some(literal::Value::IntVal(v)) if type_id == Some(DataTypeId::Date as i32) => {
+                    Some(Scalar::Date(*v))
+                }
+                Some(literal::Value::IntVal(v)) => Some(Scalar::Integer(*v)),
+                Some(literal::Value::LongVal(v)) if type_id == Some(DataTypeId::Timestamp as i32) => {
+                    Some(Scalar::Timestamp(*v))
+                }
+                Some(literal::Value::LongVal(v))
+                    if type_id == Some(DataTypeId::TimestampNtz as i32) =>
+                {
+                    Some(Scalar::TimestampNtz(*v))
+                }
+                Some(literal::Value::LongVal(v)) => Some(Scalar::Long(*v)),
+                Some(literal::Value::FloatVal(v)) => Some(Scalar::Float(*v)),
+                Some(literal::Value::DoubleVal(v)) => Some(Scalar::Double(*v)),
+                Some(literal::Value::StringVal(s)) => Some(Scalar::String(s.clone())),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -218,11 +240,27 @@ pub fn catalyst_to_kernel_expression_with_names(
 }
 
 fn catalyst_literal_to_kernel(lit: &spark_expression::Literal) -> Expression {
+    use spark_expression::data_type::DataTypeId;
+    // Spark stores TIMESTAMP / TIMESTAMP_NTZ as int64 micros and DATE as int32 days, in the int
+    // value slots. Honor the declared `datatype` so the kernel literal carries the right TYPE -- a
+    // bare LONG/INTEGER literal makes kernel reject the comparison against a temporal column
+    // ("Invalid comparison: Timestamp(µs) < Int64") and abort the whole scan. This is the operand
+    // path for binary comparisons (=, <, <=, >, >=, !=); IN-lists use `catalyst_literal_to_scalar`.
+    let type_id = lit.datatype.as_ref().map(|d| d.type_id);
     match &lit.value {
         Some(literal::Value::BoolVal(b)) => Expression::literal(*b),
         Some(literal::Value::ByteVal(v)) => Expression::literal(*v),
         Some(literal::Value::ShortVal(v)) => Expression::literal(*v),
+        Some(literal::Value::IntVal(v)) if type_id == Some(DataTypeId::Date as i32) => {
+            Expression::literal(Scalar::Date(*v))
+        }
         Some(literal::Value::IntVal(v)) => Expression::literal(*v),
+        Some(literal::Value::LongVal(v)) if type_id == Some(DataTypeId::Timestamp as i32) => {
+            Expression::literal(Scalar::Timestamp(*v))
+        }
+        Some(literal::Value::LongVal(v)) if type_id == Some(DataTypeId::TimestampNtz as i32) => {
+            Expression::literal(Scalar::TimestampNtz(*v))
+        }
         Some(literal::Value::LongVal(v)) => Expression::literal(*v),
         Some(literal::Value::FloatVal(v)) => Expression::literal(*v),
         Some(literal::Value::DoubleVal(v)) => Expression::literal(*v),
@@ -320,6 +358,53 @@ mod tests {
                 "literal didn't translate: needle={needle}, got={expr:?}"
             );
         }
+    }
+
+    // Temporal literals must carry their kernel TYPE so a predicate against a TIMESTAMP/DATE column
+    // type-checks in kernel. Before the fix a TIMESTAMP `LongVal` became a bare `Scalar::Long`,
+    // making kernel reject "Timestamp(µs) < Int64" and abort the scan (gencol partition-filter
+    // repro). This is the binary-operand path (`catalyst_literal_to_kernel`).
+    #[test]
+    fn temporal_literals_carry_kernel_type() {
+        use spark_expression::data_type::DataTypeId;
+        use spark_expression::DataType as ProtoDataType;
+        let mk = |val: literal::Value, tid: DataTypeId| Literal {
+            value: Some(val),
+            datatype: Some(ProtoDataType {
+                type_id: tid as i32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // TIMESTAMP (int64 micros) -> Scalar::Timestamp, NOT Long.
+        let ts = catalyst_literal_to_kernel(&mk(
+            literal::Value::LongVal(1_600_000_000_000_000),
+            DataTypeId::Timestamp,
+        ));
+        assert!(
+            format!("{ts:?}").contains("Timestamp"),
+            "timestamp literal must be a Timestamp scalar, got {ts:?}"
+        );
+        // TIMESTAMP_NTZ -> Scalar::TimestampNtz.
+        let tsntz =
+            catalyst_literal_to_kernel(&mk(literal::Value::LongVal(123), DataTypeId::TimestampNtz));
+        assert!(
+            format!("{tsntz:?}").contains("TimestampNtz"),
+            "timestamp_ntz literal must be a TimestampNtz scalar, got {tsntz:?}"
+        );
+        // DATE (int32 days) -> Scalar::Date.
+        let d = catalyst_literal_to_kernel(&mk(literal::Value::IntVal(18_000), DataTypeId::Date));
+        assert!(
+            format!("{d:?}").contains("Date"),
+            "date literal must be a Date scalar, got {d:?}"
+        );
+        // A plain LONG (non-temporal) stays Long.
+        let l = catalyst_literal_to_kernel(&mk(literal::Value::LongVal(8), DataTypeId::Int64));
+        let ls = format!("{l:?}");
+        assert!(
+            ls.contains('8') && !ls.contains("Timestamp"),
+            "plain long literal must stay Long, got {ls}"
+        );
     }
 
     #[test]
