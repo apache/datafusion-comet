@@ -49,6 +49,12 @@ class Native extends NativeBase {
    * @param columnNames
    *   logical column names the caller requires (kernel uses this for column-mapping resolution
    *   before stats-based file pruning).
+   * @param projectedSchemaIpc
+   *   the query's data-read columns in pure-logical names at every nesting level (Spark
+   *   `requiredSchema` minus partition + synthetic columns), serialized as an Arrow IPC schema
+   *   message (`Schema.serializeAsMessage()`). Drives `scan.with_schema(...)` so the returned
+   *   `DeltaScanTaskList` carries kernel's projected `physical_schema` / `logical_schema`. Empty
+   *   array for no projection (full-table scan; no kernel schemas returned).
    * @return
    *   `byte[]` containing the encoded DeltaScanTaskList
    */
@@ -57,5 +63,19 @@ class Native extends NativeBase {
       snapshotVersion: Long,
       storageOptions: java.util.Map[String, String],
       predicateBytes: Array[Byte],
-      columnNames: Array[String]): Array[Byte]
+      columnNames: Array[String],
+      projectedSchemaIpc: Array[Byte]): Array[Byte]
+
+  /**
+   * Schema-only companion to [[planDeltaScan]] for the batch-file-index read path (file list comes
+   * from Delta `AddFile`s, but the kernel-read executor still needs kernel's resolved
+   * physical/logical schemas). Returns a `DeltaScanTaskList` with only `physical_schema` /
+   * `logical_schema` set (Arrow IPC). `projectedSchemaIpc` is the data-read projection in
+   * pure-logical names (`Schema.serializeAsMessage()`); empty array => no schemas returned.
+   */
+  @native def planDeltaReadSchemas(
+      tableUrl: String,
+      snapshotVersion: Long,
+      storageOptions: java.util.Map[String, String],
+      projectedSchemaIpc: Array[Byte]): Array[Byte]
 }

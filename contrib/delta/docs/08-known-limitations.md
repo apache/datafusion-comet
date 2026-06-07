@@ -163,6 +163,25 @@ want to accelerate them:
 - `TahoeLogFileIndexWithCloudFetch` (Databricks-proprietary, no OSS reproducer).
 - Tables/queries that fail the schema/encryption compatibility checks.
 
+### A6. INT96 timestamps read as nanoseconds (far-future overflow) — kernel gap
+
+The kernel-read path reads each file through delta-kernel's `read_parquet_files`, which
+uses kernel's fixed `reader_options()` (`ArrowReaderOptions::new().with_skip_arrow_metadata(true)`,
+`pub(crate)` — no engine-facing knob). arrow-rs always decodes a parquet INT96 timestamp
+as `Timestamp(Nanosecond)`, which kernel then casts to the table's declared unit. Values
+after ~year 2262 overflow `i64` nanoseconds **during the read**, before any cast — so they
+can read back wrong. Spark/Comet's own parquet path avoids this via `coerce_int96="us"`,
+but kernel exposes no equivalent.
+
+- **Impact:** narrow — only INT96-physical timestamp columns with dates beyond ~2262.
+  Modern Delta writers use INT64 logical timestamps; INT96 is the legacy encoding.
+- **Surfaced by:** `CometDeltaTypeRoundTripAuditSuite` "date / timestamp / timestamp_ntz
+  round-trip" when it exercises far-future INT96 values.
+- **Options:** (a) upstream delta-kernel fix exposing an INT96 coercion hook — filed as
+  [delta-io/delta-kernel-rs#2709](https://github.com/delta-io/delta-kernel-rs/issues/2709);
+  (b) a Comet-side custom `ParquetHandler`; (c) accept the limitation. Currently (c) + (a).
+  Referenced from the `CAVEAT` comment in `read_file_via_kernel` (`kernel_scan.rs`).
+
 ---
 
 ## Part B — Pending regression failures (open as bug issues)
@@ -344,6 +363,48 @@ The originally-"untriaged" failures resolve into:
 - **Guard:** `CometDeltaNestedArrayStructReproSuite` (MERGE `array<struct>` with
   reordered nested fields; proven red→green).
 - **Tracking:** internal task #73.
+
+### B9. Nested schema evolution + nested column mapping — native wrong/error — FIXED
+
+- **Tests (large family, ~35 in the 4.1 run):** nested-struct field ADDITION /
+  reorder (`MergeIntoNestedStructEvolution*` / `...InMapEvolution*`, `SchemaUtilsSuite`
+  "normalize column names - e2e nested struct") AND nested column-mapped RENAME
+  (`CometDeltaNativeSuite` #47). The schema-evolution family first surfaced as
+  `[FAILED_READ_FILE.NO_HINT]` on `test%file%prefix-...parquet` files — but the `%` was a
+  red herring (Delta's harness prefixes every data file with `test%file%prefix-`; the
+  kernel-read resolves `%` paths fine, see `CometDeltaPercentFileNameReproSuite` /
+  `CometParquetPercentPathSuite`). The real fault was nested schema reconciliation.
+- **Root cause:** the read previously re-implemented schema reconciliation Comet-side
+  (a hand-rolled `align_batch_to_schema` / `reconcile_array`, and a `physicalise_field`
+  walk over the proto `column_mappings`). That handled top-level cases but got nested
+  column mapping wrong: the physical read schema physicalised only the TOP level, leaving
+  nested field names logical with no field-ids. Kernel's reader matches file columns by
+  field-id (then name), so nested columns went unmatched and were NULL-filled — #47 read
+  back `(id, null, null)`.
+- **Fix (use kernel as intended — see `10-iceberg-style-kernel-read.md`):** the read now
+  uses delta-kernel's own primitives end-to-end.
+  - `read_file_via_kernel` reads each file with `engine.parquet_handler().read_parquet_files(physical_schema)`
+    then `transform_to_logical(physical_schema, logical_schema, transform)` — kernel's
+    `fixup_parquet_read` does the reorder / null-fill / cast (added & reordered nested
+    fields), exactly as `Scan::execute` does. The hand-rolled `align_batch_to_schema` /
+    `reconcile_array` / `coerce_int96_to_micros` are deleted.
+  - The schemas are produced by kernel's `Scan`, not reconstructed Comet-side: the driver
+    projects the snapshot schema to the read columns (`snapshot.schema().project(cols)`,
+    which keeps the `delta.columnMapping.physicalName` annotations `with_schema` needs),
+    builds the scan, and ships `scan.physical_schema()` / `scan.logical_schema()` (Arrow
+    IPC, field-ids preserved at EVERY nesting level) to the executor via
+    `DeltaScanCommon.kernel_physical_schema` / `kernel_logical_schema`. The kernel-driver
+    `planDeltaScan` path returns them inline; the batch-file-index path
+    (`PreparedDeltaFileIndex`, file list from AddFiles) fetches them via the schema-only
+    `planDeltaReadSchemas`. The executor reads with the physical schema (so kernel matches
+    by field-id at every level) and relabels via the schema pair. `physicalise_field`
+    remains only as a fallback when no kernel schemas were shipped.
+- **Guards (red→green, all assert Comet matches Spark):**
+  `CometDeltaNestedArrayStructReproSuite` "read after ALTER ADD nested struct field
+  (schema-evolution null-fill)" + the MERGE reorder cases; `CometDeltaNativeSuite` #47
+  "nested column-mapped table with a nested rename".
+- **Tracking:** internal task #74 (the column-mapping slice of the broader kernel
+  alignment, task #76).
 
 ---
 

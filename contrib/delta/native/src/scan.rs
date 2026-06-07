@@ -91,6 +91,85 @@ pub struct DeltaScanPlan {
     /// Logical→physical column name mapping for column-mapped tables, recursive (struct fields
     /// carry nested `children`). Empty when column_mapping_mode is None.
     pub column_mappings: Vec<crate::proto::DeltaColumnMapping>,
+    /// Kernel-built data-column schemas (Arrow IPC schema messages) for the kernel-read path,
+    /// produced from the projected `Scan` (`scan.physical_schema()` / `scan.logical_schema()`).
+    /// The physical schema carries correct physical names + field-ids at every nesting level
+    /// (kernel's own column-mapping resolution); the executor reads parquet with it and relabels
+    /// physical->logical via the schema pair -- no Comet-side physicalisation. Empty when the
+    /// driver had no projected schema to build the scan against.
+    pub physical_schema_ipc: Vec<u8>,
+    pub logical_schema_ipc: Vec<u8>,
+}
+
+/// Serialize an arrow-58 schema to an encapsulated IPC schema message (continuation + length +
+/// flatbuffer `Message` whose header is the Schema). Symmetric with the executor's
+/// `arrow_ipc::convert::try_schema_from_ipc_buffer` decode and with Arrow-Java's
+/// `Schema.serializeAsMessage()` (used for the inbound projection). Field metadata -- including
+/// `PARQUET:field_id` -- is preserved.
+fn arrow_schema_to_ipc_bytes(schema: &arrow::datatypes::Schema) -> DeltaResult<Vec<u8>> {
+    let mut buf = Vec::new();
+    {
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut buf, schema)
+            .map_err(|e| DeltaError::Internal(format!("arrow IPC schema serialize: {e}")))?;
+        writer
+            .finish()
+            .map_err(|e| DeltaError::Internal(format!("arrow IPC schema finish: {e}")))?;
+    }
+    Ok(buf)
+}
+
+/// `(physical_schema_ipc, logical_schema_ipc)` for a built `Scan`: kernel's own projected
+/// physical/logical data-column schemas (Arrow IPC, field-ids preserved at every nesting level).
+fn scan_schemas_to_ipc(scan: &delta_kernel::scan::Scan) -> DeltaResult<(Vec<u8>, Vec<u8>)> {
+    use delta_kernel::engine::arrow_conversion::TryIntoArrow;
+    let physical_arrow: arrow::datatypes::Schema = scan
+        .physical_schema()
+        .as_ref()
+        .try_into_arrow()
+        .map_err(|e| DeltaError::Internal(format!("kernel physical schema->arrow: {e}")))?;
+    let logical_arrow: arrow::datatypes::Schema =
+        scan.logical_schema()
+            .as_ref()
+            .try_into_arrow()
+            .map_err(|e| DeltaError::Internal(format!("kernel logical schema->arrow: {e}")))?;
+    Ok((
+        arrow_schema_to_ipc_bytes(&physical_arrow)?,
+        arrow_schema_to_ipc_bytes(&logical_arrow)?,
+    ))
+}
+
+/// Schema-only kernel scan for the batch-file-index read path (`PreparedDeltaFileIndex` /
+/// `TahoeBatchFileIndex` / ...), where the file list comes from Delta's `AddFile`s (NOT kernel log
+/// replay, for correctness) but the kernel-read executor still needs kernel's resolved
+/// physical/logical schemas. Builds the snapshot at `version` + a projected `Scan` and returns its
+/// `(physical_schema_ipc, logical_schema_ipc)`. Does NOT enumerate files. `projected_logical_schema`
+/// is the query's data-read columns in pure-logical names (see `plan_delta_scan_with_predicate`).
+pub fn plan_delta_read_schemas(
+    url_str: &str,
+    config: &DeltaStorageConfig,
+    version: Option<u64>,
+    projected_columns: Vec<String>,
+) -> DeltaResult<(Vec<u8>, Vec<u8>)> {
+    let url = normalize_url(url_str)?;
+    let engine = get_or_create_engine(&url, config)?;
+    let snapshot = {
+        let mut builder = Snapshot::builder_for(url);
+        if let Some(v) = version {
+            builder = builder.at_version(v);
+        }
+        builder.build(&*engine)?
+    };
+    // Project the snapshot's own schema (keeps the column-mapping annotations `with_schema` needs).
+    let projected_schema = snapshot.schema().project(&projected_columns).map_err(|e| {
+        DeltaError::Internal(format!("project snapshot schema to read columns: {e}"))
+    })?;
+    // `Snapshot::build()` already returns `Arc<Snapshot>` (= `SnapshotRef`); `scan_builder` consumes
+    // it by value.
+    let scan = snapshot
+        .scan_builder()
+        .with_schema(projected_schema)
+        .build()?;
+    scan_schemas_to_ipc(&scan)
 }
 
 /// Build the recursive Delta column-mapping tree for a struct: one entry per field that is renamed
@@ -179,14 +258,24 @@ pub fn plan_delta_scan(
     config: &DeltaStorageConfig,
     version: Option<u64>,
 ) -> DeltaResult<DeltaScanPlan> {
-    plan_delta_scan_with_predicate(url_str, config, version, None)
+    plan_delta_scan_with_predicate(url_str, config, version, None, None)
 }
 
+/// `projected_columns`: the top-level data columns the query reads, in logical names (the Spark
+/// `requiredSchema` minus partition + synthetic columns). When present, the scan is projected via
+/// `snapshot.schema().project(projected_columns)` -- projecting the SNAPSHOT's own schema preserves
+/// each field's `delta.columnMapping.physicalName` annotation (which kernel's `with_schema` requires
+/// under column mapping; a freshly-built schema would lack it). Kernel then resolves the projected
+/// physical names + field-ids, and `scan.physical_schema()` / `scan.logical_schema()` are returned
+/// for the executor's kernel-read path (the intended `delta-kernel-rs` distributed-read pattern:
+/// ship the scan's schemas to workers rather than reconstructing them). `None` => full-table scan,
+/// no schemas returned (the executor falls back to physicalising `required_schema`).
 pub fn plan_delta_scan_with_predicate(
     url_str: &str,
     config: &DeltaStorageConfig,
     version: Option<u64>,
     kernel_predicate: Option<delta_kernel::expressions::Predicate>,
+    projected_columns: Option<Vec<String>>,
 ) -> DeltaResult<DeltaScanPlan> {
     let url = normalize_url(url_str)?;
     let engine = get_or_create_engine(&url, config)?;
@@ -242,7 +331,26 @@ pub fn plan_delta_scan_with_predicate(
     if let Some(pred) = kernel_predicate {
         scan_builder = scan_builder.with_predicate(Arc::new(pred));
     }
+    // Project the scan to the query's top-level data columns so `scan.physical_schema()` /
+    // `scan.logical_schema()` carry the projected shape kernel resolves. Projecting the snapshot's
+    // own schema keeps the column-mapping annotations `with_schema` needs.
+    let projected = projected_columns.is_some();
+    if let Some(ref names) = projected_columns {
+        let projected_schema = snapshot_arc.schema().project(names).map_err(|e| {
+            DeltaError::Internal(format!("project snapshot schema to read columns: {e}"))
+        })?;
+        scan_builder = scan_builder.with_schema(projected_schema);
+    }
     let scan = scan_builder.build()?;
+
+    // Kernel-read schemas: serialize the scan's own physical/logical schemas (Arrow IPC, field-ids
+    // preserved) for the executor. Only when we projected -- a full-table scan's schemas aren't the
+    // query's read shape, and the executor's non-kernel-read path doesn't consume them.
+    let (physical_schema_ipc, logical_schema_ipc) = if projected {
+        scan_schemas_to_ipc(&scan)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     // Per-row state extracted directly from each scan_metadata RecordBatch -- avoids
     // both `DvInfo` (whose `deletion_vector` field is `pub(crate)`) and the per-DV
@@ -348,6 +456,8 @@ pub fn plan_delta_scan_with_predicate(
         version: actual_version,
         unsupported_features,
         column_mappings,
+        physical_schema_ipc,
+        logical_schema_ipc,
     })
 }
 
@@ -454,8 +564,7 @@ fn extract_row_tracking_for_selected(
     let file_constants = batch
         .column_by_name("fileConstantValues")
         .and_then(|c| c.as_any().downcast_ref::<StructArray>());
-    let (base_arr, default_arr): (Option<&Int64Array>, Option<&Int64Array>) = match file_constants
-    {
+    let (base_arr, default_arr): (Option<&Int64Array>, Option<&Int64Array>) = match file_constants {
         Some(s) => (
             s.column_by_name("baseRowId")
                 .and_then(|c| c.as_any().downcast_ref::<Int64Array>()),

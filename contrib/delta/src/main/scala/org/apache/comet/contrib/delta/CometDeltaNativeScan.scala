@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{And, BoundReference, Expression, InterpretedPredicate}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometDeltaNativeScanExec, CometDeltaScanMarker, CometNativeExec}
+import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -143,6 +144,47 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
    * Fields without `delta.columnMapping.id` are passed through unchanged (e.g. partition
    * columns, synthetic row-index columns, struct-leaf fields the metadata strip elided).
    */
+  /**
+   * Names that appear in `scan.requiredSchema` but are NOT real parquet columns: Delta/Spark
+   * synthetic + `_metadata.*` virtual columns synthesised natively after the scan. They must be
+   * excluded from the kernel read projection (kernel would look for non-existent file columns).
+   * Mirrors the `syntheticNames` set used later when stripping `required_schema` for the proto.
+   * Materialised row-tracking columns (`_row-id-col-*` / `_row-commit-version-col-*`) are real
+   * parquet columns and are deliberately NOT here.
+   */
+  private[delta] val SyntheticReadFieldNames: Set[String] = Set(
+    DeltaReflection.RowIndexColumnName,
+    DeltaReflection.TmpMetadataRowIndexColumnName,
+    DeltaReflection.IsRowDeletedColumnName,
+    DeltaReflection.RowIdColumnName,
+    DeltaReflection.RowCommitVersionColumnName,
+    "file_path",
+    "file_name",
+    "file_size",
+    "file_block_start",
+    "file_block_length",
+    "file_modification_time",
+    "base_row_id",
+    "default_row_commit_version").map(_.toLowerCase(Locale.ROOT))
+
+  /**
+   * The query's data-read columns -- `scan.requiredSchema` minus synthetic/metadata columns
+   * (partition columns are never in `requiredSchema`: Spark gives the data half) -- serialized as
+   * an Arrow IPC schema message for the driver's `scan.with_schema(...)`. Pure-logical names at
+   * every nesting level, so kernel resolves the projected physical names + field-ids itself and
+   * returns `scan.physical_schema()` / `scan.logical_schema()` for the executor. Empty array when
+   * there are no data columns to read (partition-/synthetic-only scan) -- the driver then skips the
+   * projection and the executor drives the row count without a parquet read.
+   */
+  private[delta] def dataReadSchemaIpc(
+      requiredSchema: StructType,
+      timeZoneId: String): Array[Byte] = {
+    val dataFields = requiredSchema.fields.filterNot(f =>
+      SyntheticReadFieldNames.contains(f.name.toLowerCase(Locale.ROOT)))
+    if (dataFields.isEmpty) Array.emptyByteArray
+    else CometUtils.toArrowSchema(StructType(dataFields), timeZoneId).serializeAsMessage()
+  }
+
   private[delta] def translateDeltaFieldIdToParquet(field: StructField): StructField = {
     val newDataType = translateDataTypeFieldIds(field.dataType)
     val newMetadata =
@@ -548,7 +590,13 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
             snapshotVersion,
             storageOptions,
             predicateBytes,
-            columnNames)
+            columnNames,
+            // Projected data-read schema -> drives kernel's `scan.with_schema(...)` so the returned
+            // task list carries `scan.physical_schema()` / `scan.logical_schema()` for the
+            // kernel-read path (correct physical names + field-ids at every nesting level).
+            CometDeltaNativeScan.dataReadSchemaIpc(
+              scan.requiredSchema,
+              scan.conf.sessionLocalTimeZone))
         } catch {
           case scala.util.control.NonFatal(e) =>
             logWarning(
@@ -831,6 +879,38 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     val partitionSchema = schema2Proto(partitionSchemaForProto)
     commonBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
     commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
+    // Kernel-built projected schemas (`scan.physical_schema()` / `scan.logical_schema()`, Arrow
+    // IPC) -- correct physical names + field-ids at EVERY nesting level. The executor's kernel-read
+    // planner uses them verbatim instead of physicalising `required_schema`. The kernel-driver
+    // `planDeltaScan` path returns them inline; the batch-file-index path (file list from AddFiles)
+    // fetches them via the schema-only `planDeltaReadSchemas`. Empty => executor falls back to the
+    // `column_mappings` physicalisation (top-level only -- wrong for nested column mapping).
+    val kernelSchemaSource: DeltaScanTaskList =
+      if (!taskList0.getPhysicalSchema.isEmpty) {
+        taskList0
+      } else {
+        val projIpc =
+          CometDeltaNativeScan.dataReadSchemaIpc(scan.requiredSchema, scan.conf.sessionLocalTimeZone)
+        if (projIpc.isEmpty) {
+          taskList0
+        } else {
+          try {
+            DeltaScanTaskList.parseFrom(
+              nativeLib.planDeltaReadSchemas(tableRoot, snapshotVersion, storageOptions, projIpc))
+          } catch {
+            case scala.util.control.NonFatal(e) =>
+              logWarning(
+                s"CometDeltaNativeScan: kernel read-schema build failed for $tableRoot; " +
+                  s"falling back to column-mapping physicalisation",
+                e)
+              taskList0
+          }
+        }
+      }
+    if (!kernelSchemaSource.getPhysicalSchema.isEmpty) {
+      commonBuilder.setKernelPhysicalSchema(kernelSchemaSource.getPhysicalSchema)
+      commonBuilder.setKernelLogicalSchema(kernelSchemaSource.getLogicalSchema)
+    }
     commonBuilder.setUseFieldId(useFieldIdActive)
     commonBuilder.setEmitRowIndex(emitRowIndex)
     commonBuilder.setEmitIsRowDeleted(emitIsRowDeleted)

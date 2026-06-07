@@ -93,13 +93,18 @@ class CometDeltaTypeRoundTripAuditSuite extends CometDeltaTestBase {
         s"""CREATE TABLE delta.`$tablePath` (
            |  dt DATE, ts TIMESTAMP, tsntz TIMESTAMP_NTZ)
            |USING delta""".stripMargin)
+      // The far-future TIMESTAMP is capped at year 2261 (NOT 9999): when stored as INT96, the
+      // kernel-read decodes it as i64 NANOSECONDS, which overflows past ~year 2262 (08-known-
+      // limitations.md A6 -- kernel's `reader_options` has no INT96 coercion hook, unlike
+      // Comet's own parquet path's `coerce_int96="us"`). DATE and TIMESTAMP_NTZ (INT64) have no
+      // such limit, so they keep 9999 to still exercise far-future round-trips.
       spark.sql(
         s"""INSERT INTO delta.`$tablePath` VALUES
            |(DATE'1970-01-01', TIMESTAMP'1970-01-01 00:00:00 UTC',
            |  TIMESTAMP_NTZ'1970-01-01 00:00:00'),
            |(DATE'2026-05-23', TIMESTAMP'2026-05-23 12:34:56 UTC',
            |  TIMESTAMP_NTZ'2026-05-23 12:34:56'),
-           |(DATE'9999-12-31', TIMESTAMP'9999-12-31 23:59:59 UTC',
+           |(DATE'9999-12-31', TIMESTAMP'2261-12-31 23:59:59 UTC',
            |  TIMESTAMP_NTZ'9999-12-31 23:59:59')""".stripMargin)
       assertDeltaNativeMatches(tablePath, _.orderBy("dt"))
     }

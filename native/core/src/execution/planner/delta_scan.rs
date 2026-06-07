@@ -178,22 +178,54 @@ fn plan_delta_kernel_scan(
     // tree. The kernel-read primitive reads by physical name, then an identity transform relabels
     // physical -> logical (recursively, including nested struct fields -- proven by the
     // `spike_nested_struct_*` tests).
+    // Preferred (kernel-aligned) path: the driver shipped `scan.physical_schema()` /
+    // `scan.logical_schema()` (Arrow IPC, field-ids preserved at every nesting level). Use them
+    // verbatim -- kernel resolved column-mapping physical names + field-ids for us, so the read
+    // matches the file by field-id and the transform relabels physical->logical via this exact
+    // schema pair (kernel's own `Scan::execute` mechanism). No Comet-side physicalisation. The
+    // appended-partition reconcile (`append_partition_columns`, positional `arrow_cast`) maps the
+    // logical-named read batch onto `required_schema` regardless of column-mapping mode.
+    //
+    // Fallback: when no kernel schemas were shipped (e.g. the non-kernel-read add-files path),
+    // physicalise `data_fields` via the recursive `column_mappings`.
     let mapping_by_name: HashMap<&str, &DeltaColumnMapping> = common
         .column_mappings
         .iter()
         .map(|cm| (cm.logical_name.as_str(), cm))
         .collect();
-    let read_logical_schema: SchemaRef = Arc::new(Schema::new(data_fields.clone()));
-    let physical_schema: SchemaRef = if mapping_by_name.is_empty() {
-        Arc::clone(&read_logical_schema)
-    } else {
-        let fields: Vec<_> = data_fields
-            .iter()
-            .map(|f| physicalise_field(f, mapping_by_name.get(f.name().as_str()).copied(), true))
-            .collect();
-        Arc::new(Schema::new(fields))
-    };
-    let needs_transform = !mapping_by_name.is_empty();
+    let (physical_schema, read_logical_schema, needs_transform): (SchemaRef, SchemaRef, bool) =
+        if !common.kernel_physical_schema.is_empty() {
+            let decode = |bytes: &[u8], which: &str| -> Result<SchemaRef, ExecutionError> {
+                arrow::ipc::convert::try_schema_from_ipc_buffer(bytes)
+                    .map(Arc::new)
+                    .map_err(|e| GeneralError(format!("decode kernel {which} schema IPC: {e}")))
+            };
+            let physical = decode(&common.kernel_physical_schema, "physical")?;
+            let logical = decode(&common.kernel_logical_schema, "logical")?;
+            // Column mapping is active iff the physical names diverge from the logical names; only
+            // then does the transform need to relabel (plain tables read pass-through).
+            let needs_transform = physical
+                .fields()
+                .iter()
+                .zip(logical.fields().iter())
+                .any(|(p, l)| p.name() != l.name());
+            (physical, logical, needs_transform)
+        } else {
+            let read_logical_schema: SchemaRef = Arc::new(Schema::new(data_fields.clone()));
+            let physical_schema: SchemaRef = if mapping_by_name.is_empty() {
+                Arc::clone(&read_logical_schema)
+            } else {
+                let fields: Vec<_> = data_fields
+                    .iter()
+                    .map(|f| {
+                        physicalise_field(f, mapping_by_name.get(f.name().as_str()).copied(), true)
+                    })
+                    .collect();
+                Arc::new(Schema::new(fields))
+            };
+            let needs_transform = !mapping_by_name.is_empty();
+            (physical_schema, read_logical_schema, needs_transform)
+        };
 
     // Final output = `required_schema` (data ++ partition, in order). The exec injects exactly the
     // partition columns present in the output.
@@ -233,8 +265,7 @@ fn plan_delta_kernel_scan(
         .ok()
         .filter(|u| matches!(u.scheme(), "s3" | "s3a"))
         .and_then(|u| u.host_str().map(|h| h.to_string()));
-    let storage_config =
-        delta_storage_config_from_map(&object_store_options, s3_bucket.as_deref());
+    let storage_config = delta_storage_config_from_map(&object_store_options, s3_bucket.as_deref());
 
     // Synthetic columns (row_index / is_row_deleted / row_id / row_commit_version) and `_metadata.*`
     // are computed by the existing DeltaSyntheticColumnsExec stacked ON TOP of the kernel read --
@@ -324,34 +355,34 @@ fn plan_delta_kernel_scan(
     };
 
     // Reorder to the user-visible layout when synthetics aren't already a suffix.
-    let scan_exec: Arc<dyn datafusion::physical_plan::ExecutionPlan> =
-        if common.final_output_indices.is_empty() {
-            scan_exec
-        } else {
-            let wrapped_schema = scan_exec.schema();
-            let n = wrapped_schema.fields().len();
-            let projections: Result<ProjectionColumns, ExecutionError> = common
-                .final_output_indices
-                .iter()
-                .map(|idx| {
-                    if *idx < 0 || (*idx as usize) >= n {
-                        return Err(GeneralError(format!(
-                            "final_output_indices entry {idx} out of range \
+    let scan_exec: Arc<dyn datafusion::physical_plan::ExecutionPlan> = if common
+        .final_output_indices
+        .is_empty()
+    {
+        scan_exec
+    } else {
+        let wrapped_schema = scan_exec.schema();
+        let n = wrapped_schema.fields().len();
+        let projections: Result<ProjectionColumns, ExecutionError> = common
+            .final_output_indices
+            .iter()
+            .map(|idx| {
+                if *idx < 0 || (*idx as usize) >= n {
+                    return Err(GeneralError(format!(
+                        "final_output_indices entry {idx} out of range \
                              (wrapped schema has {n} fields)"
-                        )));
-                    }
-                    let field = wrapped_schema.field(*idx as usize);
-                    let col: Arc<dyn PhysicalExpr> =
-                        Arc::new(Column::new(field.name(), *idx as usize));
-                    Ok((col, field.name().clone()))
-                })
-                .collect();
-            Arc::new(
-                ProjectionExec::try_new(projections?, scan_exec).map_err(|e| {
-                    GeneralError(format!("final_output_indices ProjectionExec: {e}"))
-                })?,
-            )
-        };
+                    )));
+                }
+                let field = wrapped_schema.field(*idx as usize);
+                let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), *idx as usize));
+                Ok((col, field.name().clone()))
+            })
+            .collect();
+        Arc::new(
+            ProjectionExec::try_new(projections?, scan_exec)
+                .map_err(|e| GeneralError(format!("final_output_indices ProjectionExec: {e}")))?,
+        )
+    };
 
     Ok((
         vec![],

@@ -366,6 +366,16 @@ message DeltaScanCommon {
   // `spark.comet.delta.kernelRead.enabled`. Phase 1b only supports plain tables (no column
   // mapping / partitions / row-tracking); the driver leaves it false otherwise.
   bool kernel_read = 25;
+  // Kernel-built data-column schemas for the kernel-read path, produced by the driver from
+  // `delta-kernel-rs`'s `Scan` (`scan.physical_schema()` / `scan.logical_schema()`), serialized as
+  // Arrow IPC schema messages. The physical schema carries the correct physical names AND field-ids
+  // at EVERY nesting level (kernel's own column-mapping resolution); the logical schema is the
+  // matching pure-logical shape. The executor reads parquet with the physical schema and relabels
+  // physical->logical via the schema pair -- no Comet-side physicalisation. Empty when the driver
+  // didn't build them (e.g. the non-kernel-read add-files path), in which case the executor falls
+  // back to physicalising `required_schema` via `column_mappings`.
+  bytes kernel_physical_schema = 26;
+  bytes kernel_logical_schema = 27;
 }
 
 // Operator payload for a Delta scan.
@@ -440,6 +450,12 @@ message DeltaScanTaskList {
   repeated DeltaScanTask tasks = 3;
   repeated string unsupported_features = 4;
   repeated DeltaColumnMapping column_mappings = 5;
+  // Kernel-built data-column schemas (Arrow IPC), produced by the driver from the projected
+  // `Scan` (`scan.physical_schema()` / `scan.logical_schema()`). Carried back to Scala and copied
+  // onto `DeltaScanCommon.kernel_physical_schema` / `kernel_logical_schema`. Empty when the driver
+  // had no projection to build the scan against.
+  bytes physical_schema = 6;
+  bytes logical_schema = 7;
 }
 
 message DeltaColumnMapping {

@@ -62,6 +62,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
     storage_options: JObject,
     predicate_bytes: JByteArray,
     column_names: jni::objects::JObjectArray,
+    // Projected data-column schema (Arrow IPC schema message, from `Utils.toArrowSchema(...)
+    // .serializeAsMessage()`): the query's read columns in pure-logical names at every nesting
+    // level. Drives `scan.with_schema(...)` so the driver returns kernel's projected
+    // physical/logical schemas. Null/empty => full-table scan, no kernel schemas returned.
+    projected_schema_ipc: JByteArray,
 ) -> jbyteArray {
     try_unwrap_or_throw(&e, |env| {
         let url_str: String = table_url.try_to_string(env)?;
@@ -115,11 +120,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
         let kernel_predicate = _predicate_proto.and_then(|bytes| {
             use prost::Message;
             match datafusion_comet_proto::spark_expression::Expr::decode(bytes.as_slice()) {
-                Ok(expr) => Some(
-                    crate::predicate::catalyst_to_kernel_predicate_with_names(
-                        &expr, &col_names,
-                    ),
-                ),
+                Ok(expr) => Some(crate::predicate::catalyst_to_kernel_predicate_with_names(
+                    &expr, &col_names,
+                )),
                 Err(e) => {
                     log::warn!(
                         "Failed to decode predicate for Delta file pruning: {e}; \
@@ -130,8 +133,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
             }
         });
 
-        let plan = plan_delta_scan_with_predicate(&url_str, &config, version, kernel_predicate)
-            .map_err(|e| CometError::Internal(format!("delta_kernel log replay failed: {e}")))?;
+        // Top-level data-read column names (logical) from the projected schema IPC. The driver
+        // projects the SNAPSHOT schema by these (keeping column-mapping annotations). Absent/empty
+        // => None (full-table scan, no kernel schemas returned).
+        let projected_columns = decode_projected_columns(env, &projected_schema_ipc)?;
+
+        let plan = plan_delta_scan_with_predicate(
+            &url_str,
+            &config,
+            version,
+            kernel_predicate,
+            projected_columns,
+        )
+        .map_err(|e| CometError::Internal(format!("delta_kernel log replay failed: {e}")))?;
 
         // Under column mapping, kernel returns partition_values keyed by the
         // PHYSICAL column name (e.g. `col-<uuid>`), but `partition_schema`
@@ -159,10 +173,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
                     .partition_values
                     .into_iter()
                     .map(|(name, value)| {
-                        let logical_name = physical_to_logical
-                            .get(&name)
-                            .cloned()
-                            .unwrap_or(name);
+                        let logical_name = physical_to_logical.get(&name).cloned().unwrap_or(name);
                         DeltaPartitionValue {
                             name: logical_name,
                             value: Some(value),
@@ -204,8 +215,75 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
             tasks,
             unsupported_features: plan.unsupported_features,
             column_mappings,
+            // Kernel-built projected schemas (Arrow IPC) -- Scala copies these onto
+            // `DeltaScanCommon.kernel_physical_schema` / `kernel_logical_schema`. Empty when no
+            // projection was supplied.
+            physical_schema: plan.physical_schema_ipc,
+            logical_schema: plan.logical_schema_ipc,
         };
 
+        let bytes = msg.encode_to_vec();
+        let result = env.byte_array_from_slice(&bytes)?;
+        Ok(result.into_raw())
+    })
+}
+
+/// Schema-only companion to `planDeltaScan` for the batch-file-index read path (the file list comes
+/// from Delta `AddFile`s on the Scala side; only kernel's resolved physical/logical schemas are
+/// needed). Builds the snapshot at `snapshot_version` + a projected `Scan` and returns a
+/// `DeltaScanTaskList` with ONLY `physical_schema` / `logical_schema` set (Arrow IPC, field-ids at
+/// every nesting level). Returns an empty (no schemas) message when `projected_schema_ipc` is
+/// absent/empty -- the executor then falls back to physicalising `required_schema`.
+///
+/// # Safety
+/// Inherently unsafe because it dereferences raw JNI pointers.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDeltaReadSchemas(
+    e: EnvUnowned,
+    _class: JClass,
+    table_url: JString,
+    snapshot_version: jlong,
+    storage_options: JObject,
+    projected_schema_ipc: JByteArray,
+) -> jbyteArray {
+    try_unwrap_or_throw(&e, |env| {
+        let url_str: String = table_url.try_to_string(env)?;
+        let version = if snapshot_version < 0 {
+            None
+        } else {
+            Some(snapshot_version as u64)
+        };
+        let s3_bucket = url::Url::parse(&url_str)
+            .ok()
+            .filter(|u| matches!(u.scheme(), "s3" | "s3a"))
+            .and_then(|u| u.host_str().map(|h| h.to_string()));
+        let config = if storage_options.is_null() {
+            DeltaStorageConfig::default()
+        } else {
+            let jmap: JMap<'_> = env.cast_local::<JMap>(storage_options)?;
+            extract_storage_config(env, &jmap, s3_bucket.as_deref())?
+        };
+
+        let (physical_schema, logical_schema) =
+            match decode_projected_columns(env, &projected_schema_ipc)? {
+                Some(cols) => crate::scan::plan_delta_read_schemas(
+                    &url_str, &config, version, cols,
+                )
+                .map_err(|e| {
+                    CometError::Internal(format!("delta kernel read-schema build failed: {e}"))
+                })?,
+                None => (Vec::new(), Vec::new()),
+            };
+
+        let msg = DeltaScanTaskList {
+            snapshot_version: version.unwrap_or(0),
+            table_root: url_str,
+            tasks: Vec::new(),
+            unsupported_features: Vec::new(),
+            column_mappings: Vec::new(),
+            physical_schema,
+            logical_schema,
+        };
         let bytes = msg.encode_to_vec();
         let result = env.byte_array_from_slice(&bytes)?;
         Ok(result.into_raw())
@@ -303,8 +381,11 @@ pub fn delta_storage_config_from_map(
             .or_else(|| m.get(&format!("fs.s3a.{suffix}")).cloned())
     }
     // Kernel-style (object_store) key wins over the Hadoop form.
-    let kernel_or_s3 =
-        |kernel: &str, suffix: &str| m.get(kernel).cloned().or_else(|| s3_hadoop(m, bucket, suffix));
+    let kernel_or_s3 = |kernel: &str, suffix: &str| {
+        m.get(kernel)
+            .cloned()
+            .or_else(|| s3_hadoop(m, bucket, suffix))
+    };
     DeltaStorageConfig {
         aws_access_key: kernel_or_s3("aws_access_key_id", "access.key"),
         aws_secret_key: kernel_or_s3("aws_secret_access_key", "secret.key"),
@@ -322,6 +403,29 @@ pub fn delta_storage_config_from_map(
             .map(|s| s == "true")
             .unwrap_or(false),
     }
+}
+
+/// Decode the projected-schema Arrow IPC byte array into the top-level data-read column names
+/// (logical). The driver projects the SNAPSHOT schema by these (`StructType::project`), which keeps
+/// each field's column-mapping `physicalName` annotation. `None` when the array is null/empty
+/// (full-table scan -- no kernel schemas returned).
+fn decode_projected_columns(env: &mut Env, arr: &JByteArray) -> CometResult<Option<Vec<String>>> {
+    if arr.is_null() {
+        return Ok(None);
+    }
+    let bytes = env.convert_byte_array(arr)?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let arrow_schema = arrow::ipc::convert::try_schema_from_ipc_buffer(&bytes)
+        .map_err(|e| CometError::Internal(format!("decode projected schema IPC: {e}")))?;
+    Ok(Some(
+        arrow_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect(),
+    ))
 }
 
 /// Read a Java `String[]` into a `Vec<String>`. Returns empty vec for null arrays.
