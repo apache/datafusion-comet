@@ -155,7 +155,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
         let physical_to_logical: std::collections::HashMap<String, String> = plan
             .column_mappings
             .iter()
-            .map(|cm| (cm.physical_name.clone(), cm.logical_name.clone()))
+            .map(|(logical, physical)| (physical.clone(), logical.clone()))
             .collect();
 
         let tasks: Vec<DeltaScanTask> = plan
@@ -206,15 +206,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
             })
             .collect();
 
-        // Already the recursive proto form (built from the kernel schema in `scan.rs`).
-        let column_mappings = plan.column_mappings;
+        // `plan.column_mappings` is consumed above (partition-value key translation) and is NOT put
+        // on the wire: column mapping is fully resolved by the kernel schemas shipped on
+        // `DeltaScanCommon`, so the executor needs no `column_mappings`.
 
         let msg = DeltaScanTaskList {
             snapshot_version: plan.version,
             table_root: url_str,
             tasks,
             unsupported_features: plan.unsupported_features,
-            column_mappings,
             // Kernel-built projected schemas (Arrow IPC) -- Scala copies these onto
             // `DeltaScanCommon.kernel_physical_schema` / `kernel_logical_schema`. Empty when no
             // projection was supplied.
@@ -280,7 +280,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
             table_root: url_str,
             tasks: Vec::new(),
             unsupported_features: Vec::new(),
-            column_mappings: Vec::new(),
             physical_schema,
             logical_schema,
         };

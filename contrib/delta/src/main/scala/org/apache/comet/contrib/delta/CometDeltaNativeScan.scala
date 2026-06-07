@@ -605,70 +605,12 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
             return None
         }
       }
-    val taskList0 = DeltaScanTaskList.parseFrom(taskListBytes)
-    // The kernel path populates `column_mappings` from kernel's schema metadata.
-    // The pre-materialised-index path (`buildTaskListFromAddFiles`) doesn't have
-    // that information yet, so re-derive the mapping from the relation's data
-    // + partition schema -- each StructField carries
-    // `delta.columnMapping.physicalName` in its metadata when the table uses
-    // column mapping. Without this the native scan can't translate logical
-    // column references to physical parquet column names and returns nulls.
-    // Fetch the schema used to resolve column-mapping physical names / field-ids. Prefer the
-    // ANALYSIS-TIME schema that DeltaScanRule stashed from the original
-    // DeltaParquetFileFormat.referenceSchema (relation.options): the FileIndex / live snapshot
-    // may have moved on (RENAME COLUMN, overwriteSchema) since the query was analyzed, and the
-    // query must read against the schema it was planned with -- otherwise a column whose
-    // physical name / field-id changed reads the new data instead of NULL (DeltaColumnMapping
-    // Suite "physical name changes" / "explicit id matching"). Fall back to the live snapshot
-    // schema when the option is absent (e.g. the Delta-FileIndex-over-plain-ParquetFileFormat
-    // shape, where referenceSchema was never available).
-    val snapshotSchemaEarly: Option[StructType] =
-      scan.deltaMetadata.analyzedSchema.orElse(DeltaReflection.extractSnapshotSchema(relation))
-    // Only honour physicalName metadata when the table actually has column mapping
-    // mode enabled. Some Delta test helpers (e.g. `DeltaSourceSuiteBase.withMetadata`)
-    // call `DeltaColumnMapping.assignColumnIdAndPhysicalName` unconditionally, which
-    // attaches `delta.columnMapping.physicalName` to every StructField even when the
-    // table's `delta.columnMapping.mode` is unset / `none`. In that case the writer
-    // still uses LOGICAL names in the parquet file, so physicalising our scan would
-    // look up non-existent physical column names and return empty rows.
-    val tableColumnMappingMode = DeltaReflection
-      .extractMetadataConfiguration(relation)
-      .flatMap(_.get("delta.columnMapping.mode"))
-      .filter(m => m != null && !m.equalsIgnoreCase("none"))
-    val taskList =
-      if (!taskList0.getColumnMappingsList.isEmpty || tableColumnMappingMode.isEmpty) {
-        taskList0
-      } else {
-        // `relation.dataSchema.fields[*].metadata` is stripped of Delta's column-mapping
-        // metadata by HadoopFsRelation, so the lookup here nearly always returns empty.
-        // Use the Snapshot schema we extracted (which preserves physical names at every
-        // level) for the data-column mappings, and `relation.partitionSchema` only for
-        // partition columns (whose metadata isn't stripped).
-        val dataFieldsSource: Array[StructField] =
-          snapshotSchemaEarly.map(_.fields).getOrElse(relation.dataSchema.fields)
-        val allFields = dataFieldsSource ++ relation.partitionSchema.fields
-        val logicalToPhysical = allFields.flatMap { f =>
-          if (f.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
-            Some(f.name -> f.metadata.getString(DeltaReflection.PhysicalNameMetadataKey))
-          } else {
-            None
-          }
-        }
-        if (logicalToPhysical.isEmpty) {
-          taskList0
-        } else {
-          val b = DeltaScanTaskList.newBuilder(taskList0)
-          logicalToPhysical.foreach { case (logical, physical) =>
-            b.addColumnMappings(
-              OperatorOuterClass.DeltaColumnMapping
-                .newBuilder()
-                .setLogicalName(logical)
-                .setPhysicalName(physical)
-                .build())
-          }
-          b.build()
-        }
-      }
+    val taskList = DeltaScanTaskList.parseFrom(taskListBytes)
+    // Column mapping no longer needs any executor-side plumbing: the kernel-read path ships kernel's
+    // own `scan.physical_schema()` / `logical_schema()` (physical names + field-ids resolved at every
+    // nesting level), and kernel returns partition values already translated to logical names
+    // (driver-side, in `planDeltaScan` / `buildTaskListFromAddFiles`). The former re-derivation of a
+    // `column_mappings` tree here existed only to feed the removed `physicalise_field` schema rebuild.
 
     // Phase 6 reader-feature gate. Kernel reports any Delta reader features that
     // are currently in use in this snapshot and that Comet's native path does NOT
@@ -881,29 +823,31 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
     // Kernel-built projected schemas (`scan.physical_schema()` / `scan.logical_schema()`, Arrow
     // IPC) -- correct physical names + field-ids at EVERY nesting level. The executor's kernel-read
-    // planner uses them verbatim instead of physicalising `required_schema`. The kernel-driver
-    // `planDeltaScan` path returns them inline; the batch-file-index path (file list from AddFiles)
-    // fetches them via the schema-only `planDeltaReadSchemas`. Empty => executor falls back to the
-    // `column_mappings` physicalisation (top-level only -- wrong for nested column mapping).
+    // planner uses them verbatim. The kernel-driver `planDeltaScan` path returns them inline; the
+    // batch-file-index path (file list from AddFiles) fetches them via the schema-only
+    // `planDeltaReadSchemas`. (For a read with zero data columns there are none, and none are
+    // needed -- the executor drives the row count without a parquet read.)
     val kernelSchemaSource: DeltaScanTaskList =
-      if (!taskList0.getPhysicalSchema.isEmpty) {
-        taskList0
+      if (!taskList.getPhysicalSchema.isEmpty) {
+        taskList
       } else {
         val projIpc =
           CometDeltaNativeScan.dataReadSchemaIpc(scan.requiredSchema, scan.conf.sessionLocalTimeZone)
         if (projIpc.isEmpty) {
-          taskList0
+          taskList
         } else {
           try {
             DeltaScanTaskList.parseFrom(
               nativeLib.planDeltaReadSchemas(tableRoot, snapshotVersion, storageOptions, projIpc))
           } catch {
             case scala.util.control.NonFatal(e) =>
-              logWarning(
-                s"CometDeltaNativeScan: kernel read-schema build failed for $tableRoot; " +
-                  s"falling back to column-mapping physicalisation",
-                e)
-              taskList0
+              // The kernel-read path has no Comet-side physicalisation fallback; if kernel can't
+              // build the read schemas, decline to native and let Spark's reader handle it.
+              import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+              withFallbackReason(
+                scan,
+                s"Native Delta scan could not build kernel read schemas for $tableRoot: $e")
+              return None
           }
         }
       }
@@ -950,10 +894,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       commonBuilder.putObjectStoreOptions(key, value)
     }
 
-    // Phase 4: pass column mapping from kernel through to the native planner. Relayed as-is so the
-    // recursive `children` (nested struct-field mappings, #47) are preserved; the native planner
-    // physicalises required_schema at every nesting level from this tree.
-    commonBuilder.addAllColumnMappings(taskList.getColumnMappingsList)
+    // (Column mapping is fully resolved by kernel: the executor reads with the shipped
+    // `kernel_physical_schema` / `kernel_logical_schema`, so no `column_mappings` tree is sent.)
 
     // --- 3. Pack into a DeltaScan with COMMON ONLY (split-mode, Phase 5).
     // Tasks are NOT included in the proto at planning time. They'll be
@@ -978,7 +920,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       .setSnapshotVersion(taskList.getSnapshotVersion)
       .setTableRoot(taskList.getTableRoot)
       .addAllTasks(filteredTasks.asJava)
-      .addAllColumnMappings(taskList.getColumnMappingsList)
       .addAllUnsupportedFeatures(taskList.getUnsupportedFeaturesList)
       .build()
     lastTaskListBytes.set(filteredTaskList.toByteArray)

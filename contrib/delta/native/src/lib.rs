@@ -51,8 +51,8 @@ pub mod synthetic_columns;
 /// access to the typed variants).
 pub mod proto {
     pub use datafusion_comet_proto::spark_operator::{
-        DeltaColumnMapping, DeltaDvDescriptor, DeltaPartitionValue, DeltaScan, DeltaScanCommon,
-        DeltaScanTask, DeltaScanTaskList,
+        DeltaDvDescriptor, DeltaPartitionValue, DeltaScan, DeltaScanCommon, DeltaScanTask,
+        DeltaScanTaskList,
     };
 }
 

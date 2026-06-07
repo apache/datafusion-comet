@@ -88,9 +88,11 @@ pub struct DeltaScanPlan {
     pub entries: Vec<DeltaFileEntry>,
     pub version: u64,
     pub unsupported_features: Vec<String>,
-    /// Logical→physical column name mapping for column-mapped tables, recursive (struct fields
-    /// carry nested `children`). Empty when column_mapping_mode is None.
-    pub column_mappings: Vec<crate::proto::DeltaColumnMapping>,
+    /// Top-level `(logical_name, physical_name)` pairs for column-mapped tables. Driver-internal
+    /// only -- used to translate kernel's physical-keyed partition values back to logical names.
+    /// Empty when column_mapping_mode is None. (Nested column mapping is handled by the kernel-built
+    /// schemas, not this list.)
+    pub column_mappings: Vec<(String, String)>,
     /// Kernel-built data-column schemas (Arrow IPC schema messages) for the kernel-read path,
     /// produced from the projected `Scan` (`scan.physical_schema()` / `scan.logical_schema()`).
     /// The physical schema carries correct physical names + field-ids at every nesting level
@@ -172,13 +174,12 @@ pub fn plan_delta_read_schemas(
     scan_schemas_to_ipc(&scan)
 }
 
-/// Build the recursive Delta column-mapping tree for a struct: one entry per field that is renamed
-/// (`delta.columnMapping.physicalName`) or contains nested renamed fields. Arrays/maps are descended
-/// through transparently (Delta column-maps only struct fields). Drives the native planner's
-/// `physicalise_field`.
-fn build_struct_column_mappings(
-    st: &delta_kernel::schema::StructType,
-) -> Vec<crate::proto::DeltaColumnMapping> {
+/// Build the top-level Delta column mappings (`logical_name` -> `physical_name`) for a column-mapped
+/// table. Used driver-side only, to translate kernel's physical-keyed partition values back to
+/// logical names (partition columns are top-level). Nested column mapping no longer needs a recursive
+/// tree here -- the executor reads with kernel's own `scan.physical_schema()` / `logical_schema()`
+/// (shipped on `DeltaScanCommon`), which resolve physical names + field-ids at every nesting level.
+fn build_struct_column_mappings(st: &delta_kernel::schema::StructType) -> Vec<(String, String)> {
     use delta_kernel::schema::{ColumnMetadataKey, MetadataValue};
     st.fields()
         .filter_map(|field| {
@@ -186,38 +187,12 @@ fn build_struct_column_mappings(
                 .metadata
                 .get(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref())
             {
-                Some(MetadataValue::String(p)) => Some(p.clone()),
-                _ => None,
+                Some(MetadataValue::String(p)) => p.clone(),
+                _ => return None,
             };
-            let children = build_type_column_mappings(&field.data_type);
-            if physical.is_none() && children.is_empty() {
-                return None;
-            }
-            Some(crate::proto::DeltaColumnMapping {
-                logical_name: field.name().clone(),
-                physical_name: physical.unwrap_or_default(),
-                children,
-            })
+            Some((field.name().clone(), physical))
         })
         .collect()
-}
-
-/// Descend a data type for nested column mappings: structs yield their field mappings; arrays/maps
-/// descend into their element / key+value types transparently.
-fn build_type_column_mappings(
-    dt: &delta_kernel::schema::DataType,
-) -> Vec<crate::proto::DeltaColumnMapping> {
-    use delta_kernel::schema::DataType;
-    match dt {
-        DataType::Struct(st) => build_struct_column_mappings(st),
-        DataType::Array(at) => build_type_column_mappings(at.element_type()),
-        DataType::Map(mt) => {
-            let mut v = build_type_column_mappings(mt.key_type());
-            v.extend(build_type_column_mappings(mt.value_type()));
-            v
-        }
-        _ => Vec::new(),
-    }
 }
 
 /// List every active parquet file in a Delta table at the given version.
@@ -314,12 +289,11 @@ pub fn plan_delta_scan_with_predicate(
     // For column_mapping_mode = id or name, each StructField carries a
     // `delta.columnMapping.physicalName` metadata entry that tells us what the
     // parquet file's column name actually is.
-    let column_mappings: Vec<crate::proto::DeltaColumnMapping> =
-        if props.column_mapping_mode.is_some() {
-            build_struct_column_mappings(snapshot.schema().as_ref())
-        } else {
-            Vec::new()
-        };
+    let column_mappings: Vec<(String, String)> = if props.column_mapping_mode.is_some() {
+        build_struct_column_mappings(snapshot.schema().as_ref())
+    } else {
+        Vec::new()
+    };
 
     // `Snapshot::build()` returns `Arc<Snapshot>`, and `scan_builder` consumes
     // it. Clone the Arc so we keep a stable handle through scan construction

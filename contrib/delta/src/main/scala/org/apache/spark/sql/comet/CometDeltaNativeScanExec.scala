@@ -567,8 +567,7 @@ object CometDeltaNativeScanExec {
     val components = Seq(
       common.getTableRoot,
       common.getSnapshotVersion.toString,
-      common.getRequiredSchemaList.toString,
-      common.getColumnMappingsList.toString)
+      common.getRequiredSchemaList.toString)
     s"${common.getSource}_${components.mkString("|").hashCode}"
   }
 }

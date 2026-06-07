@@ -310,8 +310,11 @@ message DeltaScanCommon {
   uint32 data_file_concurrency_limit = 11;
   // Informational label for debug output.
   string source = 12;
-  // Logical->physical column mapping (column_mapping_mode = id or name).
-  repeated DeltaColumnMapping column_mappings = 13;
+  // Field 13 was `column_mappings` (logical->physical): the executor's only consumer was the
+  // `physicalise_field` schema rebuild, removed once the kernel-read path ships kernel's own
+  // `scan.physical_schema()`/`logical_schema()`. Partition-value key translation happens
+  // driver-side (see `DeltaScanTaskList.column_mappings`), so nothing executor-side needs it.
+  reserved 13;
   optional string materialized_row_id_column_name = 14;
   optional string materialized_row_commit_version_column_name = 15;
   // When true the DataSourceExec swallows object-store NotFound errors as empty
@@ -449,23 +452,17 @@ message DeltaScanTaskList {
   string table_root = 2;
   repeated DeltaScanTask tasks = 3;
   repeated string unsupported_features = 4;
-  repeated DeltaColumnMapping column_mappings = 5;
+  // Field 5 was `column_mappings`: column mapping is now fully resolved by the kernel-built schemas
+  // shipped on `DeltaScanCommon` (kernel resolves physical names + field-ids at every nesting
+  // level), and partition-value key translation happens driver-side, so nothing on the wire needs
+  // a column-mapping tree.
+  reserved 5;
   // Kernel-built data-column schemas (Arrow IPC), produced by the driver from the projected
   // `Scan` (`scan.physical_schema()` / `scan.logical_schema()`). Carried back to Scala and copied
   // onto `DeltaScanCommon.kernel_physical_schema` / `kernel_logical_schema`. Empty when the driver
   // had no projection to build the scan against.
   bytes physical_schema = 6;
   bytes logical_schema = 7;
-}
-
-message DeltaColumnMapping {
-  string logical_name = 1;
-  string physical_name = 2;
-  // Column mapping for nested struct fields. Delta only renames struct fields; arrays and maps
-  // are descended through transparently, so a child entry matches a struct field by `logical_name`
-  // whether that struct is the field's type directly or nested inside an array element / map value.
-  // Empty for leaf / non-struct fields.
-  repeated DeltaColumnMapping children = 3;
 }
 
 message Projection {
