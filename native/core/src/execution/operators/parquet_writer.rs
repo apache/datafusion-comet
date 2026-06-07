@@ -292,6 +292,8 @@ impl StorageWriterFactory {
         )?))
     }
 
+    const DEFAULT_REGION: &str = "us-east-1";
+
     fn create_s3_parquet_writer(
         schema: SchemaRef,
         props: WriterProperties,
@@ -300,37 +302,37 @@ impl StorageWriterFactory {
         object_store_options: &HashMap<String, String>,
     ) -> Result<Box<dyn ParquetWriter>> {
         let url_str = url.as_str();
-        let access_key = object_store_options.get("fs.s3a.access.key");
-        if access_key.is_none() {
-            return Err(DataFusionError::Execution(
-                "Missing required S3 access key: fs.s3a.access.key".to_string(),
-            ));
-        }
-        let secret_key = object_store_options.get("fs.s3a.secret.key");
-        if secret_key.is_none() {
-            return Err(DataFusionError::Execution(
-                "Missing required S3 access key: fs.s3a.secret.key".to_string(),
-            ));
-        }
-        let endpoint = object_store_options.get("fs.s3a.endpoint");
-        if endpoint.is_none() {
-            return Err(DataFusionError::Execution(
+        let access_key = object_store_options
+            .get("fs.s3a.access.key")
+            .ok_or_else(|| {
+                DataFusionError::Execution(
+                    "Missing required S3 access key: fs.s3a.access.key".to_string(),
+                )
+            })?;
+        let secret_key = object_store_options
+            .get("fs.s3a.secret.key")
+            .ok_or_else(|| {
+                DataFusionError::Execution(
+                    "Missing required S3 access key: fs.s3a.secret.key".to_string(),
+                )
+            })?;
+        let endpoint = object_store_options.get("fs.s3a.endpoint").ok_or_else(|| {
+            DataFusionError::Execution(
                 "Missing required S3 access key: fs.s3a.endpoint".to_string(),
-            ));
-        }
-        let region = object_store_options.get("fs.s3a.endpoint.region");
-        if region.is_none() {
-            //todo try extract region from fs.s3a.endpoint
-            return Err(DataFusionError::Execution(
-                "Missing required S3 access key: fs.s3a.endpoint.region".to_string(),
-            ));
-        }
-        let bucket_name = url.host_str().unwrap();
+            )
+        })?;
+        let region = object_store_options
+            .get("fs.s3a.endpoint.region")
+            .map(|s| s.as_str())
+            .unwrap_or(Self::DEFAULT_REGION);
+        let bucket_name = url.host_str().ok_or_else(|| {
+            DataFusionError::Execution(format!("Missing bucket name in S3 URL: {}", url_str))
+        })?;
         let builder = opendal::services::S3::default()
-            .endpoint(endpoint.unwrap())
-            .secret_access_key(secret_key.unwrap())
-            .access_key_id(access_key.unwrap())
-            .region(region.unwrap())
+            .endpoint(endpoint)
+            .secret_access_key(secret_key)
+            .access_key_id(access_key)
+            .region(region)
             .bucket(bucket_name);
         let op = Operator::new(builder)
             .map_err(|error| object_store::Error::Generic {
@@ -356,7 +358,7 @@ impl StorageWriterFactory {
     }
 
     fn is_s3_scheme(url: &Url) -> bool {
-        url.scheme() == "s3a" || url.scheme() == "s3"
+        url.scheme() == "s3a"
     }
 }
 
@@ -895,6 +897,61 @@ mod tests {
 
         println!(
             "Successfully completed ParquetWriterExec test with DataSourceExec input (5 batches, 5000 total rows)"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "This test requires a running S3 cluster"]
+    async fn test_write_to_s3() -> Result<()> {
+        // Configure output path
+        let output_path = "s3a://comet/test_parquet_write";
+
+        // Configure writer properties
+        let props = WriterProperties::builder()
+            .set_compression(Compression::UNCOMPRESSED)
+            .build();
+
+        let session_ctx = datafusion::prelude::SessionContext::new();
+        let runtime_env = session_ctx.runtime_env();
+
+        let mut object_store_options: HashMap<String, String> = HashMap::new();
+        object_store_options.insert("fs.s3a.access.key".to_string(), "admin".to_string());
+        object_store_options.insert("fs.s3a.secret.key".to_string(), "adminsecretkey".to_string());
+        object_store_options.insert("fs.s3a.endpoint".to_string(), "http://localhost:9000".to_string());
+
+        let mut writer = StorageWriterFactory::create(
+            &output_path,
+            create_test_record_batch(1)?.schema(),
+            props,
+            runtime_env,
+            &object_store_options,
+        )?;
+
+        // Write 5 batches in a loop
+        for i in 1..=5 {
+            let record_batch = create_test_record_batch(i)?;
+
+            writer.write_batch(&record_batch).await.map_err(|e| {
+                DataFusionError::Execution(format!("Failed to write batch {}: {}", i, e))
+            })?;
+
+            println!(
+                "Successfully wrote batch {} (1000 rows) using ParquetWriter",
+                i
+            );
+        }
+
+        // Close the writer
+        writer
+            .close()
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("Failed to close writer: {}", e)))?;
+
+        println!(
+            "Successfully completed ParquetWriter streaming write of 5 batches (5000 total rows) to HDFS at {}",
+            output_path
         );
 
         Ok(())
