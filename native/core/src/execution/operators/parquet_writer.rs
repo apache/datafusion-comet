@@ -18,9 +18,9 @@
 //! Parquet writer operator for writing RecordBatches to Parquet files
 
 use crate::execution::shuffle::CompressionCodec;
-use crate::parquet::parquet_support::is_hdfs_scheme;
 #[cfg(feature = "hdfs-opendal")]
-use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
+use crate::parquet::parquet_support::create_hdfs_operator;
+use crate::parquet::parquet_support::{is_hdfs_scheme, prepare_object_store_with_configs};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
@@ -38,7 +38,7 @@ use datafusion::{
     },
 };
 use futures::TryStreamExt;
-#[cfg(feature = "hdfs-opendal")]
+#[cfg(any(feature = "hdfs-opendal", feature = "s3-opendal"))]
 use opendal::Operator;
 use parquet::errors::ParquetError;
 use parquet::{
@@ -47,7 +47,7 @@ use parquet::{
     file::properties::WriterProperties,
 };
 use std::fs::create_dir_all;
-#[cfg(feature = "hdfs-opendal")]
+#[cfg(any(feature = "hdfs-opendal", feature = "s3-opendal"))]
 use std::io::Cursor;
 use std::path::Path;
 use std::{
@@ -118,6 +118,7 @@ impl ParquetWriter for LocalFileWriter {
 
 // A `ParquetWriter` implementation that streams Parquet data to remote object storage
 // (HDFS, S3, etc.) via the OpenDAL abstraction layer.
+#[cfg(any(feature = "hdfs-opendal", feature = "s3-opendal"))]
 struct OpendalWriter {
     arrow_writer: ArrowWriter<Cursor<Vec<u8>>>,
     opendal_writer: Option<opendal::Writer>,
@@ -125,6 +126,7 @@ struct OpendalWriter {
     path: String,
 }
 
+#[cfg(any(feature = "hdfs-opendal", feature = "s3-opendal"))]
 impl OpendalWriter {
     fn try_new(
         operator: Operator,
@@ -146,6 +148,7 @@ impl OpendalWriter {
 }
 
 #[async_trait]
+#[cfg(any(feature = "hdfs-opendal", feature = "s3-opendal"))]
 impl ParquetWriter for OpendalWriter {
     async fn write_batch(&mut self, batch: &RecordBatch) -> Result<(), ParquetError> {
         self.arrow_writer.write(batch)?;
@@ -197,17 +200,13 @@ impl ParquetWriter for OpendalWriter {
             if let Some(mut writer) = self.opendal_writer {
                 writer.write(final_data).await.map_err(|e| {
                     ParquetError::External(
-                        format!(
-                            "Failed to write final data to HDFS file '{}': {}",
-                            self.path, e
-                        )
-                        .into(),
+                        format!("Failed to write final data to file '{}': {}", self.path, e).into(),
                     )
                 })?;
 
                 writer.close().await.map_err(|e| {
                     ParquetError::External(
-                        format!("Failed to close HDFS writer for '{}': {}", self.path, e).into(),
+                        format!("Failed to close writer for '{}': {}", self.path, e).into(),
                     )
                 })?;
             }
@@ -225,7 +224,7 @@ impl StorageWriterFactory {
     // Selects and constructs a `ParquetWriter` based on the URL scheme of `output_path`.
     // Supported backends:
     // - **HDFS** – detected via `is_hdfs_scheme`; backed by `OpendalWriter`.
-    // - **S3 / S3A** – detected by scheme; backed by `OpendalWriter`.
+    // - **S3A** – detected by scheme; backed by `OpendalWriter`.
     // - **Local filesystem** – `file://`, `file:`, or a bare path; backed by `LocalFileWriter`.
     fn create(
         output_path: &str,
@@ -237,7 +236,7 @@ impl StorageWriterFactory {
         let (_, object_store_path) = prepare_object_store_with_configs(
             runtime_env,
             output_path.to_string(),
-            &HashMap::new(),
+            object_store_options,
         )
         .map_err(|e| {
             DataFusionError::Execution(format!(
@@ -250,15 +249,38 @@ impl StorageWriterFactory {
         })?;
 
         if is_hdfs_scheme(&url, object_store_options) {
-            Self::create_hdfs_parquet_writer(schema, props, &object_store_path.to_string(), &url)
+            #[cfg(feature = "hdfs-opendal")]
+            {
+                Self::create_hdfs_parquet_writer(
+                    schema,
+                    props,
+                    &object_store_path.to_string(),
+                    &url,
+                )
+            }
+            #[cfg(not(feature = "hdfs-opendal"))]
+            {
+                Err(DataFusionError::Execution(
+                    "HDFS support is not enabled. Rebuild with the 'hdfs-opendal' feature.".into(),
+                ))
+            }
         } else if Self::is_s3_scheme(&url) {
-            Self::create_s3_parquet_writer(
-                schema,
-                props,
-                &object_store_path.to_string(),
-                &url,
-                object_store_options,
-            )
+            #[cfg(feature = "s3-opendal")]
+            {
+                Self::create_s3_parquet_writer(
+                    schema,
+                    props,
+                    &object_store_path.to_string(),
+                    &url,
+                    object_store_options,
+                )
+            }
+            #[cfg(not(feature = "s3-opendal"))]
+            {
+                Err(DataFusionError::Execution(
+                    "S3 support is not enabled. Rebuild with the 's3-opendal' feature.".into(),
+                ))
+            }
         } else if Self::is_local_path(output_path) {
             Ok(Box::new(LocalFileWriter::try_new(
                 output_path,
@@ -272,6 +294,7 @@ impl StorageWriterFactory {
         }
     }
 
+    #[cfg(feature = "hdfs-opendal")]
     fn create_hdfs_parquet_writer(
         schema: SchemaRef,
         props: WriterProperties,
@@ -292,8 +315,7 @@ impl StorageWriterFactory {
         )?))
     }
 
-    const DEFAULT_REGION: &str = "us-east-1";
-
+    #[cfg(feature = "s3-opendal")]
     fn create_s3_parquet_writer(
         schema: SchemaRef,
         props: WriterProperties,
@@ -324,7 +346,7 @@ impl StorageWriterFactory {
         let region = object_store_options
             .get("fs.s3a.endpoint.region")
             .map(|s| s.as_str())
-            .unwrap_or(Self::DEFAULT_REGION);
+            .unwrap_or("us-east-1");
         let bucket_name = url.host_str().ok_or_else(|| {
             DataFusionError::Execution(format!("Missing bucket name in S3 URL: {}", url_str))
         })?;
@@ -903,6 +925,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "s3-opendal")]
     #[ignore = "This test requires a running S3 cluster"]
     async fn test_write_to_s3() -> Result<()> {
         // Configure output path
@@ -956,7 +979,7 @@ mod tests {
             .map_err(|e| DataFusionError::Execution(format!("Failed to close writer: {}", e)))?;
 
         println!(
-            "Successfully completed ParquetWriter streaming write of 5 batches (5000 total rows) to HDFS at {}",
+            "Successfully completed ParquetWriter streaming write of 5 batches (5000 total rows) to S3 at {}",
             output_path
         );
 
