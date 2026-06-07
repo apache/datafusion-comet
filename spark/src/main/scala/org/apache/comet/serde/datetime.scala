@@ -21,12 +21,13 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, SecondsToTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, NextDay, Quarter, Second, SecondsToTimestamp, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -76,7 +77,7 @@ trait CometExprGetDateField[T <: GetDateField] {
               .build())
           .build()
       })
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -134,7 +135,7 @@ object CometDayOfWeek
           .build()
       }
       .headOption
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -215,7 +216,7 @@ object CometHour extends CometExpressionSerde[Hour] {
           .setHour(builder)
           .build())
     } else {
-      withInfo(expr, expr.child)
+      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -257,7 +258,7 @@ object CometMinute extends CometExpressionSerde[Minute] {
           .setMinute(builder)
           .build())
     } else {
-      withInfo(expr, expr.child)
+      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -299,7 +300,7 @@ object CometSecond extends CometExpressionSerde[Second] {
           .setSecond(builder)
           .build())
     } else {
-      withInfo(expr, expr.child)
+      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -335,7 +336,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!isSupportedInputType(expr)) {
       val inputType = expr.children.head.dataType
-      withInfo(expr, s"unix_timestamp does not support input type: $inputType")
+      withFallbackReason(expr, s"unix_timestamp does not support input type: $inputType")
       return None
     }
 
@@ -354,7 +355,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
           .setUnixTimestamp(builder)
           .build())
     } else {
-      withInfo(expr, expr.children.head)
+      withFallbackReason(expr, expr.children.head)
       None
     }
   }
@@ -364,9 +365,107 @@ object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 
 object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
 
-object CometNextDay extends CometScalarFunction[NextDay]("next_day")
+private object UTCTimestampSerde {
+  val tzParseIncompatReason: String =
+    "Comet's native timezone parser only accepts IANA zone IDs (e.g." +
+      " `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also" +
+      " accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like" +
+      " `PST`; queries using those forms will throw a native parse error at" +
+      " execution time. See https://github.com/apache/datafusion-comet/issues/2013."
+}
 
-object CometMakeDate extends CometScalarFunction[MakeDate]("make_date")
+object CometFromUTCTimestamp extends CometExpressionSerde[FromUTCTimestamp] {
+
+  override def getSupportLevel(expr: FromUTCTimestamp): SupportLevel =
+    Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(UTCTimestampSerde.tzParseIncompatReason)
+
+  override def convert(
+      expr: FromUTCTimestamp,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto("from_utc_timestamp", childExprs: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometToUTCTimestamp extends CometExpressionSerde[ToUTCTimestamp] {
+
+  override def getSupportLevel(expr: ToUTCTimestamp): SupportLevel =
+    Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(UTCTimestampSerde.tzParseIncompatReason)
+
+  override def convert(
+      expr: ToUTCTimestamp,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto("to_utc_timestamp", childExprs: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometConvertTimezone extends CometExpressionSerde[ConvertTimezone] {
+
+  override def getSupportLevel(expr: ConvertTimezone): SupportLevel =
+    Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(UTCTimestampSerde.tzParseIncompatReason)
+
+  override def convert(
+      expr: ConvertTimezone,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val srcTz = exprToProtoInternal(expr.sourceTz, inputs, binding)
+    val tgtTz = exprToProtoInternal(expr.targetTz, inputs, binding)
+    val ts = exprToProtoInternal(expr.sourceTs, inputs, binding)
+    val toUtc = scalarFunctionExprToProto("to_utc_timestamp", ts, srcTz)
+    val fromUtc = scalarFunctionExprToProto("from_utc_timestamp", toUtc, tgtTz)
+    optExprWithFallbackReason(fromUtc, expr, expr.children: _*)
+  }
+}
+
+object CometNextDay extends CometExpressionSerde[NextDay] {
+
+  /**
+   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on a malformed
+   * `dayOfWeek` rather than returning NULL. The resolved flag is passed to native via the
+   * `ScalarFunc.fail_on_error` field.
+   */
+  override def convert(expr: NextDay, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "next_day",
+      DateType,
+      expr.failOnError,
+      childExpr: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometMakeDate extends CometExpressionSerde[MakeDate] {
+
+  /**
+   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on an invalid
+   * `(year, month, day)` triple rather than returning NULL. The resolved flag is passed to native
+   * via the `ScalarFunc.fail_on_error` field.
+   */
+  override def convert(expr: MakeDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "make_date",
+      DateType,
+      expr.failOnError,
+      childExpr: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+  }
+}
 
 object CometSecondsToTimestamp
     extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
@@ -406,7 +505,7 @@ object CometUnixDate extends CometExpressionSerde[UnixDate] {
             .build())
         .build()
     }
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -448,7 +547,7 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
         false,
         childExpr,
         formatExpr)
-    optExprWithInfo(optExpr, expr, expr.date, expr.format)
+    optExprWithFallbackReason(optExpr, expr, expr.date, expr.format)
   }
 }
 
@@ -520,24 +619,30 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
           .setTruncTimestamp(builder)
           .build())
     } else {
-      withInfo(expr, expr.timestamp, expr.format)
+      withFallbackReason(expr, expr.timestamp, expr.format)
       None
     }
   }
 }
 
 /**
- * Converts Spark DateFormatClass expression to DataFusion's to_char function.
+ * Converts Spark `DateFormatClass` to DataFusion's `to_char` when format and timezone are
+ * mappable, otherwise routes the expression through the Arrow-direct codegen dispatcher so that
+ * Spark's own `DateFormatClass.doGenCode` runs inside the Comet pipeline.
  *
- * Spark uses Java SimpleDateFormat patterns while DataFusion uses strftime patterns. This
- * implementation supports a whitelist of common format strings that can be reliably mapped
- * between the two systems.
+ * Routing:
+ *   - format is a literal in `supportedFormats` AND timezone is UTC -> native `to_char`
+ *   - format is a literal in `supportedFormats` AND timezone is non-UTC, with the per-expression
+ *     `allowIncompatible` flag set -> native `to_char` (results may differ from Spark)
+ *   - all other cases -> JVM codegen dispatcher ([[CometScalaUDF.emitJvmCodegenDispatch]]), gated
+ *     by [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]]. When that flag is disabled the operator
+ *     falls back to Spark.
  */
 object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
 
   /**
    * Mapping from Spark SimpleDateFormat patterns to strftime patterns. Only formats in this map
-   * are supported.
+   * are supported by the native path.
    */
   val supportedFormats: Map[String, String] = Map(
     // Full date formats
@@ -571,66 +676,50 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
     // ISO formats
     "yyyy-MM-dd'T'HH:mm:ss" -> "%Y-%m-%dT%H:%M:%S")
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Non-UTC timezones may produce different results than Spark")
+  // Compatibility is decided inside `convert`: the native path covers a subset, and the codegen
+  // dispatcher covers everything else when enabled. Plan-time tagging happens via
+  // `withFallbackReason` on the path that returns None.
+  override def getSupportLevel(expr: DateFormatClass): SupportLevel = Compatible()
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only the following formats are supported:" +
-      supportedFormats.keys.toSeq.sorted
-        .map(k => s"`$k`")
-        .mkString("\n  - ", "\n  - ", ""))
-
-  override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
-    // Check timezone - only UTC is fully compatible
-    val timezone = expr.timeZoneId.getOrElse("UTC")
-    val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
-
-    expr.right match {
-      case Literal(fmt: UTF8String, _) =>
-        val format = fmt.toString
-        if (supportedFormats.contains(format)) {
-          if (isUtc) {
-            Compatible()
-          } else {
-            Incompatible(Some(s"Non-UTC timezone '$timezone' may produce different results"))
-          }
-        } else {
-          Unsupported(
-            Some(
-              s"Format '$format' is not supported. Supported formats: " +
-                supportedFormats.keys.mkString(", ")))
-        }
-      case _ =>
-        Unsupported(Some("Only literal format strings are supported"))
-    }
-  }
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC " +
+      "sessions. Other format strings (including non-literal formats), as well as non-UTC " +
+      "sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct " +
+      "codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true`. When the " +
+      "codegen dispatcher is disabled (default) the operator falls back to Spark in those " +
+      "cases.")
 
   override def convert(
       expr: DateFormatClass,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Get the format string - must be a literal for us to map it
-    val strftimeFormat = expr.right match {
-      case Literal(fmt: UTF8String, _) =>
-        supportedFormats.get(fmt.toString)
+    val timezone = expr.timeZoneId.getOrElse("UTC")
+    val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
+
+    val nativeFormat: Option[String] = expr.right match {
+      case Literal(fmt: UTF8String, _) => supportedFormats.get(fmt.toString)
       case _ => None
     }
 
-    strftimeFormat match {
-      case Some(format) =>
-        val childExpr = exprToProtoInternal(expr.left, inputs, binding)
-        val formatExpr = exprToProtoInternal(Literal(format), inputs, binding)
+    val canUseNative = nativeFormat.isDefined && {
+      isUtc || CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    }
 
-        val optExpr = scalarFunctionExprToProtoWithReturnType(
-          "to_char",
-          StringType,
-          false,
-          childExpr,
-          formatExpr)
-        optExprWithInfo(optExpr, expr, expr.left, expr.right)
-      case None =>
-        withInfo(expr, expr.left, expr.right)
-        None
+    if (canUseNative) {
+      val childExpr = exprToProtoInternal(expr.left, inputs, binding)
+      val formatExpr = exprToProtoInternal(Literal(nativeFormat.get), inputs, binding)
+      val optExpr = scalarFunctionExprToProtoWithReturnType(
+        "to_char",
+        StringType,
+        false,
+        childExpr,
+        formatExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
+    } else {
+      // Hand the full `DateFormatClass` (with `timeZoneId` already stamped by `ResolveTimeZone`)
+      // to the codegen dispatcher. It closure-serializes the bound tree, so non-UTC timezones
+      // and non-whitelisted / non-literal format strings produce Spark-identical results.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
 }
@@ -659,10 +748,10 @@ object CometHours extends CometExpressionSerde[Hours] {
             .build()
         }
       case other =>
-        withInfo(expr, s"Hours does not support input type: $other")
+        withFallbackReason(expr, s"Hours does not support input type: $other")
         None
     }
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -692,7 +781,7 @@ object CometDays extends CometExpressionSerde[Days] {
           CometCast.castToProto(expr, Some(timezone), DateType, child, CometEvalMode.LEGACY)
         }
       case other =>
-        withInfo(expr, s"Days does not support input type: $other")
+        withFallbackReason(expr, s"Days does not support input type: $other")
         None
     }
 
@@ -711,6 +800,26 @@ object CometDays extends CometExpressionSerde[Days] {
         .build()
     }
 
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
+
+object CometAddMonths extends CometCodegenDispatch[AddMonths]
+
+object CometMonthsBetween extends CometCodegenDispatch[MonthsBetween]
+
+object CometMakeTimestamp extends CometCodegenDispatch[MakeTimestamp]
+
+object CometMicrosToTimestamp extends CometCodegenDispatch[MicrosToTimestamp]
+
+object CometMillisToTimestamp extends CometCodegenDispatch[MillisToTimestamp]
+
+object CometUnixSeconds extends CometCodegenDispatch[UnixSeconds]
+
+object CometUnixMillis extends CometCodegenDispatch[UnixMillis]
+
+object CometUnixMicros extends CometCodegenDispatch[UnixMicros]
+
+object CometToUnixTimestamp extends CometCodegenDispatch[ToUnixTimestamp]
+
+object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]

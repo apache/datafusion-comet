@@ -40,7 +40,7 @@ import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
@@ -50,7 +50,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
-import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isCometShuffleManagerEnabled, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isCometShuffleManagerEnabled, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.{CometTypeShim, ShimCometShuffleExchangeExec}
@@ -243,9 +243,6 @@ object CometShuffleExchangeExec
       op: ShuffleExchangeExec): CometNativeExec = {
     shuffleSupported(op) match {
       case Some(CometNativeShuffle) if op.children.forall(_.isInstanceOf[CometNativeExec]) =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
         CometSinkPlaceHolder(
           nativeOp,
           op,
@@ -268,7 +265,8 @@ object CometShuffleExchangeExec
   /**
    * Decide which Comet shuffle path (if any) can handle this shuffle. Returns `None` if neither
    * native nor columnar shuffle can be used; in that case the node is tagged with the combined
-   * fallback reasons via `withInfos` so subsequent passes short-circuit via `hasExplainInfo`.
+   * fallback reasons via `withFallbackReasons` so subsequent passes short-circuit via
+   * `hasFallbackReason`.
    *
    * This is the single coordination point: the two path-specific predicates
    * (`nativeShuffleFailureReasons` / `columnarShuffleFailureReasons`) are pure - they return
@@ -279,11 +277,11 @@ object CometShuffleExchangeExec
     // shuffle falls back to Spark and tagged it. Preserve that decision - re-deriving it against
     // a possibly-reshaped subtree (e.g. AQE stage-wrapping) can flip the answer and produce
     // inconsistent plans across passes (see #3949).
-    if (hasExplainInfo(s)) return None
+    if (hasFallbackReason(s)) return None
 
     isCometShuffleEnabledReason(s) match {
       case Some(reason) =>
-        withInfos(s, Set(reason))
+        withFallbackReasons(s, Set(reason))
         return None
       case None =>
     }
@@ -294,7 +292,7 @@ object CometShuffleExchangeExec
     // On 3.5+ with AQE DPP, the scan converts to CometNativeScanExec and
     // stageContainsDPPScan won't match (it checks FileSourceScanExec).
     if (stageContainsDPPScan(s)) {
-      withInfos(s, Set("Stage contains a scan with Dynamic Partition Pruning"))
+      withFallbackReasons(s, Set("Stage contains a scan with Dynamic Partition Pruning"))
       return None
     }
 
@@ -308,7 +306,7 @@ object CometShuffleExchangeExec
 
     if (!isCometPlan(s.child) &&
       !CometConf.COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.get(s.conf)) {
-      withInfos(
+      withFallbackReasons(
         s,
         Set(
           s"${CometConf.COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key} is disabled " +
@@ -322,7 +320,7 @@ object CometShuffleExchangeExec
     }
 
     val combined = (nativeReasons ++ columnarReasons).toSet
-    if (combined.nonEmpty) withInfos(s, combined)
+    if (combined.nonEmpty) withFallbackReasons(s, combined)
     None
   }
 
@@ -331,6 +329,7 @@ object CometShuffleExchangeExec
    * Pure: does not tag the node.
    */
   private def nativeShuffleFailureReasons(s: ShuffleExchangeExec): Seq[String] = {
+    val conf = SQLConf.get
 
     /**
      * Determine which data types are supported as partition columns in native shuffle.
@@ -358,24 +357,6 @@ object CometShuffleExchangeExec
     }
 
     /**
-     * Determine which data types are supported as partition columns in native shuffle.
-     *
-     * For RangePartitioning this defines the key that determines how data should be collocated
-     * for operations like `orderBy`, `repartitionByRange`. Native code does not support sorting
-     * complex types.
-     */
-    def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
-      // Collated strings require collation-aware ordering; Comet only compares raw bytes.
-      case st: StringType if isStringCollationType(st) => false
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
-        true
-      case _ =>
-        false
-    }
-
-    /**
      * Determine which data types are supported as data columns in native shuffle.
      *
      * Native shuffle relies on the Arrow IPC writer to serialize batches to disk, so it should
@@ -384,7 +365,7 @@ object CometShuffleExchangeExec
     def supportedSerializableDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
+          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType))
@@ -413,7 +394,6 @@ object CometShuffleExchangeExec
     }
 
     val partitioning = s.outputPartitioning
-    val conf = SQLConf.get
     partitioning match {
       case HashPartitioning(expressions, _) =>
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)) {
@@ -433,6 +413,28 @@ object CometShuffleExchangeExec
       case SinglePartition =>
       // we already checked that the input types are supported
       case RangePartitioning(orderings, _) =>
+        val strictFloatingPoint = CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get(conf)
+
+        /**
+         * Determine which data types are supported as partition columns in native shuffle.
+         *
+         * For RangePartitioning this defines the key that determines how data should be
+         * collocated for operations like `orderBy`, `repartitionByRange`. Native code does not
+         * support sorting complex types.
+         */
+        def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
+          // Collated strings require collation-aware ordering; Comet only compares raw bytes.
+          case st: StringType if isStringCollationType(st) => false
+          case _: FloatType | _: DoubleType =>
+            !strictFloatingPoint
+          case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+              _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+              _: DecimalType | _: DateType =>
+            true
+          case _ =>
+            false
+        }
+
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
           reasons +=
             s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled"
@@ -443,12 +445,20 @@ object CometShuffleExchangeExec
             reasons += s"unsupported range partitioning sort order: $o"
             // Roll up fallback reasons recorded on the sort-order expression (e.g. strict
             // floating-point sort) so they surface in the shuffle's explain output.
-            o.getTagValue(CometExplainInfo.EXTENSION_INFO).foreach(reasons ++= _)
+            o.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
           }
         }
         for (dt <- orderings.map(_.dataType).distinct) {
           if (!supportedRangePartitioningDataType(dt)) {
-            reasons += s"unsupported range partitioning data type for native shuffle: $dt"
+            val reason = dt match {
+              case _: FloatType | _: DoubleType if strictFloatingPoint =>
+                s"Range partitioning on $dt is not 100% compatible with Spark, and Comet is " +
+                  s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+                  s"${CometConf.COMPAT_GUIDE}"
+              case _ =>
+                s"unsupported range partitioning data type for native shuffle: $dt"
+            }
+            reasons += reason
           }
         }
       case RoundRobinPartitioning(_) =>
@@ -478,7 +488,7 @@ object CometShuffleExchangeExec
     def supportedSerializableDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
+          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
@@ -886,7 +896,8 @@ object CometShuffleExchangeExec
         shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
         shuffleType = CometColumnarShuffle,
         schema = Some(fromAttributes(outputAttributes)),
-        decodeTime = writeMetrics("decode_time"))
+        decodeTime = writeMetrics("decode_time"),
+        shuffleWriteMetrics = writeMetrics)
 
     dependency
   }

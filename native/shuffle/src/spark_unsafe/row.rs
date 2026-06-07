@@ -28,8 +28,8 @@ use arrow::array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
         Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
-        Int64Builder, Int8Builder, ListBuilder, MapBuilder, StringBuilder, StringDictionaryBuilder,
-        StructBuilder, TimestampMicrosecondBuilder,
+        Int64Builder, Int8Builder, ListBuilder, MapBuilder, NullBuilder, StringBuilder,
+        StringDictionaryBuilder, StructBuilder, TimestampMicrosecondBuilder,
     },
     types::Int32Type,
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
@@ -266,6 +266,10 @@ pub(super) fn append_field(
         DataType::Date32 => {
             append_field_to_builder!(Date32Builder, |builder: &mut Date32Builder| builder
                 .append_value(row.get_date(idx)));
+        }
+        DataType::Null => {
+            let field_builder = get_field_builder!(struct_builder, NullBuilder, idx);
+            field_builder.append_null();
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             append_field_to_builder!(
@@ -1148,6 +1152,12 @@ fn append_columns(
                     .append_value(row.get_date(idx))
             );
         }
+        DataType::Null => {
+            let null_builder = downcast_builder_ref!(NullBuilder, builder);
+            for _ in row_start..row_end {
+                null_builder.append_null();
+            }
+        }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             append_column_to_builder!(
                 TimestampMicrosecondBuilder,
@@ -1252,6 +1262,7 @@ fn make_builders(
             }
         }
         DataType::Date32 => Box::new(Date32Builder::with_capacity(row_num)),
+        DataType::Null => Box::new(NullBuilder::new()),
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))
         }
@@ -1310,7 +1321,7 @@ pub fn process_sorted_row_partition(
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
-) -> Result<(i64, Option<u32>), CometError> {
+) -> Result<(i64, Option<u32>, i64), CometError> {
     // The current row number we are reading
     let mut current_row = 0;
     // Total number of bytes written
@@ -1339,6 +1350,9 @@ pub fn process_sorted_row_partition(
 
     // Reusable buffer for serialized batch data
     let mut frozen: Vec<u8> = Vec::new();
+
+    // Single ipc_time accumulates encode + compression time across all batches.
+    let ipc_time = Time::default();
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1371,8 +1385,6 @@ pub fn process_sorted_row_partition(
         frozen.clear();
         let mut cursor = Cursor::new(&mut frozen);
 
-        // we do not collect metrics in Native_writeSortedFileNative
-        let ipc_time = Time::default();
         let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
         written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
 
@@ -1384,7 +1396,11 @@ pub fn process_sorted_row_partition(
         current_row += n;
     }
 
-    Ok((written as i64, current_checksum.map(|c| c.finalize())))
+    Ok((
+        written as i64,
+        current_checksum.map(|c| c.finalize()),
+        ipc_time.value() as i64,
+    ))
 }
 
 fn builder_to_array(

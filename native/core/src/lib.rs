@@ -65,10 +65,12 @@ pub mod jvm_bridge {
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
-#[macro_use]
-pub mod common;
+pub mod cloud;
 pub mod execution;
 pub mod parquet;
+// this module is for non release only. Intended for debugging/profiling purposes
+#[cfg(debug_assertions)]
+pub mod debug;
 
 #[cfg(all(
     not(target_env = "msvc"),

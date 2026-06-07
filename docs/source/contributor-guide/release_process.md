@@ -57,8 +57,9 @@ instructions on each step.
 Before starting the release process, review the user guide to ensure it accurately reflects the current state of the
 project:
 
-- Review the supported expressions and operators lists in the user guide. Verify that any expressions added since
-  the last release are included and that their support status is accurate.
+- Review the [Spark Expression Support](../user-guide/latest/expressions.md) page and the supported operators list
+  in the user guide. The expression page is the source of truth for expression support status, so verify that any
+  expressions added or changed since the last release appear there with an accurate status (✅ / ⚠️ / 🔜 / 💤).
 - Spot-check the support status of individual expressions by running tests or queries to confirm they work as
   documented.
 - Look for any expressions that may have regressed or changed behavior since the last release and update the
@@ -150,13 +151,28 @@ example generates a change log of all changes between the previous version and t
 
 ```shell
 export GITHUB_TOKEN=<your-token-here>
-python3 generate-changelog.py 0.12.0 HEAD 0.13.0 > ../changelog/0.13.0.md
+python3 generate-changelog.py 0.12.0 HEAD 0.13.0 > ../../docs/source/changelog/0.13.0.md
 ```
 
 Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
 commit into the release branch.
 
 ### Build the jars
+
+#### A note on workspace cleanliness
+
+The `common/pom.xml` resource configuration unconditionally bundles
+`native/target/{x86_64,aarch64}-apple-darwin/release/libcomet.dylib` into the
+`common` jar when those files exist on disk. Maven's `clean` removes
+`common/target` but does not touch Cargo's `native/target` directory, so a
+stale dylib left over from a prior local `make release` or `make release-linux`
+on the release manager's workstation can silently end up in a release jar
+(see [#2232](https://github.com/apache/datafusion-comet/issues/2232) for the
+incident in 0.9.1).
+
+The `build-release-comet.sh` script now runs `cargo clean` for you, but as a
+defensive measure, prefer running the release build from a fresh clone of the
+repository rather than your day-to-day working tree.
 
 #### Setup to do the build
 

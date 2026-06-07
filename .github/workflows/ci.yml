@@ -1,0 +1,292 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Top-level CI orchestrator: runs cheap preflight checks first, then fans out
+# to the long-running test/build workflows only if preflight passed and the
+# PR/push touched files relevant to that workflow.
+
+name: CI
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # preflight: cheap checks that gate everything else. Failure short-circuits
+  # the entire pipeline before any heavy job spins up. Folds in what used to be
+  # pr_rat_check, pr_markdown_format, pr_missing_suites, and validate_workflows.
+  # pr_title_check stays a standalone workflow because it needs to fire on PR
+  # `edited` events.
+  # ---------------------------------------------------------------------------
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 11
+
+      - name: Apache RAT license check
+        run: ./mvnw -B -N apache-rat:check
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install prettier
+        run: npm install -g prettier
+
+      - name: Check markdown formatting
+        run: prettier --check "**/*.md"
+
+      - name: Check missing suites
+        run: python3 dev/ci/check-suites.py
+
+      - name: Install actionlint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
+          echo "$PWD" >> $GITHUB_PATH
+
+      - name: Lint GitHub Actions workflows
+        run: actionlint -color --shellcheck=off
+
+  # ---------------------------------------------------------------------------
+  # changes: compute which long jobs need to run for this event. Replaces the
+  # per-workflow `on: paths:` filters that used to gate triggering. Filter
+  # rules live in dev/ci/compute-changes.py, which is invoked here in lieu of
+  # dorny/paths-filter (not on the apache org actions allow list). On
+  # workflow_dispatch every output is forced true so a manual run can
+  # exercise any gated job.
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect changes
+    needs: preflight
+    runs-on: ubuntu-slim
+    outputs:
+      build_linux:  ${{ steps.compute.outputs.build_linux }}
+      build_macos:  ${{ steps.compute.outputs.build_macos }}
+      benchmark:    ${{ steps.compute.outputs.benchmark }}
+      docs:         ${{ steps.compute.outputs.docs }}
+      spark_3_4:    ${{ steps.compute.outputs.spark_3_4 }}
+      spark_3_5:    ${{ steps.compute.outputs.spark_3_5 }}
+      spark_4_0:    ${{ steps.compute.outputs.spark_4_0 }}
+      spark_4_1:    ${{ steps.compute.outputs.spark_4_1 }}
+      iceberg_1_8:  ${{ steps.compute.outputs.iceberg_1_8 }}
+      iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
+      iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Need both branches' history so we can diff base..head for PRs and
+          # before..after for pushes.
+          fetch-depth: 0
+
+      - name: Compute outputs
+        id: compute
+        shell: bash
+        env:
+          EVENT_NAME:  ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER:  ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10; do
+              echo "${key}=true" >> "$GITHUB_OUTPUT"
+            done
+            exit 0
+          fi
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
+          else
+            # push to main; first push to a branch has all-zero before sha
+            if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
+              git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
+            else
+              git diff --name-only "$PUSH_BEFORE".."$PUSH_AFTER" > changed_files.txt
+            fi
+          fi
+          echo "Changed files:"
+          cat changed_files.txt
+          python3 dev/ci/compute-changes.py changed_files.txt >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Heavy jobs: each is a thin caller of an existing reusable workflow. The
+  # `if:` expressions encode the same event/label/path criteria the
+  # standalone trigger workflows used to encode in their `on:` blocks.
+  # ---------------------------------------------------------------------------
+
+  pr_build_linux:
+    name: PR Build (Linux)
+    needs: changes
+    if: |
+      needs.changes.outputs.build_linux == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'pull_request')
+    uses: ./.github/workflows/pr_build_linux.yml
+
+  pr_build_macos:
+    name: PR Build (macOS)
+    needs: changes
+    if: |
+      needs.changes.outputs.build_macos == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'pull_request')
+    uses: ./.github/workflows/pr_build_macos.yml
+
+  pr_benchmark_check:
+    name: PR Benchmark Check
+    needs: changes
+    if: |
+      needs.changes.outputs.benchmark == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'pull_request')
+    uses: ./.github/workflows/pr_benchmark_check.yml
+
+  docs:
+    name: Deploy Comet site
+    needs: changes
+    # docs deploys to asf-site, so only run on push-to-main (or a manual dispatch).
+    if: |
+      needs.changes.outputs.docs == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/docs.yaml
+
+  spark_3_4:
+    name: Spark SQL Tests (Spark 3.4)
+    needs: changes
+    # Main-only by default; PRs need the `run-spark-3.4-tests` label.
+    if: |
+      needs.changes.outputs.spark_3_4 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'run-spark-3.4-tests')))
+    uses: ./.github/workflows/spark_sql_test_reusable.yml
+    with:
+      spark-short: '3.4'
+      spark-full: '3.4.3'
+      java: 11
+
+  spark_3_5:
+    name: Spark SQL Tests (Spark 3.5)
+    needs: changes
+    if: |
+      needs.changes.outputs.spark_3_5 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'pull_request')
+    uses: ./.github/workflows/spark_sql_test_reusable.yml
+    with:
+      spark-short: '3.5'
+      spark-full: '3.5.8'
+      java: 17
+
+  spark_4_0:
+    name: Spark SQL Tests (Spark 4.0)
+    needs: changes
+    if: |
+      needs.changes.outputs.spark_4_0 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'pull_request')
+    uses: ./.github/workflows/spark_sql_test_reusable.yml
+    with:
+      spark-short: '4.0'
+      spark-full: '4.0.2'
+      java: 17
+
+  spark_4_1:
+    name: Spark SQL Tests (Spark 4.1)
+    needs: changes
+    # Main-only by default; PRs need the `run-spark-4.1-tests` label.
+    if: |
+      needs.changes.outputs.spark_4_1 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'run-spark-4.1-tests')))
+    uses: ./.github/workflows/spark_sql_test_reusable.yml
+    with:
+      spark-short: '4.1'
+      spark-full: '4.1.2'
+      java: 17
+
+  iceberg_1_8:
+    name: Iceberg Spark SQL Tests (Iceberg 1.8)
+    needs: changes
+    # Main-only; never runs on PR events.
+    if: |
+      needs.changes.outputs.iceberg_1_8 == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/iceberg_spark_test_reusable.yml
+    with:
+      iceberg-short: '1.8'
+      iceberg-full: '1.8.1'
+      spark-short: '3.4'
+      spark-full: '3.4.3'
+      java: 11
+
+  iceberg_1_9:
+    name: Iceberg Spark SQL Tests (Iceberg 1.9)
+    needs: changes
+    # Main-only; never runs on PR events.
+    if: |
+      needs.changes.outputs.iceberg_1_9 == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/iceberg_spark_test_reusable.yml
+    with:
+      iceberg-short: '1.9'
+      iceberg-full: '1.9.1'
+      spark-short: '3.5'
+      spark-full: '3.5.8'
+      java: 17
+
+  iceberg_1_10:
+    name: Iceberg Spark SQL Tests (Iceberg 1.10)
+    needs: changes
+    if: |
+      needs.changes.outputs.iceberg_1_10 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'pull_request')
+    uses: ./.github/workflows/iceberg_spark_test_reusable.yml
+    with:
+      iceberg-short: '1.10'
+      iceberg-full: '1.10.0'
+      spark-short: '3.5'
+      spark-full: '3.5.8'
+      java: 17

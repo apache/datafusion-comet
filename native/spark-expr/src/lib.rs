@@ -53,7 +53,9 @@ pub use agg_funcs::*;
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 
 mod bloom_filter;
-pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
+pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain, SparkBloomFilterVersion};
+
+pub mod jvm_udf;
 
 mod conditional_funcs;
 mod conversion_funcs;
@@ -61,6 +63,7 @@ mod map_funcs;
 pub use map_funcs::spark_map_sort;
 mod math_funcs;
 mod nondetermenistic_funcs;
+pub mod url_funcs;
 
 pub use array_funcs::*;
 pub use conditional_funcs::*;
@@ -73,9 +76,9 @@ pub use comet_scalar_funcs::{
 };
 pub use csv_funcs::*;
 pub use datetime_funcs::{
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkHour, SparkHoursTransform,
-    SparkMakeDate, SparkMinute, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp,
-    TimestampTruncExpr,
+    spark_day_name, spark_month_name, spark_to_time, SparkDateDiff, SparkDateFromUnixDate,
+    SparkDateTrunc, SparkHour, SparkHoursTransform, SparkMakeDate, SparkMakeTime, SparkMinute,
+    SparkNextDay, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp, TimestampTruncExpr,
 };
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
@@ -123,10 +126,16 @@ pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     }
 }
 
-pub(crate) fn decimal_sum_overflow_error() -> SparkError {
-    SparkError::DecimalSumOverflow
+pub(crate) fn decimal_sum_overflow_error(function_name: &str) -> SparkError {
+    SparkError::DecimalSumOverflow {
+        function_name: function_name.to_string(),
+    }
 }
 
 pub(crate) fn divide_by_zero_error() -> SparkError {
     SparkError::DivideByZero
+}
+
+pub(crate) fn remainder_by_zero_error() -> SparkError {
+    SparkError::RemainderByZero
 }

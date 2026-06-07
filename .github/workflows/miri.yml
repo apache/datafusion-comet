@@ -22,28 +22,9 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-  pull_request:
-    paths-ignore:
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+  # nightly safety check
+  schedule:
+    - cron: '0 4 * * *'
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -51,7 +32,7 @@ on:
 jobs:
   miri:
     name: "Miri"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Install Build Dependencies

@@ -22,14 +22,13 @@ package org.apache.comet.exec
 import java.nio.file.{Files, Paths}
 
 import scala.reflect.runtime.universe._
-import scala.util.Random
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
-import org.apache.spark.sql.{CometTestBase, DataFrame, RandomDataGenerator, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -94,22 +93,16 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         """.stripMargin))
   }
 
-  test("Fallback to Spark for unsupported input besides ordering") {
-    val dataGenerator = RandomDataGenerator
-      .forType(
-        dataType = NullType,
-        nullable = true,
-        new Random(System.nanoTime()),
-        validJulianDatetime = false)
-      .get
+  test("columnar shuffle with NullType passthrough column") {
+    val df = sql("SELECT x, y FROM VALUES ('a', null), ('b', null), ('c', null) AS t(x, y)")
+    val shuffled = df.repartition(2, $"x")
+    checkShuffleAnswer(shuffled, 1)
+  }
 
-    val schema = new StructType()
-      .add("index", IntegerType, nullable = false)
-      .add("col", NullType, nullable = true)
-    val rdd =
-      spark.sparkContext.parallelize((1 to 20).map(i => Row(i, dataGenerator())))
-    val df = spark.createDataFrame(rdd, schema).orderBy("index").coalesce(1)
-    checkSparkAnswer(df)
+  test("columnar shuffle with Map[_, NullType] column") {
+    val df = sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
+    val shuffled = df.repartition(2, $"id")
+    checkShuffleAnswer(shuffled, 1)
   }
 
   test("columnar shuffle on nested struct including nulls") {
@@ -189,7 +182,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
               checkShuffleAnswer(df, complexKeyShuffles)
             }
 
-            withParquetTable((0 until 50).map(i => (Map(i -> (i, i.toString)), i + 1)), "tbl") {
+            withParquetTable((0 until 50).map(i => (Map(i -> ((i, i.toString))), i + 1)), "tbl") {
               val df = sql("SELECT * FROM tbl")
                 .filter($"_2" > 10)
                 .repartition(numPartitions, $"_1", $"_2")
@@ -526,7 +519,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
-  test("fix: StreamReader should always set useDecimal128 as true") {
+  test("fix: StreamReader should read shuffled decimal columns as Decimal128") {
     Seq(10, 201).foreach { numPartitions =>
       withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
         withTempPath { dir =>
@@ -718,6 +711,26 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
       assert(metrics.contains("shuffleWriteTime"))
       assert(metrics("shuffleWriteTime").value > 0)
+    }
+  }
+
+  test("columnar shuffle encode_time metric should be tracked (issue-1212)") {
+    // Use enough rows so encode time is measurably > 0
+    withParquetTable((0 until 1000).map(i => (i, (i + 1).toLong)), "tbl") {
+      val shuffled = sql("SELECT * FROM tbl").repartition(10, $"_1")
+      shuffled.collect()
+
+      val metrics = find(shuffled.queryExecution.executedPlan) {
+        case _: CometShuffleExchangeExec => true
+        case _ => false
+      }.map(_.metrics).get
+
+      assert(
+        metrics.contains("encode_time"),
+        "encode_time metric must exist in CometColumnarExchange")
+      assert(
+        metrics("encode_time").value > 0,
+        s"encode_time should be > 0 for columnar shuffle, got ${metrics("encode_time").value}")
     }
   }
 

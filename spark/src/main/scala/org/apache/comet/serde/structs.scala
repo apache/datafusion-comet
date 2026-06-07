@@ -23,22 +23,33 @@ import scala.jdk.CollectionConverters._
 import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToCsv, StructsToJson}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
+
+  private val duplicateNamesReason =
+    "`CreateNamedStruct` with duplicate field names is not supported"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(duplicateNamesReason)
+
+  override def getSupportLevel(expr: CreateNamedStruct): SupportLevel = {
+    if (expr.names.length != expr.names.distinct.length) {
+      Unsupported(Some(duplicateNamesReason))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: CreateNamedStruct,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (expr.names.length != expr.names.distinct.length) {
-      withInfo(expr, "CreateNamedStruct with duplicate field names are not supported")
-      return None
-    }
-
     val valExprs = expr.valExprs.map(exprToProtoInternal(_, inputs, binding))
 
     if (valExprs.forall(_.isDefined)) {
@@ -52,7 +63,7 @@ object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
           .setCreateNamedStruct(structBuilder)
           .build())
     } else {
-      withInfo(expr, "unsupported arguments for CreateNamedStruct", expr.valExprs: _*)
+      withFallbackReason(expr, "unsupported arguments for CreateNamedStruct", expr.valExprs: _*)
       None
     }
 
@@ -97,67 +108,51 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
           .setGetArrayStructFields(arrayStructFieldsBuilder)
           .build())
     } else {
-      withInfo(expr, "unsupported arguments for GetArrayStructFields", expr.child)
+      withFallbackReason(expr, "unsupported arguments for GetArrayStructFields", expr.child)
       None
     }
   }
 }
 
-object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
+/**
+ * `to_json` runs Spark's own implementation through the codegen dispatcher by default, for
+ * byte-exact compatibility. The native (rust) path is faster but only covers struct inputs of
+ * supported types with no options, so it is opt-in via
+ * `spark.comet.expression.StructsToJson.allowIncompatible`; any case it does not cover
+ * (unsupported types or options) falls through to the codegen dispatcher via
+ * [[CometCodegenDispatch]].
+ */
+object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Does not support `+Infinity` and `-Infinity` for numeric types (float, double)." +
-      " (https://github.com/apache/datafusion-comet/issues/3016)")
-
-  override def getSupportLevel(expr: StructsToJson): SupportLevel =
-    Incompatible(
-      Some(
-        "Does not support Infinity/-Infinity for numeric types" +
-          " (https://github.com/apache/datafusion-comet/issues/3016)"))
+  private def nativeSupported(expr: StructsToJson): Boolean =
+    expr.options.isEmpty && isSupportedType(expr.child.dataType)
 
   override def convert(
       expr: StructsToJson,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (expr.options.nonEmpty) {
-      withInfo(expr, "StructsToJson with options is not supported")
-      None
-    } else {
-      val isSupported = expr.child.dataType match {
-        case s: StructType =>
-          s.fields.forall(f => isSupportedType(f.dataType))
-        case _: MapType | _: ArrayType =>
-          // Spark supports map and array in StructsToJson but this is not yet
-          // implemented in Comet
-          false
-        case _ =>
-          false
-      }
-
-      if (isSupported) {
-        exprToProtoInternal(expr.child, inputs, binding) match {
-          case Some(p) =>
-            val toJson = ExprOuterClass.ToJson
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      val ignoreNullFields = SQLConf.get.jsonGeneratorIgnoreNullFields
+      exprToProtoInternal(expr.child, inputs, binding) match {
+        case Some(p) =>
+          val toJson = ExprOuterClass.ToJson
+            .newBuilder()
+            .setChild(p)
+            .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+            .setIgnoreNullFields(ignoreNullFields)
+            .build()
+          Some(
+            ExprOuterClass.Expr
               .newBuilder()
-              .setChild(p)
-              .setTimezone(expr.timeZoneId.getOrElse("UTC"))
-              .setIgnoreNullFields(true)
-              .build()
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setToJson(toJson)
-                .build())
-          case _ =>
-            withInfo(expr, expr.child)
-            None
-        }
-      } else {
-        withInfo(expr, "Unsupported data type", expr.child)
-        None
+              .setToJson(toJson)
+              .build())
+        case _ =>
+          withFallbackReason(expr, expr.child)
+          None
       }
+    } else {
+      super.convert(expr, inputs, binding)
     }
-  }
 
   def isSupportedType(dt: DataType): Boolean = {
     dt match {
@@ -179,63 +174,46 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
   }
 }
 
-object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
+/**
+ * `from_json` runs Spark's own implementation through the codegen dispatcher by default. The
+ * native (rust) path is partially implemented and not comprehensively tested, so it is opt-in via
+ * `spark.comet.expression.JsonToStructs.allowIncompatible` and only for schemas it supports; any
+ * other case falls through to the codegen dispatcher via [[CometCodegenDispatch]].
+ */
+object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Partially implemented and not comprehensively tested")
-
-  override def getUnsupportedReasons(): Seq[String] = Seq("Requires an explicit schema")
-
-  override def getSupportLevel(expr: JsonToStructs): SupportLevel = {
-    // this feature is partially implemented and not comprehensively tested yet
-    Incompatible()
-  }
+  private def nativeSupported(expr: JsonToStructs): Boolean =
+    expr.schema != null && isSupportedSchema(expr.schema)
 
   override def convert(
       expr: JsonToStructs,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
-    if (expr.schema == null) {
-      withInfo(expr, "from_json requires explicit schema")
-      return None
-    }
-
-    def isSupportedType(dt: DataType): Boolean = {
-      dt match {
-        case StructType(fields) =>
-          fields.nonEmpty && fields.forall(f => isSupportedType(f.dataType))
-        case DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
-            DataTypes.DoubleType | DataTypes.BooleanType | DataTypes.StringType =>
-          true
-        case _ => false
-      }
-    }
-
-    val schemaType = expr.schema
-    if (!isSupportedType(schemaType)) {
-      withInfo(expr, "from_json: Unsupported schema type")
-      return None
+    if (!(CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr))) {
+      return super.convert(expr, inputs, binding)
     }
 
     val options = expr.options
     if (options.nonEmpty) {
       val mode = options.getOrElse("mode", "PERMISSIVE")
       if (mode != "PERMISSIVE") {
-        withInfo(expr, s"from_json: Only PERMISSIVE mode supported, got: $mode")
+        withFallbackReason(expr, s"from_json: Only PERMISSIVE mode supported, got: $mode")
         return None
       }
       val knownOptions = Set("mode")
       val unknownOpts = options.keySet -- knownOptions
       if (unknownOpts.nonEmpty) {
-        withInfo(expr, s"from_json: Ignoring unsupported options: ${unknownOpts.mkString(", ")}")
+        withFallbackReason(
+          expr,
+          s"from_json: Ignoring unsupported options: ${unknownOpts.mkString(", ")}")
       }
     }
 
     // Convert child expression and schema to protobuf
     for {
       childProto <- exprToProtoInternal(expr.child, inputs, binding)
-      schemaProto <- serializeDataType(schemaType)
+      schemaProto <- serializeDataType(expr.schema)
     } yield {
       val fromJson = ExprOuterClass.FromJson
         .newBuilder()
@@ -245,6 +223,15 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
         .build()
       ExprOuterClass.Expr.newBuilder().setFromJson(fromJson).build()
     }
+  }
+
+  private def isSupportedSchema(dt: DataType): Boolean = dt match {
+    case StructType(fields) =>
+      fields.nonEmpty && fields.forall(f => isSupportedSchema(f.dataType))
+    case DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType |
+        DataTypes.BooleanType | DataTypes.StringType =>
+      true
+    case _ => false
   }
 }
 

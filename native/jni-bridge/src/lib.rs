@@ -26,13 +26,24 @@ use jni::{
     errors::Error,
     objects::{JMethodID, JObject, JString, JThrowable, JValueOwned},
     signature::ReturnType,
-    Env, JavaVM,
+    Env, JavaVM, DEFAULT_LOCAL_FRAME_CAPACITY,
 };
 use once_cell::sync::OnceCell;
 
 use errors::{CometError, CometResult};
 
 pub mod errors;
+
+enum LocalFrameError<E> {
+    Closure(E),
+    Jni(jni::errors::Error),
+}
+
+impl<E> From<jni::errors::Error> for LocalFrameError<E> {
+    fn from(source: jni::errors::Error) -> Self {
+        Self::Jni(source)
+    }
+}
 
 /// Global reference to the Java VM, initialized during native library setup.
 pub static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
@@ -180,12 +191,16 @@ mod comet_exec;
 pub use comet_exec::*;
 mod batch_iterator;
 mod comet_metric_node;
+mod comet_s3_credential_dispatcher;
 mod comet_task_memory_manager;
+mod comet_udf_bridge;
 mod shuffle_block_iterator;
 
 use batch_iterator::CometBatchIterator;
 pub use comet_metric_node::*;
+pub use comet_s3_credential_dispatcher::CometS3CredentialDispatcher;
 pub use comet_task_memory_manager::*;
+use comet_udf_bridge::CometUdfBridge;
 use shuffle_block_iterator::CometShuffleBlockIterator;
 
 /// The JVM classes that are used in the JNI calls.
@@ -217,6 +232,11 @@ pub struct JVMClasses<'a> {
     /// The CometTaskMemoryManager used for interacting with JVM side to
     /// acquire & release native memory.
     pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
+    /// The CometUdfBridge class used to dispatch JVM scalar UDFs.
+    /// `None` if the class is not on the classpath.
+    pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
+    /// JNI handles for the CometS3CredentialDispatcher SPI and the CometS3Credentials POJO.
+    pub comet_s3_credential_dispatcher: CometS3CredentialDispatcher<'a>,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -287,6 +307,14 @@ impl JVMClasses<'_> {
                 comet_batch_iterator: CometBatchIterator::new(env).unwrap(),
                 comet_shuffle_block_iterator: CometShuffleBlockIterator::new(env).unwrap(),
                 comet_task_memory_manager: CometTaskMemoryManager::new(env).unwrap(),
+                comet_udf_bridge: {
+                    let bridge = CometUdfBridge::new(env).ok();
+                    if env.exception_check() {
+                        env.exception_clear();
+                    }
+                    bridge
+                },
+                comet_s3_credential_dispatcher: CometS3CredentialDispatcher::new(env).unwrap(),
             }
         });
     }
@@ -300,6 +328,13 @@ impl JVMClasses<'_> {
     }
 
     /// Runs a closure with an attached JNI environment for the current thread.
+    ///
+    /// The closure executes inside a JNI local frame. All JNI local references
+    /// created inside the closure are freed when the frame is popped on return.
+    /// Callers must return only Rust values (e.g. `Vec`, `ArrayRef`, scalars);
+    /// returning a raw JNI local reference will produce a dangling reference
+    /// after the frame is popped. Panic safety is guaranteed by
+    /// `jni::Env::with_local_frame`, which pops the frame even on unwinding.
     pub fn with_env<T, E, F>(f: F) -> Result<T, E>
     where
         F: FnOnce(&mut Env) -> Result<T, E>,
@@ -316,7 +351,15 @@ impl JVMClasses<'_> {
                 .attach_current_thread_guard(Default::default, &mut scope)
                 .map_err(CometError::from)
                 .map_err(E::from)?;
-            f(guard.borrow_env_mut())
+            guard
+                .borrow_env_mut()
+                .with_local_frame(DEFAULT_LOCAL_FRAME_CAPACITY, |env| {
+                    f(env).map_err(LocalFrameError::Closure)
+                })
+                .map_err(|err| match err {
+                    LocalFrameError::Closure(err) => err,
+                    LocalFrameError::Jni(err) => E::from(CometError::from(err)),
+                })
         }
     }
 }
