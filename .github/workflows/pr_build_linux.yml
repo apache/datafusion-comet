@@ -59,7 +59,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup coursier
-        uses: coursier/setup-action@v1
+        uses: coursier/setup-action@v3
         with:
           jvm: temurin:21
 
