@@ -1651,6 +1651,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       MapType(IntegerType, StringType),
       MapType(StringType, DoubleType)).foreach { toType =>
       castTest(input, toType)
+    }
+  }
+
   test("cast ArrayType(DateType) to unsupported ArrayType falls back") {
     val fromType = ArrayType(DateType)
     val unsupportedElementTypes =
