@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
@@ -1590,6 +1590,28 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       TimestampType,
       BinaryType)
     testArrayCastMatrix(types, ArrayType(_), generateArrays(100, _))
+  }
+
+  test("cast MapType to MapType") {
+    // https://github.com/apache/datafusion-comet/issues/4491
+    // Native cast_map_to_map already handles the Parquet `key_value` vs
+    // Spark `entries` field-name difference, so we only need to verify that
+    // the planner routes Map→Map casts into it.
+    import scala.collection.JavaConverters._
+    val schema =
+      StructType(Seq(StructField("a", MapType(IntegerType, IntegerType), nullable = true)))
+    val rows = Range(0, 100).map { i =>
+      if (i % 10 == 0) Row(null)
+      else Row(Map(i -> (i + 1), (i + 2) -> (i + 3)))
+    }
+    val input = spark.createDataFrame(rows.asJava, schema)
+
+    Seq(
+      MapType(LongType, LongType),
+      MapType(IntegerType, StringType),
+      MapType(StringType, DoubleType)).foreach { toType =>
+      castTest(input, toType)
+    }
   }
 
   // https://github.com/apache/datafusion-comet/issues/3906
