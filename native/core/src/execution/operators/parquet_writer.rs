@@ -918,8 +918,14 @@ mod tests {
 
         let mut object_store_options: HashMap<String, String> = HashMap::new();
         object_store_options.insert("fs.s3a.access.key".to_string(), "admin".to_string());
-        object_store_options.insert("fs.s3a.secret.key".to_string(), "adminsecretkey".to_string());
-        object_store_options.insert("fs.s3a.endpoint".to_string(), "http://localhost:9000".to_string());
+        object_store_options.insert(
+            "fs.s3a.secret.key".to_string(),
+            "adminsecretkey".to_string(),
+        );
+        object_store_options.insert(
+            "fs.s3a.endpoint".to_string(),
+            "http://localhost:9000".to_string(),
+        );
 
         let mut writer = StorageWriterFactory::create(
             &output_path,
