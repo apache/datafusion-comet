@@ -67,6 +67,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
     // level. Drives `scan.with_schema(...)` so the driver returns kernel's projected
     // physical/logical schemas. Null/empty => full-table scan, no kernel schemas returned.
     projected_schema_ipc: JByteArray,
+    // ANALYSIS-TIME read schema as Delta schema JSON (`StructType.json`, carrying
+    // `delta.columnMapping.physicalName` + `id`). Preferred over `projected_schema_ipc` for
+    // `with_schema` so kernel resolves the physical names the query was PLANNED with (correct for
+    // schema-change-since-analysis). Empty => use the IPC names + snapshot projection.
+    projected_schema_json: JString,
 ) -> jbyteArray {
     try_unwrap_or_throw(&e, |env| {
         let url_str: String = table_url.try_to_string(env)?;
@@ -137,6 +142,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
         // projects the SNAPSHOT schema by these (keeping column-mapping annotations). Absent/empty
         // => None (full-table scan, no kernel schemas returned).
         let projected_columns = decode_projected_columns(env, &projected_schema_ipc)?;
+        // Analysis-time read schema (Delta JSON), preferred over the snapshot projection.
+        let projected_schema_json = decode_jstring(env, &projected_schema_json)?;
 
         let plan = plan_delta_scan_with_predicate(
             &url_str,
@@ -144,6 +151,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
             version,
             kernel_predicate,
             projected_columns,
+            projected_schema_json,
         )
         .map_err(|e| CometError::Internal(format!("delta_kernel log replay failed: {e}")))?;
 
@@ -245,6 +253,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
     snapshot_version: jlong,
     storage_options: JObject,
     projected_schema_ipc: JByteArray,
+    projected_schema_json: JString,
 ) -> jbyteArray {
     try_unwrap_or_throw(&e, |env| {
         let url_str: String = table_url.try_to_string(env)?;
@@ -264,15 +273,25 @@ pub unsafe extern "system" fn Java_org_apache_comet_contrib_delta_Native_planDel
             extract_storage_config(env, &jmap, s3_bucket.as_deref())?
         };
 
+        let projected_schema_json = decode_jstring(env, &projected_schema_json)?;
+        let projected_columns = decode_projected_columns(env, &projected_schema_ipc)?;
+        // Build kernel schemas when EITHER carrier is present (the analysis-time JSON is preferred;
+        // the IPC names are the fallback -- they're mutually exclusive on the wire). Both absent =>
+        // zero data columns => no schemas needed.
         let (physical_schema, logical_schema) =
-            match decode_projected_columns(env, &projected_schema_ipc)? {
-                Some(cols) => crate::scan::plan_delta_read_schemas(
-                    &url_str, &config, version, cols,
+            if projected_schema_json.is_some() || projected_columns.is_some() {
+                crate::scan::plan_delta_read_schemas(
+                    &url_str,
+                    &config,
+                    version,
+                    projected_schema_json,
+                    projected_columns.unwrap_or_default(),
                 )
                 .map_err(|e| {
                     CometError::Internal(format!("delta kernel read-schema build failed: {e}"))
-                })?,
-                None => (Vec::new(), Vec::new()),
+                })?
+            } else {
+                (Vec::new(), Vec::new())
             };
 
         let msg = DeltaScanTaskList {
@@ -425,6 +444,15 @@ fn decode_projected_columns(env: &mut Env, arr: &JByteArray) -> CometResult<Opti
             .map(|f| f.name().clone())
             .collect(),
     ))
+}
+
+/// Decode a Java `String` into `Option<String>`: `None` for null/empty.
+fn decode_jstring(env: &mut Env, s: &JString) -> CometResult<Option<String>> {
+    if s.is_null() {
+        return Ok(None);
+    }
+    let v = s.try_to_string(env)?;
+    Ok(if v.is_empty() { None } else { Some(v) })
 }
 
 /// Read a Java `String[]` into a `Vec<String>`. Returns empty vec for null arrays.

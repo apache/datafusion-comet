@@ -64,7 +64,8 @@ class Native extends NativeBase {
       storageOptions: java.util.Map[String, String],
       predicateBytes: Array[Byte],
       columnNames: Array[String],
-      projectedSchemaIpc: Array[Byte]): Array[Byte]
+      projectedSchemaIpc: Array[Byte],
+      projectedSchemaJson: String): Array[Byte]
 
   /**
    * Schema-only companion to [[planDeltaScan]] for the batch-file-index read path (file list comes
@@ -72,10 +73,14 @@ class Native extends NativeBase {
    * physical/logical schemas). Returns a `DeltaScanTaskList` with only `physical_schema` /
    * `logical_schema` set (Arrow IPC). `projectedSchemaIpc` is the data-read projection in
    * pure-logical names (`Schema.serializeAsMessage()`); empty array => no schemas returned.
+   * `projectedSchemaJson` is the ANALYSIS-TIME read schema as Delta schema JSON
+   * (`StructType.json`, carrying column-mapping physicalName/id); preferred over the IPC names so
+   * kernel resolves the names the query was planned with (schema-change-since-analysis correctness).
    */
   @native def planDeltaReadSchemas(
       tableUrl: String,
       snapshotVersion: Long,
       storageOptions: java.util.Map[String, String],
-      projectedSchemaIpc: Array[Byte]): Array[Byte]
+      projectedSchemaIpc: Array[Byte],
+      projectedSchemaJson: String): Array[Byte]
 }

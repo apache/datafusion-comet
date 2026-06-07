@@ -185,6 +185,33 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     else CometUtils.toArrowSchema(StructType(dataFields), timeZoneId).serializeAsMessage()
   }
 
+  /**
+   * The ANALYSIS-TIME read schema as Delta schema JSON (`StructType.json`) -- the same data columns
+   * as [[dataReadSchemaIpc]] but drawn from the schema the query was PLANNED with (DeltaScanRule's
+   * stashed reference schema), so it carries `delta.columnMapping.physicalName` + `id` at every
+   * nesting level. The driver feeds this to kernel's `ScanBuilder::with_schema`, which resolves
+   * physical names from THESE annotations and null-fills columns whose field-id changed since
+   * analysis (Delta's schema-on-read escape hatch). Returns `""` when the analysis-time schema is
+   * absent or doesn't cover every data column (the driver then falls back to projecting the live
+   * snapshot by the IPC names). Order matches [[dataReadSchemaIpc]] (requiredSchema's data order).
+   */
+  private[delta] def dataReadSchemaJson(
+      analyzedSchema: Option[StructType],
+      requiredSchema: StructType): String = {
+    analyzedSchema match {
+      case Some(analyzed) =>
+        val byName = analyzed.fields.map(f => f.name.toLowerCase(Locale.ROOT) -> f).toMap
+        val dataFields = requiredSchema.fields.filterNot(f =>
+          SyntheticReadFieldNames.contains(f.name.toLowerCase(Locale.ROOT)))
+        val projected = dataFields.flatMap(f => byName.get(f.name.toLowerCase(Locale.ROOT)))
+        // Only use the analysis-time schema when it covers every data column; otherwise fall back.
+        if (projected.nonEmpty && projected.length == dataFields.length) {
+          StructType(projected).json
+        } else ""
+      case None => ""
+    }
+  }
+
   private[delta] def translateDeltaFieldIdToParquet(field: StructField): StructField = {
     val newDataType = translateDataTypeFieldIds(field.dataType)
     val newMetadata =
@@ -585,18 +612,27 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
         // wrapper detection upstream in `CometScanRule.scanBelowFallsBackForDvs`
         // is responsible for keeping DV-aware internal reads on vanilla.
         try {
+          // The driver's `with_schema` prefers the ANALYSIS-TIME read schema (Delta JSON, carrying
+          // column-mapping physicalName/id) so kernel resolves the names the query was planned with
+          // -> correct under schema-change-since-analysis. The Arrow-IPC names are only the fallback
+          // (no analysis-time schema available), so ship them ONLY then -- never both.
+          val projJson = CometDeltaNativeScan.dataReadSchemaJson(
+            scan.deltaMetadata.analyzedSchema,
+            scan.requiredSchema)
+          val projIpc =
+            if (projJson.nonEmpty) Array.emptyByteArray
+            else
+              CometDeltaNativeScan.dataReadSchemaIpc(
+                scan.requiredSchema,
+                scan.conf.sessionLocalTimeZone)
           nativeLib.planDeltaScan(
             tableRoot,
             snapshotVersion,
             storageOptions,
             predicateBytes,
             columnNames,
-            // Projected data-read schema -> drives kernel's `scan.with_schema(...)` so the returned
-            // task list carries `scan.physical_schema()` / `scan.logical_schema()` for the
-            // kernel-read path (correct physical names + field-ids at every nesting level).
-            CometDeltaNativeScan.dataReadSchemaIpc(
-              scan.requiredSchema,
-              scan.conf.sessionLocalTimeZone))
+            projIpc,
+            projJson)
         } catch {
           case scala.util.control.NonFatal(e) =>
             logWarning(
@@ -831,14 +867,20 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       if (!taskList.getPhysicalSchema.isEmpty) {
         taskList
       } else {
+        // Prefer the analysis-time schema (JSON); ship the Arrow-IPC names only as the fallback
+        // (never both). Both empty => zero data columns => no kernel schemas needed.
+        val projJson =
+          CometDeltaNativeScan.dataReadSchemaJson(scan.deltaMetadata.analyzedSchema, scan.requiredSchema)
         val projIpc =
-          CometDeltaNativeScan.dataReadSchemaIpc(scan.requiredSchema, scan.conf.sessionLocalTimeZone)
-        if (projIpc.isEmpty) {
+          if (projJson.nonEmpty) Array.emptyByteArray
+          else CometDeltaNativeScan.dataReadSchemaIpc(scan.requiredSchema, scan.conf.sessionLocalTimeZone)
+        if (projJson.isEmpty && projIpc.isEmpty) {
           taskList
         } else {
           try {
             DeltaScanTaskList.parseFrom(
-              nativeLib.planDeltaReadSchemas(tableRoot, snapshotVersion, storageOptions, projIpc))
+              nativeLib
+                .planDeltaReadSchemas(tableRoot, snapshotVersion, storageOptions, projIpc, projJson))
           } catch {
             case scala.util.control.NonFatal(e) =>
               // The kernel-read path has no Comet-side physicalisation fallback; if kernel can't

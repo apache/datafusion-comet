@@ -67,6 +67,11 @@ parquet = { version = "58.1.0", default-features = false, features = ["experimen
 futures = "0.3"
 thiserror = "2"
 prost = "0.14.3"
+# Parse the analysis-time Delta schema JSON (shipped from the JVM) into a kernel `StructType` for
+# `ScanBuilder::with_schema`, so kernel resolves column-mapping physical names against the schema the
+# query was PLANNED with (correct for schema-change-since-analysis). Same format kernel itself uses
+# for the snapshot schema in the log.
+serde_json = "1"
 jni = "0.22.4"
 # Used by parse_delta_partition_scalar for timestamp parsing across the JVM's TZ shapes
 # (IANA names, GMT+/-HH:MM, etc).

@@ -140,16 +140,48 @@ fn scan_schemas_to_ipc(scan: &delta_kernel::scan::Scan) -> DeltaResult<(Vec<u8>,
     ))
 }
 
+/// Build the logical read schema for `ScanBuilder::with_schema`.
+///
+/// Prefers the ANALYSIS-TIME schema (`projected_schema_json` -- the Delta schema JSON the JVM
+/// stashed at query analysis, carrying `delta.columnMapping.physicalName` + `delta.columnMapping.id`
+/// at every nesting level, the same format kernel uses for the snapshot schema in the log). Feeding
+/// kernel the analysis-time schema is what makes schema-change-since-analysis correct: kernel's
+/// `make_physical` resolves physical names from THIS schema's own annotations and its field-id
+/// matching null-fills any column whose id changed since analysis (Delta's schema-on-read escape
+/// hatch), instead of reading the LIVE snapshot's current names. Falls back to projecting the
+/// snapshot's own schema by column name when no analysis-time JSON is available (e.g. a Delta
+/// FileIndex over a plain ParquetFileFormat, where no reference schema was stashed). `None` => no
+/// projection (full-table scan).
+fn build_read_schema(
+    snapshot: &delta_kernel::snapshot::Snapshot,
+    projected_schema_json: Option<&str>,
+    projected_columns: Option<&[String]>,
+) -> DeltaResult<Option<delta_kernel::schema::SchemaRef>> {
+    if let Some(json) = projected_schema_json {
+        let st: delta_kernel::schema::StructType = serde_json::from_str(json).map_err(|e| {
+            DeltaError::Internal(format!("parse analysis-time read schema JSON: {e}"))
+        })?;
+        Ok(Some(Arc::new(st)))
+    } else if let Some(names) = projected_columns {
+        Ok(Some(snapshot.schema().project(names).map_err(|e| {
+            DeltaError::Internal(format!("project snapshot schema to read columns: {e}"))
+        })?))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Schema-only kernel scan for the batch-file-index read path (`PreparedDeltaFileIndex` /
 /// `TahoeBatchFileIndex` / ...), where the file list comes from Delta's `AddFile`s (NOT kernel log
 /// replay, for correctness) but the kernel-read executor still needs kernel's resolved
 /// physical/logical schemas. Builds the snapshot at `version` + a projected `Scan` and returns its
-/// `(physical_schema_ipc, logical_schema_ipc)`. Does NOT enumerate files. `projected_logical_schema`
-/// is the query's data-read columns in pure-logical names (see `plan_delta_scan_with_predicate`).
+/// `(physical_schema_ipc, logical_schema_ipc)`. Does NOT enumerate files. See `build_read_schema`
+/// for the analysis-time-schema vs snapshot projection.
 pub fn plan_delta_read_schemas(
     url_str: &str,
     config: &DeltaStorageConfig,
     version: Option<u64>,
+    projected_schema_json: Option<String>,
     projected_columns: Vec<String>,
 ) -> DeltaResult<(Vec<u8>, Vec<u8>)> {
     let url = normalize_url(url_str)?;
@@ -161,16 +193,15 @@ pub fn plan_delta_read_schemas(
         }
         builder.build(&*engine)?
     };
-    // Project the snapshot's own schema (keeps the column-mapping annotations `with_schema` needs).
-    let projected_schema = snapshot.schema().project(&projected_columns).map_err(|e| {
-        DeltaError::Internal(format!("project snapshot schema to read columns: {e}"))
-    })?;
+    let read_schema = build_read_schema(
+        &snapshot,
+        projected_schema_json.as_deref(),
+        Some(&projected_columns),
+    )?
+    .ok_or_else(|| DeltaError::Internal("read schemas requested with no projection".into()))?;
     // `Snapshot::build()` already returns `Arc<Snapshot>` (= `SnapshotRef`); `scan_builder` consumes
     // it by value.
-    let scan = snapshot
-        .scan_builder()
-        .with_schema(projected_schema)
-        .build()?;
+    let scan = snapshot.scan_builder().with_schema(read_schema).build()?;
     scan_schemas_to_ipc(&scan)
 }
 
@@ -233,7 +264,7 @@ pub fn plan_delta_scan(
     config: &DeltaStorageConfig,
     version: Option<u64>,
 ) -> DeltaResult<DeltaScanPlan> {
-    plan_delta_scan_with_predicate(url_str, config, version, None, None)
+    plan_delta_scan_with_predicate(url_str, config, version, None, None, None)
 }
 
 /// `projected_columns`: the top-level data columns the query reads, in logical names (the Spark
@@ -251,6 +282,7 @@ pub fn plan_delta_scan_with_predicate(
     version: Option<u64>,
     kernel_predicate: Option<delta_kernel::expressions::Predicate>,
     projected_columns: Option<Vec<String>>,
+    projected_schema_json: Option<String>,
 ) -> DeltaResult<DeltaScanPlan> {
     let url = normalize_url(url_str)?;
     let engine = get_or_create_engine(&url, config)?;
@@ -305,15 +337,16 @@ pub fn plan_delta_scan_with_predicate(
     if let Some(pred) = kernel_predicate {
         scan_builder = scan_builder.with_predicate(Arc::new(pred));
     }
-    // Project the scan to the query's top-level data columns so `scan.physical_schema()` /
-    // `scan.logical_schema()` carry the projected shape kernel resolves. Projecting the snapshot's
-    // own schema keeps the column-mapping annotations `with_schema` needs.
-    let projected = projected_columns.is_some();
-    if let Some(ref names) = projected_columns {
-        let projected_schema = snapshot_arc.schema().project(names).map_err(|e| {
-            DeltaError::Internal(format!("project snapshot schema to read columns: {e}"))
-        })?;
-        scan_builder = scan_builder.with_schema(projected_schema);
+    // Project the scan to the query's data columns so `scan.physical_schema()` /
+    // `scan.logical_schema()` carry the projected shape kernel resolves -- preferring the
+    // analysis-time schema so schema-change-since-analysis reads correctly (see `build_read_schema`).
+    let projected = projected_schema_json.is_some() || projected_columns.is_some();
+    if let Some(read_schema) = build_read_schema(
+        &snapshot_arc,
+        projected_schema_json.as_deref(),
+        projected_columns.as_deref(),
+    )? {
+        scan_builder = scan_builder.with_schema(read_schema);
     }
     let scan = scan_builder.build()?;
 
