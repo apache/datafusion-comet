@@ -1636,22 +1636,55 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // https://github.com/apache/datafusion-comet/issues/4491
     // Native cast_map_to_map already handles the Parquet `key_value` vs
     // Spark `entries` field-name difference, so we only need to verify that
-    // the planner routes Map→Map casts into it.
+    // the planner routes Map→Map casts into it. The map column must be read
+    // natively for the cast to be exercised by Comet, which only happens
+    // under the V1 Parquet scan, so we pin USE_V1_SOURCE_LIST=parquet.
     import scala.collection.JavaConverters._
     val schema =
       StructType(Seq(StructField("a", MapType(IntegerType, IntegerType), nullable = true)))
     val rows = Range(0, 100).map { i =>
       if (i % 10 == 0) Row(null)
+      else if (i % 7 == 0) Row(Map.empty[Int, Int])
       else Row(Map(i -> (i + 1), (i + 2) -> (i + 3)))
     }
     val input = spark.createDataFrame(rows.asJava, schema)
 
-    Seq(
-      MapType(LongType, LongType),
-      MapType(IntegerType, StringType),
-      MapType(StringType, DoubleType)).foreach { toType =>
-      castTest(input, toType)
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      Seq(
+        MapType(LongType, LongType),
+        MapType(IntegerType, StringType),
+        MapType(StringType, DoubleType)).foreach { toType =>
+        castTest(input, toType)
+      }
     }
+  }
+
+  test("cast MapType propagates Incompatible from inner value cast") {
+    // Float → Decimal is Incompatible due to rounding (see canCastFromFloat).
+    // The Map arm must propagate that Incompatible up rather than silently
+    // marking the whole Map → Map cast Compatible.
+    assert(
+      CometCast.isSupported(
+        MapType(IntegerType, FloatType),
+        MapType(IntegerType, DecimalType(10, 2)),
+        None,
+        CometEvalMode.LEGACY) ==
+        Incompatible(Some("There can be rounding differences")))
+  }
+
+  test("cast MapType propagates Unsupported from nested value cast") {
+    // Map<Int, Map<Int, Int>> → Map<Int, String>: the inner Map → String
+    // cast is Unsupported, and that must propagate through the outer Map
+    // arm rather than being silently swallowed.
+    val innerFrom = MapType(IntegerType, IntegerType)
+    val expectedMessage = s"Cast from $innerFrom to ${DataTypes.StringType} is not supported"
+    assert(
+      CometCast.isSupported(
+        MapType(IntegerType, innerFrom),
+        MapType(IntegerType, StringType),
+        None,
+        CometEvalMode.LEGACY) ==
+        Unsupported(Some(expectedMessage)))
   }
 
   test("cast ArrayType(DateType) to unsupported ArrayType falls back") {
