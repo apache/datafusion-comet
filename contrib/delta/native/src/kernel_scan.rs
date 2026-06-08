@@ -588,10 +588,6 @@ impl DeltaKernelScanExec {
             .map_err(|e| DataFusionError::Execution(format!("kernel scan table root: {e}")))?;
         let engine = get_or_create_engine(&table_root_url, &self.storage_config)
             .map_err(|e| DataFusionError::Execution(format!("kernel scan engine: {e}")))?;
-        let logical_schema = arrow_to_kernel_schema(&self.read_logical_schema)
-            .map_err(|e| DataFusionError::Execution(format!("kernel scan logical schema: {e}")))?;
-        let physical_schema = arrow_to_kernel_schema(&self.physical_schema)
-            .map_err(|e| DataFusionError::Execution(format!("kernel scan physical schema: {e}")))?;
 
         // Does the query want `is_row_deleted` (keep all rows, flag them) vs a plain drop of DV rows?
         let emit_is_row_deleted = self
@@ -599,6 +595,47 @@ impl DeltaKernelScanExec {
             .fields()
             .iter()
             .any(|f| f.name() == IS_ROW_DELETED_NAME);
+
+        // Zero data columns (literal projection, partition-only count): nothing to read from parquet,
+        // so kernel produces no row_index either. Drive the row count from `record_count` / the
+        // parquet footer, emit an empty-data batch of that length, and let `assemble_synthesized`
+        // fill partition + per-file-constant synthetics by name. DV: flag all rows when is_row_deleted
+        // is requested, else shorten the count to the live rows.
+        if self.physical_schema.fields().is_empty() {
+            let empty_schema = Arc::new(arrow::datatypes::Schema::empty());
+            let mut out = Vec::new();
+            for file in &self.files {
+                let n = self.file_row_count(engine.as_ref(), &table_root_url, file)?;
+                let mut deleted: Vec<u64> = Vec::new();
+                if let Some(desc) = &file.dv {
+                    deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config)
+                        .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
+                }
+                let (rows, is_deleted): (usize, Option<Int8Array>) = if emit_is_row_deleted {
+                    let dset: std::collections::HashSet<usize> =
+                        deleted.iter().map(|&i| i as usize).collect();
+                    let flags: Vec<i8> = (0..n).map(|i| i8::from(dset.contains(&i))).collect();
+                    (n, Some(Int8Array::from(flags)))
+                } else {
+                    let live = n - deleted.iter().filter(|&&i| (i as usize) < n).count();
+                    (live, None)
+                };
+                let opts = arrow::array::RecordBatchOptions::new().with_row_count(Some(rows));
+                let batch = arrow::array::RecordBatch::try_new_with_options(
+                    Arc::clone(&empty_schema),
+                    vec![],
+                    &opts,
+                )
+                .map_err(DataFusionError::from)?;
+                out.push(self.assemble_synthesized(batch, file, is_deleted)?);
+            }
+            return Ok(out);
+        }
+
+        let logical_schema = arrow_to_kernel_schema(&self.read_logical_schema)
+            .map_err(|e| DataFusionError::Execution(format!("kernel scan logical schema: {e}")))?;
+        let physical_schema = arrow_to_kernel_schema(&self.physical_schema)
+            .map_err(|e| DataFusionError::Execution(format!("kernel scan physical schema: {e}")))?;
 
         let mut out: Vec<arrow::array::RecordBatch> = Vec::new();
         for file in &self.files {

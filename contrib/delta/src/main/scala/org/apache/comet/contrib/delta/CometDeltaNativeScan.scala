@@ -269,6 +269,66 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     }
   }
 
+  /**
+   * Kernel read schema for the in-worker synthesis path (`synthesize_in_worker`): data + partitions,
+   * plus `row_index` as a kernel `RowIndex` metadata column and `row_id` as a kernel `RowId` metadata
+   * column (kernel injects/generates them). The WORKER-only synthetics -- `is_row_deleted`,
+   * `row_commit_version`, and Spark `_metadata.*` per-file constants -- are EXCLUDED (kernel doesn't
+   * read them; the executor produces them). Returns "" when nothing is read from parquet.
+   */
+  private[delta] def synthesizeReadSchemaJson(
+      annotatedSource: Option[StructType],
+      requiredSchema: StructType,
+      partitionSchema: StructType): String = {
+    val byName =
+      annotatedSource.map(_.fields.map(f => f.name.toLowerCase(Locale.ROOT) -> f).toMap)
+        .getOrElse(Map.empty)
+    val pick = (f: StructField) => byName.getOrElse(f.name.toLowerCase(Locale.ROOT), f)
+    // Synthetics the executor produces itself (NOT read from kernel).
+    val workerOnly: Set[String] = Set(
+      DeltaReflection.IsRowDeletedColumnName,
+      DeltaReflection.RowCommitVersionColumnName,
+      "file_path",
+      "file_name",
+      "file_size",
+      "file_block_start",
+      "file_block_length",
+      "file_modification_time",
+      "base_row_id",
+      "default_row_commit_version").map(_.toLowerCase(Locale.ROOT))
+    def isRowIndex(n: String): Boolean =
+      n.equalsIgnoreCase(DeltaReflection.RowIndexColumnName) ||
+        n.equalsIgnoreCase(DeltaReflection.TmpMetadataRowIndexColumnName)
+    def isRowId(n: String): Boolean =
+      n.equalsIgnoreCase(DeltaReflection.RowIdColumnName) ||
+        n.toLowerCase(Locale.ROOT).startsWith("_row-id-col-")
+    val kept: Array[StructField] = requiredSchema.fields.flatMap { f =>
+      val lc = f.name.toLowerCase(Locale.ROOT)
+      if (workerOnly.contains(lc)) {
+        None // worker-side constant; not read from kernel
+      } else if (isRowIndex(f.name)) {
+        Some(asKernelMetadataColumn(f.name, "row_index"))
+      } else if (isRowId(f.name)) {
+        Some(asKernelMetadataColumn(f.name, KernelRowIdSpec))
+      } else {
+        // Real data column -- includes the MATERIALISED `_row-commit-version-col-*` (kernel has no
+        // RowCommitVersion metadata column, so it's read from parquet by name, null-filled when a
+        // file lacks it).
+        Some(pick(f))
+      }
+    }
+    val all = kept ++ partitionSchema.fields.map(pick)
+    if (all.isEmpty) "" else StructType(all).json
+  }
+
+  /** A LONG field marked as kernel's `<spec>` metadata column (`delta.metadataSpec`). */
+  private def asKernelMetadataColumn(name: String, spec: String): StructField = {
+    val md = new org.apache.spark.sql.types.MetadataBuilder()
+      .putString(KernelMetadataSpecKey, spec)
+      .build()
+    StructField(name, org.apache.spark.sql.types.LongType, nullable = true, md)
+  }
+
   private[delta] def translateDeltaFieldIdToParquet(field: StructField): StructField = {
     val newDataType = translateDataTypeFieldIds(field.dataType)
     val newMetadata =
@@ -583,6 +643,15 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // Serialize the data filters so kernel can apply stats-based file pruning during log replay.
     val predicateBytes: Array[Byte] = serializeSupportedDataFilters(scan)
 
+    // Stage B/C: produce synthetic columns inside DeltaKernelScanExec (kernel metadata columns +
+    // engine-side DV-invert / per-file constants), retiring the stacked DeltaSyntheticColumnsExec.
+    // Only on the kernel-enumeration read path (NOT the AddFiles/subset path), which ships kernel's
+    // per-file transform (needed for row_id GenerateRowId + partition injection). Config-gated while
+    // validated.
+    val synthesizeInWorker: Boolean =
+      DeltaConf.COMET_DELTA_SYNTHESIZE_IN_WORKER_ENABLED.get(scan.conf) &&
+        !DeltaReflection.isSubsetFileIndex(relation.location)
+
     // Column name list for resolving BoundReference indices to kernel column
     // names. Must match the order of scan.output because exprToProto binds
     // attribute references by position in that schema.
@@ -680,12 +749,23 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
           // there's no stashed reference schema; both carry the annotations kernel needs. Include the
           // partition schema so kernel's transform INJECTS partition columns (max-kernel) rather than
           // Comet appending them.
-          val projJson = CometDeltaNativeScan.dataReadSchemaJson(
-            scan.deltaMetadata.analyzedSchema.orElse(
-              DeltaReflection.extractSnapshotSchema(relation)),
-            scan.requiredSchema,
-            relation.partitionSchema,
-            rowTrackingActive = rowTrackingEnabled)
+          val annotated = scan.deltaMetadata.analyzedSchema.orElse(
+            DeltaReflection.extractSnapshotSchema(relation))
+          val projJson =
+            if (synthesizeInWorker) {
+              // Kernel read = data + partitions + row_index/row_id as kernel metadata columns; the
+              // executor synthesises is_row_deleted / row_commit_version / _metadata.* itself.
+              CometDeltaNativeScan.synthesizeReadSchemaJson(
+                annotated,
+                scan.requiredSchema,
+                relation.partitionSchema)
+            } else {
+              CometDeltaNativeScan.dataReadSchemaJson(
+                annotated,
+                scan.requiredSchema,
+                relation.partitionSchema,
+                rowTrackingActive = rowTrackingEnabled)
+            }
           nativeLib.planDeltaScan(
             tableRoot,
             snapshotVersion,
@@ -899,19 +979,32 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // row_index, is_row_deleted, row_id, row_commit_version). The native dispatcher
     // applies a final ProjectionExec to reorder columns to match Spark's expected
     // output layout. Empty when synthetics ARE a suffix -- already in the right order.
-    val finalOutputIndices: Seq[Int] = computeFinalOutputIndices(
-      needsSyntheticEmit,
-      requiredSchemaForProto,
-      isSynthetic,
-      emitRowIndex,
-      emitIsRowDeleted,
-      emitRowId,
-      emitRowCommitVersion,
-      rowIndexColumnAlias,
-      metadataColumnNamesEmitted)
+    // In synthesize mode the executor assembles the full output BY NAME, so no positional reorder is
+    // needed and `required_schema` IS the full output (= scan.output) -- synthetics are NOT stripped.
+    val finalOutputIndices: Seq[Int] =
+      if (synthesizeInWorker) Seq.empty
+      else
+        computeFinalOutputIndices(
+          needsSyntheticEmit,
+          requiredSchemaForProto,
+          isSynthetic,
+          emitRowIndex,
+          emitIsRowDeleted,
+          emitRowId,
+          emitRowCommitVersion,
+          rowIndexColumnAlias,
+          metadataColumnNamesEmitted)
     val requiredSchemaForProtoStripped =
-      if (needsSyntheticEmit) requiredSchemaForProto.filterNot(isSynthetic)
-      else requiredSchemaForProto
+      if (synthesizeInWorker) {
+        // Full output the executor must emit (data + partitions + ALL synthetics) in scan.output
+        // order; the by-name assembler places each column. Logical names (no id-translation -- field
+        // ids ride on the kernel READ schema, not the output).
+        scan.output.map(a => StructField(a.name, a.dataType, a.nullable)).toArray
+      } else if (needsSyntheticEmit) {
+        requiredSchemaForProto.filterNot(isSynthetic)
+      } else {
+        requiredSchemaForProto
+      }
 
     val requiredSchema = schema2Proto(requiredSchemaForProtoStripped)
     val partitionSchema = schema2Proto(partitionSchemaForProto)
@@ -987,6 +1080,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // the native exec drives the row count from record_count / the parquet footer (#48).
     val kernelReadEligible = DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf)
     commonBuilder.setKernelRead(kernelReadEligible)
+    commonBuilder.setSynthesizeInWorker(synthesizeInWorker)
 
     // (Data-filter pushdown belonged to the removed ParquetSource path; the kernel-read path does
     // its own stats-based file pruning during log replay, so no pushed predicate is shipped.)
