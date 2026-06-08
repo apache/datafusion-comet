@@ -709,11 +709,14 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // Needs kernel's per-file transform (row_id GenerateRowId + partition injection), which only the
     // kernel-enumeration path ships. Regular reads always take it; DML rewrites (TahoeBatchFileIndex)
     // get it via kernel-enumerate + path-filter (set below, only if every touched file matched).
-    // Config-gated while validated.
-    val synthesizeConfig: Boolean =
-      DeltaConf.COMET_DELTA_SYNTHESIZE_IN_WORKER_ENABLED.get(scan.conf)
+    // In-worker synthesis is now the ONLY native synthesis path; the legacy stacked
+    // DeltaSyntheticColumnsExec is removed (#82). Regular reads always synthesize in-worker; subset
+    // reads (DML rewrites) do too when every touched file matched kernel enumeration, otherwise they
+    // decline to vanilla Spark (the `case None` branch below). A read that would have needed the old
+    // exec therefore either synthesizes in-worker or declines -- it never reaches a non-synthesize
+    // native path.
     var synthesizeInWorker: Boolean =
-      synthesizeConfig && !DeltaReflection.isSubsetFileIndex(relation.location)
+      !DeltaReflection.isSubsetFileIndex(relation.location)
 
     // Column name list for resolving BoundReference indices to kernel column
     // names. Must match the order of scan.output because exprToProto binds
@@ -754,24 +757,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
           relation.location,
           scan.partitionFilters ++ scan.dataFilters) match {
           case Some(addFiles) =>
-            // Under column mapping, Delta stores partition values in AddFile keyed by the
-            // PHYSICAL column name. `relation.partitionSchema.fields[*].metadata` has had
-            // Delta's columnMapping metadata stripped by HadoopFsRelation, so look in the
-            // authoritative Snapshot schema (via reflection) and restrict to fields that
-            // appear in the relation's partition schema.
-            val partitionNames = relation.partitionSchema.fields.map(_.name).toSet
-            val snapshotFields = DeltaReflection
-              .extractSnapshotSchema(relation)
-              .map(_.fields)
-              .getOrElse(Array.empty[StructField])
-            val physToLogical = snapshotFields.flatMap { f =>
-              if (partitionNames.contains(f.name) &&
-                f.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
-                Some(f.metadata.getString(DeltaReflection.PhysicalNameMetadataKey) -> f.name)
-              } else {
-                None
-              }
-            }.toMap
             // DV handling: the driver only ships a DV DESCRIPTOR per AddFile
             // (storage type / path / offset / size, KB-scale). The executor decodes
             // via `dv_reader::read_dv_indexes` on first poll. Pre-#218 we called
@@ -789,7 +774,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
             // enumeration (safe: the legacy DeltaSyntheticColumnsExec path still works -- never wrong
             // files). CDC indexes (files outside the snapshot) are excluded by isDmlRewriteFileIndex.
             val dmlSynthBytes: Option[Array[Byte]] =
-              if (synthesizeConfig && DeltaReflection.isDmlRewriteFileIndex(relation.location)) {
+              if (DeltaReflection.isDmlRewriteFileIndex(relation.location)) {
                 try {
                   val annotated = scan.deltaMetadata.analyzedSchema.orElse(
                     DeltaReflection.extractSnapshotSchema(relation))
@@ -846,21 +831,19 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
                 synthesizeInWorker = true
                 bytes
               case None =>
-                // Residual reads kept on the legacy DeltaSyntheticColumnsExec path FOR NOW: the CDC
-                // family (CdcAddFileIndex / TahoeRemove / TahoeChange) and the rare DML declines
-                // (CM-id materialised row_commit_version; OPTIMIZE file-not-found race). NOTE: kernel
-                // DOES support CDC -- via the separate `delta_kernel::table_changes::TableChanges` API
-                // (emits `_change_type` / `_commit_version` / `_commit_timestamp`), which reuses the
-                // same per-file read + transform primitives as the regular scan. Routing CDC through
-                // it (a TableChanges-based read path) is the path to deleting this exec; until that's
-                // wired, CDC stays here.
-                buildTaskListFromAddFiles(
-                  tableRoot,
-                  snapshotVersion,
-                  addFiles,
-                  nativeOp = null,
-                  columnNames,
-                  physicalToLogicalPartitionNames = physToLogical).toByteArray
+                // #82: the legacy buildTaskListFromAddFiles + DeltaSyntheticColumnsExec path is
+                // retired. The only reads that reached it were CDC-family subset indexes (now read
+                // natively via kernel TableChanges -- CometDeltaCdfScanExec, #84 -- so they never
+                // become a marker here) and the rare DML declines that can't synthesize in-worker
+                // (CM-id materialised row_commit_version; OPTIMIZE file-not-found race). Decline the
+                // latter to vanilla Spark with the same withFallbackReason mechanism the
+                // reflection-failure branch below uses (proven to cleanly drop the Comet boundary).
+                import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+                withFallbackReason(
+                  scan,
+                  s"Native Delta scan declines a subset-file-index read that cannot synthesize " +
+                    s"in-worker (${relation.location.getClass.getName}); falling back to Spark.")
+                return None
             }
           case None =>
             // Reflection failed; fall back conservatively.
@@ -1560,67 +1543,6 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     }
   }
 
-  /**
-   * Build a kernel-independent `DeltaScanTaskList` from a caller-provided AddFile list. Used when
-   * the Delta scan has a pre-materialized FileIndex (streaming micro-batch, MERGE/UPDATE/DELETE
-   * post-join) so we can honour its exact file list instead of re-running log replay (which would
-   * return a different set).
-   *
-   * Each AddFile becomes one `DeltaScanTask`. Absolute path resolution mirrors
-   * `DeltaFileOperations.absolutePath`: if `AddFile.path` is already absolute (has a URI scheme),
-   * keep it verbatim; otherwise join against `tableRoot`.
-   */
-  private def buildTaskListFromAddFiles(
-      tableRoot: String,
-      snapshotVersion: Long,
-      addFiles: Seq[DeltaReflection.ExtractedAddFile],
-      nativeOp: AnyRef,
-      columnNames: Array[String],
-      physicalToLogicalPartitionNames: Map[String, String] = Map.empty)
-      : OperatorOuterClass.DeltaScanTaskList = {
-    val tlBuilder = OperatorOuterClass.DeltaScanTaskList.newBuilder()
-    tlBuilder.setTableRoot(tableRoot)
-    if (snapshotVersion >= 0) tlBuilder.setSnapshotVersion(snapshotVersion)
-
-    addFiles.foreach { af =>
-      val absPath =
-        if (af.path.contains(":/")) af.path
-        else {
-          val sep = if (tableRoot.endsWith("/")) "" else "/"
-          tableRoot + sep + af.path
-        }
-      val taskBuilder = OperatorOuterClass.DeltaScanTask.newBuilder()
-      taskBuilder.setFilePath(absPath)
-      taskBuilder.setFileSize(af.size)
-      DeltaReflection.parseNumRecords(af.statsJson).foreach(taskBuilder.setRecordCount)
-      af.partitionValues.foreach { case (k, v) =>
-        // Under column mapping, Delta stores partition values keyed by the
-        // PHYSICAL column name (e.g. `col-<uuid>-part`). Our partition_schema
-        // on the wire uses LOGICAL names and the native kernel-read path matches
-        // by name, so translate when we have a physical->logical map (the
-        // kernel-path jni.rs performs the same translation for its own extraction).
-        val logicalName = physicalToLogicalPartitionNames.getOrElse(k, k)
-        val pvBuilder =
-          OperatorOuterClass.DeltaPartitionValue.newBuilder().setName(logicalName)
-        if (v != null) pvBuilder.setValue(v)
-        taskBuilder.addPartitionValues(pvBuilder.build())
-      }
-      af.baseRowId.foreach(taskBuilder.setBaseRowId)
-      af.defaultRowCommitVersion.foreach(taskBuilder.setDefaultRowCommitVersion)
-      af.modificationTime.foreach(taskBuilder.setModificationTime)
-      // Ship the DV descriptor (KB-scale) instead of the materialised row-index
-      // list (was up to 1 GB per file -- the #218 dominator). Executor decodes
-      // via dv_reader::read_dv_indexes on first poll of the DV-bearing partition.
-      if (af.hasDeletionVector) {
-        // Pass tableRoot so addFileDvToProto can pre-resolve "u" -> "p" via Delta's
-        // own absolutePath (handles Delta's test-only filename prefix; see helper).
-        DeltaReflection.addFileDvToProto(af.dvDescriptor, tableRoot)
-          .foreach(taskBuilder.setDv)
-      }
-      tlBuilder.addTasks(taskBuilder.build())
-    }
-    tlBuilder.build()
-  }
 
   def createExec(nativeOp: Operator, op: CometDeltaScanMarker): CometNativeExec = {
     val tableRoot = DeltaReflection.extractTableRoot(op.relation).getOrElse("unknown")
