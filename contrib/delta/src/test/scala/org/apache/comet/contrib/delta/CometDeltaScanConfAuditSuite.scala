@@ -19,7 +19,7 @@
 
 package org.apache.comet.contrib.delta
 
-import org.apache.spark.sql.comet.CometDeltaNativeScanExec
+import org.apache.spark.sql.comet.{CometDeltaCdfScanExec, CometDeltaNativeScanExec}
 
 // Audit 1: scan-affecting SQLConfs and table properties.
 //
@@ -148,13 +148,10 @@ class CometDeltaScanConfAuditSuite extends CometDeltaTestBase {
   // ---- CDF / CDC ------------------------------------------------------------
 
   // `delta.enableChangeDataFeed` table prop + `readChangeFeed` read option.
-  // GAP: path-based CDF reads route through `DeltaCDFRelation` which our
-  // `DeltaScanRule` (matching on `CometScanExec` over `HadoopFsRelation`)
-  // does not currently intercept. CometDeltaCdcSuite covers table-API CDC
-  // reads, which DO engage native; the path-API form documented here is a
-  // known limitation. Remove the GAP assertion (flip to assert non-empty
-  // CometDeltaNativeScanExec) when the rule learns to handle DeltaCDFRelation.
-  test("GAP CDF: path-based readChangeFeed does not engage native (DeltaCDFRelation)") {
+  // Path-based CDF reads route through `DeltaCDFRelation` (a RowDataSourceScanExec); CometExecRule
+  // now intercepts that and replaces it with a native CometDeltaCdfScanExec reading via kernel's
+  // TableChanges (#84). (Previously a documented GAP -- only table-API CDC engaged.)
+  test("path-based readChangeFeed engages native CometDeltaCdfScanExec (DeltaCDFRelation)") {
     assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
     withDeltaTable("conf_cdf_append") { tablePath =>
       val ss = spark
@@ -174,11 +171,10 @@ class CometDeltaScanConfAuditSuite extends CometDeltaTestBase {
         .load(tablePath)
       df.collect()
       val plan = df.queryExecution.executedPlan
-      val scans = collect(plan) { case s: CometDeltaNativeScanExec => s }
+      val cdfScans = collect(plan) { case s: CometDeltaCdfScanExec => s }
       assert(
-        scans.isEmpty,
-        "GAP CLOSED: path-based CDF read now engages native -- flip this " +
-          "assertion to assert engagement and move the test to the positive matrix")
+        cdfScans.nonEmpty,
+        s"path-based CDF read should engage native CometDeltaCdfScanExec:\n$plan")
     }
   }
 

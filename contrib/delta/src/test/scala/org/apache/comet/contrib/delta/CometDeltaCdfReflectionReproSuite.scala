@@ -19,7 +19,6 @@
 
 package org.apache.comet.contrib.delta
 
-import org.apache.spark.sql.execution.RowDataSourceScanExec
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 
 // Groundwork for native CDC (#84): a readChangeFeed read is a RowDataSourceScanExec over a
@@ -46,21 +45,17 @@ class CometDeltaCdfReflectionReproSuite extends CometDeltaTestBase {
         .load(tablePath)
       df.collect() // finalize plan
 
-      // A CDF read is a RowDataSourceScanExec over the DeltaCDFRelation (also visible as a
-      // LogicalRelation in the analyzed plan). Confirm both the node shape and that the
-      // accessors extract what the native kernel TableChanges read needs.
-      df.collect() // finalize plan
-      val plan = df.queryExecution.executedPlan
-      val physicalRelations = collect(plan) { case r: RowDataSourceScanExec => r.relation }
-      assert(
-        physicalRelations.exists(DeltaReflection.isCdfRelation),
-        s"expected a RowDataSourceScanExec over DeltaCDFRelation, got:\n$plan")
+      // A CDF read starts as a RowDataSourceScanExec over the DeltaCDFRelation; Comet now intercepts
+      // it (CometExecRule) and replaces it with a native CometDeltaCdfScanExec, so the relation is no
+      // longer in the PHYSICAL plan. It remains in the analyzed (logical) plan as a LogicalRelation,
+      // where the accessors run. Confirm the relation is reachable there + the accessors extract what
+      // the native kernel TableChanges read needs.
       val logicalRelations = df.queryExecution.analyzed.collect {
         case lr: LogicalRelation => lr.relation
       }
-      val cdfRel = (physicalRelations ++ logicalRelations)
+      val cdfRel = logicalRelations
         .find(DeltaReflection.isCdfRelation)
-        .getOrElse(fail(s"no DeltaCDFRelation found in:\n$plan"))
+        .getOrElse(fail(s"no DeltaCDFRelation found in:\n${df.queryExecution.analyzed}"))
 
       assert(
         DeltaReflection.extractCdfTableRoot(cdfRel).exists(_.nonEmpty),
@@ -68,6 +63,43 @@ class CometDeltaCdfReflectionReproSuite extends CometDeltaTestBase {
       assert(
         DeltaReflection.extractCdfVersions(cdfRel).contains((0L, Some(2L))),
         s"expected (0, Some(2)) got ${DeltaReflection.extractCdfVersions(cdfRel)}")
+    }
+  }
+
+  test("readChangeFeed engages native CometDeltaCdfScanExec and matches vanilla") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("cdf_native") { tablePath =>
+      spark.sql(
+        s"""CREATE OR REPLACE TABLE delta.`$tablePath`(id INT, v STRING)
+            USING DELTA TBLPROPERTIES (delta.enableChangeDataFeed = true)""")
+      spark.sql(s"INSERT INTO delta.`$tablePath` VALUES (1, 'a'), (2, 'b')")
+      spark.sql(s"UPDATE delta.`$tablePath` SET v = 'A' WHERE id = 1")
+      spark.sql(s"DELETE FROM delta.`$tablePath` WHERE id = 2")
+
+      // _commit_timestamp is wall-clock / nondeterministic; drop it for the equality check.
+      val read = () =>
+        spark.read
+          .format("delta")
+          .option("readChangeFeed", "true")
+          .option("startingVersion", "0")
+          .load(tablePath)
+          .drop("_commit_timestamp")
+
+      val df = read()
+      df.collect() // finalize plan
+      val plan = df.queryExecution.executedPlan
+      val cdfExecs = collect(plan) {
+        case s: org.apache.spark.sql.comet.CometDeltaCdfScanExec => s
+      }
+      assert(cdfExecs.nonEmpty, s"expected a native CometDeltaCdfScanExec in plan, got:\n$plan")
+
+      val nativeRows = read().collect().toSeq.map(normalizeRow)
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        val vanillaRows = read().collect().toSeq.map(normalizeRow)
+        assert(
+          nativeRows.sortBy(_.mkString("|")) == vanillaRows.sortBy(_.mkString("|")),
+          s"CDC native=$nativeRows vanilla=$vanillaRows")
+      }
     }
   }
 }

@@ -458,6 +458,23 @@ object DeltaReflection extends Logging {
   }
 
   /**
+   * The latest version available for a `DeltaCDFRelation`, read from its pinned snapshot
+   * (`snapshotWithSchemaMode.snapshot.version`). Used to clamp a requested `endingVersion` that
+   * exceeds the table's latest committed version: kernel's `TableChanges` errors if `end > latest`
+   * (`LogSegment end version N not the same as the specified end version M`), whereas Delta clamps
+   * to the latest. Returns `None` on reflection failure (caller leaves the requested end as-is).
+   */
+  def extractCdfLatestVersion(relation: Any): Option[Long] = {
+    try {
+      findAccessor(relation, Seq("snapshotWithSchemaMode"))
+        .flatMap(findAccessor(_, Seq("snapshot")))
+        .flatMap(snap => longMember(snap, "version"))
+    } catch {
+      case scala.util.control.NonFatal(_) => None
+    }
+  }
+
+  /**
    * Convert a Delta partition value string to a Catalyst-internal representation. Delta stores
    * partition values as strings in add actions; this converts them to the correct type for
    * predicate evaluation.

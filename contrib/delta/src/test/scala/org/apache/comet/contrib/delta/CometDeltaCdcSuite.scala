@@ -62,15 +62,15 @@ class CometDeltaCdcSuite extends CometDeltaTestBase {
       assert(schema.contains("_commit_timestamp"),
         s"CDC schema missing _commit_timestamp: ${df.schema.fieldNames.mkString(",")}")
 
-      // CDC augments the scan with _change_type/_commit_version/_commit_timestamp;
-      // the native scan is unaware of these, so DeltaScanRule must DECLINE and let
-      // Spark handle it. Inspect the plan only after collect() so AQE has finalized
-      // it (see CometDeltaTestBase.assertDeltaNativeMatches doc on plan ordering).
-      val nativeScans = df.queryExecution.executedPlan.collect {
-        case s: org.apache.spark.sql.comet.CometDeltaNativeScanExec => s
+      // CDC now reads natively via delta-kernel's TableChanges: CometExecRule intercepts the
+      // RowDataSourceScanExec over DeltaCDFRelation and replaces it with a CometDeltaCdfScanExec,
+      // which emits the data columns + _change_type / _commit_version / _commit_timestamp. Inspect
+      // the plan only after collect() so AQE has finalized it.
+      val cdfScans = df.queryExecution.executedPlan.collect {
+        case s: org.apache.spark.sql.comet.CometDeltaCdfScanExec => s
       }
-      assert(nativeScans.isEmpty,
-        s"CDC read must fall back to Spark, but Comet claimed it:\n" +
+      assert(cdfScans.nonEmpty,
+        s"CDC read should engage the native kernel TableChanges path (CometDeltaCdfScanExec):\n" +
           s"${df.queryExecution.executedPlan}")
 
       // Correctness: the result with the native config ON must match vanilla Spark.
@@ -117,14 +117,16 @@ class CometDeltaCdcSuite extends CometDeltaTestBase {
       val rows = df.collect()
       assert(rows.nonEmpty)
 
-      // CDC must fall back (the native scan can't produce the CDC metadata columns).
-      // Inspect after collect() so AQE has finalized the plan.
+      // CDC engages the native kernel TableChanges path even with an orderBy + projection on the
+      // metadata columns. The orderBy makes this plan AQE-wrapped, so use the AdaptiveSparkPlanHelper
+      // `collect` (strips AQE) rather than a plain TreeNode collect, which can't see inside the
+      // finalized AQE subtree. Inspect after collect() so AQE has finalized the plan.
       val plan = df.queryExecution.executedPlan
       assert(
-        plan.collect {
-          case s: org.apache.spark.sql.comet.CometDeltaNativeScanExec => s
-        }.isEmpty,
-        s"CDC read must fall back to Spark, but Comet claimed it:\n$plan")
+        collect(plan) {
+          case s: org.apache.spark.sql.comet.CometDeltaCdfScanExec => s
+        }.nonEmpty,
+        s"CDC read should engage CometDeltaCdfScanExec:\n$plan")
 
       // Compare the deterministic CDC columns native-on vs vanilla (the
       // unix_timestamp(_commit_timestamp) projection above is wall-clock-derived

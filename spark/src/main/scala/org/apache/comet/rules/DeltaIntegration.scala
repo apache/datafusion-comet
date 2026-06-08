@@ -20,7 +20,7 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.{FileSourceScanExec, RowDataSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 
 import org.apache.comet.serde.CometOperatorSerde
@@ -156,6 +156,59 @@ object DeltaIntegration extends org.apache.spark.internal.Logging {
           logWarning(
             s"CometDeltaNativeScan.transformV1IfDelta threw, declining to vanilla Delta " +
               s"for this scan",
+            Option(e.getCause).getOrElse(e))
+          None
+      }
+    }
+  }
+
+  /**
+   * True when `relation` is Delta's Change Data Feed relation (`DeltaCDFRelation`, produced by a
+   * `readChangeFeed` read). A pure class-name check -- no contrib dependency and no reflection
+   * cost
+   * -- so `CometExecRule` can cheaply gate before invoking [[transformCdf]].
+   */
+  def isCdfRelation(relation: Any): Boolean =
+    relation != null && relation.getClass.getName.contains("DeltaCDFRelation")
+
+  // Cached reflective binding to the contrib's `CometDeltaNativeScan.convertCdf`, resolved once per
+  // JVM (mirrors `transformV1IfDeltaBinding`).
+  @volatile private var convertCdfBindingCache
+      : Option[Option[(AnyRef, java.lang.reflect.Method)]] = None
+
+  private def convertCdfBinding: Option[(AnyRef, java.lang.reflect.Method)] =
+    convertCdfBindingCache.getOrElse {
+      val binding = serdeCls.flatMap { cls =>
+        try {
+          val module = cls.getField("MODULE$").get(null)
+          val m = cls.getMethod("convertCdf", classOf[RowDataSourceScanExec])
+          Some((module, m))
+        } catch {
+          case _: NoSuchMethodException | _: NoSuchFieldException | _: IllegalAccessException =>
+            None
+        }
+      }
+      convertCdfBindingCache = Some(binding)
+      binding
+    }
+
+  /**
+   * Delegate a Change Data Feed read (`RowDataSourceScanExec` over `DeltaCDFRelation`) to the
+   * contrib, producing a native `CometDeltaCdfScanExec`. Returns `Some(plan)` if the contrib
+   * handled it, `None` to leave the vanilla Spark CDF read in place. Called from `CometExecRule`.
+   */
+  def transformCdf(scan: RowDataSourceScanExec): Option[SparkPlan] = {
+    convertCdfBinding.flatMap { case (module, m) =>
+      try {
+        Option(m.invoke(module, scan))
+          .map(_.asInstanceOf[Option[SparkPlan]])
+          .flatten
+      } catch {
+        case _: IllegalAccessException | _: IllegalArgumentException =>
+          None
+        case e: java.lang.reflect.InvocationTargetException =>
+          logWarning(
+            "CometDeltaNativeScan.convertCdf threw, leaving the vanilla Spark CDF read in place",
             Option(e.getCause).getOrElse(e))
           None
       }

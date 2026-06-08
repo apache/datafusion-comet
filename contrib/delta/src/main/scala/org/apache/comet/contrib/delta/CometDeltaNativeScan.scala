@@ -28,7 +28,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{And, BoundReference, Expression, InterpretedPredicate}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.comet.{CometDeltaNativeScanExec, CometDeltaScanMarker, CometNativeExec}
+import org.apache.spark.sql.comet.{CometDeltaCdfScanExec, CometDeltaNativeScanExec, CometDeltaScanMarker, CometNativeExec, SerializedPlan}
+import org.apache.spark.sql.execution.RowDataSourceScanExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -536,6 +537,66 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     DeltaConf.COMET_DELTA_NATIVE_ENABLED)
 
   override def getSupportLevel(operator: CometDeltaScanMarker): SupportLevel = Compatible()
+
+  /**
+   * Convert a Change Data Feed read -- a `RowDataSourceScanExec` over Delta's `DeltaCDFRelation`
+   * (`readChangeFeed`) -- into a native [[CometDeltaCdfScanExec]]. The native `DeltaKernelScanExec`
+   * reconstructs delta-kernel's `TableChanges(start, end)` from the `cdf_read` + version fields in
+   * the `DeltaScanCommon` and calls `execute()`, emitting the data columns plus `_change_type` /
+   * `_commit_version` / `_commit_timestamp`. There are no per-file tasks (kernel reads the whole
+   * range). Returns `None` (decline -> vanilla Spark) if the relation's table root or version range
+   * can't be extracted. Called from core's `CometExecRule` via `DeltaIntegration.transformCdf`.
+   */
+  def convertCdf(scan: RowDataSourceScanExec): Option[CometNativeExec] = {
+    if (!DeltaConf.COMET_DELTA_NATIVE_ENABLED.get()) return None
+    val relation = scan.relation
+    val tableRoot = DeltaReflection.extractCdfTableRoot(relation).getOrElse {
+      logWarning("CometDeltaNativeScan: unable to extract CDF table root; falling back to Spark.")
+      return None
+    }
+    val (startVersion, endVersion) = DeltaReflection.extractCdfVersions(relation).getOrElse {
+      logWarning("CometDeltaNativeScan: unable to extract CDF version range; falling back to Spark.")
+      return None
+    }
+
+    // required_schema is the FULL CDF output: data columns + _change_type / _commit_version /
+    // _commit_timestamp, in `scan.output` order. The native side assembles by name, so no stripping.
+    val outputFields = scan.output.map(a => StructField(a.name, a.dataType, a.nullable)).toArray
+
+    val commonBuilder = DeltaScanCommon.newBuilder()
+    commonBuilder.setSource(scan.simpleStringWithNodeId())
+    commonBuilder.setTableRoot(tableRoot)
+    // snapshot_version is only used for the per-scan source key; the start version keys it uniquely.
+    commonBuilder.setSnapshotVersion(startVersion)
+    commonBuilder.setSessionTimezone(scan.conf.sessionLocalTimeZone)
+    commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+    commonBuilder.addAllRequiredSchema(schema2Proto(outputFields).toIterable.asJava)
+    // CDF is a kernel read (via TableChanges); the native planner's gate requires kernel_read=true
+    // (the legacy read path is gone). The cdf branch then bypasses the per-file kernel-schema
+    // requirement and reads the whole range via read_all_cdf.
+    commonBuilder.setKernelRead(true)
+    commonBuilder.setCdfRead(true)
+    commonBuilder.setCdfStartVersion(startVersion)
+    // Clamp a requested endingVersion that exceeds the table's latest committed version: kernel's
+    // TableChanges errors (`LogSegment end version N not the same as the specified end version M`)
+    // whereas Delta clamps to latest. Leave unset ("read to latest") if no end was requested.
+    val clampedEnd = endVersion.map { e =>
+      DeltaReflection.extractCdfLatestVersion(relation) match {
+        case Some(latest) if e > latest => latest
+        case _ => e
+      }
+    }
+    clampedEnd.foreach(commonBuilder.setCdfEndVersion)
+
+    val deltaScanBuilder = DeltaScan.newBuilder()
+    deltaScanBuilder.setCommon(commonBuilder.build())
+    deltaScanBuilder.setTableRoot(tableRoot)
+    val op = Operator.newBuilder().setDeltaScan(deltaScanBuilder.build()).build()
+
+    val exec = CometDeltaCdfScanExec(op, scan.output, SerializedPlan(None), scan, tableRoot)
+    scan.logicalLink.foreach(exec.setLogicalLink)
+    Some(exec)
+  }
 
   override def convert(
       scan: CometDeltaScanMarker,
