@@ -202,89 +202,26 @@ fn plan_delta_kernel_scan(
     // constants) and assembles the FULL `output_schema` (= required_schema, synthetics included) by
     // name -- so the legacy DeltaSyntheticColumnsExec is NOT stacked on top.
     let synthesize = common.synthesize_in_worker;
-    let need_synthetics = !synthesize
-        && (common.emit_row_index
-            || common.emit_is_row_deleted
-            || common.emit_row_id
-            || common.emit_row_commit_version
-            || !common.metadata_column_names.is_empty());
 
-    let kernel_exec = Arc::new(DeltaKernelScanExec::new(
-        output_schema,
-        physical_schema,
-        read_logical_schema,
-        needs_transform,
-        !need_synthetics, // apply_dv here only when the synthetic exec isn't doing it
-        partition_output_schema,
-        common.session_timezone.clone(),
-        table_root.clone(),
-        storage_config.clone(),
-        files,
-        synthesize,
-        cdf,
-    ));
-
-    let scan_exec: Arc<dyn datafusion::physical_plan::ExecutionPlan> = if need_synthetics {
-        use comet_contrib_delta::synthetic_columns::{
-            DeltaSyntheticColumnsExec, TaskMetadata, ROW_INDEX_COLUMN_NAME,
-        };
-        let has_dv = scan.tasks.iter().any(|t| t.dv.is_some());
-        let drop_deleted = has_dv && !common.emit_is_row_deleted;
-        // Only pass real DV descriptors when the exec flags or drops; else `None`s (never decode).
-        let dvs_for_exec: Vec<Option<comet_contrib_delta::proto::DeltaDvDescriptor>> =
-            if common.emit_is_row_deleted || drop_deleted {
-                scan.tasks.iter().map(|t| t.dv.clone()).collect()
-            } else {
-                vec![None; scan.tasks.len()]
-            };
-        let base_row_ids: Vec<Option<i64>> = scan.tasks.iter().map(|t| t.base_row_id).collect();
-        let default_commit_versions: Vec<Option<i64>> = scan
-            .tasks
-            .iter()
-            .map(|t| t.default_row_commit_version)
-            .collect();
-        let task_metadata: Vec<TaskMetadata> = scan
-            .tasks
-            .iter()
-            .map(|t| TaskMetadata {
-                file_path: Some(t.file_path.clone()),
-                file_size: Some(t.file_size as i64),
-                byte_range_start: t.byte_range_start.map(|v| v as i64),
-                byte_range_end: t.byte_range_end.map(|v| v as i64),
-                modification_time_millis: t.modification_time,
-                base_row_id: t.base_row_id,
-                default_row_commit_version: t.default_row_commit_version,
-            })
-            .collect();
-        let row_index_alias = if common.row_index_column_alias.is_empty() {
-            ROW_INDEX_COLUMN_NAME
-        } else {
-            common.row_index_column_alias.as_str()
-        };
-        let synth_root = comet_contrib_delta::dv_reader::normalize_table_root(&table_root)
-            .map_err(|e| GeneralError(format!("DeltaScan table_root: {e}")))?;
-        Arc::new(
-            DeltaSyntheticColumnsExec::new(
-                kernel_exec,
-                dvs_for_exec,
-                synth_root,
-                storage_config,
-                base_row_ids,
-                default_commit_versions,
-                common.emit_row_index,
-                common.emit_is_row_deleted,
-                common.emit_row_id,
-                common.emit_row_commit_version,
-                drop_deleted,
-                row_index_alias,
-                common.metadata_column_names.clone(),
-                task_metadata,
-            )
-            .map_err(|e| GeneralError(format!("DeltaSyntheticColumnsExec: {e}")))?,
-        )
-    } else {
-        kernel_exec
-    };
+    // In-worker synthesis is the only native path (#82): DeltaKernelScanExec produces ALL output
+    // columns (data + partitions + row_index/row_id/is_row_deleted/row_commit_version/_metadata.*)
+    // by name and applies the DV itself. The legacy DeltaSyntheticColumnsExec is removed; the driver
+    // never sets `synthesize_in_worker=false` for a native read (it declines to Spark instead).
+    let scan_exec: Arc<dyn datafusion::physical_plan::ExecutionPlan> =
+        Arc::new(DeltaKernelScanExec::new(
+            output_schema,
+            physical_schema,
+            read_logical_schema,
+            needs_transform,
+            true, // apply_dv: the kernel scan always applies the DV now
+            partition_output_schema,
+            common.session_timezone.clone(),
+            table_root.clone(),
+            storage_config.clone(),
+            files,
+            synthesize,
+            cdf,
+        ));
 
     // Reorder to the user-visible layout when synthetics aren't already a suffix.
     let scan_exec: Arc<dyn datafusion::physical_plan::ExecutionPlan> = if common

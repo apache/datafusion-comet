@@ -23,10 +23,6 @@
 //! Surfaces:
 //!   - JNI: `Java_org_apache_comet_contrib_delta_Native_planDeltaScan` (driver-side
 //!     log replay via delta-kernel-rs; returns a `DeltaScanTaskList` proto)
-//!   - [`synthetic_columns::DeltaSyntheticColumnsExec`]: the unified DV-sweep exec,
-//!     constructed by core's planner dispatcher. It appends Delta's synthetic columns
-//!     and/or drops DV-deleted rows in a single running-offset sweep (the latter mode
-//!     replaces the former standalone deletion-vector filter exec)
 //!   - [`plan_delta_scan`]: helpers core's planner dispatcher invokes to assemble
 //!     a Delta scan's `DataSourceExec` (kernel-rs is JVM-side, so the per-scan
 //!     planning the JVM doesn't pre-resolve happens here)
@@ -43,7 +39,6 @@ pub mod kernel_scan;
 pub mod planner;
 pub mod predicate;
 pub mod scan;
-pub mod synthetic_columns;
 
 /// Re-export of the Delta proto messages, named so module paths inside this crate
 /// can keep their original `use crate::proto::Delta...` form. The messages
