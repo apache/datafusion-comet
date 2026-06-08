@@ -160,6 +160,11 @@ fn plan_delta_kernel_scan(
                 .map(|pv| (pv.name.clone(), pv.value.clone()))
                 .collect(),
             transform_json: t.transform_json.clone(),
+            base_row_id: t.base_row_id,
+            default_row_commit_version: t.default_row_commit_version,
+            modification_time: t.modification_time.unwrap_or(0),
+            byte_range_start: t.byte_range_start.map(|v| v as i64),
+            byte_range_end: t.byte_range_end.map(|v| v as i64),
         })
         .collect();
 
@@ -182,11 +187,18 @@ fn plan_delta_kernel_scan(
     // drop DV rows (apply_dv = false); the synthetic exec drops them or surfaces `is_row_deleted`,
     // computing row positions against the full physical rows. DeltaKernelScanExec is one partition
     // per file, so the per-partition vectors below align by file/task order.
-    let need_synthetics = common.emit_row_index
-        || common.emit_is_row_deleted
-        || common.emit_row_id
-        || common.emit_row_commit_version
-        || !common.metadata_column_names.is_empty();
+    // Stage B/C: when the driver set `synthesize_in_worker`, DeltaKernelScanExec produces ALL
+    // synthetic columns itself (row_index/row_id from kernel metadata columns in the read;
+    // is_row_deleted by inverting the decoded DV; row_commit_version + Spark `_metadata.*` as per-file
+    // constants) and assembles the FULL `output_schema` (= required_schema, synthetics included) by
+    // name -- so the legacy DeltaSyntheticColumnsExec is NOT stacked on top.
+    let synthesize = common.synthesize_in_worker;
+    let need_synthetics = !synthesize
+        && (common.emit_row_index
+            || common.emit_is_row_deleted
+            || common.emit_row_id
+            || common.emit_row_commit_version
+            || !common.metadata_column_names.is_empty());
 
     let kernel_exec = Arc::new(DeltaKernelScanExec::new(
         output_schema,
@@ -199,6 +211,7 @@ fn plan_delta_kernel_scan(
         table_root.clone(),
         storage_config.clone(),
         files,
+        synthesize,
     ));
 
     let scan_exec: Arc<dyn datafusion::physical_plan::ExecutionPlan> = if need_synthetics {

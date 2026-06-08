@@ -379,6 +379,15 @@ message DeltaScanCommon {
   // back to physicalising `required_schema` via `column_mappings`.
   bytes kernel_physical_schema = 26;
   bytes kernel_logical_schema = 27;
+  // Stage B/C: when true, DeltaKernelScanExec produces ALL synthetic columns itself (row_index /
+  // row_id / file_path via kernel metadata columns; is_row_deleted by inverting the decoded DV;
+  // row_commit_version + Spark `_metadata.*` as per-file constants) and assembles the full output by
+  // name -- so the standalone DeltaSyntheticColumnsExec is NOT stacked on top and no
+  // `final_output_indices` reorder is needed. Default false (legacy DeltaSyntheticColumnsExec path).
+  // When set, `required_schema` is the FULL output (synthetics NOT stripped) and the per-file
+  // synthesis inputs ride on DeltaScanTask (base_row_id / default_row_commit_version /
+  // modification_time / byte range / dv).
+  bool synthesize_in_worker = 28;
 }
 
 // Operator payload for a Delta scan.

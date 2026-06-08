@@ -66,6 +66,20 @@ use crate::engine::{get_or_create_engine, DeltaStorageConfig};
 use crate::planner::{parse_delta_partition_scalar, SessionTimezone};
 use crate::proto::DeltaDvDescriptor;
 
+// Engine-side synthetic / Spark `_metadata.*` column names produced in `synthesize` mode. row_index
+// and row_id are NOT here -- they come from kernel metadata columns in the read. These mirror
+// `DeltaSyntheticColumnsExec` so the two paths emit identical values (kernel pins arrow-58 = Comet's).
+const IS_ROW_DELETED_NAME: &str = "__delta_internal_is_row_deleted";
+const ROW_COMMIT_VERSION_NAME: &str = "row_commit_version";
+const META_FILE_PATH: &str = "file_path";
+const META_FILE_NAME: &str = "file_name";
+const META_FILE_SIZE: &str = "file_size";
+const META_FILE_BLOCK_START: &str = "file_block_start";
+const META_FILE_BLOCK_LENGTH: &str = "file_block_length";
+const META_FILE_MODIFICATION_TIME: &str = "file_modification_time";
+const META_BASE_ROW_ID: &str = "base_row_id";
+const META_DEFAULT_ROW_COMMIT_VERSION: &str = "default_row_commit_version";
+
 /// Convert a Comet arrow `Schema` into a kernel `StructType`. Since delta-kernel pins the same arrow
 /// version as Comet (arrow-58), this is kernel's own `try_from_arrow` directly -- no cross-version
 /// FFI bridge. `try_from_arrow` DOES preserve `PARQUET:field_id` (and nested column-mapping ids)
@@ -197,6 +211,20 @@ pub struct KernelScanFile {
     /// (data + partitions), reconciled to `output_schema` by name. Empty falls back to the legacy
     /// identity-transform + `append_partition_columns` path.
     pub transform_json: Vec<u8>,
+    /// `AddFile.baseRowId` for row-tracking tables (`None` otherwise). Per-file constant surfaced as
+    /// `_metadata.base_row_id`. (row_id itself comes from kernel's RowId metadata column.)
+    pub base_row_id: Option<i64>,
+    /// `AddFile.defaultRowCommitVersion` for row-tracking tables (`None` otherwise). Per-file
+    /// constant surfaced as `row_commit_version` / `_metadata.default_row_commit_version` (kernel has
+    /// no RowCommitVersion metadata-column support, so this stays engine-side).
+    pub default_row_commit_version: Option<i64>,
+    /// File modification time, epoch millis (`AddFile.modificationTime`). Surfaced as
+    /// `_metadata.file_modification_time` (converted to micros).
+    pub modification_time: i64,
+    /// File-split byte range (`None`/`None` = whole file). Surfaces `_metadata.file_block_start` /
+    /// `file_block_length`.
+    pub byte_range_start: Option<i64>,
+    pub byte_range_end: Option<i64>,
 }
 
 /// Iceberg-style "kernel reads" scan operator. Reads each Delta data file through
@@ -239,6 +267,13 @@ pub struct DeltaKernelScanExec {
     storage_config: DeltaStorageConfig,
     /// Files this scan reads (whole-table, single partition for now).
     files: Vec<KernelScanFile>,
+    /// Stage B/C: when true, this exec produces ALL synthetic columns itself (row_index / row_id via
+    /// kernel metadata columns carried in the read; is_row_deleted by inverting the decoded DV;
+    /// row_commit_version + Spark `_metadata.*` as per-file constants) and assembles the full
+    /// `output_schema` by name -- no DeltaSyntheticColumnsExec wraps it. When false, the legacy path:
+    /// the wrapping exec appends synthetics and this exec only reads data (+ partitions) and applies
+    /// the DV per `apply_dv`.
+    synthesize: bool,
     plan_properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -257,6 +292,7 @@ impl DeltaKernelScanExec {
         table_root: String,
         storage_config: DeltaStorageConfig,
         files: Vec<KernelScanFile>,
+        synthesize: bool,
     ) -> Self {
         // Single DataFusion partition: the Spark side (CometDeltaNativeScanExec) already splits
         // files across Spark partitions and injects each partition's file subset, consuming one
@@ -280,6 +316,7 @@ impl DeltaKernelScanExec {
             table_root,
             storage_config,
             files,
+            synthesize,
             plan_properties,
             metrics: ExecutionPlanMetricsSet::new(),
         }
@@ -292,6 +329,9 @@ impl DeltaKernelScanExec {
     /// the wrapping DeltaSyntheticColumnsExec computes row positions against a single file. Eager
     /// (collects into a `Vec`); the blocking kernel reads run on the calling task thread.
     fn read_all(&self) -> DFResult<Vec<arrow::array::RecordBatch>> {
+        if self.synthesize {
+            return self.read_all_synthesize();
+        }
         let table_root_url = normalize_table_root(&self.table_root)
             .map_err(|e| DataFusionError::Execution(format!("kernel scan table root: {e}")))?;
         let engine = get_or_create_engine(&table_root_url, &self.storage_config)
@@ -535,6 +575,250 @@ impl DeltaKernelScanExec {
         )
         .map_err(DataFusionError::from)
     }
+
+    /// Stage B/C synthesis path. Reads each file via kernel (row_index / row_id arrive as kernel
+    /// metadata columns carried in `physical_schema`/`read_logical_schema` + the per-file transform),
+    /// then produces the engine-side synthetics -- `is_row_deleted` by inverting the decoded DV,
+    /// `row_commit_version` + Spark `_metadata.*` as per-file constants -- dropping DV rows when
+    /// `is_row_deleted` isn't requested, and assembles the FULL `output_schema` by name. Replaces the
+    /// stacked DeltaSyntheticColumnsExec (no `final_output_indices` needed -- by-name handles order).
+    fn read_all_synthesize(&self) -> DFResult<Vec<arrow::array::RecordBatch>> {
+        use arrow::array::Int8Array;
+        let table_root_url = normalize_table_root(&self.table_root)
+            .map_err(|e| DataFusionError::Execution(format!("kernel scan table root: {e}")))?;
+        let engine = get_or_create_engine(&table_root_url, &self.storage_config)
+            .map_err(|e| DataFusionError::Execution(format!("kernel scan engine: {e}")))?;
+        let logical_schema = arrow_to_kernel_schema(&self.read_logical_schema)
+            .map_err(|e| DataFusionError::Execution(format!("kernel scan logical schema: {e}")))?;
+        let physical_schema = arrow_to_kernel_schema(&self.physical_schema)
+            .map_err(|e| DataFusionError::Execution(format!("kernel scan physical schema: {e}")))?;
+
+        // Does the query want `is_row_deleted` (keep all rows, flag them) vs a plain drop of DV rows?
+        let emit_is_row_deleted = self
+            .output_schema
+            .fields()
+            .iter()
+            .any(|f| f.name() == IS_ROW_DELETED_NAME);
+
+        let mut out: Vec<arrow::array::RecordBatch> = Vec::new();
+        for file in &self.files {
+            // Decode the DV once per file (sorted physical row indexes), only when we flag or drop.
+            let mut deleted: Vec<u64> = Vec::new();
+            if let Some(desc) = &file.dv {
+                deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config)
+                    .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
+                deleted.sort_unstable();
+            }
+            let has_dv = !deleted.is_empty();
+            let drop_deleted = has_dv && !emit_is_row_deleted;
+
+            let transform: Option<ExpressionRef> = if file.transform_json.is_empty() {
+                None
+            } else {
+                Some(Arc::new(
+                    serde_json::from_slice::<delta_kernel::expressions::Expression>(
+                        &file.transform_json,
+                    )
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "kernel scan: deserialize transform for {}: {e}",
+                            file.path
+                        ))
+                    })?,
+                ))
+            };
+
+            // Read ALL physical rows (no kernel DV drop) so row_index stays physical and we control
+            // flag-vs-drop ourselves -- surviving rows keep their physical row_index after a drop.
+            let kernel_batches = read_file_via_kernel(
+                engine.as_ref(),
+                &table_root_url,
+                &file.path,
+                file.size,
+                None,
+                transform,
+                physical_schema.clone(),
+                logical_schema.clone(),
+            )
+            .map_err(|e| map_file_read_error(e, &file.path))?;
+
+            let mut file_offset: i64 = 0;
+            let mut del_ptr: usize = 0;
+            for kb in &kernel_batches {
+                let len = kb.num_rows();
+                let batch_end = file_offset + len as i64;
+                // is_row_deleted (Int8) over physical rows [file_offset, batch_end) via a single
+                // forward pass through the sorted DV indexes.
+                let is_deleted_arr: Option<Int8Array> =
+                    if has_dv && (emit_is_row_deleted || drop_deleted) {
+                        while del_ptr < deleted.len() && (deleted[del_ptr] as i64) < file_offset {
+                            del_ptr += 1;
+                        }
+                        let mut flags = vec![0i8; len];
+                        let mut p = del_ptr;
+                        while p < deleted.len() && (deleted[p] as i64) < batch_end {
+                            flags[(deleted[p] as i64 - file_offset) as usize] = 1;
+                            p += 1;
+                        }
+                        Some(Int8Array::from(flags))
+                    } else {
+                        None
+                    };
+
+                let assembled = self.assemble_synthesized(
+                    kb.clone(),
+                    file,
+                    if emit_is_row_deleted {
+                        is_deleted_arr.clone()
+                    } else {
+                        None
+                    },
+                )?;
+
+                let final_batch = if drop_deleted {
+                    let keep: Vec<bool> = match &is_deleted_arr {
+                        Some(a) => (0..len).map(|i| a.value(i) == 0).collect(),
+                        None => vec![true; len],
+                    };
+                    arrow::compute::filter_record_batch(&assembled, &arrow::array::BooleanArray::from(keep))
+                        .map_err(DataFusionError::from)?
+                } else {
+                    assembled
+                };
+                out.push(final_batch);
+                file_offset = batch_end;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Assemble the FULL `output_schema` by name from a kernel-read batch plus the engine-side
+    /// synthetics. For each output field: take it from the kernel batch if present (data, partitions,
+    /// row_index, row_id); else build the known synthetic (`is_row_deleted`, `row_commit_version`,
+    /// Spark `_metadata.*` per-file constants); else a partition constant; else error.
+    fn assemble_synthesized(
+        &self,
+        kernel_batch: arrow::array::RecordBatch,
+        file: &KernelScanFile,
+        is_deleted: Option<arrow::array::Int8Array>,
+    ) -> DFResult<arrow::array::RecordBatch> {
+        use arrow::array::{Int64Array, StringArray, TimestampMicrosecondArray};
+        let num_rows = kernel_batch.num_rows();
+        let kernel_schema = kernel_batch.schema();
+        let parsed_tz = SessionTimezone::parse(&self.session_timezone);
+        let cast_to = |arr: arrow::array::ArrayRef,
+                       field: &arrow::datatypes::Field|
+         -> DFResult<arrow::array::ArrayRef> {
+            if arr.data_type() == field.data_type() {
+                Ok(arr)
+            } else {
+                arrow_cast(&arr, field.data_type()).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "kernel scan (synthesize): reconciling column '{}': {e}",
+                        field.name()
+                    ))
+                })
+            }
+        };
+
+        let mut columns: Vec<arrow::array::ArrayRef> =
+            Vec::with_capacity(self.output_schema.fields().len());
+        for out_field in self.output_schema.fields() {
+            let name = out_field.name();
+            // 1. produced by the kernel read (data, partitions, row_index, row_id).
+            if let Some(idx) = kernel_schema.fields().iter().position(|f| f.name() == name) {
+                columns.push(cast_to(Arc::clone(kernel_batch.column(idx)), out_field)?);
+                continue;
+            }
+            // 2. engine-side synthetics + Spark `_metadata.*` per-file constants.
+            let lc = name.to_ascii_lowercase();
+            let arr: arrow::array::ArrayRef = match lc.as_str() {
+                IS_ROW_DELETED_NAME => match &is_deleted {
+                    Some(a) => Arc::new(a.clone()),
+                    None => Arc::new(arrow::array::Int8Array::from(vec![0i8; num_rows])),
+                },
+                ROW_COMMIT_VERSION_NAME | META_DEFAULT_ROW_COMMIT_VERSION => {
+                    match file.default_row_commit_version {
+                        Some(v) => Arc::new(Int64Array::from(vec![Some(v); num_rows])),
+                        None => Arc::new(Int64Array::from(vec![None as Option<i64>; num_rows])),
+                    }
+                }
+                META_FILE_PATH => Arc::new(StringArray::from(vec![file.path.clone(); num_rows])),
+                META_FILE_NAME => {
+                    let base = match file.path.rfind('/') {
+                        Some(i) => file.path[i + 1..].to_string(),
+                        None => file.path.clone(),
+                    };
+                    Arc::new(StringArray::from(vec![base; num_rows]))
+                }
+                META_FILE_SIZE => Arc::new(Int64Array::from(vec![file.size; num_rows])),
+                META_FILE_BLOCK_START => {
+                    Arc::new(Int64Array::from(vec![file.byte_range_start.unwrap_or(0); num_rows]))
+                }
+                META_FILE_BLOCK_LENGTH => {
+                    let v = match (file.byte_range_start, file.byte_range_end) {
+                        (Some(s), Some(e)) => e - s,
+                        _ => file.size,
+                    };
+                    Arc::new(Int64Array::from(vec![v; num_rows]))
+                }
+                META_FILE_MODIFICATION_TIME => {
+                    let micros = file.modification_time.saturating_mul(1000);
+                    Arc::new(
+                        TimestampMicrosecondArray::from(vec![micros; num_rows]).with_timezone("UTC"),
+                    )
+                }
+                META_BASE_ROW_ID => {
+                    Arc::new(Int64Array::from(vec![file.base_row_id.unwrap_or(0); num_rows]))
+                }
+                other
+                    if other.starts_with("_row-id-col-")
+                        || other.starts_with("_row-commit-version-col-") =>
+                {
+                    // Materialised row-tracking column absent from this file -> all nulls (kernel's
+                    // RowId metadata column already surfaced a present one as a data column above).
+                    Arc::new(Int64Array::from(vec![None as Option<i64>; num_rows]))
+                }
+                _ if self.partition_schema.fields().iter().any(|f| f.name() == name) => {
+                    // Partition column the transform didn't inject -> constant from the Add action.
+                    let raw = file
+                        .partition_values
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .and_then(|(_, v)| v.as_ref());
+                    let scalar = match raw {
+                        Some(v) => parse_delta_partition_scalar(
+                            v,
+                            out_field.data_type(),
+                            &parsed_tz,
+                            &self.session_timezone,
+                        )
+                        .map_err(|e| {
+                            DataFusionError::Execution(format!(
+                                "kernel scan (synthesize) partition '{name}': {e}"
+                            ))
+                        })?,
+                        None => ScalarValue::try_from(out_field.data_type())?,
+                    };
+                    scalar.to_array_of_size(num_rows)?
+                }
+                _ => {
+                    return Err(DataFusionError::Execution(format!(
+                        "kernel scan (synthesize): output column '{name}' was not produced by the \
+                         kernel read and is not a known synthetic / partition column"
+                    )));
+                }
+            };
+            columns.push(cast_to(arr, out_field)?);
+        }
+        let opts = arrow::array::RecordBatchOptions::new().with_row_count(Some(num_rows));
+        arrow::array::RecordBatch::try_new_with_options(
+            Arc::clone(&self.output_schema),
+            columns,
+            &opts,
+        )
+        .map_err(DataFusionError::from)
+    }
 }
 
 impl fmt::Debug for DeltaKernelScanExec {
@@ -756,6 +1040,11 @@ mod tests {
             dv: None,
             partition_values: vec![],
             transform_json: Vec::new(),
+            base_row_id: None,
+            default_row_commit_version: None,
+            modification_time: 0,
+            byte_range_start: None,
+            byte_range_end: None,
         }];
 
         let exec = DeltaKernelScanExec::new(
@@ -769,6 +1058,7 @@ mod tests {
             url.as_str().to_string(),
             DeltaStorageConfig::default(),
             files,
+            false, // legacy path (no in-worker synthesis)
         );
 
         let ctx = Arc::new(TaskContext::default());
@@ -832,6 +1122,11 @@ mod tests {
             dv: None,
             partition_values: vec![],
             transform_json: Vec::new(),
+            base_row_id: None,
+            default_row_commit_version: None,
+            modification_time: 0,
+            byte_range_start: None,
+            byte_range_end: None,
         }];
 
         let exec = DeltaKernelScanExec::new(
@@ -845,6 +1140,7 @@ mod tests {
             url.as_str().to_string(),
             DeltaStorageConfig::default(),
             files,
+            false, // legacy path (no in-worker synthesis)
         );
         let stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
         let batches = datafusion::physical_plan::common::collect(stream)
