@@ -338,7 +338,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | --- | --- | --- |
 | `from_json` | ✅ | Falls back by default; opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json)) |
 | `get_json_object` | ✅ | Some inputs need allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
-| `json_array_length` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `json_array_length` | ✅ | Single-quoted/trailing JSON needs allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#json_array_length)) |
 | `json_object_keys` | 🔜 | [#3161](https://github.com/apache/datafusion-comet/issues/3161) |
 | `json_tuple` | 🔜 | [#3160](https://github.com/apache/datafusion-comet/issues/3160) |
 | `schema_of_json` | 🔜 | [#3163](https://github.com/apache/datafusion-comet/issues/3163) |
