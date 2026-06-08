@@ -785,11 +785,14 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
                 synthesizeInWorker = true
                 bytes
               case None =>
-                // Residual reads kept on the legacy DeltaSyntheticColumnsExec path: the CDC family
-                // (CdcAddFileIndex / TahoeRemove / TahoeChange -- inverted-DV / _change_data semantics
-                // kernel can't express) and the rare DML declines (CM-id materialised
-                // row_commit_version; OPTIMIZE file-not-found race). Probe confirmed CDC requires this
-                // native path, so the exec is retained as a narrow fallback rather than deleted.
+                // Residual reads kept on the legacy DeltaSyntheticColumnsExec path FOR NOW: the CDC
+                // family (CdcAddFileIndex / TahoeRemove / TahoeChange) and the rare DML declines
+                // (CM-id materialised row_commit_version; OPTIMIZE file-not-found race). NOTE: kernel
+                // DOES support CDC -- via the separate `delta_kernel::table_changes::TableChanges` API
+                // (emits `_change_type` / `_commit_version` / `_commit_timestamp`), which reuses the
+                // same per-file read + transform primitives as the regular scan. Routing CDC through
+                // it (a TableChanges-based read path) is the path to deleting this exec; until that's
+                // wired, CDC stays here.
                 buildTaskListFromAddFiles(
                   tableRoot,
                   snapshotVersion,
