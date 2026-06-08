@@ -407,6 +407,57 @@ object DeltaReflection extends Logging {
   }
 
   /**
+   * True when `relation` is Delta's Change Data Feed relation (`DeltaCDFRelation`, produced by a
+   * `readChangeFeed` read). A CDF read is a `RowDataSourceScanExec` over this `CatalystScan`
+   * relation -- a different physical-node family than the `FileSourceScanExec` / `HadoopFsRelation`
+   * the rest of the rule handles -- so it must be intercepted separately to engage the native
+   * kernel `TableChanges` read path.
+   */
+  def isCdfRelation(relation: Any): Boolean =
+    relation != null && relation.getClass.getName.contains("DeltaCDFRelation")
+
+  /**
+   * Table root (filesystem path) for a `DeltaCDFRelation`, read from its `DeltaLog.dataPath`.
+   * The relation exposes `snapshotWithSchemaMode.snapshot.deltaLog` (and historically `deltaLog`
+   * directly); `dataPath` is a Hadoop `Path`. Returns `None` on reflection failure.
+   */
+  def extractCdfTableRoot(relation: Any): Option[String] = {
+    try {
+      findAccessor(relation, Seq("snapshotWithSchemaMode"))
+        .flatMap(findAccessor(_, Seq("snapshot")))
+        .flatMap(findAccessor(_, Seq("deltaLog")))
+        .orElse(findAccessor(relation, Seq("deltaLog")))
+        .flatMap(dl => invokeNoArg(dl, "dataPath"))
+        .map(_.toString)
+    } catch {
+      case scala.util.control.NonFatal(_) => None
+    }
+  }
+
+  /**
+   * `(startingVersion, endingVersion)` for a `DeltaCDFRelation`. Delta stores these as the
+   * relation's `startingVersion: Option[Long]` / `endingVersion: Option[Long]` fields. A missing
+   * start defaults to 0 (kernel `TableChanges` requires a concrete start); a missing end stays
+   * `None` (kernel reads to the latest committed version). Returns `None` only on reflection
+   * failure.
+   */
+  def extractCdfVersions(relation: Any): Option[(Long, Option[Long])] = {
+    def asLong(any: Any): Option[Long] = any match {
+      case l: Long => Some(l)
+      case i: java.lang.Long => Some(i.toLong)
+      case Some(x) => asLong(x)
+      case _ => None
+    }
+    try {
+      val start = findAccessor(relation, Seq("startingVersion")).flatMap(asLong).getOrElse(0L)
+      val end = findAccessor(relation, Seq("endingVersion")).flatMap(asLong)
+      Some((start, end))
+    } catch {
+      case scala.util.control.NonFatal(_) => None
+    }
+  }
+
+  /**
    * Convert a Delta partition value string to a Catalyst-internal representation. Delta stores
    * partition values as strings in add actions; this converts them to the correct type for
    * predicate evaluation.
