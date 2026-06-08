@@ -4612,9 +4612,9 @@ dependencies = [
 
 [[package]]
 name = "object_store_opendal"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08298874eee5935c95bcaa393148834f9c53d904461ca15584a041d8a1c907c2"
+checksum = "0eb12a624a41fce745838d0ef3701ff6c47797c13cd18ad3612fd2a3134fdbd8"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4622,7 +4622,7 @@ dependencies = [
  "futures",
  "mea",
  "object_store",
- "opendal 0.56.0",
+ "opendal 0.57.0",
  "pin-project",
  "tokio",
 ]
