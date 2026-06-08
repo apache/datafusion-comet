@@ -493,6 +493,17 @@ object DeltaReflection extends Logging {
   }
 
   /**
+   * A subset FileIndex whose touched `AddFile`s are a SUBSET of the pinned snapshot's active files
+   * (MERGE / UPDATE / DELETE post-join rewrites, and streaming appends): `TahoeBatchFileIndex`. These
+   * can be served by kernel enumeration FILTERED to the touched paths (every touched file is in the
+   * snapshot, so kernel has its transform). The CDC family (`CdcAddFileIndex` / `TahoeRemoveFileIndex`
+   * / `TahoeChangeFileIndex`) is NOT here -- it references removed / `_change_data` files outside the
+   * snapshot, so kernel enumeration can't supply their transforms; those keep the legacy path.
+   */
+  def isDmlRewriteFileIndex(location: Any): Boolean =
+    location.getClass.getName.contains("TahoeBatchFileIndex")
+
+  /**
    * Detect whether the FileIndex carries a non-empty `rowIndexFilters` map. Delta
    * uses this to flag CDC "delete events" / "insert events" reads where the DV
    * bitmap semantics are INVERTED relative to a normal batch read: native

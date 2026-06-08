@@ -645,12 +645,14 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
 
     // Stage B/C: produce synthetic columns inside DeltaKernelScanExec (kernel metadata columns +
     // engine-side DV-invert / per-file constants), retiring the stacked DeltaSyntheticColumnsExec.
-    // Only on the kernel-enumeration read path (NOT the AddFiles/subset path), which ships kernel's
-    // per-file transform (needed for row_id GenerateRowId + partition injection). Config-gated while
-    // validated.
-    val synthesizeInWorker: Boolean =
-      DeltaConf.COMET_DELTA_SYNTHESIZE_IN_WORKER_ENABLED.get(scan.conf) &&
-        !DeltaReflection.isSubsetFileIndex(relation.location)
+    // Needs kernel's per-file transform (row_id GenerateRowId + partition injection), which only the
+    // kernel-enumeration path ships. Regular reads always take it; DML rewrites (TahoeBatchFileIndex)
+    // get it via kernel-enumerate + path-filter (set below, only if every touched file matched).
+    // Config-gated while validated.
+    val synthesizeConfig: Boolean =
+      DeltaConf.COMET_DELTA_SYNTHESIZE_IN_WORKER_ENABLED.get(scan.conf)
+    var synthesizeInWorker: Boolean =
+      synthesizeConfig && !DeltaReflection.isSubsetFileIndex(relation.location)
 
     // Column name list for resolving BoundReference indices to kernel column
     // names. Must match the order of scan.output because exprToProto binds
@@ -719,13 +721,78 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
             // executor = decode). If a DV file is missing/corrupt the executor
             // surfaces a `SparkException` -- same observable behaviour as before,
             // just at execution rather than planning.
-            buildTaskListFromAddFiles(
-              tableRoot,
-              snapshotVersion,
-              addFiles,
-              nativeOp = null,
-              columnNames,
-              physicalToLogicalPartitionNames = physToLogical).toByteArray
+            // Option (a): DML rewrites (TahoeBatchFileIndex -- touched files are a subset of the
+            // pinned snapshot) get kernel's per-file transforms by enumerating the snapshot and
+            // filtering to the touched AddFile paths, so they synthesize in-worker like regular
+            // reads. Decline to the legacy AddFiles path if ANY touched file isn't in kernel's
+            // enumeration (safe: the legacy DeltaSyntheticColumnsExec path still works -- never wrong
+            // files). CDC indexes (files outside the snapshot) are excluded by isDmlRewriteFileIndex.
+            val dmlSynthBytes: Option[Array[Byte]] =
+              if (synthesizeConfig && DeltaReflection.isDmlRewriteFileIndex(relation.location)) {
+                try {
+                  val annotated = scan.deltaMetadata.analyzedSchema.orElse(
+                    DeltaReflection.extractSnapshotSchema(relation))
+                  val projJson = CometDeltaNativeScan.synthesizeReadSchemaJson(
+                    annotated,
+                    scan.requiredSchema,
+                    relation.partitionSchema)
+                  // Empty predicate: the touched AddFile set is the authoritative selection; kernel
+                  // stats pruning could drop a touched file and force a needless decline.
+                  val kernelTaskList = DeltaScanTaskList.parseFrom(
+                    nativeLib.planDeltaScan(
+                      tableRoot,
+                      snapshotVersion,
+                      storageOptions,
+                      Array.emptyByteArray,
+                      columnNames,
+                      projJson))
+                  // Resolve touched AddFile paths the SAME way the native side resolves kernel paths
+                  // (table_root + rel, or pass-through for scheme'd paths), then match by file_path.
+                  val sep = if (tableRoot.endsWith("/")) "" else "/"
+                  val touched: Set[String] = addFiles.map { af =>
+                    if (af.path.contains(":/")) af.path else tableRoot + sep + af.path
+                  }.toSet
+                  val matched = kernelTaskList.getTasksList.asScala
+                    .filter(t => touched.contains(t.getFilePath))
+                  if (touched.nonEmpty && matched.size == touched.size) {
+                    Some(
+                      DeltaScanTaskList
+                        .newBuilder()
+                        .setSnapshotVersion(kernelTaskList.getSnapshotVersion)
+                        .setTableRoot(kernelTaskList.getTableRoot)
+                        .addAllUnsupportedFeatures(kernelTaskList.getUnsupportedFeaturesList)
+                        .setPhysicalSchema(kernelTaskList.getPhysicalSchema)
+                        .setLogicalSchema(kernelTaskList.getLogicalSchema)
+                        .addAllTasks(matched.asJava)
+                        .build()
+                        .toByteArray)
+                  } else {
+                    None
+                  }
+                } catch {
+                  case scala.util.control.NonFatal(e) =>
+                    logWarning(
+                      s"CometDeltaNativeScan: DML kernel-enumerate for $tableRoot failed; " +
+                        s"using legacy AddFiles path",
+                      e)
+                    None
+                }
+              } else {
+                None
+              }
+            dmlSynthBytes match {
+              case Some(bytes) =>
+                synthesizeInWorker = true
+                bytes
+              case None =>
+                buildTaskListFromAddFiles(
+                  tableRoot,
+                  snapshotVersion,
+                  addFiles,
+                  nativeOp = null,
+                  columnNames,
+                  physicalToLogicalPartitionNames = physToLogical).toByteArray
+            }
           case None =>
             // Reflection failed; fall back conservatively.
             import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
