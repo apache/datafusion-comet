@@ -182,6 +182,54 @@ but kernel exposes no equivalent.
   (b) a Comet-side custom `ParquetHandler`; (c) accept the limitation. Currently (c) + (a).
   Referenced from the `CAVEAT` comment in `read_file_via_kernel` (`kernel_scan.rs`).
 
+### A7. Manual field-id repoint under column-mapping `id` mode — kernel id/name-fallback gap
+
+- **Behavior:** Delta's `DeltaColumnMappingSuite` "explicit id matching" test
+  manually rewrites a field's `delta.columnMapping.id` via a raw `DeltaLog`
+  transaction (its `updateFieldIdFor` helper) to (case 1) a **non-existent** id,
+  and (case 2) **another column's** id, then asserts strict id-*only* matching:
+  case 1 must read back `NULL` (no parquet column has that id), case 2 must read
+  the column that physically carries the repointed id. The kernel-read path
+  diverges on both, so the test is **ignored** under Comet (see the
+  `ignore("explicit id matching")` hunk in `dev/diffs/4.1.0.diff`).
+- **Root cause:** the read goes through delta-kernel-rs's field matcher
+  (`match_parquet_fields` / `get_indices` in kernel's
+  `engine/arrow_utils/mod.rs`). Kernel matches each requested field to a parquet
+  column **by field-id, then FALLS BACK to name** when the requested id is not
+  present in the file. That name fallback is correct for normal column-mapping
+  reads (physicalName and id are always consistent there, so id matches first and
+  the fallback never fires). But after a manual repoint the field's id and its
+  physicalName disagree with the file:
+  - **Case 1 (id → non-existent):** the requested id isn't in the file, so kernel
+    falls back to the physicalName and reads the **stale column's data** instead
+    of NULL. This is a *silent wrong value*, not an error.
+  - **Case 2 (id → another column's id):** the field matches the intended parquet
+    column by id, but the now-orphaned physical column ALSO matches the requested
+    field by name — two parquet columns bind to one requested field, and the read
+    fails with `FAILED_READ_FILE`.
+- **Why it's not declined Comet-side:** the repoint is only detectable by reading
+  the parquet file's *actual* field-ids — which is exactly where kernel then
+  mis-matches. There is **no plan-time schema signal** that distinguishes a
+  repointed table from a normal column-mapping-`id` table (both have well-formed
+  physicalName + id per field), so a precise decline has nothing to fire on. A
+  broad "decline all CM-id reads" gate would over-decline the large body of
+  legitimate column-mapping reads that work correctly today (the CM suites pass).
+  And case 1's failure mode (wrong value, no error) can't be caught without doing
+  the read. So neither a plan-time gate nor a runtime fallback is viable.
+- **Real-user impact: nil.** Repointing a field's `delta.columnMapping.id` onto a
+  different id requires hand-writing a `DeltaLog` transaction. No normal Delta
+  operation — `ALTER`, `RENAME`, schema evolution, OPTIMIZE — ever does this. The
+  test deliberately corrupts the id mapping to probe an internal strict-id
+  invariant; it is not a code path real tables reach.
+- **Correct fix (upstream kernel):** make the name fallback in
+  `match_parquet_fields` fire only for parquet columns that carry **no** field-id,
+  i.e. never let a name match override an explicit-but-absent id under CM-`id`
+  mode. To be filed against delta-kernel-rs (same component as the INT96 gap
+  A6 / [#2709]). Once kernel is strict-id under CM, flip the diff hunk back to
+  `test(...)` and delete this entry.
+- **Guard:** the ignore lives in `dev/diffs/4.1.0.diff` with the full rationale
+  inline; this entry is the tracking record. Internal task #79.
+
 ---
 
 ## Part B — Pending regression failures (open as bug issues)

@@ -51,8 +51,9 @@ use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use futures::StreamExt;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
@@ -982,13 +983,25 @@ impl ExecutionPlan for DeltaKernelScanExec {
                 "DeltaKernelScanExec has a single partition, got {partition}"
             )));
         }
+        // Record output rows so the Comet scan exec's `output_rows` / `numOutputRows`
+        // SQLMetric is populated (mirrors core `ScanExec`'s `BaselineMetrics`). Without
+        // this the scan reads correctly but reports 0 rows scanned -- breaking Spark UI
+        // metrics, streaming `numInputRows`, and any test that reads the scan's
+        // `numOutputRows` (e.g. Delta's `StatsCollectionSuite` "gather stats").
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
         let batches = self.read_all()?;
         let schema = Arc::clone(&self.output_schema);
         let stream = futures::stream::iter(
             batches
                 .into_iter()
                 .map(Ok::<arrow::array::RecordBatch, DataFusionError>),
-        );
+        )
+        .map(move |batch| {
+            if let Ok(ref b) = batch {
+                baseline_metrics.record_output(b.num_rows());
+            }
+            batch
+        });
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
