@@ -185,6 +185,40 @@ pub fn read_file_via_kernel(
     Ok(out)
 }
 
+/// Read a Delta Change Data Feed (CDF / readChangeFeed) over `[start_version, end_version]` via
+/// kernel's `TableChanges` API and return Arrow `RecordBatch`es in the CDF LOGICAL schema: data
+/// columns + `_change_type` (Utf8) + `_commit_version` (Int64) + `_commit_timestamp`
+/// (Timestamp(us, UTC)), with column mapping / partitions / deletion vectors all resolved by kernel.
+///
+/// Kernel's CDF per-file API (`scan_metadata` / `CdfScanFile` / `get_cdf_transform_expr`) is
+/// `pub(crate)`; only `execute()` is public. So unlike the regular read, CDF can't be distributed
+/// per-file -- this reconstructs `TableChanges` and reads the WHOLE range on one task (the caller
+/// runs it as a single DataFusion partition). For CDF's typically-bounded version ranges that's fine.
+pub fn read_cdf_via_kernel(
+    engine: Arc<dyn Engine>,
+    table_root: &Url,
+    start_version: u64,
+    end_version: Option<u64>,
+) -> DeltaResult<Vec<RecordBatch>> {
+    let table_changes = delta_kernel::table_changes::TableChanges::try_new(
+        table_root.clone(),
+        engine.as_ref(),
+        start_version,
+        end_version,
+    )?;
+    let scan = table_changes.into_scan_builder().build()?;
+    let mut out: Vec<RecordBatch> = Vec::new();
+    for batch in scan.execute(engine.clone())? {
+        let batch = batch?;
+        let arrow = batch
+            .any_ref()
+            .downcast_ref::<ArrowEngineData>()
+            .ok_or_else(|| Error::generic("CDF read returned non-Arrow EngineData"))?;
+        out.push(arrow.record_batch().clone());
+    }
+    Ok(out)
+}
+
 /// One Delta data file's worth of per-file inputs the driver ships to the executor: enough to
 /// read + DV-filter the file via kernel without reconstructing the `Snapshot`.
 #[derive(Debug, Clone)]
@@ -274,6 +308,12 @@ pub struct DeltaKernelScanExec {
     /// the wrapping exec appends synthetics and this exec only reads data (+ partitions) and applies
     /// the DV per `apply_dv`.
     synthesize: bool,
+    /// Change Data Feed read: `Some((start, end))` reads table changes via kernel's
+    /// `TableChanges::execute` over the inclusive version range (end `None` = latest), single
+    /// partition, emitting data + `_change_type` / `_commit_version` / `_commit_timestamp`. `None` =
+    /// normal scan. When set, `files` is empty and the kernel data-column schemas are unused (kernel
+    /// enumerates + reads the whole range itself).
+    cdf: Option<(u64, Option<u64>)>,
     plan_properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -293,6 +333,7 @@ impl DeltaKernelScanExec {
         storage_config: DeltaStorageConfig,
         files: Vec<KernelScanFile>,
         synthesize: bool,
+        cdf: Option<(u64, Option<u64>)>,
     ) -> Self {
         // Single DataFusion partition: the Spark side (CometDeltaNativeScanExec) already splits
         // files across Spark partitions and injects each partition's file subset, consuming one
@@ -317,6 +358,7 @@ impl DeltaKernelScanExec {
             storage_config,
             files,
             synthesize,
+            cdf,
             plan_properties,
             metrics: ExecutionPlanMetricsSet::new(),
         }
@@ -329,6 +371,9 @@ impl DeltaKernelScanExec {
     /// the wrapping DeltaSyntheticColumnsExec computes row positions against a single file. Eager
     /// (collects into a `Vec`); the blocking kernel reads run on the calling task thread.
     fn read_all(&self) -> DFResult<Vec<arrow::array::RecordBatch>> {
+        if let Some((start, end)) = self.cdf {
+            return self.read_all_cdf(start, end);
+        }
         if self.synthesize {
             return self.read_all_synthesize();
         }
@@ -455,6 +500,33 @@ impl DeltaKernelScanExec {
                 // column the transform did NOT inject is appended as a constant.
                 out.push(self.assemble_output_batch(batch.clone(), &file.partition_values)?);
             }
+        }
+        Ok(out)
+    }
+
+    /// Change Data Feed read (single partition): read the whole version range via kernel's
+    /// `TableChanges::execute`, then reconcile each batch to `output_schema` BY NAME (kernel emits
+    /// data + partitions + `_change_type` / `_commit_version` / `_commit_timestamp`; the by-name
+    /// assembler places them in Spark's expected order).
+    fn read_all_cdf(
+        &self,
+        start_version: u64,
+        end_version: Option<u64>,
+    ) -> DFResult<Vec<arrow::array::RecordBatch>> {
+        let table_root_url = normalize_table_root(&self.table_root)
+            .map_err(|e| DataFusionError::Execution(format!("kernel CDF table root: {e}")))?;
+        let engine = get_or_create_engine(&table_root_url, &self.storage_config)
+            .map_err(|e| DataFusionError::Execution(format!("kernel CDF engine: {e}")))?;
+        let engine_dyn: Arc<dyn Engine> = engine;
+        let batches = read_cdf_via_kernel(engine_dyn, &table_root_url, start_version, end_version)
+            .map_err(|e| {
+                DataFusionError::Execution(format!("kernel CDF read for {}: {e}", self.table_root))
+            })?;
+        let mut out = Vec::with_capacity(batches.len());
+        for batch in batches {
+            // Reuse the by-name assembler: CDF output carries data + partitions + the 3 CDF columns,
+            // all produced by kernel, so no partition fallback is exercised.
+            out.push(self.assemble_output_batch(batch, &[])?);
         }
         Ok(out)
     }
@@ -1096,6 +1168,7 @@ mod tests {
             DeltaStorageConfig::default(),
             files,
             false, // legacy path (no in-worker synthesis)
+            None,  // not a CDF read
         );
 
         let ctx = Arc::new(TaskContext::default());
@@ -1178,6 +1251,7 @@ mod tests {
             DeltaStorageConfig::default(),
             files,
             false, // legacy path (no in-worker synthesis)
+            None,  // not a CDF read
         );
         let stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
         let batches = datafusion::physical_plan::common::collect(stream)

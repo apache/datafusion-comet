@@ -106,8 +106,17 @@ fn plan_delta_kernel_scan(
     // `record_count`). Otherwise the kernel schemas are required -- their absence is a driver bug,
     // not something to paper over by re-deriving them (which is what the old `physicalise_field`
     // path did, getting nested column mapping wrong).
+    // Change Data Feed read: the executor reconstructs TableChanges + execute()s the whole version
+    // range itself (single partition), so it ships no per-file tasks and uses no kernel data-column
+    // schemas -- bypass the schema-selection below.
+    let cdf: Option<(u64, Option<u64>)> = if common.cdf_read {
+        Some((common.cdf_start_version, common.cdf_end_version))
+    } else {
+        None
+    };
+
     let (physical_schema, read_logical_schema, needs_transform): (SchemaRef, SchemaRef, bool) =
-        if data_fields.is_empty() {
+        if cdf.is_some() || data_fields.is_empty() {
             let empty: SchemaRef = Arc::new(Schema::empty());
             (Arc::clone(&empty), empty, false)
         } else if !common.kernel_physical_schema.is_empty() {
@@ -212,6 +221,7 @@ fn plan_delta_kernel_scan(
         storage_config.clone(),
         files,
         synthesize,
+        cdf,
     ));
 
     let scan_exec: Arc<dyn datafusion::physical_plan::ExecutionPlan> = if need_synthetics {

@@ -388,6 +388,17 @@ message DeltaScanCommon {
   // synthesis inputs ride on DeltaScanTask (base_row_id / default_row_commit_version /
   // modification_time / byte range / dv).
   bool synthesize_in_worker = 28;
+  // Change Data Feed (CDF / readChangeFeed): when true, DeltaKernelScanExec reads table changes via
+  // delta-kernel-rs's `TableChanges` API (single partition reconstructs TableChanges(start, end) and
+  // calls `execute()`), emitting the data columns plus `_change_type` / `_commit_version` /
+  // `_commit_timestamp`. The version range is below; `required_schema` is the full CDF output
+  // (assembled by name). No per-file tasks -- the worker enumerates + reads the whole range itself
+  // (kernel's CDF per-file API is pub(crate); only execute() is public). Default false.
+  bool cdf_read = 29;
+  // Inclusive start version of the CDF range.
+  uint64 cdf_start_version = 30;
+  // Inclusive end version of the CDF range. `has_cdf_end_version` distinguishes "latest" (unset).
+  optional uint64 cdf_end_version = 31;
 }
 
 // Operator payload for a Delta scan.
