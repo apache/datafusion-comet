@@ -35,6 +35,7 @@ num = { workspace = true }
 regex = { workspace = true }
 # preserve_order: needed for get_json_object to match Spark's JSON key ordering
 serde_json = { version = "1.0", features = ["preserve_order"] }
+serde = { version = "1.0", features = ["derive"] }
 datafusion-comet-common = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 jni = "0.22.4"
