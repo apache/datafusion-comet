@@ -80,18 +80,4 @@ object DeltaConf {
           "by default; set to false to fall back to the legacy reader.")
       .booleanConf
       .createWithDefault(true)
-
-  val COMET_DELTA_SYNTHESIZE_IN_WORKER_ENABLED: ConfigEntry[Boolean] =
-    ConfigBuilder("spark.comet.delta.synthesizeInWorker.enabled")
-      .category(CATEGORY)
-      .doc(
-        "Produce Delta synthetic columns (row_index / row_id via kernel metadata columns; " +
-          "is_row_deleted by inverting the deletion vector; row_commit_version and Spark " +
-          "_metadata.* as per-file constants) INSIDE DeltaKernelScanExec and assemble the output " +
-          "by name, instead of stacking the separate DeltaSyntheticColumnsExec. Only takes effect " +
-          "on the kernel-enumeration read path (regular reads), which ships kernel's per-file " +
-          "transform. Off by default while the path is validated; flipping it on lets the standalone " +
-          "synthetic exec be retired.")
-      .booleanConf
-      .createWithDefault(true)
 }
