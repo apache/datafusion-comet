@@ -264,9 +264,10 @@ pub struct KernelScanFile {
 
 /// Iceberg-style "kernel reads" scan operator. Reads each Delta data file through
 /// `delta-kernel-rs` (`read_file_via_kernel`); kernel and Comet share arrow-58, so the resulting
-/// `RecordBatch`es drop straight into the Comet plan. Replaces the ParquetSource + DV-sweep +
-/// synthetic-columns stack on the kernel-read path; built by core's `plan_delta_scan` when
-/// `DeltaScanCommon.kernel_read` is set. Single output partition: partition 0 reads every file.
+/// `RecordBatch`es drop straight into the Comet plan. This is the only Delta read path (the legacy
+/// ParquetSource + DV-sweep + synthetic-columns stack was removed); built by
+/// `comet_contrib_delta::planner::plan_delta_scan`. Single output partition: partition 0 reads
+/// every file.
 ///
 /// Column mapping (name- and id-mode, including nested struct fields): read with
 /// `physical_schema` (physical names), then an identity transform relabels to `output_schema`

@@ -146,10 +146,9 @@ The split:
 - **`DeltaScanCommon`** (fields shared across all partitions): table root,
   required schema, partition schema, object-store options, session timezone,
   the kernel-built data-column schemas (`kernel_physical_schema` /
-  `kernel_logical_schema`), the `kernel_read` flag, the
-  `synthesize_in_worker` flag, the CDF fields (`cdf_read`,
-  `cdf_start_version`, `cdf_end_version`), the `emit_*` flags, and
-  `final_output_indices` for reorder
+  `kernel_logical_schema`), the `synthesize_in_worker` flag, the
+  `dv_file_name_prefix`, the CDF fields (`cdf_read`, `cdf_start_version`,
+  `cdf_end_version`), the `emit_*` flags, and `final_output_indices` for reorder
 - **`DeltaScanTask[]`** (per partition): the list of files this partition
   reads, with path, size, record count, partition values, optional DV
   descriptor, the per-file `transform_json`, and optional `baseRowId` /

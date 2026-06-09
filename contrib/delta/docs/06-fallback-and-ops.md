@@ -83,12 +83,11 @@ documents WHY the decline exists and what would need to change to remove it.
 
 ### User off-switches
 
-| Switch                                                            | Effect                                                                                        |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `spark.comet.scan.deltaNative.enabled=false`                      | Decline all Delta scans → Spark's reader                                                      |
-| `spark.comet.delta.kernelRead.enabled=false`                      | Disable the kernel-read path specifically (currently the only read path; reserved off-switch) |
-| `spark.comet.scan.deltaNative.fallbackOnUnsupportedFeature=false` | Raise an error instead of falling back on an unsupported feature (test aid, default `true`)   |
-| `spark.comet.exec.enabled=false`                                  | Disable Comet entirely → Spark for everything                                                 |
+| Switch                                                            | Effect                                                                                      |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `spark.comet.scan.deltaNative.enabled=false`                      | Decline all Delta scans → Spark's reader                                                    |
+| `spark.comet.scan.deltaNative.fallbackOnUnsupportedFeature=false` | Raise an error instead of falling back on an unsupported feature (test aid, default `true`) |
+| `spark.comet.exec.enabled=false`                                  | Disable Comet entirely → Spark for everything                                               |
 
 All keys live in
 `contrib/delta/src/main/scala/org/apache/comet/contrib/delta/DeltaConf.scala`.
@@ -163,7 +162,6 @@ gates:
 | Config                                                  | Default                      | Notes                                                             |
 | ------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------- |
 | `spark.comet.scan.deltaNative.enabled`                  | `true` (when contrib loaded) | Per-query off-switch via SET                                      |
-| `spark.comet.delta.kernelRead.enabled`                  | `true`                       | Kernel-read path (the only read path)                             |
 | `spark.comet.scan.deltaNative.dataFileConcurrencyLimit` | `1`                          | Per-Spark-task concurrency reading Delta data files (2–8 typical) |
 | `spark.comet.delta.cdf.maxPartitions`                   | `8`                          | Max Spark partitions a Change Data Feed read splits into          |
 | `spark.comet.batchSize`                                 | (Comet default)              | Same setting; controls Arrow batch size                           |

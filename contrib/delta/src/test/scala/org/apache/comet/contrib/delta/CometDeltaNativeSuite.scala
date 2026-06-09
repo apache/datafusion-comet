@@ -50,13 +50,11 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
         .format("delta")
         .save(tablePath)
 
-      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
-        // Correctness: the kernel-read result matches vanilla Spark (and stays on the native
-        // CometDeltaNativeScanExec, i.e. no Spark-side fallback).
-        assertDeltaNativeMatches(tablePath, identity)
-        // Routing: the native proto carries kernel_read=true, so DeltaKernelScanExec ran.
-        assertKernelReadEngaged(tablePath)
-      }
+      // Correctness: the kernel-read result matches vanilla Spark (and stays on the native
+      // CometDeltaNativeScanExec, i.e. no Spark-side fallback).
+      assertDeltaNativeMatches(tablePath, identity)
+      // Routing: kernel-read via DeltaKernelScanExec is the only path, so it engaged.
+      assertKernelReadEngaged(tablePath)
     }
   }
 
@@ -80,9 +78,7 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
 
       // Force name-mode resolution: with parquet field-id read off, the kernel-read path reads by
       // physical name and relabels to logical via the identity transform.
-      withSQLConf(
-        DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true",
-        "spark.sql.parquet.fieldId.read.enabled" -> "false") {
+      withSQLConf("spark.sql.parquet.fieldId.read.enabled" -> "false") {
         assertDeltaNativeMatches(tablePath, identity)
         assertKernelReadEngaged(tablePath)
         // Projection of the renamed column also reads correctly.
@@ -114,9 +110,7 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
       // requires the kernel-read path to physicalise + relabel at every nesting level (#47).
       spark.sql(s"ALTER TABLE delta.`$tablePath` RENAME COLUMN s.a TO renamed_a")
 
-      withSQLConf(
-        DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true",
-        "spark.sql.parquet.fieldId.read.enabled" -> "false") {
+      withSQLConf("spark.sql.parquet.fieldId.read.enabled" -> "false") {
         assertDeltaNativeMatches(tablePath, _.orderBy("id"))
         assertKernelReadEngaged(tablePath)
         // Project into the renamed nested field (nested pruning + relabel on the kernel path).
@@ -138,16 +132,14 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
         .format("delta")
         .partitionBy("grp")
         .save(tablePath)
-      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
-        // Partition-only aggregate: no data column is read, so the row count is driven from
-        // record_count (the parquet footer as fallback) -- exercises the #48 zero-data-column path.
-        assertDeltaNativeMatches(
-          tablePath,
-          _.groupBy("grp").agg(count("*").as("c")).orderBy("grp"))
-        assertKernelReadEngaged(tablePath)
-        // A bare row count over the partition column also reads no data columns.
-        assertDeltaNativeMatches(tablePath, _.select("grp").orderBy("grp"))
-      }
+      // Partition-only aggregate: no data column is read, so the row count is driven from
+      // record_count (the parquet footer as fallback) -- exercises the #48 zero-data-column path.
+      assertDeltaNativeMatches(
+        tablePath,
+        _.groupBy("grp").agg(count("*").as("c")).orderBy("grp"))
+      assertKernelReadEngaged(tablePath)
+      // A bare row count over the partition column also reads no data columns.
+      assertDeltaNativeMatches(tablePath, _.select("grp").orderBy("grp"))
     }
   }
 
@@ -169,13 +161,11 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
       // Rename so a logical name diverges from its physical name.
       spark.sql(s"ALTER TABLE delta.`$tablePath` RENAME COLUMN name TO full_name")
 
-      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
-        // id-mode reads through the same rename-then-relabel kernel path; field ids ride along on
-        // the physical schema as a fallback matcher.
-        assertDeltaNativeMatches(tablePath, identity)
-        assertKernelReadEngaged(tablePath)
-        assertDeltaNativeMatches(tablePath, _.select("id", "full_name"))
-      }
+      // id-mode reads through the same rename-then-relabel kernel path; field ids ride along on
+      // the physical schema as a fallback matcher.
+      assertDeltaNativeMatches(tablePath, identity)
+      assertKernelReadEngaged(tablePath)
+      assertDeltaNativeMatches(tablePath, _.select("id", "full_name"))
     }
   }
 
@@ -192,16 +182,14 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
         .partitionBy("part")
         .save(tablePath)
 
-      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
-        // The scan outputs data ++ partition; the kernel exec reproduces that, so projections
-        // and partition filters all work without special handling.
-        assertDeltaNativeMatches(tablePath, identity) // SELECT *
-        assertKernelReadEngaged(tablePath)
-        assertDeltaNativeMatches(tablePath, _.select("id")) // data-only projection
-        assertDeltaNativeMatches(tablePath, _.select("id", "part")) // data + partition
-        assertDeltaNativeMatches(tablePath, _.select("part", "name")) // reordered
-        assertDeltaNativeMatches(tablePath, _.where("part = 1")) // partition filter
-      }
+      // The scan outputs data ++ partition; the kernel exec reproduces that, so projections
+      // and partition filters all work without special handling.
+      assertDeltaNativeMatches(tablePath, identity) // SELECT *
+      assertKernelReadEngaged(tablePath)
+      assertDeltaNativeMatches(tablePath, _.select("id")) // data-only projection
+      assertDeltaNativeMatches(tablePath, _.select("id", "part")) // data + partition
+      assertDeltaNativeMatches(tablePath, _.select("part", "name")) // reordered
+      assertDeltaNativeMatches(tablePath, _.where("part = 1")) // partition filter
     }
   }
 
@@ -219,15 +207,13 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
         .option("delta.enableDeletionVectors", "true")
         .save(tablePath)
 
-      withSQLConf(DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.key -> "true") {
-        // _metadata.* triggers the DeltaSyntheticColumnsExec stacked on the kernel read.
-        assertDeltaNativeMatches(tablePath, _.select($"id", $"_metadata.file_path"))
-        // DELETE reads the table emitting is_row_deleted, exercising the kernel read (apply_dv off)
-        // + synthetic exec composition. Then the surviving rows (DV applied) must match vanilla.
-        spark.sql(s"DELETE FROM delta.`$tablePath` WHERE id % 4 = 0")
-        assertDeltaNativeMatches(tablePath, identity)
-        assertKernelReadEngaged(tablePath)
-      }
+      // _metadata.* is synthesized in-worker by DeltaKernelScanExec.
+      assertDeltaNativeMatches(tablePath, _.select($"id", $"_metadata.file_path"))
+      // DELETE writes a deletion vector; the read applies it in-worker, and the surviving rows
+      // must match vanilla.
+      spark.sql(s"DELETE FROM delta.`$tablePath` WHERE id % 4 = 0")
+      assertDeltaNativeMatches(tablePath, identity)
+      assertKernelReadEngaged(tablePath)
     }
   }
 

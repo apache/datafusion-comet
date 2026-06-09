@@ -571,10 +571,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     commonBuilder.setSessionTimezone(scan.conf.sessionLocalTimeZone)
     commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
     commonBuilder.addAllRequiredSchema(schema2Proto(outputFields).toIterable.asJava)
-    // CDF is a kernel read (via TableChanges); the native planner's gate requires kernel_read=true
-    // (the legacy read path is gone). The cdf branch then bypasses the per-file kernel-schema
+    // CDF is a kernel read (via TableChanges); the cdf branch bypasses the per-file kernel-schema
     // requirement and reads the whole range via read_all_cdf.
-    commonBuilder.setKernelRead(true)
     commonBuilder.setCdfRead(true)
     commonBuilder.setCdfStartVersion(startVersion)
     // Clamp a requested endingVersion that exceeds the table's latest committed version: kernel's
@@ -1205,21 +1203,12 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
 
 
 
-    // "Kernel reads" (Phase 1b plain; #44 column mapping name+id; #45 partitions; #46 row-tracking
-    // + metadata): route to DeltaKernelScanExec when the flag is on and the table is in the
-    // currently-supported subset. The remaining gates are interim scaffolding -- the goal is to
-    // grow coverage until the old path can be deleted, so they shrink over time, they aren't a
-    // permanent fallback. The native side SPLITS required_schema into data (read) + partition
-    // (injected) columns, and stacks the existing DeltaSyntheticColumnsExec on top for synthetics
-    // / metadata / DV. Still on the default reader: nested-typed columns, and scans that read zero
-    // data columns (only partition or only synthetic columns) -- nothing drives the row count.
-    // Nested-typed columns take the kernel-read path: the native planner physicalises
-    // required_schema at every nesting level from the recursive column_mappings, kernel's transform
-    // relabels nested physical->logical, and align_batch_to_schema prunes nested children (#47).
-    // Zero-data-column reads (partition-only, e.g. groupBy(partition).agg(count("*"))) also take it:
-    // the native exec drives the row count from record_count / the parquet footer (#48).
-    val kernelReadEligible = DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf)
-    commonBuilder.setKernelRead(kernelReadEligible)
+    // Kernel-read is the only Delta read path: every file is read through delta-kernel-rs (read +
+    // transform + DV) by DeltaKernelScanExec, which produces all output columns in-worker, by name.
+    // The native side splits required_schema into data (read from parquet) + partition (injected)
+    // columns; column mapping (incl. nested, #47), partitions, row-tracking, _metadata columns, and
+    // zero-data-column reads (partition-only, e.g. groupBy(partition).agg(count("*")); the exec
+    // drives the row count from record_count / the parquet footer, #48) are all handled here.
     commonBuilder.setSynthesizeInWorker(synthesizeInWorker)
     // Delta's test mode prepends `spark.databricks.delta.testOnly.dvFileNamePrefix` to DV
     // filenames; delta-kernel-rs doesn't honour that JVM-only conf, so the executor splices it

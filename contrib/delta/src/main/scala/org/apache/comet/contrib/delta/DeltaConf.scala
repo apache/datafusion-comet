@@ -79,18 +79,4 @@ object DeltaConf {
       .intConf
       .checkValue(v => v > 0, "CDF max partitions must be positive")
       .createWithDefault(8)
-
-  val COMET_DELTA_KERNEL_READ_ENABLED: ConfigEntry[Boolean] =
-    ConfigBuilder("spark.comet.delta.kernelRead.enabled")
-      .category(CATEGORY)
-      .doc(
-        "Read Delta data files through delta-kernel-rs's own read + transform + " +
-          "deletion-vector path (DeltaKernelScanExec) instead of the ParquetSource + " +
-          "DV-sweep + synthetic-columns stack. delta-kernel shares Comet's Arrow version " +
-          "(58), so kernel batches flow straight into the plan with no bridge. Handles " +
-          "plain tables, column mapping (name + id, including nested), partitions, " +
-          "deletion vectors, row-tracking, _metadata columns, and INT96 timestamps. On " +
-          "by default; set to false to fall back to the legacy reader.")
-      .booleanConf
-      .createWithDefault(true)
 }

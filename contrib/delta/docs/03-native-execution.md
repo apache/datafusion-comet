@@ -66,9 +66,7 @@ document walks through that.
 
 ## The plan
 
-`plan_delta_scan` requires `common.kernel_read` to be set; if it isn't, the
-legacy read path is gone, so it errors and Comet falls back to vanilla Spark.
-Otherwise it:
+`plan_delta_scan` builds the kernel-read `ExecutionPlan`. It:
 
 1. Splits `required_schema` (data ++ partition, in order) into data fields and
    partition fields by partition-column name.

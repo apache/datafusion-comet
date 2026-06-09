@@ -379,22 +379,13 @@ mod tests {
 /// wraps the returned exec in a `SparkPlan`; everything else is below.
 ///
 /// Iceberg-style "kernel reads" is the only path: each Delta file is read through
-/// `DeltaKernelScanExec` (delta-kernel 0.24 / arrow-58). If the driver left `kernel_read` false there
-/// is nothing to do natively, so we error and Comet falls back to vanilla Spark for this scan.
+/// `DeltaKernelScanExec` (delta-kernel 0.24 / arrow-58).
 pub fn plan_delta_scan(
     scan: &DeltaScan,
     common: &DeltaScanCommon,
     required_schema: &SchemaRef,
     partition_schema: &SchemaRef,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    if !common.kernel_read {
-        return Err(DataFusionError::Execution(
-            "DeltaScan: the legacy read path was removed; kernel-read is required \
-             (spark.comet.delta.kernelRead.enabled is on by default)"
-                .to_string(),
-        ));
-    }
-
     // Split `required_schema` (data ++ partition, in order) by partition-column name: read the data
     // fields from parquet, inject the partition fields as constants; the exec reassembles them.
     let partition_names: std::collections::HashSet<&str> = partition_schema

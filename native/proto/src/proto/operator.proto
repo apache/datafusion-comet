@@ -362,13 +362,12 @@ message DeltaScanCommon {
   // synthetic columns (row_index / is_row_deleted / row_id / row_commit_version)
   // unless `final_output_indices` reorders them.
   repeated string metadata_column_names = 24;
-  // Phase 1b "kernel reads" (iceberg-style): when true, the native planner routes this scan to
-  // `DeltaKernelScanExec`, which reads each file through delta-kernel-rs (read + transform + DV)
-  // and bridges the result into Comet's arrow plan, instead of the ParquetSource + DV-sweep +
-  // synthetic-columns stack. Default false (old path). Set from
-  // `spark.comet.delta.kernelRead.enabled`. Phase 1b only supports plain tables (no column
-  // mapping / partitions / row-tracking); the driver leaves it false otherwise.
-  bool kernel_read = 25;
+  // Field 25 was `bool kernel_read`: a transitional toggle from when the legacy ParquetSource read
+  // path still co-existed with the kernel-read path. The legacy path is gone (#50) and kernel-read
+  // is the only read path, so the toggle (and its `spark.comet.delta.kernelRead.enabled` config)
+  // were removed -- the driver no longer sends it and the native planner no longer gates on it.
+  reserved 25;
+  reserved "kernel_read";
   // Kernel-built data-column schemas for the kernel-read path, produced by the driver from
   // `delta-kernel-rs`'s `Scan` (`scan.physical_schema()` / `scan.logical_schema()`), serialized as
   // Arrow IPC schema messages. The physical schema carries the correct physical names AND field-ids
