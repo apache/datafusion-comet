@@ -1970,6 +1970,9 @@ case class CometBroadcastNestedLoopJoinExec(
 
   override def hashCode(): Int =
     Objects.hashCode(output, joinType, condition, buildSide, left, right)
+
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.joinMetrics(sparkContext)
 }
 
 object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNestedLoopJoinExec] {
@@ -2184,7 +2187,7 @@ case class CometHashJoinExec(
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.hashJoinMetrics(sparkContext)
+    CometMetricNode.joinMetrics(sparkContext)
 }
 
 case class CometBroadcastHashJoinExec(
@@ -2325,7 +2328,7 @@ case class CometBroadcastHashJoinExec(
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.hashJoinMetrics(sparkContext)
+    CometMetricNode.joinMetrics(sparkContext)
 }
 
 object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {

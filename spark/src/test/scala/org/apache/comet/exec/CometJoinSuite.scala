@@ -38,10 +38,7 @@ class CometJoinSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED.key -> "true",
-        CometConf.getOperatorAllowIncompatConfigKey("BroadcastNestedLoopJoinExec") -> "true") {
+      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -708,8 +705,14 @@ class CometJoinSuite extends CometTestBase {
 
   test("BroadcastNestedLoopJoin with unequal filter") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
-        withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
+      // Include NULL keys: predicate `_1 > _1` returns NULL with a NULL operand, so
+      // those rows must not contribute to the join output.
+      val left: Seq[(Integer, Int)] =
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+      val right: Seq[(Integer, Int)] =
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 1))
+      withParquetTable(left, "tbl_a") {
+        withParquetTable(right, "tbl_b") {
           val df =
             sql("SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a JOIN tbl_b ON tbl_a._1 > tbl_b._1")
           checkSparkAnswerAndOperator(
@@ -722,8 +725,12 @@ class CometJoinSuite extends CometTestBase {
 
   test("BroadcastNestedLoopJoin cross join with count-only output") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
-        withParquetTable((0 until 5).map(i => (i, s"w_$i")), "tbl_b") {
+      val left: Seq[(Integer, Int)] =
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 9))
+      val right: Seq[(Integer, String)] =
+        (0 until 5).map(i => ((i: Integer), s"w_$i")) ++ Seq((null, "w_null"))
+      withParquetTable(left, "tbl_a") {
+        withParquetTable(right, "tbl_b") {
           val df = sql("SELECT /*+ BROADCAST(tbl_b) */ count(*) FROM tbl_a, tbl_b")
           checkSparkAnswerAndOperator(
             df,
@@ -735,8 +742,13 @@ class CometJoinSuite extends CometTestBase {
 
   test("BroadcastNestedLoopJoin LEFT OUTER with inequality") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
-        withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
+      // NULL left keys must still appear in the output (LEFT OUTER preserves them)
+      val left: Seq[(Integer, Int)] =
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+      val right: Seq[(Integer, Int)] =
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 1))
+      withParquetTable(left, "tbl_a") {
+        withParquetTable(right, "tbl_b") {
           val df =
             sql(
               "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._1 > tbl_b._1")
@@ -750,8 +762,13 @@ class CometJoinSuite extends CometTestBase {
 
   test("BroadcastNestedLoopJoin LEFT SEMI with inequality") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
-        withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
+      // NULL keys never match (predicate evaluates to NULL
+      val left: Seq[(Integer, Int)] =
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+      val right: Seq[(Integer, Int)] =
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 1))
+      withParquetTable(left, "tbl_a") {
+        withParquetTable(right, "tbl_b") {
           val df =
             sql("SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT SEMI JOIN tbl_b ON tbl_a._1 > tbl_b._1")
           checkSparkAnswerAndOperator(
@@ -764,8 +781,13 @@ class CometJoinSuite extends CometTestBase {
 
   test("BroadcastNestedLoopJoin LEFT ANTI with inequality") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
-        withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_b") {
+      // LEFT ANTI keeps left rows that have NO match (left rows with NULL keys must appear in the output)
+      val left: Seq[(Integer, Int)] =
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+      val right: Seq[(Integer, Int)] =
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 1))
+      withParquetTable(left, "tbl_a") {
+        withParquetTable(right, "tbl_b") {
           val df =
             sql("SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a LEFT ANTI JOIN tbl_b ON tbl_a._1 > tbl_b._1")
           checkSparkAnswerAndOperator(
@@ -778,8 +800,13 @@ class CometJoinSuite extends CometTestBase {
 
   test("BroadcastNestedLoopJoin RIGHT OUTER with inequality (BuildLeft, swap path)") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable((0 until 10).map(i => (i, i + 5)), "tbl_a") {
-        withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_b") {
+      // RIGHT OUTER preserves right rows.
+      val left: Seq[(Integer, Int)] =
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 9))
+      val right: Seq[(Integer, Int)] =
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+      withParquetTable(left, "tbl_a") {
+        withParquetTable(right, "tbl_b") {
           val df =
             sql("SELECT /*+ BROADCAST(tbl_a) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._1 < tbl_b._1")
           checkSparkAnswerAndOperator(
@@ -792,13 +819,92 @@ class CometJoinSuite extends CometTestBase {
 
   test("BroadcastNestedLoopJoin cross join without condition (materialized rows)") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable((0 until 5).map(i => (i, i * 10)), "tbl_a") {
-        withParquetTable((0 until 4).map(i => (i, s"v_$i")), "tbl_b") {
+      val left: Seq[(Integer, Int)] =
+        (0 until 5).map(i => ((i: Integer), i * 10)) ++ Seq((null, 99))
+      val right: Seq[(Integer, String)] =
+        (0 until 4).map(i => ((i: Integer), s"v_$i")) ++ Seq((null, "v_null"))
+      withParquetTable(left, "tbl_a") {
+        withParquetTable(right, "tbl_b") {
           val df =
             sql("SELECT /*+ BROADCAST(tbl_b) */ tbl_a._1, tbl_b._2 FROM tbl_a, tbl_b")
           checkSparkAnswerAndOperator(
             df,
             Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin LEFT OUTER without condition") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      val left: Seq[(Integer, Int)] =
+        (0 until 5).map(i => ((i: Integer), i * 10)) ++ Seq((null, 99))
+      val right: Seq[(Integer, String)] =
+        (0 until 4).map(i => ((i: Integer), s"v_$i")) ++ Seq((null, "v_null"))
+      withParquetTable(left, "tbl_a") {
+        withParquetTable(right, "tbl_b") {
+          val df =
+            sql(
+              "SELECT /*+ BROADCAST(tbl_b) */ tbl_a._1, tbl_b._2" +
+                " FROM tbl_a LEFT JOIN tbl_b ON true")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin broadcast reuse across two joins") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      // Same broadcast relation (tbl_b) feeds two separate BNLJs. Spark/AQE handles
+      // broadcast-exchange reuse generically rather than inside BNLJ, so this verifies
+      // we still produce correct results when reuse fires across CometBNLJ consumers.
+      withParquetTable((0 until 50).map(i => (i, i % 10)), "tbl_a") {
+        withParquetTable((0 until 50).map(i => (i, i + 1)), "tbl_c") {
+          withParquetTable((0 until 5).map(i => (i, i * 10)), "tbl_b") {
+            val df = sql(
+              "SELECT count(*) FROM" +
+                " (SELECT /*+ BROADCAST(tbl_b) */ tbl_a._1 AS k FROM tbl_a JOIN tbl_b" +
+                "  ON tbl_a._1 > tbl_b._1) a" +
+                " JOIN" +
+                " (SELECT /*+ BROADCAST(tbl_b) */ tbl_c._1 AS k FROM tbl_c JOIN tbl_b" +
+                "  ON tbl_c._1 > tbl_b._1) c" +
+                " ON a.k = c.k")
+            checkSparkAnswerAndOperator(
+              df,
+              Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+          }
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin FULL OUTER falls back to Spark") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 50).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i, i + 100)), "tbl_b") {
+          val df =
+            sql(
+              "SELECT /*+ BROADCAST(tbl_b) */ * FROM tbl_a FULL OUTER JOIN tbl_b" +
+                " ON tbl_a._1 > tbl_b._1")
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin LEFT OUTER with BuildLeft falls back to Spark") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 10).map(i => (i, i + 100)), "tbl_a") {
+        withParquetTable((0 until 50).map(i => (i, i % 5)), "tbl_b") {
+          // Broadcasting the preserved (left) side forces BuildLeft + LeftOuter, an
+          // unsupported combo. Comet should fall back to Spark and still match.
+          val df =
+            sql(
+              "SELECT /*+ BROADCAST(tbl_a) */ * FROM tbl_a LEFT OUTER JOIN tbl_b" +
+                " ON tbl_a._1 > tbl_b._1")
+          checkSparkAnswer(df)
         }
       }
     }
