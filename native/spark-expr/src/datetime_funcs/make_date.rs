@@ -28,25 +28,59 @@ use std::sync::Arc;
 
 /// Spark-compatible make_date function.
 /// Creates a date from year, month, and day columns.
-/// Returns NULL for invalid dates (e.g., Feb 30, month 13, etc.) instead of throwing an error.
+/// For an invalid `(year, month, day)` triple Spark returns NULL when `spark.sql.ansi.enabled` is
+/// false, and throws otherwise. The ANSI flag is carried here as `fail_on_error`.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkMakeDate {
     signature: Signature,
+    fail_on_error: bool,
 }
 
 impl SparkMakeDate {
-    pub fn new() -> Self {
+    pub fn new(fail_on_error: bool) -> Self {
         Self {
             // Accept any numeric type - we'll cast to Int32 internally
             signature: Signature::any(3, Volatility::Immutable),
+            fail_on_error,
         }
     }
 }
 
 impl Default for SparkMakeDate {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
+}
+
+/// Build the error message Spark surfaces for an invalid date under ANSI mode. Spark wraps the
+/// `java.time.DateTimeException` raised by `LocalDate.of` (via `ansiDateTimeArgumentOutOfRange` /
+/// `ansiDateTimeError`), so we reproduce `java.time`'s messages and validation order: month range,
+/// then day range, then the day-vs-month check.
+fn invalid_date_message(year: i32, month: i32, day: i32) -> String {
+    const MONTH_NAMES: [&str; 12] = [
+        "JANUARY",
+        "FEBRUARY",
+        "MARCH",
+        "APRIL",
+        "MAY",
+        "JUNE",
+        "JULY",
+        "AUGUST",
+        "SEPTEMBER",
+        "OCTOBER",
+        "NOVEMBER",
+        "DECEMBER",
+    ];
+    if !(1..=12).contains(&month) {
+        return format!("Invalid value for MonthOfYear (valid values 1 - 12): {month}");
+    }
+    if !(1..=31).contains(&day) {
+        return format!("Invalid value for DayOfMonth (valid values 1 - 28/31): {day}");
+    }
+    if day == 29 && month == 2 {
+        return format!("Invalid date 'February 29' as '{year}' is not a leap year");
+    }
+    format!("Invalid date '{} {day}'", MONTH_NAMES[(month - 1) as usize])
 }
 
 /// Cast an array to Int32Array if it's not already Int32.
@@ -147,7 +181,12 @@ impl ScalarUDFImpl for SparkMakeDate {
 
                 match make_date(y, m, d) {
                     Some(days) => builder.append_value(days),
-                    None => builder.append_null(),
+                    None => {
+                        if self.fail_on_error {
+                            return Err(DataFusionError::Execution(invalid_date_message(y, m, d)));
+                        }
+                        builder.append_null();
+                    }
                 }
             }
         }

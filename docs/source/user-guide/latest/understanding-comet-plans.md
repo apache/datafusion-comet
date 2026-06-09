@@ -138,6 +138,51 @@ operators were arranged after Comet's serialization). See the
 [Metrics Guide](metrics.md) for details on the native metrics that appear in
 this output.
 
+## Programmatic Access to Fallback Reasons
+
+The configs above route fallback reasons to logs or the SQL UI. If you want
+the reasons for a specific query as data — for example, to assert in a test
+or to drive a custom report — use `org.apache.comet.ExtendedExplainInfo`
+directly. It is the same class that backs `spark.comet.explain.format`, and
+it works on any Spark version because it does not rely on the Spark 4.0
+`extendedExplainProviders` extension point.
+
+```scala
+import org.apache.comet.ExtendedExplainInfo
+
+val df = spark.sql("SELECT ...")
+val plan = df.queryExecution.executedPlan
+val info = new ExtendedExplainInfo()
+
+// Sorted, deduplicated list of fallback reasons across the whole plan.
+val reasons: Seq[String] = info.getFallbackReasons(plan)
+
+// Formatted string. Honors spark.comet.explain.format:
+//   - "verbose"  -> the full plan annotated with per-node fallback reasons
+//   - "fallback" -> just the list of reasons
+val formatted: String = info.generateExtendedInfo(plan)
+```
+
+Example:
+
+```
+val df = spark.sql("SELECT from_unixtime(eventTime) FROM events")
+
+val plan = df.queryExecution.executedPlan
+val info = new org.apache.comet.ExtendedExplainInfo()
+println(info.generateExtendedInfo(plan))
+```
+
+Output
+
+```
+Project [COMET: from_unixtime(eventTime#5L, yyyy-MM-dd HH:mm:ss, Some(GMT)) is not fully compatible with Spark. To enable it anyway, set spark.comet.expression.FromUnixTime.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
++- CometNativeColumnarToRow
+   +- CometNativeScan parquet
+
+Comet accelerated 1 out of 2 eligible operators (50%). Final plan contains 1 transitions between Spark and Comet.
+```
+
 ## Comet Operator Reference
 
 The following sections describe the Comet nodes you will see in plans, grouped
