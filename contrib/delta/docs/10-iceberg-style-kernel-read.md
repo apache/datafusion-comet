@@ -23,11 +23,21 @@
 > plain tables, column mapping (name + id, including nested), partitions, deletion
 > vectors, row-tracking, `_metadata`, schema evolution, zero-data-column reads, and
 > INT96 timestamps (coerced to micros on read). The legacy ParquetSource path has
-> been removed. Custom pieces that remain (the INT96-driven custom read +
-> `align_batch_to_schema`, the DV decode, `DeltaSyntheticColumnsExec`, partition
-> injection, column-mapping physicalisation) exist because we reimplement kernel's
-> per-file pipeline rather than call `Scan::execute`; each is tracked for evaluation
-> against upstream delta-kernel behaviour. The original plan follows.
+> been removed (#50), and `delta_scan.rs` in core is now a ~72-line shim that
+> delegates to `comet_contrib_delta::planner::plan_delta_scan` (#77).
+>
+> Since the original plan, the per-file pipeline collapsed further than §2 below
+> envisaged: column-mapping **physicalisation** was dropped — kernel ships its own
+> `physical_schema()`/`logical_schema()` and `transform_to_logical` does the relabel
+> (#76, nested CM #47); the separate `DeltaSyntheticColumnsExec` is **deleted** —
+> `DeltaKernelScanExec` now synthesizes ALL output columns in-worker, by name (#82);
+> and CDF (`readChangeFeed`) is kernel-native via `TableChanges` →
+> `CometDeltaCdfScanExec`, split multi-partition (#84/#2) — not a synthetic-columns
+> fallback. The custom pieces that **remain** are the INT96-driven custom read +
+> `align_batch_to_schema` and the DV decode (`dv_reader`); they exist because we
+> reimplement kernel's per-file pipeline rather than call `Scan::execute` (kernel's
+> per-file scan data and INT96 hook aren't serializable/exposed — see
+> `12-elimination-evaluation.md`). The original plan follows for the historical record.
 
 ## 1. Why
 

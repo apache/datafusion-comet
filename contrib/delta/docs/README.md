@@ -21,7 +21,8 @@
 
 > **Current architecture (read this first):** the read path is **"kernel reads"** —
 > each Delta data file is read through `delta-kernel-rs` (0.24, which shares Comet's
-> arrow-58) via `DeltaKernelScanExec`, and the result flows straight into the Comet
+> arrow-58) by the native `plan_delta_scan` builder (wrapped on the JVM by
+> `CometDeltaNativeScanExec`), and the result flows straight into the Comet
 > plan with no arrow bridge. It is the default and the only path. The legacy
 > ParquetSource + DV-sweep + synthetic-columns + column-mapping-physicalisation stack
 > described in docs **02–04** has been **removed**. For the current design see
@@ -55,20 +56,23 @@ If you only have ten minutes, read [01-overview.md](01-overview.md).
 
 This contrib makes Apache Comet read Delta Lake tables natively in Rust
 without going through Spark's `DeltaParquetFileFormat`. It plugs into
-Comet's existing plan-rewrite rule (`CometScanRule`) via reflection,
-recognises Delta `LogicalRelation`s, and substitutes them with a native
-scan node. Driver-side, `delta-kernel-rs` resolves the snapshot and
-produces a per-file list (path, size, deletion-vector descriptor,
-partition values, column-mapping tree) encoded into a typed proto variant
-and shipped to executors. Executor-side, `DeltaKernelScanExec` reads each
-file through delta-kernel's own read + physical→logical transform (column
-mapping incl. nested, partition injection) — kernel and Comet share
-arrow-58, so the batches drop straight into the plan. Deletion vectors are
-decoded from the serializable descriptor, and Delta's "virtual" columns
-(`row_id`, `__delta_internal_is_row_deleted`, etc.) are layered on by
-`DeltaSyntheticColumnsExec`. INT96 timestamps are coerced to micros on read
-(kernel's reader leaves them at nanos). The contrib is gated behind a Maven
-profile and a Cargo feature; default Comet builds are unaware of it.
+Comet's existing plan-rewrite rule (`CometScanRule`) via reflection
+(`DeltaIntegration.transformV1IfDelta`), recognises Delta `LogicalRelation`s,
+and substitutes them with a native scan node. Driver-side, `delta-kernel-rs`
+resolves the snapshot and produces a per-file list (path, size,
+deletion-vector descriptor, partition values) plus kernel's physical and
+logical schemas, encoded into a typed proto variant and shipped to executors.
+Executor-side, the contrib reads each file through delta-kernel's own read +
+physical→logical transform (column mapping incl. nested, partition injection,
+deletion-vector masking) — kernel and Comet share arrow-58, so the batches
+drop straight into the plan with no Arrow bridge. Delta's "virtual" columns
+(`row_id`, `__delta_internal_is_row_deleted`, etc.) and INT96 timestamp
+coercion are handled in-worker on the same kernel-read path; the legacy
+stacked `DeltaSyntheticColumnsExec` (#82) and the standalone ParquetSource
+read path (#50) have been removed. Change Data Feed (`readChangeFeed`) is
+read natively via kernel's `TableChanges` and split across multiple Spark
+partitions. The contrib is gated behind a Maven profile and a Cargo feature;
+default Comet builds are unaware of it.
 
 ## Conceptual model in one diagram
 
@@ -81,23 +85,23 @@ Catalyst plan with Delta LogicalRelation
         │ no
         ▼
 delta-kernel-rs scan resolution
+  (snapshot, per-file list, physical + logical schemas)
         │
         ▼
 DeltaScan proto (common block + per-task arrays)
         │
-        ▼  (executor, JNI boundary)
-contrib_delta_scan::build_plan (Rust)
+        ▼  (executor, JNI boundary: planDeltaScan)
+comet_contrib_delta::planner::plan_delta_scan (Rust)
         │
-        ▼  builds DataFusion ExecutionPlan tree:
-ParquetSource
-  → ProjectionExec rename       [optional, if CM physical != logical names]
-  → DeltaSyntheticColumnsExec   [if any emit_*]
-       OR                       (the two are mutually exclusive)
-    DeltaDvFilterExec           [else if any task has DV]
-  → ProjectionExec reorder      [optional, if synthetics not a suffix]
+        ▼  per-file kernel read + transform:
+delta-kernel read  →  physical→logical (column mapping, nested)
+                   →  deletion-vector masking
+                   →  partition-value injection
+                   →  synthetic columns (row_index, is_row_deleted,
+                      row_id, row_commit_version) + INT96→micros coercion
         │
         ▼
-Arrow RecordBatch stream → Spark ColumnarBatch (via Comet's Arrow bridge)
+Arrow RecordBatch stream (arrow-58) → Spark ColumnarBatch, no Arrow bridge
 ```
 
 ## Glossary
@@ -124,12 +128,14 @@ Arrow RecordBatch stream → Spark ColumnarBatch (via Comet's Arrow bridge)
 ```
 spark/src/main/scala/org/apache/comet/rules/DeltaIntegration.scala   # reflection bridge in core
 spark/src/main/scala/org/apache/comet/rules/CometScanRule.scala      # one arm calling DeltaIntegration
+spark/src/main/scala/org/apache/comet/rules/CometExecRule.scala      # marker→native + CDF interception
 native/proto/src/proto/operator.proto                                # DeltaScan proto variant
-native/core/src/execution/planner/contrib_delta_scan.rs              # native dispatcher arm
+native/core/src/execution/planner/delta_scan.rs                      # native dispatcher arm (contrib-delta-gated shim)
 
 contrib/delta/src/main/scala/org/apache/comet/contrib/delta/...      # all contrib Scala
+contrib/delta/src/main/scala/org/apache/spark/sql/comet/...          # CometDeltaNativeScanExec, CometDeltaCdfScanExec, DeltaPlanDataInjector
 contrib/delta/native/src/...                                         # all contrib Rust
-contrib/delta/dev/diffs/delta/4.1.0.diff                             # regression diff vs Delta 4.1
+contrib/delta/dev/diffs/4.1.0.diff                                   # regression diff vs Delta 4.1 (also 4.0.0.diff, 3.3.2.diff)
 contrib/delta/dev/run-regression.sh                                  # regression driver
 ```
 

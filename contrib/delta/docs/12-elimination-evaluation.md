@@ -26,32 +26,40 @@ in the contrib be dropped in favour of relying on delta-kernel directly, and (2)
 
 ## Headline
 
-- **Custom pieces (kernel-path):** none can be removed _purely in our code today_. Almost
-  all are blocked on the same two upstream delta-kernel gaps — there is no reader-options /
-  INT96 hook, and the per-file scan data (`ScanFile` / `ScanMetadata` / transform
-  `Expression` / `DvInfo`) is not serializable, so we can't ship it over JNI and call
-  kernel's `Scan::execute` executor-side. The custom per-file pipeline exists precisely to
-  work around these. **Two upstream asks** would collapse most of it (below).
+- **Custom pieces (kernel-path):** the surface shrank further since this evaluation was
+  first written. Column-mapping **physicalisation** was dropped (#76: kernel ships its own
+  `physical_schema()`/`logical_schema()` and `transform_to_logical` relabels), and the
+  separate `DeltaSyntheticColumnsExec` was **deleted** (#82: `DeltaKernelScanExec` now
+  synthesizes all output columns in-worker). What remains (INT96 custom read +
+  `align_batch_to_schema`, the `dv_reader` DV decode, in-worker synthesis, partition
+  injection) is blocked on the same two upstream delta-kernel gaps — there is no
+  reader-options / INT96 hook, and the per-file scan data (`ScanFile` / `ScanMetadata` /
+  transform `Expression` / `DvInfo`) is not serializable, so we can't ship it over JNI and
+  call kernel's `Scan::execute` executor-side. **Two upstream asks** would collapse most of
+  it (below).
 - **Core changes (the 8 extracted PRs + Delta hooks):** **all stay.** None were
   old-path-only. Four are general Comet fixes; the rest are still exercised by the
   kernel-read path.
-- **Only concrete removable code:** the dead proto fields + Scala emission left behind by
-  the #50 old-path deletion (`data_schema`, `projection_vector`, `data_filters`, and the
-  `physicalFileDataSchema` / `physicaliseRequiredField` emission that feeds them).
+- **Removable dead code: already removed.** The dead proto fields + Scala emission left
+  behind by the #50 old-path deletion (`data_schema`, `projection_vector`, `data_filters`
+  on `DeltaScanCommon`, plus the `physicalFileDataSchema` / `physicaliseRequiredField`
+  emission and the `build_delta_partitioned_files` / `ColumnMappingFilterRewriter` planner
+  helpers) were removed in #71. The proto numbers are now `reserved` (operator.proto
+  `reserved 2, 4, 5` in `DeltaScanCommon`, `reserved 13` for the old `column_mappings`).
 
 ## Cluster 1 — custom kernel-path pieces (#55–61)
 
 Evidence cross-checked against delta-kernel 0.24 source.
 
-| #   | Custom piece                                                                      | Verdict                       | Why it can't be delegated yet                                                                                                                                                                                                                                                                                         |
-| --- | --------------------------------------------------------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 55  | INT96 custom read (`read_file_via_kernel` + `coerce_int96_to_micros`)             | **KEEP — blocked upstream**   | Kernel's `ParquetHandler::read_parquet_files` exposes no `ArrowReaderOptions` / INT96-coercion / supplied-schema hook (`engine/mod.rs` `reader_options()` is fixed). INT96 overflows i64-nanos at read, so it must be coerced _during_ the read.                                                                      |
-| 56  | `align_batch_to_schema`                                                           | **KEEP — blocked by #55**     | This is the fixup (reorder/cast/null-fill) kernel's reader does internally via `fixup_parquet_read` (`pub(crate)`). It's only redundant if we use kernel's reader — which #55 prevents. Falls away the moment we can delegate the read.                                                                               |
-| 57  | `dv_reader` DV decode                                                             | **KEEP — blocked upstream**   | `DvInfo` doesn't derive Serialize/Deserialize and `DeletionVectorDescriptor.deletion_vector` is `pub(crate)`, so the DV can't cross JNI / be rebuilt executor-side. We decode from our own serializable proto descriptor via the public `descriptor.row_indexes()`.                                                   |
-| 58  | `DeltaSyntheticColumnsExec` (row-tracking / `_metadata` / `is_row_deleted`)       | **KEEP — blocked upstream**   | Kernel _has_ `FieldTransformSpec::GenerateRowId` / `MetadataDerivedColumn`, but `FieldTransformSpec` isn't serializable, the transform `Expression` is a non-serializable `Arc`, and Spark's `_metadata.*` virtual columns aren't a kernel transform output. Output-shape concern that crosses the executor boundary. |
-| 59  | partition injection (`append_partition_columns` / `parse_delta_partition_scalar`) | **KEEP — blocked by #58/#61** | Kernel injects partitions via `MetadataDerivedColumn` in the transform — but only reachable if we can ship a serializable transform and run kernel's evaluator executor-side.                                                                                                                                         |
-| 60  | column-mapping physicalisation (`scan.rs` mapping tree + `physicalise_field`)     | **KEEP — blocked by #61**     | Kernel already computes the physical/logical schemas (`Scan::physical_schema()` / `logical_schema()`) and the rename transform internally; we rebuild them only because we can't ship kernel's `ScanMetadata` to the executor.                                                                                        |
-| 61  | **umbrella:** per-file exec → `Scan::execute`                                     | **KEEP — blocked upstream**   | `Scan::execute` is driver-only (does log replay), and `ScanFile` / `ScanMetadata` / the transform `Expression` aren't serializable. This is the keystone: making them serializable folds #56/#59/#60 and most of #58 into kernel.                                                                                     |
+| #   | Custom piece                                                                                                              | Verdict                               | Why it can't be delegated yet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 55  | INT96 custom read (`read_file_via_kernel` + `coerce_int96_to_micros`)                                                     | **KEEP — blocked upstream**           | Kernel's `ParquetHandler::read_parquet_files` exposes no `ArrowReaderOptions` / INT96-coercion / supplied-schema hook (`engine/mod.rs` `reader_options()` is fixed). INT96 overflows i64-nanos at read, so it must be coerced _during_ the read.                                                                                                                                                                                                                                                                                                           |
+| 56  | `align_batch_to_schema`                                                                                                   | **KEEP — blocked by #55**             | This is the fixup (reorder/cast/null-fill) kernel's reader does internally via `fixup_parquet_read` (`pub(crate)`). It's only redundant if we use kernel's reader — which #55 prevents. Falls away the moment we can delegate the read.                                                                                                                                                                                                                                                                                                                    |
+| 57  | `dv_reader` DV decode                                                                                                     | **KEEP — blocked upstream**           | `DvInfo` doesn't derive Serialize/Deserialize and `DeletionVectorDescriptor.deletion_vector` is `pub(crate)`, so the DV can't cross JNI / be rebuilt executor-side. We decode from our own serializable proto descriptor via the public `descriptor.row_indexes()`.                                                                                                                                                                                                                                                                                        |
+| 58  | in-worker synthesis (row-tracking / `_metadata` / `is_row_deleted`) in `DeltaKernelScanExec`                              | **KEEP (slimmed) — blocked upstream** | The separate `DeltaSyntheticColumnsExec` is **deleted** (#82); `DeltaKernelScanExec` now produces all output columns by name in `synthesize` mode. `row_index` / `row_id` come from kernel metadata columns; `is_row_deleted` / `row_commit_version` / Spark `_metadata.*` are per-file constants assembled in-worker. Kernel has `FieldTransformSpec::GenerateRowId` / `MetadataDerivedColumn`, but `FieldTransformSpec` isn't serializable and Spark's `_metadata.*` virtual columns aren't a kernel transform output, so the assembly stays Comet-side. |
+| 59  | partition injection (kernel `transform_to_logical`, fallback `append_partition_columns` / `parse_delta_partition_scalar`) | **KEEP — partly delegated**           | When the per-file `transform_json` is present kernel injects partitions via its transform (delegated); the Comet-side `append_partition_columns` is only the fallback for the identity-transform path. Full delegation still needs serializable per-file scan data executor-side.                                                                                                                                                                                                                                                                          |
+| 60  | column-mapping physicalisation — **DROPPED (#76)**                                                                        | **REMOVED, delegated to kernel**      | The recursive `physicalise_field` schema-rebuild is gone. The driver projects the snapshot and ships kernel's own `Scan::physical_schema()` / `logical_schema()` (`scan.rs`, field-ids preserved); the executor relabels via `transform_to_logical`. Nested column mapping works (#47). `build_struct_column_mappings` survives only as a top-level logical→physical list carried driver-side on `DeltaScanTaskList`, not an executor physicalisation tree.                                                                                                |
+| 61  | **umbrella:** per-file exec → `Scan::execute`                                                                             | **KEEP — blocked upstream**           | `Scan::execute` is driver-only (does log replay), and `ScanFile` / `ScanMetadata` / the transform `Expression` aren't serializable. This is the keystone: making them serializable folds #56/#59 and most of #58 into kernel (#60 is already delegated).                                                                                                                                                                                                                                                                                                   |
 
 **Two upstream delta-kernel asks** (filing these unblocks the shrink):
 
@@ -60,11 +68,11 @@ Evidence cross-checked against delta-kernel 0.24 source.
 2. **Serializable per-file scan data** — `ScanFile`, `ScanMetadata`, the transform
    `Expression`, and `DvInfo` deriving Serialize/Deserialize (and `deletion_vector` made
    `pub`), so the executor can reconstruct and call a kernel read directly. Unblocks
-   #57/#59/#60/#61 and most of #58.
+   #57/#59/#61 and most of #58 (#60 is already delegated to kernel's schemas).
 
-Until then, the custom per-file pipeline is necessary, not incidental. `DeltaSyntheticColumnsExec`
-likely stays partly regardless (Spark `_metadata` semantics + `is_row_deleted` are Comet/Spark
-concerns kernel doesn't model).
+Until then, the custom per-file pipeline is necessary, not incidental. The in-worker
+synthesis (#58) likely stays partly regardless (Spark `_metadata` semantics + `is_row_deleted`
+are Comet/Spark concerns kernel doesn't model).
 
 ## Cluster 2 — the 8 extracted core PRs (#62–69)
 
@@ -89,23 +97,29 @@ reach the native exec): `DeltaIntegration`, the `CometExecRule` Delta arm, `Come
 `operators.scala` injector registration. `CometPlanAdaptiveDynamicPruningFilters` is
 KEEP-but-shrinkable (its Delta arm is transport-agnostic; covered by `CometDeltaDppReproSuite`).
 
-**#71 proto/Scala — concrete removable dead code** (the #50 deletion residual). These are
-populated by the Scala but **never read by the native kernel path**:
+**#71 proto/Scala dead code — DONE (removed).** This evaluation originally flagged the #50
+old-path residual for removal; #71 carried it out. The proto numbers are now `reserved` in
+`DeltaScanCommon` (operator.proto: `reserved 2, 4, 5` covering the old `data_schema` /
+`data_filters` / `projection_vector`, and `reserved 13` for the old `column_mappings`), and
+the Scala emitters / planner helpers are gone:
 
-| Item                                                                 | Set (Scala)                        | Read (native)                                 | Action                                        |
-| -------------------------------------------------------------------- | ---------------------------------- | --------------------------------------------- | --------------------------------------------- |
-| proto `data_schema` (field 2)                                        | `CometDeltaNativeScan.scala` ~1015 | none                                          | **remove**                                    |
-| proto `projection_vector` (field 5)                                  | ~1094                              | none                                          | **remove**                                    |
-| proto `data_filters` (field 4)                                       | `addPushedDataFilters`             | none (kernel does its own log-replay pruning) | **remove**                                    |
-| `physicalFileDataSchemaFields` (Scala)                               | feeds `data_schema`                | —                                             | **remove**                                    |
-| `physicaliseRequiredField` / `physicaliseDataTypePreserving` (Scala) | feed the above                     | —                                             | shrink/remove once `data_schema` is gone      |
-| proto `kernel_read` (field 25)                                       | always true now                    | `delta_scan.rs` errors if false               | keep (or fold into deltaNative.enabled later) |
+| Item                                                                | State now                                                                            |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| proto `data_schema` / `data_filters` / `projection_vector` (Delta)  | **removed** — `reserved 2, 4, 5` in `DeltaScanCommon`                                |
+| `physicalFileDataSchemaFields` / `physicaliseRequiredField` (Scala) | **removed** — no longer present in `CometDeltaNativeScan.scala`                      |
+| `physicalise_field` recursive schema rebuild (native `scan.rs`)     | **removed** (#76)                                                                    |
+| `build_delta_partitioned_files` / `ColumnMappingFilterRewriter`     | **removed** from `planner.rs` (only stale name mentions remain in `jni.rs` comments) |
+| proto `kernel_read` (field 25)                                      | kept; `planner.rs::plan_delta_scan` errors if false (kernel-read is the only path)   |
 
-`required_schema` (pure-logical), `column_mappings` (recursive), `partition_schema`, the
-synthesis flags, `final_output_indices`, `session_timezone`, `table_root`, and
-`object_store_options` are all actively read by `plan_delta_kernel_scan` — keep.
+> Note: the `data_schema` / `projection_vector` fields that still exist in operator.proto
+> live on **`NativeScanCommon`** / **`CsvScan`** — unrelated messages, not Delta.
 
-This #71 cleanup is the natural completion of the #50 old-path deletion and is the only
-code this evaluation marks for removal. It also overlaps the still-pending `planner.rs`
-dead helpers (`build_delta_partitioned_files`, `ColumnMappingFilterRewriter`) noted in the
-#50 commit.
+Still actively read by the contrib `plan_delta_scan` (keep): `required_schema` (pure-logical),
+`partition_schema`, `kernel_physical_schema` / `kernel_logical_schema` (kernel's shipped
+schemas), `synthesize_in_worker`, `final_output_indices`, `cdf_read` + version range,
+`dv_file_name_prefix`, `session_timezone`, `table_root`, and `object_store_options`. The
+top-level logical→physical `column_mappings` (no longer a recursive tree) is carried
+driver-side on `DeltaScanTaskList`, not consumed executor-side.
+
+With #71 landed, this evaluation no longer marks any code for removal — the kernel-read
+surface is at its current floor pending the two upstream delta-kernel asks above.

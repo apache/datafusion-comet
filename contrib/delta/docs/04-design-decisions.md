@@ -158,28 +158,39 @@ This applies to the S3A credential bridge as well — we resolve
 `S3AUtils.createAWSCredentialProviderList` once and reuse the
 `Method` handle for every kernel-rs engine creation.
 
-## Why does each FileGroup hold one file when synthetics emit?
+## (Historical) Why did each FileGroup hold one file when synthetics emit?
 
-**Decision.** When any `emit_*` flag is set, the parquet
-`FileScanConfig` is built with one `FileGroup` per file.
+> **Superseded by kernel-read.** This describes the legacy
+> `ParquetSource` + `DeltaSyntheticColumnsExec` stack, which was
+> **deleted** (#50, #82). It is preserved only to explain a past
+> design choice. The current `DeltaKernelScanExec` reads one file via
+> kernel per task and synthesises every output column by name in-worker
+> — there is no FileGroup-to-partition-index coupling.
+
+**Decision (legacy).** When any `emit_*` flag was set, the parquet
+`FileScanConfig` was built with one `FileGroup` per file.
 
 **Alternative.** Let the parquet reader pack files into shared groups
 for better parallelism.
 
-**Why not.** `DeltaSyntheticColumnsExec` indexes per-partition state
-vectors `(deleted_row_indexes, base_row_ids, default_row_commit_versions)`
-by the DataFusion partition index. One file per FileGroup means
-"partition index = file index", which is what makes the index lookup
-correct. With shared groups, multiple files would map to one partition
-index and the lookup would return the wrong file's metadata.
+**Why not.** The now-deleted `DeltaSyntheticColumnsExec` indexed
+per-partition state vectors
+`(deleted_row_indexes, base_row_ids, default_row_commit_versions)`
+by the DataFusion partition index. One file per FileGroup meant
+"partition index = file index", which made the index lookup correct.
+With shared groups, multiple files would map to one partition index and
+the lookup would return the wrong file's metadata.
 
-We pay a parallelism cost only when synthetics are emitted (which is a
-minority of queries — primarily MERGE/UPDATE/DELETE rewrite plans and
-queries that explicitly select `row_id`).
+## (Historical) Why a `DeltaDvFilterExec` and not a Spark filter on top?
 
-## Why a `DeltaDvFilterExec` and not a Spark filter on top?
+> **Superseded by kernel-read.** `DeltaDvFilterExec` was deleted
+> alongside the legacy read path. DVs are now resolved executor-side
+> inside `DeltaKernelScanExec` via kernel's own apply-DV path
+> (`dv_reader::read_dv_indexes`); deleted rows are dropped before the
+> batch enters the Comet plan. The rationale below explains the original
+> choice.
 
-**Decision.** Filter deleted rows in the native plan, between
+**Decision (legacy).** Filter deleted rows in the native plan, between
 `ParquetSource` and the synthetic-column exec.
 
 **Alternative.** Read all rows natively, ship to the JVM, filter there.
@@ -187,10 +198,8 @@ queries that explicitly select `row_id`).
 **Why not.** DVs can mark significant fractions of a file as deleted
 (MERGE-heavy workloads can easily hit 30%+). Filtering natively avoids
 serialising and crossing JNI with rows that are about to be dropped.
-
-It also keeps the synthetic-column logic correct: `is_row_deleted` is
-populated by walking the same DV index list, so emitting that column
-naturally falls out of the same exec we built for filtering.
+The same reasoning still holds for the kernel-read path, which applies
+the DV before any rows cross JNI.
 
 ## Why an engine cache keyed on storage config?
 
@@ -250,9 +259,13 @@ been touched since) would always fall back. The user-visible result is
 "row tracking acceleration only works on tables you wrote from scratch
 after enabling row tracking", which is a sharp edge.
 
-Synthesising covers both cases uniformly. The cost is the per-task
-`base_row_id` field in the proto and the per-batch arithmetic in the
-synthetic-columns exec.
+Synthesising covers both cases uniformly. In the current kernel-read
+path the per-file `baseRowId` (and `defaultRowCommitVersion`) are
+supplied JVM-side by `RowTrackingAugmentedFileIndex`, and
+`DeltaKernelScanExec` emits `row_id` / `row_commit_version` by name from
+kernel's per-file transform plus that base — Delta's `GenerateRowIDs`
+strategy expands `_metadata.row_id` into these primitives before Comet
+ever sees the plan.
 
 ## Why a standalone Cargo manifest in `contrib/delta/native`?
 

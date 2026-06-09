@@ -23,21 +23,23 @@
 
 Anywhere this contrib cannot confidently produce identical results to
 Spark's Delta reader, the planner declines and lets Spark execute the
-scan unchanged. The decline path is uniform:
+scan unchanged. The decline path is uniform — `DeltaScanRule` attaches a
+reason and returns `None`, which cleanly drops the Comet boundary so
+vanilla Spark's Delta reader handles the scan:
 
 ```scala
-withInfo(plan, "delta-contrib: <human-readable reason>")
-return plan  // unchanged — Spark runs it
+withFallbackReason(scan, "<human-readable reason>")
+return None  // no Comet marker — Spark's Delta reader runs it
 ```
 
-`withInfo` attaches the reason to the plan's `extraMetadata`, which Comet's
-explain-fallback rendering picks up. Users running
-`EXPLAIN EXTENDED` on a fallback-affected query see:
+`withFallbackReason` attaches the reason to the plan's tag metadata,
+which Comet's explain-fallback rendering picks up. Users running
+`EXPLAIN EXTENDED` on a fallback-affected query see the reason in the
+fallback section, e.g.:
 
 ```
-== Comet Native Plan Info ==
-- CometDeltaNativeScan rejected: delta-contrib: DV materialisation failed for
-  file s3://bucket/_delta_log/00000000000000000123.dv (read error)
+- Delta native scan declined: native_delta_compat does not support
+  encryption config
 ```
 
 This is the primary observability surface. Operators investigating "why
@@ -81,33 +83,47 @@ documents WHY the decline exists and what would need to change to remove it.
 
 ### User off-switches
 
-| Switch                                       | Effect                                        |
-| -------------------------------------------- | --------------------------------------------- |
-| `spark.comet.scan.deltaNative.enabled=false` | Decline all Delta scans → Spark's reader      |
-| `spark.comet.exec.enabled=false`             | Disable Comet entirely → Spark for everything |
+| Switch                                                            | Effect                                                                                        |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `spark.comet.scan.deltaNative.enabled=false`                      | Decline all Delta scans → Spark's reader                                                      |
+| `spark.comet.delta.kernelRead.enabled=false`                      | Disable the kernel-read path specifically (currently the only read path; reserved off-switch) |
+| `spark.comet.scan.deltaNative.fallbackOnUnsupportedFeature=false` | Raise an error instead of falling back on an unsupported feature (test aid, default `true`)   |
+| `spark.comet.exec.enabled=false`                                  | Disable Comet entirely → Spark for everything                                                 |
 
-## Removed decline gates (post-PR2)
+All keys live in
+`contrib/delta/src/main/scala/org/apache/comet/contrib/delta/DeltaConf.scala`.
 
-Earlier versions of this contrib declined on broader cases; sweeps during
-gate-unblock work brought them under native execution. Removed gates:
+## Removed decline gates
+
+Earlier versions of this contrib declined on broader cases; the move to
+the kernel-read path (#50, #82) and a series of gate-unblock sweeps
+brought them under native execution. The mechanisms named below for the
+DV / synthetic / row-tracking cases reflect the **current** kernel-read
+path, not the deleted `ParquetSource` + `DeltaSyntheticColumnsExec` /
+`DeltaDvFilterExec` stack that originally retired some of them. Removed
+gates:
 
 - **Column-mapping `id` mode** — implemented via Delta-ID → parquet-field-ID
-  translation in the planner
-- **General Parquet field-ID matching** — proto now carries `use_field_id`
-- **Synthetic columns (`__delta_internal_*`)** — emit flags + native
-  synthesis
-- **`outputHasIsRowDeleted` DV fallback** — handled by `DeltaDvFilterExec`
-- **`TahoeBatchFileIndex` DV fallback** — handled by
-  `buildTaskListFromAddFiles` + `deletedRowIndexesByPath` path
-- **`enableRowTracking=false` for `row_id` queries** — synthesis from
-  `baseRowId`
-- **Synthetic columns NOT a suffix** — `final_output_indices` reorder
-- **`checkLatestSchemaOnRead=false`** — our snapshot is pinned via
-  `extractSnapshotVersion(relation)` so the at-read check doesn't apply
-- **TahoeBatchFileIndex with DVs** — handled the same as `TahoeBatchFileIndex` non-DV
-
-Each removed gate has its own commit (P7s-P7y series) documenting the
-mechanism.
+  translation in the planner; the analysis-time physical schema is shipped
+  to kernel's `with_schema`
+- **General Parquet field-ID matching** — handled by kernel's own
+  column-mapping resolution
+- **Synthetic / `_metadata` columns** — `DeltaKernelScanExec` synthesises
+  every output column by name in-worker (kernel's per-file transform +
+  partitions + row-tracking primitives)
+- **Deletion vectors** — applied executor-side inside `DeltaKernelScanExec`
+  via `dv_reader::read_dv_indexes`; deleted rows dropped before they cross
+  JNI
+- **`enableRowTracking=false` for `row_id` queries** — `row_id` synthesised
+  from per-file `baseRowId` (supplied by `RowTrackingAugmentedFileIndex`)
+- **`TahoeBatchFileIndex` (DML rewrites), `CdcAddFileIndex`** — the
+  exact-subset file list is passed through to the kernel scan
+- **Change Data Feed (`readChangeFeed`)** — read kernel-natively via
+  `TableChanges` (`CometDeltaCdfScanExec`, #84), split across partitions
+  (#2); no longer declined
+- **Schema-change-since-analysis** — the analysis-time read schema is
+  shipped to kernel's `with_schema` (#78), so a snapshot that changed
+  since analysis still reads correctly
 
 ## Operational signals
 
@@ -123,7 +139,9 @@ mechanism.
 
 - Driver-side engine cache size: not currently exposed; would be a useful
   follow-up metric. The cache lives behind `engine::engine_cache()` (a
-  `OnceLock<Mutex<HashMap<EngineKey, Arc<DeltaEngine>>>>` static)
+  `OnceLock<Mutex<EngineCacheState>>` static, whose `map` is
+  `HashMap<EngineKey, (Arc<DeltaEngine>, u64)>` keyed on
+  `(scheme, authority, DeltaStorageConfig)`)
 - kernel-rs scan-planning time: implicit in `CometDeltaNativeScanExec`'s
   driver-side latency, not separately reported
 
@@ -142,15 +160,16 @@ mechanism.
 
 ## Known-safe configuration changes operators can make
 
-| Config                                       | Default                      | Notes                                   |
-| -------------------------------------------- | ---------------------------- | --------------------------------------- |
-| `spark.comet.scan.deltaNative.enabled`       | `true` (when contrib loaded) | Per-query off-switch via SET            |
-| `spark.comet.parquet.read.io.threadPoolSize` | (Comet default)              | Same setting as plain Comet parquet     |
-| `spark.comet.batchSize`                      | (Comet default)              | Same setting; controls Arrow batch size |
+| Config                                                  | Default                      | Notes                                                             |
+| ------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------- |
+| `spark.comet.scan.deltaNative.enabled`                  | `true` (when contrib loaded) | Per-query off-switch via SET                                      |
+| `spark.comet.delta.kernelRead.enabled`                  | `true`                       | Kernel-read path (the only read path)                             |
+| `spark.comet.scan.deltaNative.dataFileConcurrencyLimit` | `1`                          | Per-Spark-task concurrency reading Delta data files (2–8 typical) |
+| `spark.comet.delta.cdf.maxPartitions`                   | `8`                          | Max Spark partitions a Change Data Feed read splits into          |
+| `spark.comet.batchSize`                                 | (Comet default)              | Same setting; controls Arrow batch size                           |
 
-There is currently no Delta-specific tuning beyond the on/off switch. The
-contrib reuses Comet's parquet tuning surface because the read path IS
-Comet's parquet reader.
+Delta-specific tuning is the on/off switch plus the data-file concurrency
+and CDF partition-count knobs above (all defined in `DeltaConf.scala`).
 
 ## Debug entry points
 
@@ -175,10 +194,12 @@ For production investigation:
 4. Compare a Comet-on vs Comet-off run of the same query if a
    correctness issue is suspected
 
-The regression diff in `contrib/delta/dev/diffs/delta/4.1.0.diff` is the
-canonical reference for "what should work" — if a Delta upstream test
-isn't in the diff and isn't passing with the contrib enabled, that's
-either a missed decline gate or a real bug.
+The regression diffs in `contrib/delta/dev/diffs/` (one per Delta
+version: `3.3.2.diff`, `4.0.0.diff`, `4.1.0.diff`, driven by
+`contrib/delta/dev/run-regression.sh`) are the canonical reference for
+"what should work" — if a Delta upstream test isn't in the diff and isn't
+passing with the contrib enabled, that's either a missed decline gate or
+a real bug.
 
 ---
 

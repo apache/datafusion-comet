@@ -19,12 +19,13 @@
 
 # Comet Delta Contrib — Design Overview
 
-> **Note:** the executor-side **read path** described below (ParquetSource +
-> field-id resolution + DV-sweep + synthetic columns + rename ProjectionExec) has
-> been **replaced** by the "kernel reads" path: `DeltaKernelScanExec` reads each
-> file through delta-kernel-rs (0.24 / arrow-58) directly. The driver-side planning,
-> deployment modes, and "what this does NOT touch" sections below are still accurate;
-> for the current execution design see
+> **Read path:** Delta tables are read **natively through delta-kernel-rs**
+> ("kernel-read"), enabled by default. `DeltaKernelScanExec` reads each file
+> through delta-kernel-rs (0.24 / arrow-58), applying kernel's physical→logical
+> transform (column mapping incl. nested, partition injection, row-tracking) and
+> the deletion vector itself, and synthesises Delta's virtual columns in-worker.
+> The legacy ParquetSource + DV-sweep + stacked-synthetic-columns read path has
+> been **removed**; kernel-read is the only read path. For execution detail see
 > [10-iceberg-style-kernel-read.md](10-iceberg-style-kernel-read.md).
 
 ## Who this is for
@@ -46,11 +47,14 @@ that Spark's `FileSourceScanExec` doesn't expose cleanly enough for Comet to
 slot in underneath.
 
 This contrib bypasses that wrapping. It plans Delta scans with
-`delta-kernel-rs` (the official Rust kernel maintained by the Delta team),
-hands the resolved file list to DataFusion's parquet reader, and synthesises
-Delta's "virtual" columns (`row_id`, `__delta_internal_is_row_deleted`, etc.)
-in native code. The result is end-to-end native execution for Delta reads,
-with no Spark-side parquet decoding on the hot path.
+`delta-kernel-rs` (the official Rust kernel maintained by the Delta team), and
+reads each resolved data file through kernel itself — kernel does the parquet
+read, applies the physical→logical transform (column mapping, partition
+injection, row-tracking materialisation), and applies the deletion vector. Any
+remaining Delta "virtual" columns (`__delta_internal_is_row_deleted`,
+`row_commit_version`, `_metadata.*`) are synthesised in-worker by
+`DeltaKernelScanExec`. The result is end-to-end native execution for Delta
+reads, with no Spark-side parquet decoding on the hot path.
 
 ## Mental model: a DSv2 substitute scan that fires before DSv2 binding
 
@@ -86,46 +90,47 @@ produced by DataFusion in Rust and shipped to the JVM as Arrow record batches.
 │                                                                      │
 │  Catalyst logical plan                                               │
 │       │                                                              │
-│       │   DeltaScanRule.transformV1IfDelta (extension)              │
+│       │   DeltaScanRule.transformV1IfDelta (CometScanRule arm)       │
 │       ▼                                                              │
-│  Plan with CometDeltaNativeScanExec in place of FileSourceScanExec   │
+│  CometDeltaScanMarker wrapping the original FileSourceScanExec       │
 │       │                                                              │
+│       │   CometExecRule routes the marker to the Delta serde         │
 │       │   CometDeltaNativeScan.convert (proto serde)                 │
-│       │     1. delta-kernel-rs resolves snapshot                     │
-│       │     2. Returns AddFile list + DV info + base row IDs         │
-│       │     3. Encode into DeltaScan proto (common + per-task)       │
+│       │     1. JNI → planDeltaScan: kernel enumerates the snapshot   │
+│       │        and ships per file a transform_json + DV descriptor   │
+│       │        + kernel-built physical/logical Arrow schemas         │
+│       │        (DML rewrites: kernel-enumerate + path-filter)        │
+│       │     2. Encode into DeltaScan proto (common + per-task)       │
 │       ▼                                                              │
-│  Per-partition byte arrays (DeltaScanTask) via PlanDataInjector      │
+│  CometDeltaNativeScanExec; per-partition DeltaScanTask byte arrays   │
+│  injected via DeltaPlanDataInjector                                  │
 └───────────────────┬─────────────────────────────────────────────────┘
                     │ shipped to executors via Spark task serialisation
                     ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  SPARK EXECUTOR (JVM + Rust via JNI)                                 │
 │                                                                      │
-│  CometNativeScanExec.compute                                         │
+│  Comet native exec framework                                         │
 │       │                                                              │
-│       │   JNI → planDeltaScan(proto bytes)                          │
+│       │   delta_scan.rs shim → comet_contrib_delta::planner          │
 │       ▼                                                              │
-│  contrib_delta_scan::build_plan (Rust)                               │
+│  DeltaKernelScanExec (contrib/delta/native/src/kernel_scan.rs)       │
 │       │                                                              │
-│       │   Builds DataFusion ExecutionPlan tree:                      │
-│       │     ParquetSource (with field_id resolution)                 │
+│       │   For each file, read parquet via delta-kernel-rs, apply     │
+│       │   kernel's transform (CM/partition/row-tracking) + DV, and   │
+│       │   produce ALL output columns BY NAME — in-worker synthesis   │
+│       │   (data + partitions + row_index/row_id/is_row_deleted/      │
+│       │    row_commit_version/_metadata.*)                           │
 │       │       ↓                                                      │
-│       │     ProjectionExec (CM rename, if physical != logical names) │
-│       │       ↓                                                      │
-│       │     DeltaSyntheticColumnsExec    if any emit_* flag          │
-│       │       OR                                                     │
-│       │     DeltaDvFilterExec            else if any task has DV     │
-│       │       ↓                                                      │
-│       │     ProjectionExec (reorder if synthetics not a suffix)      │
+│       │   ProjectionExec (reorder via final_output_indices, if any)  │
 │       ▼                                                              │
 │  Arrow RecordBatch stream → Comet's existing Arrow→JVM bridge        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 The two non-obvious pieces are **the proto split** (a single "common" block
-plus per-partition task arrays) and the **native wrapping stack** (DV /
-rename / synthetics / reorder). Both are covered in
+plus per-partition task arrays) and the **in-worker synthesis** done by
+`DeltaKernelScanExec`. Both are covered in
 [02-planning.md](02-planning.md) and
 [03-native-execution.md](03-native-execution.md).
 
@@ -134,9 +139,10 @@ rename / synthetics / reorder). Both are covered in
 Default builds (no `-Pcontrib-delta` Maven profile, no `contrib-delta` Cargo
 feature) ship with zero Delta surface area:
 
-- The reflection bridge in `DeltaIntegration.scala` returns `None` at the
-  first classpath lookup and stays that way for the JVM lifetime
-- The `contrib_delta_scan` arm in `native/core/src/execution/planner/` is
+- The reflection bridge in `spark/.../rules/DeltaIntegration.scala` returns the
+  "not handled" sentinel at the first classpath lookup and stays that way for
+  the JVM lifetime
+- The `delta_scan` arm in `native/core/src/execution/planner/delta_scan.rs` is
   `#[cfg(feature = "contrib-delta")]`-gated and compiles out of the dylib
 - The proto variant `delta_scan = 117` is present in the schema but never
   emitted
@@ -145,8 +151,8 @@ Delta-enabled builds (`-Pcontrib-delta` + `contrib-delta` Cargo feature):
 
 - `contrib/delta/src/main/scala/...` lands on the classpath, including the
   Spark extension that registers `DeltaScanRule`
-- `contrib/delta/native/` is linked into `libcomet` as a static lib via
-  re-export, contributing the `Java_…_planDeltaScan` JNI symbol
+- `contrib/delta/native/` (the `comet_contrib_delta` crate) is linked into
+  `libcomet`, contributing the `Java_…_planDeltaScan` JNI symbol
 - The reflection bridge resolves on first call and caches the result
 
 This is the same shape as the Iceberg contrib in this repo. The motivation is

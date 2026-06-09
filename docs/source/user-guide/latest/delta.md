@@ -91,11 +91,13 @@ To disable native Delta scans (fall back to Spark's Delta reader), set
 
 ### Tuning
 
-| Config                                                      | Default | Description                                                                                                                                                                  |
-| ----------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.scan.deltaNative.enabled`                      | `true`  | Enable native Delta table scans.                                                                                                                                             |
-| `spark.comet.scan.deltaNative.dataFileConcurrencyLimit`     | `1`     | Per-task concurrency when reading data files. Raise to 2–8 on tables with many small files to hide I/O latency (uses more memory).                                           |
-| `spark.comet.scan.deltaNative.fallbackOnUnsupportedFeature` | `true`  | When `true`, fall back to Spark's Delta reader on any unsupported Delta protocol feature. Set `false` to error instead (useful in tests asserting the native path is taken). |
+| Config                                                      | Default | Description                                                                                                                                                                                                                                                                 |
+| ----------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spark.comet.scan.deltaNative.enabled`                      | `true`  | Enable native Delta table scans.                                                                                                                                                                                                                                            |
+| `spark.comet.delta.kernelRead.enabled`                      | `true`  | Read each Delta data file through `delta-kernel-rs`'s own read + transform + deletion-vector path. Set `false` to fall back to the legacy reader.                                                                                                                           |
+| `spark.comet.scan.deltaNative.dataFileConcurrencyLimit`     | `1`     | Per-task concurrency when reading data files. Raise to 2–8 on tables with many small files to hide I/O latency (uses more memory).                                                                                                                                          |
+| `spark.comet.scan.deltaNative.fallbackOnUnsupportedFeature` | `true`  | When `true`, fall back to Spark's Delta reader on any unsupported Delta protocol feature. Set `false` to error instead (useful in tests asserting the native path is taken).                                                                                                |
+| `spark.comet.delta.cdf.maxPartitions`                       | `8`     | Maximum number of Spark partitions a Change Data Feed (`readChangeFeed`) read is split into. The version range is chunked into up to this many contiguous sub-ranges, each read by an independent native `TableChanges` call. Capped by the number of commits in the range. |
 
 ## Supported features
 
@@ -106,6 +108,8 @@ To disable native Delta scans (fall back to Spark's Delta reader), set
 - **Time travel** (`VERSION AS OF` / `TIMESTAMP AS OF`)
 - **Partition pruning**, including Dynamic Partition Pruning (e.g. `MERGE` over partitioned tables)
 - **Generated / partition columns**
+- **Change Data Feed** (`readChangeFeed`), read natively and split across multiple Spark partitions
+- **`_metadata` columns** and **INT96 timestamps**
 - Storage: local filesystem, HDFS, and S3-compatible object stores
 
 ## Current limitations
@@ -115,7 +119,6 @@ scan and Spark's own Delta reader handles it (correctness is always preserved; t
 is visible in `EXPLAIN EXTENDED` when `spark.comet.explainFallback.enabled=true`). Notable
 fallbacks:
 
-- Path-based Change Data Feed reads (`DeltaCDFRelation`); table-API CDF still uses Spark
 - `VARIANT`-typed columns
 - Some cloud credential configurations are not bridged to the native reader (e.g. GCS,
   certain per-bucket S3 credential chains)
