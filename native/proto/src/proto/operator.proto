@@ -399,6 +399,12 @@ message DeltaScanCommon {
   uint64 cdf_start_version = 30;
   // Inclusive end version of the CDF range. `has_cdf_end_version` distinguishes "latest" (unset).
   optional uint64 cdf_end_version = 31;
+  // Delta's test-only deletion-vector filename prefix
+  // (`spark.databricks.delta.testOnly.dvFileNamePrefix`, default `test%dv%prefix-` under
+  // `Utils.isTesting`, empty in production). Delta prepends it to the DV filename at write time
+  // (`<prefix>deletion_vector_<uuid>.bin`) but delta-kernel-rs resolves the un-prefixed name, so
+  // executor-side DV reads splice it back in for "u"-storage DVs. Empty = no-op (production).
+  string dv_file_name_prefix = 32;
 }
 
 // Operator payload for a Delta scan.

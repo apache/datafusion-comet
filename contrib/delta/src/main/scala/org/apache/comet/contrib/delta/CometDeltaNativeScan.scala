@@ -1221,6 +1221,10 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     val kernelReadEligible = DeltaConf.COMET_DELTA_KERNEL_READ_ENABLED.get(scan.conf)
     commonBuilder.setKernelRead(kernelReadEligible)
     commonBuilder.setSynthesizeInWorker(synthesizeInWorker)
+    // Delta's test mode prepends `spark.databricks.delta.testOnly.dvFileNamePrefix` to DV
+    // filenames; delta-kernel-rs doesn't honour that JVM-only conf, so the executor splices it
+    // back into kernel's resolved DV path. Empty in production (no-op).
+    commonBuilder.setDvFileNamePrefix(DeltaReflection.dvFileNamePrefix(scan.conf))
 
     // (Data-filter pushdown belonged to the removed ParquetSource path; the kernel-read path does
     // its own stats-based file pruning during log replay, so no pushed predicate is shipped.)

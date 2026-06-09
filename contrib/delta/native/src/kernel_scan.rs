@@ -300,6 +300,10 @@ pub struct DeltaKernelScanExec {
     table_root: String,
     /// Storage credentials/options for the kernel engine.
     storage_config: DeltaStorageConfig,
+    /// Delta's test-only DV filename prefix (`spark.databricks.delta.testOnly.dvFileNamePrefix`).
+    /// Empty in production; non-empty (e.g. `test%dv%prefix-`) under Delta's `Utils.isTesting`.
+    /// Spliced into kernel's resolved DV path so executor-side DV reads find the real file.
+    dv_file_name_prefix: String,
     /// Files this scan reads (whole-table, single partition for now).
     files: Vec<KernelScanFile>,
     /// Stage B/C: when true, this exec produces ALL synthetic columns itself (row_index / row_id via
@@ -332,6 +336,7 @@ impl DeltaKernelScanExec {
         session_timezone: String,
         table_root: String,
         storage_config: DeltaStorageConfig,
+        dv_file_name_prefix: String,
         files: Vec<KernelScanFile>,
         synthesize: bool,
         cdf: Option<(u64, Option<u64>)>,
@@ -357,6 +362,7 @@ impl DeltaKernelScanExec {
             session_timezone,
             table_root,
             storage_config,
+            dv_file_name_prefix,
             files,
             synthesize,
             cdf,
@@ -396,7 +402,7 @@ impl DeltaKernelScanExec {
                 let n = self.file_row_count(engine.as_ref(), &table_root_url, file)?;
                 let live = match (&file.dv, self.apply_dv) {
                     (Some(desc), true) => {
-                        let deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config)
+                        let deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config, &self.dv_file_name_prefix)
                             .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                         n - deleted.iter().filter(|&&i| (i as usize) < n).count()
                     }
@@ -441,7 +447,7 @@ impl DeltaKernelScanExec {
             // rows pass through and a wrapping DeltaSyntheticColumnsExec drops/flags them.
             let selection_vector = match (&file.dv, self.apply_dv) {
                 (Some(desc), true) => {
-                    let deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config)
+                    let deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config, &self.dv_file_name_prefix)
                         .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                     let n = file.record_count.ok_or_else(|| {
                         DataFusionError::Execution(format!(
@@ -681,7 +687,7 @@ impl DeltaKernelScanExec {
                 let n = self.file_row_count(engine.as_ref(), &table_root_url, file)?;
                 let mut deleted: Vec<u64> = Vec::new();
                 if let Some(desc) = &file.dv {
-                    deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config)
+                    deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config, &self.dv_file_name_prefix)
                         .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                 }
                 let (rows, is_deleted): (usize, Option<Int8Array>) = if emit_is_row_deleted {
@@ -715,7 +721,7 @@ impl DeltaKernelScanExec {
             // Decode the DV once per file (sorted physical row indexes), only when we flag or drop.
             let mut deleted: Vec<u64> = Vec::new();
             if let Some(desc) = &file.dv {
-                deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config)
+                deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config, &self.dv_file_name_prefix)
                     .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                 deleted.sort_unstable();
             }
@@ -1179,6 +1185,7 @@ mod tests {
             "UTC".to_string(),
             url.as_str().to_string(),
             DeltaStorageConfig::default(),
+            String::new(), // no DV filename prefix
             files,
             false, // legacy path (no in-worker synthesis)
             None,  // not a CDF read
@@ -1262,6 +1269,7 @@ mod tests {
             "UTC".to_string(),
             url.as_str().to_string(),
             DeltaStorageConfig::default(),
+            String::new(), // no DV filename prefix
             files,
             false, // legacy path (no in-worker synthesis)
             None,  // not a CDF read

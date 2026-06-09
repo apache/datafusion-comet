@@ -706,6 +706,43 @@ object DeltaReflection extends Logging {
     }
   }
 
+  // Resolve `DeltaSQLConf.TEST_DV_NAME_PREFIX` (a `ConfigEntry[String]`) and `SQLConf.getConf`
+  // once per JVM. `None` when the entry is absent (Delta version drift) -> empty prefix.
+  private lazy val dvNamePrefixAccessor: Option[(AnyRef, java.lang.reflect.Method)] =
+    try {
+      val confObjCls = Class.forName("org.apache.spark.sql.delta.sources.DeltaSQLConf$")
+      val module = confObjCls.getField("MODULE$").get(null)
+      val entry = confObjCls.getMethod("TEST_DV_NAME_PREFIX").invoke(module)
+      val configEntryCls = Class.forName("org.apache.spark.internal.config.ConfigEntry")
+      val getConf =
+        classOf[org.apache.spark.sql.internal.SQLConf].getMethod("getConf", configEntryCls)
+      Some((entry, getConf))
+    } catch {
+      case _: ReflectiveOperationException => None
+      case _: LinkageError => None
+    }
+
+  /**
+   * Delta's test-only deletion-vector filename prefix
+   * (`spark.databricks.delta.testOnly.dvFileNamePrefix`). Delta prepends it to every DV file it
+   * writes (`<prefix>deletion_vector_<uuid>.bin`) when `Utils.isTesting` is true; in production it
+   * is empty. delta-kernel-rs has no knowledge of this JVM-only conf and resolves the un-prefixed
+   * name, so the executor splices this prefix into kernel's resolved DV path (see
+   * `dv_reader::read_dv_indexes`).
+   *
+   * Read via the `ConfigEntry` rather than `getConfString(key, "")`: the prefix is the entry's
+   * (testing-gated) DEFAULT, not a session setting, so a raw string lookup would always see empty.
+   * This mirrors how Delta's own writer/reader obtain it. Empty on Delta versions lacking the
+   * entry (reflection miss -> production behaviour).
+   */
+  def dvFileNamePrefix(sqlConf: org.apache.spark.sql.internal.SQLConf): String =
+    dvNamePrefixAccessor match {
+      case Some((entry, getConf)) =>
+        try getConf.invoke(sqlConf, entry).asInstanceOf[String]
+        catch { case scala.util.control.NonFatal(_) => "" }
+      case None => ""
+    }
+
   /**
    * Convert Delta's `DeletionVectorDescriptor` into the proto `DeltaDvDescriptor` so the
    * native executor (not the driver) reads the DV bitmap. Pre-#218 the driver called

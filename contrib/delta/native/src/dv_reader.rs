@@ -74,13 +74,50 @@ pub fn read_dv_indexes(
     proto_dv: &DeltaDvDescriptor,
     table_root_url: &Url,
     config: &DeltaStorageConfig,
+    dv_file_name_prefix: &str,
 ) -> DeltaResult<Vec<u64>> {
     let descriptor = proto_to_kernel_descriptor(proto_dv)?;
     let engine = get_or_create_engine(table_root_url, config)?;
     let storage = Engine::storage_handler(&*engine);
+
+    // Delta's test mode prepends `dv_file_name_prefix`
+    // (`spark.databricks.delta.testOnly.dvFileNamePrefix`) to every DV filename Delta WRITES:
+    // `<prefix>deletion_vector_<uuid>.bin`. delta-kernel-rs has no knowledge of that JVM-only conf,
+    // so for "u" (UUID-relative) storage it resolves the UN-prefixed `deletion_vector_<uuid>.bin`
+    // and the read fails (the file isn't there). Splice the prefix into kernel's own resolved path
+    // and read through an absolute-path ("p") descriptor instead. Only "u" descriptors get the
+    // prefix -- Delta applies it only to the relative DVs it writes, never to verbatim "p"
+    // (absolute) or "i" (inline) descriptors. The prefix is empty in production, so this whole
+    // branch is a no-op there.
+    if !dv_file_name_prefix.is_empty() && proto_dv.storage_type == "u" {
+        if let Some(resolved) = descriptor.absolute_path(table_root_url)? {
+            if let Some(prefixed) = splice_dv_file_name_prefix(&resolved, dv_file_name_prefix) {
+                let mut abs = proto_dv.clone();
+                abs.storage_type = "p".to_string();
+                abs.path_or_inline_dv = prefixed;
+                let abs_descriptor = proto_to_kernel_descriptor(&abs)?;
+                return abs_descriptor
+                    .row_indexes(storage, table_root_url)
+                    .map_err(|e| DeltaError::Internal(format!("DV read failed: {e}")));
+            }
+        }
+    }
+
     descriptor
         .row_indexes(storage, table_root_url)
         .map_err(|e| DeltaError::Internal(format!("DV read failed: {e}")))
+}
+
+/// Insert Delta's test-mode DV filename prefix in front of the `deletion_vector_<uuid>.bin`
+/// component of `resolved` (the path delta-kernel-rs computed WITHOUT the prefix). Operates on the
+/// decoded filesystem path so the literal `%` in prefixes like `test%dv%prefix-` is re-encoded
+/// correctly when rebuilt into a `file://` URL. Returns `None` for non-file URLs (cloud stores
+/// never carry the test prefix, which only exists under `Utils.isTesting` on local temp dirs).
+fn splice_dv_file_name_prefix(resolved: &Url, prefix: &str) -> Option<String> {
+    let path = resolved.to_file_path().ok()?;
+    let file_name = path.file_name()?.to_str()?;
+    let new_path = path.with_file_name(format!("{prefix}{file_name}"));
+    Some(Url::from_file_path(&new_path).ok()?.into())
 }
 
 /// Reconstruct kernel's `DeletionVectorDescriptor` from the proto wire form.
@@ -286,6 +323,37 @@ mod tests {
     fn normalize_table_root_preserves_trailing_slash() {
         let u = normalize_table_root("file:///tmp/t/").unwrap();
         assert_eq!(u.as_str(), "file:///tmp/t/");
+    }
+
+    // The test-mode DV prefix is spliced in front of the `deletion_vector_<uuid>.bin` filename
+    // (not the directory), and the literal `%` in the prefix is re-encoded as `%25` in the URL.
+    #[test]
+    fn splice_dv_file_name_prefix_inserts_before_filename() {
+        let resolved =
+            Url::parse("file:///tmp/t/deletion_vector_8d3e34f6-e84e-45b1-a9e5-529a013299b1.bin")
+                .unwrap();
+        let out = splice_dv_file_name_prefix(&resolved, "test%dv%prefix-").unwrap();
+        assert_eq!(
+            out,
+            "file:///tmp/t/test%25dv%25prefix-deletion_vector_8d3e34f6-e84e-45b1-a9e5-529a013299b1.bin"
+        );
+    }
+
+    // A random-prefix DV (kernel resolves it into a subdirectory) keeps the directory; only the
+    // filename gets the test prefix.
+    #[test]
+    fn splice_dv_file_name_prefix_keeps_parent_dir() {
+        let resolved = Url::parse("file:///tmp/t/ab/deletion_vector_xyz.bin").unwrap();
+        let out = splice_dv_file_name_prefix(&resolved, "p-").unwrap();
+        assert_eq!(out, "file:///tmp/t/ab/p-deletion_vector_xyz.bin");
+    }
+
+    // Non-file URLs (cloud object stores, which never carry the JVM test prefix) are declined so
+    // the caller falls back to kernel's own resolution.
+    #[test]
+    fn splice_dv_file_name_prefix_declines_non_file_url() {
+        let resolved = Url::parse("s3://bucket/t/deletion_vector_xyz.bin").unwrap();
+        assert!(splice_dv_file_name_prefix(&resolved, "test%dv%prefix-").is_none());
     }
 
     // A corrupt/truncated parquet (e.g. the kernel "EOF: footer metadata" error) must become a

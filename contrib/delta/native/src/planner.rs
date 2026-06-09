@@ -511,6 +511,7 @@ pub fn plan_delta_scan(
         common.session_timezone.clone(),
         table_root.clone(),
         storage_config.clone(),
+        common.dv_file_name_prefix.clone(),
         files,
         synthesize,
         cdf,
