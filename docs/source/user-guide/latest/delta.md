@@ -55,11 +55,11 @@ reflection bridge returns no handler and the native dispatch arm is compiled out
 
 ### Supported Spark / Delta versions
 
-| Spark | Delta | Scala |
-|-------|-------|-------|
+| Spark | Delta | Scala       |
+| ----- | ----- | ----------- |
 | 3.5   | 3.3.2 | 2.12 / 2.13 |
-| 4.0   | 4.0.0 | 2.13  |
-| 4.1   | 4.1.0 | 2.13  |
+| 4.0   | 4.0.0 | 2.13        |
+| 4.1   | 4.1.0 | 2.13        |
 
 Delta 4.1 (Spark 4.1) requires Java 17.
 
@@ -91,11 +91,11 @@ To disable native Delta scans (fall back to Spark's Delta reader), set
 
 ### Tuning
 
-| Config | Default | Description |
-|--------|---------|-------------|
-| `spark.comet.scan.deltaNative.enabled` | `true` | Enable native Delta table scans. |
-| `spark.comet.scan.deltaNative.dataFileConcurrencyLimit` | `1` | Per-task concurrency when reading data files. Raise to 2–8 on tables with many small files to hide I/O latency (uses more memory). |
-| `spark.comet.scan.deltaNative.fallbackOnUnsupportedFeature` | `true` | When `true`, fall back to Spark's Delta reader on any unsupported Delta protocol feature. Set `false` to error instead (useful in tests asserting the native path is taken). |
+| Config                                                      | Default | Description                                                                                                                                                                  |
+| ----------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spark.comet.scan.deltaNative.enabled`                      | `true`  | Enable native Delta table scans.                                                                                                                                             |
+| `spark.comet.scan.deltaNative.dataFileConcurrencyLimit`     | `1`     | Per-task concurrency when reading data files. Raise to 2–8 on tables with many small files to hide I/O latency (uses more memory).                                           |
+| `spark.comet.scan.deltaNative.fallbackOnUnsupportedFeature` | `true`  | When `true`, fall back to Spark's Delta reader on any unsupported Delta protocol feature. Set `false` to error instead (useful in tests asserting the native path is taken). |
 
 ## Supported features
 

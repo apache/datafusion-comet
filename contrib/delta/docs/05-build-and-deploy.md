@@ -23,10 +23,10 @@
 
 Two things must be enabled together to get Delta acceleration:
 
-| Switch | What it controls |
-|---|---|
-| Maven: `-Pcontrib-delta` | Scala/Java contrib classes are compiled and packaged into `comet-spark` JAR. The Spark extension is registered. |
-| Cargo: `--features contrib-delta` (on `native/core`) | The contrib Rust crate is linked into `libcomet`. The JNI symbol `Java_…_planDeltaScan` is exported. |
+| Switch                                               | What it controls                                                                                                |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Maven: `-Pcontrib-delta`                             | Scala/Java contrib classes are compiled and packaged into `comet-spark` JAR. The Spark extension is registered. |
+| Cargo: `--features contrib-delta` (on `native/core`) | The contrib Rust crate is linked into `libcomet`. The JNI symbol `Java_…_planDeltaScan` is exported.            |
 
 Mismatched switches produce a clear failure:
 
@@ -132,7 +132,7 @@ targets / Maven invocations that do so).
 </profile>
 ```
 
-The Maven profile does *not* trigger the native Cargo build — that is a
+The Maven profile does _not_ trigger the native Cargo build — that is a
 separate invocation. Operators must remember to pass
 `--features contrib-delta` to the Cargo command (or set the equivalent
 environment variable used by `make release`) so the dylib and the JAR end
@@ -146,13 +146,14 @@ required.
 
 ## What the `comet-spark` JAR looks like
 
-| File or class | Default build | `-Pcontrib-delta` build |
-|---|---|---|
-| `org.apache.comet.rules.CometScanRule` | yes | yes |
-| `org.apache.comet.rules.DeltaIntegration` | yes (reflective bridge, returns None at runtime) | yes |
-| `org.apache.comet.contrib.delta.DeltaScanRule` | absent | present |
-| `org.apache.comet.contrib.delta.CometDeltaNativeScan` | absent | present |
-| `org.apache.comet.contrib.delta.DeltaPlanDataInjector` | absent | present |
+| File or class                                          | Default build                                    | `-Pcontrib-delta` build |
+| ------------------------------------------------------ | ------------------------------------------------ | ----------------------- |
+| `org.apache.comet.rules.CometScanRule`                 | yes                                              | yes                     |
+| `org.apache.comet.rules.DeltaIntegration`              | yes (reflective bridge, returns None at runtime) | yes                     |
+| `org.apache.comet.contrib.delta.DeltaScanRule`         | absent                                           | present                 |
+| `org.apache.comet.contrib.delta.CometDeltaNativeScan`  | absent                                           | present                 |
+| `org.apache.comet.contrib.delta.DeltaPlanDataInjector` | absent                                           | present                 |
+
 A `default` consumer is therefore entirely free of Delta classes. Running
 the default JAR against a Delta workload simply means
 `DeltaIntegration.transformV1IfDelta` returns `None` and Spark's
@@ -216,11 +217,11 @@ under that matrix entry.
 ## Local iteration tips
 
 - **Iterate on Scala only**: `mvn -Pspark-4.1 -Pcontrib-delta -DskipTests
-  -pl spark -am install` — skips the native build, reuses your existing
+-pl spark -am install` — skips the native build, reuses your existing
   dylib
 - **Iterate on Rust only**: build native (`cargo build -p comet --features
-  contrib-delta`), then `cp target/release/libcomet.dylib
-  spark/target/...` if you want to skip the JAR repack — the contrib
+contrib-delta`), then `cp target/release/libcomet.dylib
+spark/target/...` if you want to skip the JAR repack — the contrib
   classes are still wired the same way
 
 The regression script `contrib/delta/dev/run-regression.sh` handles all of

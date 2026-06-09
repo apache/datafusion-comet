@@ -37,6 +37,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NATIVE_DIR="$ROOT/native"
 SPARK_DIR="$ROOT/spark"
 
+# Use the repo's Maven wrapper, not a bare `mvn`. The CI gate job runs in a bare
+# `amd64/rust` container that has no system Maven on PATH, so `mvn` would fail to
+# launch, produce no dependency output, and trip the anti-vacuous guard below.
+# `./mvnw` self-provisions the pinned Maven version regardless of the image.
+MVNW="$ROOT/mvnw"
+
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 hdr()   { printf '\n\033[36m==> %s\033[0m\n' "$*"; }
@@ -65,7 +71,7 @@ green "OK: cargo tree with contrib-delta correctly pulls comet-contrib-delta + d
 
 hdr "Maven: default profile excludes io.delta:* dependencies"
 cd "$ROOT"
-DEPS_DEFAULT="$(mvn -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
+DEPS_DEFAULT="$("$MVNW" -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
 # Guard against a vacuous pass: if mvn failed entirely (network/profile/OOM) the
 # capture is empty, the io.delta grep below finds nothing, and the gate would
 # "pass" without having proven anything. Assert a dependency we KNOW is always
@@ -82,7 +88,7 @@ if echo "$DEPS_DEFAULT" | grep -qE 'io\.delta:'; then
 fi
 green "OK: default Maven build has zero io.delta dependencies"
 
-DEPS_CONTRIB="$(mvn -Pspark-4.1,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
+DEPS_CONTRIB="$("$MVNW" -Pspark-4.1,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
 DELTA_DEP_HITS="$(printf '%s\n' "$DEPS_CONTRIB" | grep -cE 'io\.delta:delta-spark.*:4\.' || true)"
 if [[ "$DELTA_DEP_HITS" -lt 1 ]]; then
   red "FAIL: -Pcontrib-delta + spark-4.1 missing delta-spark:4.x"
@@ -91,7 +97,7 @@ fi
 green "OK: -Pcontrib-delta + spark-4.1 correctly pulls delta-spark:4.x"
 
 # Per-Spark Delta version pinning: spark-3.5 + contrib-delta must pull delta-spark:3.x
-DEPS_CONTRIB_35="$(mvn -Pspark-3.5,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
+DEPS_CONTRIB_35="$("$MVNW" -Pspark-3.5,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
 DELTA35_HITS="$(printf '%s\n' "$DEPS_CONTRIB_35" | grep -cE 'io\.delta:delta-spark.*:3\.' || true)"
 if [[ "$DELTA35_HITS" -lt 1 ]]; then
   red "FAIL: -Pcontrib-delta + spark-3.5 missing delta-spark:3.x"
@@ -107,7 +113,7 @@ green "OK: -Pcontrib-delta + spark-3.5 correctly pulls delta-spark:3.x"
 # spark-4.0 + contrib-delta must pull delta-spark:4.0.x specifically (Delta 4.1
 # requires Spark 4.1 internals and tripping NoSuchMethodError on
 # ParserInterface.$init$ at runtime).
-DEPS_CONTRIB_40="$(mvn -Pspark-4.0,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
+DEPS_CONTRIB_40="$("$MVNW" -Pspark-4.0,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
 DELTA40_HITS="$(printf '%s\n' "$DEPS_CONTRIB_40" | grep -cE 'io\.delta:delta-spark.*:4\.0\.' || true)"
 if [[ "$DELTA40_HITS" -lt 1 ]]; then
   red "FAIL: -Pcontrib-delta + spark-4.0 missing delta-spark:4.0.x"
@@ -124,7 +130,7 @@ green "OK: -Pcontrib-delta + spark-4.0 correctly pulls delta-spark:4.0.x"
 
 hdr "Compiled classes: no contrib/delta classes in default build"
 cd "$ROOT"
-mvn -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark -am test-compile -q -DskipTests=true >/dev/null 2>&1
+"$MVNW" -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark -am test-compile -q -DskipTests=true >/dev/null 2>&1
 LEAK_CLASSES="$(find spark/target/classes -path '*comet/contrib*' -name '*.class' 2>/dev/null)"
 if [[ -n "$LEAK_CLASSES" ]]; then
   red "FAIL: default Maven build compiled contrib classes:"

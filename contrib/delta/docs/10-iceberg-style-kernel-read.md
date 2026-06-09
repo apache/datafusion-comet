@@ -15,7 +15,7 @@
   under the License.
 -->
 
-# Iceberg-style Delta contrib — read *through* delta-kernel-rs
+# Iceberg-style Delta contrib — read _through_ delta-kernel-rs
 
 > **Status: IMPLEMENTED and default.** This started as a plan; it is now the only
 > read path. `DeltaKernelScanExec` reads each Delta file through delta-kernel-rs
@@ -62,14 +62,14 @@ behavioural safety net.
 
 **Deleted (the win):**
 
-| Surface | ~LOC |
-|---|---|
-| `contrib/delta/native/src/synthetic_columns.rs` (DV-sweep exec + synthetic columns) | ~1218 |
-| `contrib/delta/native/src/dv_reader.rs` (DV decode) | ~259 |
-| `delta_scan.rs` `after_synthetics` + column-mapping-rename wiring | ~205 |
-| `CometDeltaNativeScan.scala` physicalisation (`extractSnapshotSchema`, `physicalise*`, `translateDeltaFieldIdToParquet`) | ~161 |
-| Proto fields for DV descriptors / synthetic-emit flags / column mappings + their Scala wiring | ~200 |
-| `DeltaScanRule.withDeltaColumnMappingMetadata` and related | ~100 |
+| Surface                                                                                                                  | ~LOC  |
+| ------------------------------------------------------------------------------------------------------------------------ | ----- |
+| `contrib/delta/native/src/synthetic_columns.rs` (DV-sweep exec + synthetic columns)                                      | ~1218 |
+| `contrib/delta/native/src/dv_reader.rs` (DV decode)                                                                      | ~259  |
+| `delta_scan.rs` `after_synthetics` + column-mapping-rename wiring                                                        | ~205  |
+| `CometDeltaNativeScan.scala` physicalisation (`extractSnapshotSchema`, `physicalise*`, `translateDeltaFieldIdToParquet`) | ~161  |
+| Proto fields for DV descriptors / synthetic-emit flags / column mappings + their Scala wiring                            | ~200  |
+| `DeltaScanRule.withDeltaColumnMappingMetadata` and related                                                               | ~100  |
 
 Order **~2000+ lines** removed, plus the elimination of the highest-risk hand-rolled logic
 (column mapping, DV offset accounting).
@@ -85,7 +85,7 @@ Order **~2000+ lines** removed, plus the elimination of the highest-risk hand-ro
   minus the physicalisation. The marker/fallback logic stays.
 - The **engine / object-store config** (`DeltaStorageConfig`, the cached kernel engine).
 - The **decline-to-vanilla fallback** (when kernel can't handle a feature, fall back to
-  Spark's reader). The set of declined cases may *shrink* (kernel handles more natively).
+  Spark's reader). The set of declined cases may _shrink_ (kernel handles more natively).
 - The **build gate** (`dev/verify-contrib-delta-gate.sh`).
 
 ## 3. Target architecture (mirrors `iceberg_scan.rs`)
@@ -120,7 +120,7 @@ dependency required**, but **not** the pure "ship the scan task" model Iceberg u
 What's public and usable on an executor without the `Snapshot`:
 
 - `scan::state::transform_to_logical(engine, physical_data, physical_schema, logical_schema,
-  transform)` — applies the transform via kernel's expression evaluator. This is what does
+transform)` — applies the transform via kernel's expression evaluator. This is what does
   column mapping (**including nested**), partition injection, and row-tracking. Handing this to
   kernel removes our buggy parquet-schema-adapter physicalisation entirely.
 - `scan::state::DvInfo::get_selection_vector(engine, table_root)` — the DV mask.
@@ -133,21 +133,21 @@ What's public and usable on an executor without the `Snapshot`:
 
 The one real gap: `ScanFile.transform` is an `ExpressionRef` that is **not serde-serializable**,
 and kernel's internal transform-spec builder (`TransformSpec` / `get_state_info` in
-`state_info.rs`) is `pub(crate)`. So we cannot ship kernel's *own* computed transform across the
+`state_info.rs`) is `pub(crate)`. So we cannot ship kernel's _own_ computed transform across the
 JNI/proto boundary, the way Iceberg ships a `FileScanTask`.
 
 **Design implication (revised from §4):** the executor **rebuilds an equivalent transform** from
 serializable inputs (logical + physical schema, the column-mapping metadata the contrib already
 extracts, per-file `partition_values`, and `base_row_id`) using the public `Transform`/`Expression`
 API, then applies it via the public `transform_to_logical` + `get_selection_vector`. The
-transform *application* is kernel's (correct nested handling); only the small, declarative
-transform *spec* is ours.
+transform _application_ is kernel's (correct nested handling); only the small, declarative
+transform _spec_ is ours.
 
 **Net effect on the deletion:**
 
 - Deleted as planned: `dv_reader.rs` (→ `get_selection_vector`), `synthetic_columns.rs` (the
   DV-sweep + all synthetic columns → kernel's `GenerateRowId` / `MetadataDerivedColumn` transform
-  + DV mask), and the historically-buggy nested-name physicalisation (→ `transform_to_logical`).
+  - DV mask), and the historically-buggy nested-name physicalisation (→ `transform_to_logical`).
 - Added (smaller, safer): `DeltaKernelScanExec` (~200-300 LOC, like `iceberg_scan.rs`), a
   transform-spec builder over the public `Transform` API (~200-400 LOC, declarative expression
   construction rather than schema-tree rewriting with pruning), and a Spark-parity adapter
@@ -164,7 +164,7 @@ deletes too, reaching the full Iceberg-clean shape.
 
 ## 4. The crux (original framing): distributing kernel's read
 
-`Scan::execute(engine)` is a **single-node** iterator over *all* files. Spark needs the read
+`Scan::execute(engine)` is a **single-node** iterator over _all_ files. Spark needs the read
 distributed across executors. This is the one genuinely hard part, and it is the gate for the
 whole effort.
 
@@ -189,7 +189,7 @@ Two fallbacks if Spike 0 is partly negative:
 
 - **4a.** Kernel reads + transforms, but we still distribute by file group exactly as today
   (the existing per-file-group partitioning already gives one file per DV'd partition).
-- **4b.** If kernel can't evaluate the transform on the executor, keep a *minimal* native
+- **4b.** If kernel can't evaluate the transform on the executor, keep a _minimal_ native
   translation for the column-mapping rename only (the spike showed nested field-id matching
   already works natively for ID mode), and still delete the DV/synthetic re-implementation.
   This is a partial win.
@@ -248,7 +248,7 @@ is **no per-executor log replay** (would be a duplicate-snapshot-read perf bug).
 - **Spark type parity of kernel output** — the adapter must reconcile kernel's Arrow types
   with what Comet expects (timestamp unit/zone, decimal precision, the materialised
   row-tracking column types). This is the bulk of Phase 2.
-- **Column mapping** — kernel resolves it per the Delta spec, which should be *more* correct
+- **Column mapping** — kernel resolves it per the Delta spec, which should be _more_ correct
   than the hand-rolled physicalisation. This removes the historically buggy area rather than
   porting it. Validate with `CometDeltaColumnMappingSuite` /
   `CometDeltaColumnMappingPhysicalNameReproSuite` / `CometDeltaTypeRoundTripAuditSuite`.

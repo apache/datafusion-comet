@@ -37,7 +37,7 @@ DeltaIntegration.transformV1IfDelta(plan, session, scanExec, r) match {
 }
 ```
 
-`DeltaIntegration` is a thin Scala object in *core* that:
+`DeltaIntegration` is a thin Scala object in _core_ that:
 
 1. On first call, reflectively looks up
    `org.apache.comet.contrib.delta.DeltaScanRule#transformV1IfDelta`
@@ -72,7 +72,7 @@ It's a `LeafExecNode` with these responsibilities:
   existing native exec path
 
 The kernel-rs scan runs once on first access of `allTasks`; the result is
-reused. DPP filters are deliberately applied *after* that lazy val (inside
+reused. DPP filters are deliberately applied _after_ that lazy val (inside
 `doExecuteColumnar`) rather than baked into `allTasks` — at planning time
 the DPP subquery is still a `SubqueryAdaptiveBroadcastExec` placeholder,
 so the actual partition values are not known yet.
@@ -192,13 +192,13 @@ serialised through the same encoding path as the static case.
 
 ## What's serialised vs computed at execute time
 
-| Computed at plan time (driver) | Computed at execute time (driver, lazy) |
-|---|---|
-| Schema resolution | DPP-resolved partition values |
-| Gate evaluation | kernel-rs file list |
-| Column-mapping translation | per-partition task byte arrays |
-| Synthetic-column detection | task packing into partitions |
-| Emit flags + `final_output_indices` | proto encoding |
+| Computed at plan time (driver)      | Computed at execute time (driver, lazy) |
+| ----------------------------------- | --------------------------------------- |
+| Schema resolution                   | DPP-resolved partition values           |
+| Gate evaluation                     | kernel-rs file list                     |
+| Column-mapping translation          | per-partition task byte arrays          |
+| Synthetic-column detection          | task packing into partitions            |
+| Emit flags + `final_output_indices` | proto encoding                          |
 
 Nothing in this list happens per-batch on the executor; the executor's only
 job is to deserialise the proto and run the resulting DataFusion plan.

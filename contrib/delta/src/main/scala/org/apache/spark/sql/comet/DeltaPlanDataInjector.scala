@@ -50,6 +50,11 @@ object DeltaPlanDataInjector extends PlanDataInjector {
     if (!op.hasDeltaScan) return false
     // The common-only proto produced at planning time has zero tasks. After injection
     // the operator carries the partition's tasks -- skip those (idempotent canInject).
+    //
+    // Note: a CDF read always has zero tasks (it carries a version sub-range, not files), so this
+    // stays true even after the CDF branch in `inject` runs. That's intentionally NOT idempotent-
+    // guarded the way the task branch is, and it's safe because `PlanDataInjector.injectPlanData`
+    // walks each operator exactly once per partition (CometExecRDD.compute -> one inject per op).
     op.getDeltaScan.getTasksCount == 0
   }
 

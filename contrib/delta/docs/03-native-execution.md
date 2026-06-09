@@ -97,7 +97,7 @@ groups for better parallelism.
 
 When `column_mapping_mode = "name"` (or `id` if physical names still differ),
 the parquet read produced columns under their physical names (e.g.
-`col-1a2b3c`). The downstream layers expect *logical* names. We insert a
+`col-1a2b3c`). The downstream layers expect _logical_ names. We insert a
 `ProjectionExec` that renames physical → logical right after the parquet
 source.
 
@@ -139,12 +139,12 @@ This is the most Delta-specific piece. Source: `contrib/delta/native/src/synthet
 
 The exec appends up to four columns onto the parquet output:
 
-| Column | Type | How it's computed |
-|---|---|---|
-| `__delta_internal_row_index` | UInt64 | per-file row counter, starts at 0, increments by batch size |
+| Column                            | Type        | How it's computed                                                   |
+| --------------------------------- | ----------- | ------------------------------------------------------------------- |
+| `__delta_internal_row_index`      | UInt64      | per-file row counter, starts at 0, increments by batch size         |
 | `__delta_internal_is_row_deleted` | Int32 (0/1) | walks the per-task DV sorted indexes against the current row offset |
-| `row_id` | Int64 | `task.base_row_id + physical_row_index` (per file) |
-| `row_commit_version` | Int64 | `task.default_row_commit_version` (constant per file) |
+| `row_id`                          | Int64       | `task.base_row_id + physical_row_index` (per file)                  |
+| `row_commit_version`              | Int64       | `task.default_row_commit_version` (constant per file)               |
 
 State is per **DataFusion partition**, not per file. Each `FileGroup` becomes
 its own DataFusion partition (because `need_per_file_groups = true` whenever
@@ -164,7 +164,7 @@ There is no explicit "task finished" reset. State doesn't need to reset
 because each partition's stream object only ever sees rows from one file.
 
 **Why we synthesise rather than read from a materialised column**. Delta
-*can* materialise `row_id` / `row_commit_version` into the parquet files at
+_can_ materialise `row_id` / `row_commit_version` into the parquet files at
 write time, in which case we'd just read them directly. But Delta only
 materialises them when row tracking has been on since the file was written —
 files written before row tracking was enabled have a `baseRowId` table-level

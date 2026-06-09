@@ -50,41 +50,41 @@ documents WHY the decline exists and what would need to change to remove it.
 
 ### Correctness — load-bearing, do not remove
 
-| Decline | Reason | Removal path |
-|---|---|---|
-| DV materialisation failure | Kernel-rs couldn't read or parse a DV file → we don't know which rows are deleted → we cannot safely return data | Cannot be removed; this is "kernel errored, defer to Spark" |
-| Reflective AddFile extraction failure | Couldn't get the file list from the Delta relation → nothing to scan | Cannot be removed; this is "Delta's reflection surface changed shape" |
-| Kernel-rs log-replay error | Kernel returned an error during snapshot resolution → we don't have an authoritative file list | Cannot be removed; same class as above |
-| Phase 6 reader-feature gate | Currently an empty list; future kernel-rs versions may return reader-feature names we don't yet understand | Per-feature evaluation as kernel-rs evolves |
+| Decline                               | Reason                                                                                                           | Removal path                                                          |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| DV materialisation failure            | Kernel-rs couldn't read or parse a DV file → we don't know which rows are deleted → we cannot safely return data | Cannot be removed; this is "kernel errored, defer to Spark"           |
+| Reflective AddFile extraction failure | Couldn't get the file list from the Delta relation → nothing to scan                                             | Cannot be removed; this is "Delta's reflection surface changed shape" |
+| Kernel-rs log-replay error            | Kernel returned an error during snapshot resolution → we don't have an authoritative file list                   | Cannot be removed; same class as above                                |
+| Phase 6 reader-feature gate           | Currently an empty list; future kernel-rs versions may return reader-feature names we don't yet understand       | Per-feature evaluation as kernel-rs evolves                           |
 
 ### Shared Comet limits (apply to any native scan, not Delta-specific)
 
-| Decline | Reason | Removal path |
-|---|---|---|
-| Unsupported encryption KMS config | Comet core's `CometParquetUtils` rejects | Implement KMS bridge in Comet core |
-| Custom Hadoop FS schemes (`fake://`) | `object_store` has no Hadoop FS plugin layer | Bridge Hadoop `FileSystem` to `object_store` in Rust |
-| `ShortType` under default config | `CometScanTypeChecker` rejects | Flip the default after coverage testing |
-| String collation in schema | Comet core can't evaluate collation-aware ops yet | Implement in core expression evaluators |
-| Variant struct in schema | Arrow-rs has `parquet-variant` but Comet hasn't integrated | Integrate `parquet-variant` in Comet core |
+| Decline                              | Reason                                                     | Removal path                                         |
+| ------------------------------------ | ---------------------------------------------------------- | ---------------------------------------------------- |
+| Unsupported encryption KMS config    | Comet core's `CometParquetUtils` rejects                   | Implement KMS bridge in Comet core                   |
+| Custom Hadoop FS schemes (`fake://`) | `object_store` has no Hadoop FS plugin layer               | Bridge Hadoop `FileSystem` to `object_store` in Rust |
+| `ShortType` under default config     | `CometScanTypeChecker` rejects                             | Flip the default after coverage testing              |
+| String collation in schema           | Comet core can't evaluate collation-aware ops yet          | Implement in core expression evaluators              |
+| Variant struct in schema             | Arrow-rs has `parquet-variant` but Comet hasn't integrated | Integrate `parquet-variant` in Comet core            |
 
 ### External
 
-| Decline | Reason | Removal path |
-|---|---|---|
+| Decline                           | Reason                                              | Removal path                           |
+| --------------------------------- | --------------------------------------------------- | -------------------------------------- |
 | `TahoeLogFileIndexWithCloudFetch` | Databricks-proprietary file index; not in OSS Delta | Wouldn't ship in this PR; DBR-specific |
 
 ### Workaround, tracked upstream
 
-| Decline | Reason | Removal path |
-|---|---|---|
+| Decline                           | Reason                                                   | Removal path                            |
+| --------------------------------- | -------------------------------------------------------- | --------------------------------------- |
 | `CreateArray` mixed element types | `apache/datafusion#22366` (`make_array` strict on types) | Remove this decline when upstream lands |
 
 ### User off-switches
 
-| Switch | Effect |
-|---|---|
-| `spark.comet.scan.deltaNative.enabled=false` | Decline all Delta scans → Spark's reader |
-| `spark.comet.exec.enabled=false` | Disable Comet entirely → Spark for everything |
+| Switch                                       | Effect                                        |
+| -------------------------------------------- | --------------------------------------------- |
+| `spark.comet.scan.deltaNative.enabled=false` | Decline all Delta scans → Spark's reader      |
+| `spark.comet.exec.enabled=false`             | Disable Comet entirely → Spark for everything |
 
 ## Removed decline gates (post-PR2)
 
@@ -142,11 +142,11 @@ mechanism.
 
 ## Known-safe configuration changes operators can make
 
-| Config | Default | Notes |
-|---|---|---|
-| `spark.comet.scan.deltaNative.enabled` | `true` (when contrib loaded) | Per-query off-switch via SET |
-| `spark.comet.parquet.read.io.threadPoolSize` | (Comet default) | Same setting as plain Comet parquet |
-| `spark.comet.batchSize` | (Comet default) | Same setting; controls Arrow batch size |
+| Config                                       | Default                      | Notes                                   |
+| -------------------------------------------- | ---------------------------- | --------------------------------------- |
+| `spark.comet.scan.deltaNative.enabled`       | `true` (when contrib loaded) | Per-query off-switch via SET            |
+| `spark.comet.parquet.read.io.threadPoolSize` | (Comet default)              | Same setting as plain Comet parquet     |
+| `spark.comet.batchSize`                      | (Comet default)              | Same setting; controls Arrow batch size |
 
 There is currently no Delta-specific tuning beyond the on/off switch. The
 contrib reuses Comet's parquet tuning surface because the read path IS

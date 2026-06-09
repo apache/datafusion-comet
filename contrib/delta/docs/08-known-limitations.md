@@ -46,7 +46,7 @@ The Delta own-suite regression is run via
 - **History:** A dynamic-partition-pruning (DPP) broadcast join / MERGE over a
   partitioned Delta table originally crashed
   (`CometSubqueryAdaptiveBroadcastExec ... does not support the execute() code
-  path`), then (intermediate fix) ran correctly but unpruned in the
+path`), then (intermediate fix) ran correctly but unpruned in the
   native-block case. Now it engages the native scan, returns correct results,
   AND prunes to the required partitions in both the standalone and the
   parent-block (MERGE/join) cases.
@@ -55,7 +55,7 @@ The Delta own-suite regression is run via
      unexecutable `CometSubqueryAdaptiveBroadcastExec`.
      `CometPlanAdaptiveDynamicPruningFilters` rewrites it to an executable
      `CometSubqueryBroadcastExec` (with broadcast reuse), but the rewritten
-     scan *copy* was dropped when `transformUp` rebuilt the enclosing native
+     scan _copy_ was dropped when `transformUp` rebuilt the enclosing native
      block (`TreeNode.makeCopy` can't carry `@transient` fields). **Fix:** the
      scan implements `withDynamicPruningFilters` to install the rewrite IN PLACE
      via a transient side-channel (`dppFiltersOverride`) and return `this`, so
@@ -87,7 +87,7 @@ The Delta own-suite regression is run via
 
 The full credential audit (task #72) aligned the Delta engine with core Comet's
 `parquet_support::prepare_object_store_with_configs`: **S3** bridges Hadoop
-`fs.s3a.*` keys explicitly (object_store can't read them); **Azure / GCS / other**
+`fs.s3a.*` keys explicitly (`object_store` can't read them); **Azure / GCS / other**
 schemes are built through `object_store::parse_url`, which sources credentials from
 the ambient environment (`AZURE_*` / `GOOGLE_*` / ADC / instance metadata). A2a–A2d
 are now closed; A2e is the remaining residual.
@@ -187,7 +187,7 @@ but kernel exposes no equivalent.
 - **Behavior:** Delta's `DeltaColumnMappingSuite` "explicit id matching" test
   manually rewrites a field's `delta.columnMapping.id` via a raw `DeltaLog`
   transaction (its `updateFieldIdFor` helper) to (case 1) a **non-existent** id,
-  and (case 2) **another column's** id, then asserts strict id-*only* matching:
+  and (case 2) **another column's** id, then asserts strict id-_only_ matching:
   case 1 must read back `NULL` (no parquet column has that id), case 2 must read
   the column that physically carries the repointed id. The kernel-read path
   diverges on both, so the test is **ignored** under Comet (see the
@@ -202,13 +202,13 @@ but kernel exposes no equivalent.
   physicalName disagree with the file:
   - **Case 1 (id → non-existent):** the requested id isn't in the file, so kernel
     falls back to the physicalName and reads the **stale column's data** instead
-    of NULL. This is a *silent wrong value*, not an error.
+    of NULL. This is a _silent wrong value_, not an error.
   - **Case 2 (id → another column's id):** the field matches the intended parquet
     column by id, but the now-orphaned physical column ALSO matches the requested
     field by name — two parquet columns bind to one requested field, and the read
     fails with `FAILED_READ_FILE`.
 - **Why it's not declined Comet-side:** the repoint is only detectable by reading
-  the parquet file's *actual* field-ids — which is exactly where kernel then
+  the parquet file's _actual_ field-ids — which is exactly where kernel then
   mis-matches. There is **no plan-time schema signal** that distinguishes a
   repointed table from a normal column-mapping-`id` table (both have well-formed
   physicalName + id per field), so a precise decline has nothing to fire on. A
@@ -319,7 +319,7 @@ The originally-"untriaged" failures resolve into:
 - **Symptom:** A WHERE with ~101 AND'd predicates produces a very deep boolean
   expression; serializing it to Comet's native proto exceeds protobuf's default
   recursion limit (100): `InvalidProtocolBufferException: Protocol message had
-  too many levels of nesting` from `ExprOuterClass$BinaryExpr.mergeFrom`.
+too many levels of nesting` from `ExprOuterClass$BinaryExpr.mergeFrom`.
 - **Parse site:** `CometNativeExec.findShuffleScanIndices`
   (`OperatorOuterClass.Operator.parseFrom`) re-parses the serialized plan; a
   `CometFilter` carrying the 202-conjunct left-deep `And` is a deep `BinaryExpr`.
@@ -340,7 +340,7 @@ The originally-"untriaged" failures resolve into:
 - **Symptom:** With one data file truncated to 0 bytes, vanilla Spark+Delta
   throws `[FAILED_READ_FILE.NO_HINT]`; Comet's native reader throws
   `CometNativeException: External: Generic LocalFileSystem error: Requested range
-  was invalid` instead, so the test's message assertion fails.
+was invalid` instead, so the test's message assertion fails.
 - **Fix (CORE Comet):** `CometExecIterator.isFileReadError` now also recognises
   object-store read failures (truncated/empty file: "Requested range was
   invalid"; "Object at location ... not found"; "Generic <Store> error: ..."),
@@ -365,7 +365,7 @@ The originally-"untriaged" failures resolve into:
 - **Root cause:** B3 reads the materialized `_row-id-col-<uuid>` as a real parquet
   data column. That column is physically present only in files rewritten by a
   row-id-preserving op — ABSENT from freshly appended/inserted files (often absent
-  from *every* file). When one Spark partition packs several such files, the native
+  from _every_ file). When one Spark partition packs several such files, the native
   scan emits one parquet file-group per file (needed for per-file `row_index`), and
   reading a column physically absent from some files **across the
   concurrently-executed file-groups** non-deterministically drops whole
@@ -393,9 +393,9 @@ The originally-"untriaged" failures resolve into:
   value ...").
 - **Symptom:** native error/panic reading an `array<struct>` / nested-struct / map
   column via the kernel-read path: `Invalid argument error: column types must match
-  schema types, expected List(Struct(...)) but found List(Struct(...), field:
-  'element')` (and an equivalent `assert_eq!` / `arrow-select coalesce.rs:539` panic
-  on the unpartitioned pass-through). A *plain* read of a consistent `array<struct>`
+schema types, expected List(Struct(...)) but found List(Struct(...), field:
+'element')` (and an equivalent `assert_eq!` / `arrow-select coalesce.rs:539` panic
+  on the unpartitioned pass-through). A _plain_ read of a consistent `array<struct>`
   table is fine; the trigger is the schema-evolution / MERGE read.
 - **Root cause:** the kernel-read batch names nested Arrow fields by Spark convention
   (list element `"element"`), but `DeltaKernelScanExec.output_schema` -- derived from

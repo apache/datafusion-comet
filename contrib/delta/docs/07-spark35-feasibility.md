@@ -58,10 +58,10 @@ Five small changes; total under 100 lines:
 
 ## Test status
 
-| Spark + Delta | Suites | Tests | Status |
-|---|---|---|---|
-| Spark 4.1 + Delta 4.1.0 | 4 (Features, Native, ColumnMapping, Coverage) | 49 | ✅ all pass |
-| Spark 3.5 + Delta 3.3.2 | 4 (same) | 49 | ✅ all pass |
+| Spark + Delta           | Suites                                        | Tests | Status      |
+| ----------------------- | --------------------------------------------- | ----- | ----------- |
+| Spark 4.1 + Delta 4.1.0 | 4 (Features, Native, ColumnMapping, Coverage) | 49    | ✅ all pass |
+| Spark 3.5 + Delta 3.3.2 | 4 (same)                                      | 49    | ✅ all pass |
 
 Including the row-tracking-unmaterialised `_metadata.row_id` test, the
 DV-bearing tables tests, column-mapping name + id modes, and the full
@@ -118,11 +118,11 @@ its OWN intermediate columns (`_tmp_metadata_row_index`, `_row-id-col-`,
 
 ## Original feasibility prediction (preserved for the record)
 
-> | Effort tier | Time | Scope |
-> |---|---|---|
-> | Minimal viable | 2–3 dev-days | spark-3.5 build + most coverage passing, row-tracking degraded |
-> | Production-equivalent | 1–2 dev-weeks | full coverage on Delta 3.3, regression diff ported, all 49 contrib tests green |
-> | Full multi-version | 3–4 dev-weeks | spark-3.4 + spark-3.5 + spark-4.x all green, separate Delta versions per Spark, CI matrix |
+> | Effort tier           | Time          | Scope                                                                                     |
+> | --------------------- | ------------- | ----------------------------------------------------------------------------------------- |
+> | Minimal viable        | 2–3 dev-days  | spark-3.5 build + most coverage passing, row-tracking degraded                            |
+> | Production-equivalent | 1–2 dev-weeks | full coverage on Delta 3.3, regression diff ported, all 49 contrib tests green            |
+> | Full multi-version    | 3–4 dev-weeks | spark-3.4 + spark-3.5 + spark-4.x all green, separate Delta versions per Spark, CI matrix |
 
 Actual cost: **one dev session, ~2 hours including the post-mortem
 investigation.** The bulk of the predicted complexity — Spark-4-only API

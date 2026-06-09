@@ -34,22 +34,22 @@ scan integration in Comet. It is written for engineers who:
 
 - Know Spark's DataSource V2 interfaces (TableProvider / Scan / Batch /
   InputPartition) at a working level
-- Have *not* read Comet's internals before
-- Have *not* worked with `delta-kernel-rs` before
-- Want to understand the *design*, not just the *code*
+- Have _not_ read Comet's internals before
+- Have _not_ worked with `delta-kernel-rs` before
+- Want to understand the _design_, not just the _code_
 
 If you only have ten minutes, read [01-overview.md](01-overview.md).
 
 ## Reading order
 
-| # | Document | Audience |
-|---|---|---|
-| 01 | [Overview](01-overview.md) | Everyone — start here |
-| 02 | [Planning](02-planning.md) | Engineers reviewing the Scala-side planning rule and proto serde |
-| 03 | [Native execution](03-native-execution.md) | Engineers reviewing the Rust-side execution plan tree |
-| 04 | [Design decisions](04-design-decisions.md) | Reviewers asking "why didn't you just…" — read after 01 |
-| 05 | [Build and deploy](05-build-and-deploy.md) | Operators packaging and deploying Comet with Delta support |
-| 06 | [Fallback and ops](06-fallback-and-ops.md) | Operators investigating fallbacks and observability |
+| #   | Document                                   | Audience                                                         |
+| --- | ------------------------------------------ | ---------------------------------------------------------------- |
+| 01  | [Overview](01-overview.md)                 | Everyone — start here                                            |
+| 02  | [Planning](02-planning.md)                 | Engineers reviewing the Scala-side planning rule and proto serde |
+| 03  | [Native execution](03-native-execution.md) | Engineers reviewing the Rust-side execution plan tree            |
+| 04  | [Design decisions](04-design-decisions.md) | Reviewers asking "why didn't you just…" — read after 01          |
+| 05  | [Build and deploy](05-build-and-deploy.md) | Operators packaging and deploying Comet with Delta support       |
+| 06  | [Fallback and ops](06-fallback-and-ops.md) | Operators investigating fallbacks and observability              |
 
 ## One-paragraph summary
 
@@ -148,5 +148,5 @@ suggested reading sequence is:
 4. Selected source files per the strategy
 
 The remaining design documents (02, 03, 05, 06) are more useful as
-on-ramp material *after* the PR has merged, for engineers picking up the
+on-ramp material _after_ the PR has merged, for engineers picking up the
 code later.

@@ -66,7 +66,7 @@ they only want plain parquet is a regression vs the current state.
 
 **Alternative B.** Ship as a separate Maven artifact in a separate repo.
 
-**Why not.** This contrib needs a *small* set of core touchpoints that
+**Why not.** This contrib needs a _small_ set of core touchpoints that
 must evolve in lockstep with the contrib (`PlanDataInjector.opStructCase`,
 the `OpStruct::DeltaScan` variant, the `contrib_delta_scan` dispatcher
 arm). Splitting repos would version-couple them anyway; same-repo is
@@ -233,7 +233,7 @@ this for now because (a) the cache is keyed on a snapshot of the config,
 which is sufficient for short-lived sessions and (b) eviction-on-401 is
 a follow-up.
 
-## Why row-tracking *synthesis*, not "fall back if not materialised"?
+## Why row-tracking _synthesis_, not "fall back if not materialised"?
 
 **Decision.** When Delta hasn't materialised `row_id` /
 `row_commit_version`, synthesise them natively from `baseRowId +

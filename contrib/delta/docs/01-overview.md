@@ -65,7 +65,7 @@ doesn't do that:
 2. **We want to replace the entire scan node, not just the reader.** Delta
    inserts post-scan projections and filters to implement column mapping,
    row-tracking materialisation, and DV filtering. Those need to be
-   *recognised* and *eliminated*, then their semantics re-emitted natively.
+   _recognised_ and _eliminated_, then their semantics re-emitted natively.
 3. **Comet's existing plan-rewrite infrastructure already does this for
    plain parquet.** Hooking in at the same layer (`CometScanRule` /
    `CometExecRule`) gives us the same lifecycle, the same fallback
@@ -159,7 +159,7 @@ operational implications are in
 To keep the integration scope tight, this PR deliberately avoids:
 
 - **Writes.** Delta writes still go through Delta's Scala writer. The native
-  path is read-only. (`Delete`, `Update`, `Merge` *use* this read path via
+  path is read-only. (`Delete`, `Update`, `Merge` _use_ this read path via
   Spark's regenerated plans, but the write back to `_delta_log` is Delta's
   code.)
 - **Delta transaction protocol.** We do not parse `_delta_log` ourselves —
@@ -170,13 +170,13 @@ To keep the integration scope tight, this PR deliberately avoids:
 
 ## Where to read next
 
-| Topic | Document |
-|---|---|
-| The planning rule, proto layout, kernel-rs interaction | [02-planning.md](02-planning.md) |
-| The native execution plan tree and synthetic columns | [03-native-execution.md](03-native-execution.md) |
+| Topic                                                                   | Document                                         |
+| ----------------------------------------------------------------------- | ------------------------------------------------ |
+| The planning rule, proto layout, kernel-rs interaction                  | [02-planning.md](02-planning.md)                 |
+| The native execution plan tree and synthetic columns                    | [03-native-execution.md](03-native-execution.md) |
 | Why an extension rule (not DSv2), why contrib (not core), why kernel-rs | [04-design-decisions.md](04-design-decisions.md) |
-| Maven profile, Cargo feature, the publishing dance | [05-build-and-deploy.md](05-build-and-deploy.md) |
-| Failure handling, Spark fallback, observability | [06-fallback-and-ops.md](06-fallback-and-ops.md) |
+| Maven profile, Cargo feature, the publishing dance                      | [05-build-and-deploy.md](05-build-and-deploy.md) |
+| Failure handling, Spark fallback, observability                         | [06-fallback-and-ops.md](06-fallback-and-ops.md) |
 
 If you only have time for one more document, read
 [04-design-decisions.md](04-design-decisions.md) — it answers the "why didn't
