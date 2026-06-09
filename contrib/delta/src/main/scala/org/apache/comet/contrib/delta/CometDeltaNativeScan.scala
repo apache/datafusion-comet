@@ -593,7 +593,28 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     deltaScanBuilder.setTableRoot(tableRoot)
     val op = Operator.newBuilder().setDeltaScan(deltaScanBuilder.build()).build()
 
-    val exec = CometDeltaCdfScanExec(op, scan.output, SerializedPlan(None), scan, tableRoot)
+    // Version-range split: partition the inclusive [start, end] range across up to
+    // COMET_DELTA_CDF_MAX_PARTITIONS Spark partitions so a multi-version CDF read parallelizes
+    // (each partition runs an independent native TableChanges read of its slice). Chunking needs a
+    // concrete end; when none is resolvable (read-to-latest and the latest version is unknown) we
+    // keep a single partition with the end unset (native reads to latest).
+    val resolvedEndOpt: Option[Long] =
+      clampedEnd.orElse(DeltaReflection.extractCdfLatestVersion(relation))
+    val subRanges: Seq[(Long, Option[Long])] = resolvedEndOpt match {
+      case Some(end) if end >= startVersion =>
+        val maxParts = math.max(1, DeltaConf.COMET_DELTA_CDF_MAX_PARTITIONS.get(scan.conf))
+        val numCommits = end - startVersion + 1
+        val n = math.max(1, math.min(numCommits, maxParts.toLong)).toInt
+        val chunk = (numCommits + n - 1) / n
+        (0 until n).flatMap { i =>
+          val s = startVersion + i * chunk
+          if (s > end) None else Some((s, Some(math.min(s + chunk - 1, end))))
+        }
+      case _ =>
+        Seq((startVersion, clampedEnd))
+    }
+
+    val exec = CometDeltaCdfScanExec(op, scan.output, SerializedPlan(None), scan, tableRoot, subRanges)
     scan.logicalLink.foreach(exec.setLogicalLink)
     Some(exec)
   }

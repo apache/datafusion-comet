@@ -33,12 +33,19 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 /**
  * Native Delta Change Data Feed scan (`readChangeFeed`).
  *
- * Unlike [[CometDeltaNativeScanExec]] (per-file task list, DPP, encryption, multi-partition), a CDF
- * read is a SINGLE partition: the native `DeltaKernelScanExec` reconstructs delta-kernel's
+ * Unlike [[CometDeltaNativeScanExec]] (per-file task list, DPP, encryption), a CDF read has no
+ * per-file tasks: the native `DeltaKernelScanExec` reconstructs delta-kernel's
  * `TableChanges(start, end)` from the `DeltaScanCommon`'s `cdf_read` + version fields and calls
  * `execute()`, emitting the data columns plus `_change_type` / `_commit_version` /
- * `_commit_timestamp`. There are no per-file tasks -- kernel enumerates + reads the whole range
- * itself (its CDF per-file API is `pub(crate)`; only `execute()` is public).
+ * `_commit_timestamp` (kernel's CDF per-file API is `pub(crate)`; only `execute()` is public).
+ *
+ * Version-range split: the inclusive `[start, end]` range is chunked into `subRanges` contiguous
+ * slices, one per Spark partition. Each partition runs an independent native `TableChanges` read of
+ * its slice -- the shared `nativeOp` carries the full range (+ schema, + source key); the
+ * per-partition `DeltaScan` carries only that partition's sub-range, which `DeltaPlanDataInjector`
+ * splices over the shared range at execution. This stays a SINGLE `CometNativeExec` emitting N
+ * partitions (not a `CometUnionExec`, which is not a `CometNativeExec` and would make a downstream
+ * native shuffle / aggregation ineligible). A single-element `subRanges` is the un-split case.
  *
  * `originalPlan` is the `RowDataSourceScanExec` over `DeltaCDFRelation` we replaced; it is used only
  * for `output` and `logicalLink` (there is no `FileSourceScanExec` / `HadoopFsRelation` here).
@@ -48,10 +55,11 @@ case class CometDeltaCdfScanExec(
     override val output: Seq[Attribute],
     override val serializedPlanOpt: SerializedPlan,
     @transient originalPlan: SparkPlan,
-    tableRoot: String)
+    tableRoot: String,
+    subRanges: Seq[(Long, Option[Long])])
     extends CometLeafExec {
 
-  override def outputPartitioning: Partitioning = UnknownPartitioning(1)
+  override def outputPartitioning: Partitioning = UnknownPartitioning(subRanges.length)
 
   override def outputOrdering: Seq[SortOrder] = Nil
 
@@ -67,27 +75,33 @@ case class CometDeltaCdfScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
-    // The DeltaScanCommon (carrying cdf_read + version range + required schema) is shared; the
-    // single per-partition DeltaScan carries only the table root (no per-file tasks).
+    // The DeltaScanCommon (carrying cdf_read + full version range + required schema) is shared; each
+    // per-partition DeltaScan carries only this partition's inclusive cdf sub-range in a minimal
+    // common (cdf_read marks it), which DeltaPlanDataInjector splices over the shared range. No
+    // per-file tasks -- the native side reconstructs TableChanges from the (overridden) range.
     val commonData = nativeOp.getDeltaScan.getCommon.toByteArray
-    val partitionBytes = {
-      val b = OperatorOuterClass.DeltaScan.newBuilder()
+    val perPartition: Array[Array[Byte]] = subRanges.map { case (start, end) =>
+      val pc = OperatorOuterClass.DeltaScanCommon.newBuilder()
+      pc.setCdfRead(true)
+      pc.setCdfStartVersion(start)
+      end.foreach(pc.setCdfEndVersion)
+      val b = OperatorOuterClass.DeltaScan.newBuilder().setCommon(pc.build())
       if (tableRoot != null && tableRoot.nonEmpty) b.setTableRoot(tableRoot)
       b.build().toByteArray
-    }
+    }.toArray
     CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
       commonByKey = Map(sourceKey -> commonData),
-      perPartitionByKey = Map(sourceKey -> Array(partitionBytes)),
+      perPartitionByKey = Map(sourceKey -> perPartition),
       serializedPlan = serializedPlan,
-      numPartitions = 1,
+      numPartitions = perPartition.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
       subqueries = Seq.empty,
       broadcastedHadoopConfForEncryption = None,
       encryptedFilePaths = Seq.empty,
-      perPartitionFilePaths = Array(Seq.empty))
+      perPartitionFilePaths = Array.fill(perPartition.length)(Seq.empty))
   }
 
   override def convertBlock(): CometDeltaCdfScanExec = {

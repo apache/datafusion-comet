@@ -102,4 +102,52 @@ class CometDeltaCdfReflectionReproSuite extends CometDeltaTestBase {
       }
     }
   }
+
+  test("readChangeFeed splits a multi-version range across Spark partitions (#2)") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("cdf_split") { tablePath =>
+      spark.sql(
+        s"""CREATE OR REPLACE TABLE delta.`$tablePath`(id INT, v STRING)
+            USING DELTA TBLPROPERTIES (delta.enableChangeDataFeed = true)""")
+      // Each INSERT is its own commit, so the [0, 6] range spans 7 commits -- enough to chunk.
+      (1 to 6).foreach(i => spark.sql(s"INSERT INTO delta.`$tablePath` VALUES ($i, 'v$i')"))
+
+      val read = () =>
+        spark.read
+          .format("delta")
+          .option("readChangeFeed", "true")
+          .option("startingVersion", "0")
+          .load(tablePath)
+          .drop("_commit_timestamp")
+
+      // Cap the split at 4 partitions. The single CometDeltaCdfScanExec should carry >= 2 sub-ranges
+      // (so it emits multiple Spark partitions) WITHOUT a CometUnionExec wrapper -- it stays a single
+      // CometNativeExec so a downstream native shuffle / aggregation remains eligible.
+      withSQLConf("spark.comet.delta.cdf.maxPartitions" -> "4") {
+        val df = read()
+        df.collect() // finalize plan
+        val plan = df.queryExecution.executedPlan
+        val cdfExecs = collect(plan) {
+          case s: org.apache.spark.sql.comet.CometDeltaCdfScanExec => s
+        }
+        assert(cdfExecs.nonEmpty, s"expected a native CometDeltaCdfScanExec in plan, got:\n$plan")
+        assert(
+          collect(plan) { case u: org.apache.spark.sql.comet.CometUnionExec => u }.isEmpty,
+          s"the split must not introduce a CometUnionExec (breaks native shuffle), got:\n$plan")
+        val ranges = cdfExecs.head.subRanges
+        assert(
+          ranges.size >= 2,
+          s"expected the [0,6] range to split into >= 2 sub-ranges, got ${ranges.size}: $ranges")
+
+        // The split must be correct: native (split) == vanilla Spark.
+        val nativeRows = read().collect().toSeq.map(normalizeRow)
+        withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+          val vanillaRows = read().collect().toSeq.map(normalizeRow)
+          assert(
+            nativeRows.sortBy(_.mkString("|")) == vanillaRows.sortBy(_.mkString("|")),
+            s"split CDC native=$nativeRows vanilla=$vanillaRows")
+        }
+      }
+    }
+  }
 }

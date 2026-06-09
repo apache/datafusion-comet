@@ -63,12 +63,24 @@ object DeltaPlanDataInjector extends PlanDataInjector {
     // `partitionBytes` is the serialised `DeltaScan` that packs only this partition's
     // tasks (no common block) to avoid duplicating schemas across partitions. Splice
     // the partition's tasks into the original common-only envelope.
-    val tasksOnlyScan = OperatorOuterClass.DeltaScan.parseFrom(partitionBytes)
+    val partitionScan = OperatorOuterClass.DeltaScan.parseFrom(partitionBytes)
     val originalScan = op.getDeltaScan
-    val mergedScan = OperatorOuterClass.DeltaScan
+    val mergedScanBuilder = OperatorOuterClass.DeltaScan
       .newBuilder(originalScan)
-      .addAllTasks(tasksOnlyScan.getTasksList)
-      .build()
-    op.toBuilder.setDeltaScan(mergedScan).build()
+      .addAllTasks(partitionScan.getTasksList)
+    // CDF version-range split: a Change Data Feed read carries no tasks; instead the per-partition
+    // DeltaScan packs this partition's inclusive cdf sub-range in a minimal common (cdf_read marks
+    // it). Splice that [start, end] over the shared common's full range so each partition's native
+    // TableChanges read covers only its slice. Regular (non-CDF) per-partition bytes set no common,
+    // so this is skipped and only the task list is merged.
+    if (partitionScan.hasCommon && partitionScan.getCommon.getCdfRead) {
+      val pc = partitionScan.getCommon
+      val mergedCommon = originalScan.getCommon.toBuilder
+      mergedCommon.setCdfStartVersion(pc.getCdfStartVersion)
+      if (pc.hasCdfEndVersion) mergedCommon.setCdfEndVersion(pc.getCdfEndVersion)
+      else mergedCommon.clearCdfEndVersion()
+      mergedScanBuilder.setCommon(mergedCommon.build())
+    }
+    op.toBuilder.setDeltaScan(mergedScanBuilder.build()).build()
   }
 }

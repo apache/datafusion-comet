@@ -67,6 +67,19 @@ object DeltaConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  val COMET_DELTA_CDF_MAX_PARTITIONS: ConfigEntry[Int] =
+    ConfigBuilder("spark.comet.delta.cdf.maxPartitions")
+      .category(CATEGORY)
+      .doc(
+        "Maximum number of Spark partitions a Change Data Feed (readChangeFeed) read is split " +
+          "into. The inclusive version range is chunked into up to this many contiguous " +
+          "sub-ranges, each read by an independent native delta-kernel TableChanges call, so a " +
+          "multi-version CDF read parallelizes across tasks instead of reading the whole range " +
+          "on one task. Capped by the number of commits in the range.")
+      .intConf
+      .checkValue(v => v > 0, "CDF max partitions must be positive")
+      .createWithDefault(8)
+
   val COMET_DELTA_KERNEL_READ_ENABLED: ConfigEntry[Boolean] =
     ConfigBuilder("spark.comet.delta.kernelRead.enabled")
       .category(CATEGORY)
