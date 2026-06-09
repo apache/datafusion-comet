@@ -708,9 +708,9 @@ class CometJoinSuite extends CometTestBase {
       // Include NULL keys: predicate `_1 > _1` returns NULL with a NULL operand, so
       // those rows must not contribute to the join output.
       val left: Seq[(Integer, Int)] =
-        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq[(Integer, Int)]((null, 7), (50, -1))
       val right: Seq[(Integer, Int)] =
-        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 1))
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq[(Integer, Int)]((null, 1))
       withParquetTable(left, "tbl_a") {
         withParquetTable(right, "tbl_b") {
           val df =
@@ -726,9 +726,9 @@ class CometJoinSuite extends CometTestBase {
   test("BroadcastNestedLoopJoin cross join with count-only output") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       val left: Seq[(Integer, Int)] =
-        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 9))
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq[(Integer, Int)]((null, 9))
       val right: Seq[(Integer, String)] =
-        (0 until 5).map(i => ((i: Integer), s"w_$i")) ++ Seq((null, "w_null"))
+        (0 until 5).map(i => ((i: Integer), s"w_$i")) ++ Seq[(Integer, String)]((null, "w_null"))
       withParquetTable(left, "tbl_a") {
         withParquetTable(right, "tbl_b") {
           val df = sql("SELECT /*+ BROADCAST(tbl_b) */ count(*) FROM tbl_a, tbl_b")
@@ -744,9 +744,9 @@ class CometJoinSuite extends CometTestBase {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       // NULL left keys must still appear in the output (LEFT OUTER preserves them)
       val left: Seq[(Integer, Int)] =
-        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq[(Integer, Int)]((null, 7), (50, -1))
       val right: Seq[(Integer, Int)] =
-        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 1))
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq[(Integer, Int)]((null, 1))
       withParquetTable(left, "tbl_a") {
         withParquetTable(right, "tbl_b") {
           val df =
@@ -764,9 +764,9 @@ class CometJoinSuite extends CometTestBase {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       // NULL keys never match (predicate evaluates to NULL
       val left: Seq[(Integer, Int)] =
-        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq[(Integer, Int)]((null, 7), (50, -1))
       val right: Seq[(Integer, Int)] =
-        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 1))
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq[(Integer, Int)]((null, 1))
       withParquetTable(left, "tbl_a") {
         withParquetTable(right, "tbl_b") {
           val df =
@@ -783,9 +783,9 @@ class CometJoinSuite extends CometTestBase {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       // LEFT ANTI keeps left rows that have NO match (left rows with NULL keys must appear in the output)
       val left: Seq[(Integer, Int)] =
-        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq[(Integer, Int)]((null, 7), (50, -1))
       val right: Seq[(Integer, Int)] =
-        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 1))
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq[(Integer, Int)]((null, 1))
       withParquetTable(left, "tbl_a") {
         withParquetTable(right, "tbl_b") {
           val df =
@@ -802,9 +802,9 @@ class CometJoinSuite extends CometTestBase {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       // RIGHT OUTER preserves right rows.
       val left: Seq[(Integer, Int)] =
-        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq((null, 9))
+        (0 until 10).map(i => ((i: Integer), i + 5)) ++ Seq[(Integer, Int)]((null, 9))
       val right: Seq[(Integer, Int)] =
-        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq((null, 7), (50, -1))
+        (0 until 100).map(i => ((i: Integer), i % 5)) ++ Seq[(Integer, Int)]((null, 7), (50, -1))
       withParquetTable(left, "tbl_a") {
         withParquetTable(right, "tbl_b") {
           val df =
@@ -820,9 +820,9 @@ class CometJoinSuite extends CometTestBase {
   test("BroadcastNestedLoopJoin cross join without condition (materialized rows)") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       val left: Seq[(Integer, Int)] =
-        (0 until 5).map(i => ((i: Integer), i * 10)) ++ Seq((null, 99))
+        (0 until 5).map(i => ((i: Integer), i * 10)) ++ Seq[(Integer, Int)]((null, 99))
       val right: Seq[(Integer, String)] =
-        (0 until 4).map(i => ((i: Integer), s"v_$i")) ++ Seq((null, "v_null"))
+        (0 until 4).map(i => ((i: Integer), s"v_$i")) ++ Seq[(Integer, String)]((null, "v_null"))
       withParquetTable(left, "tbl_a") {
         withParquetTable(right, "tbl_b") {
           val df =
@@ -838,9 +838,9 @@ class CometJoinSuite extends CometTestBase {
   test("BroadcastNestedLoopJoin LEFT OUTER without condition") {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       val left: Seq[(Integer, Int)] =
-        (0 until 5).map(i => ((i: Integer), i * 10)) ++ Seq((null, 99))
+        (0 until 5).map(i => ((i: Integer), i * 10)) ++ Seq[(Integer, Int)]((null, 99))
       val right: Seq[(Integer, String)] =
-        (0 until 4).map(i => ((i: Integer), s"v_$i")) ++ Seq((null, "v_null"))
+        (0 until 4).map(i => ((i: Integer), s"v_$i")) ++ Seq[(Integer, String)]((null, "v_null"))
       withParquetTable(left, "tbl_a") {
         withParquetTable(right, "tbl_b") {
           val df =
