@@ -138,7 +138,11 @@ echo
 echo "[1.5/4] Syncing Comet artifacts to $COMET_PUBLISH_DIR..."
 rm -rf "$COMET_PUBLISH_DIR"
 mkdir -p "$COMET_PUBLISH_DIR/org/apache/datafusion"
-rsync -a "$HOME/.m2/repository/org/apache/datafusion/" "$COMET_PUBLISH_DIR/org/apache/datafusion/"
+# `cp -a`, not `rsync`: the CI smoke container (bare amd64/rust) has no rsync on
+# PATH, so `rsync` exited 127 and failed the whole smoke run. `cp -a src/. dst/`
+# copies the contents of src into dst with attributes preserved (the same effect
+# as `rsync -a src/ dst/`) using only coreutils, which are always present.
+cp -a "$HOME/.m2/repository/org/apache/datafusion/." "$COMET_PUBLISH_DIR/org/apache/datafusion/"
 echo "  Published: $(ls -1 "$COMET_PUBLISH_DIR/org/apache/datafusion/" | wc -l | tr -d ' ') Comet modules"
 
 # Step 2: clone Delta (or reuse existing checkout).

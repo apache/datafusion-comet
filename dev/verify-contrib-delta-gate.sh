@@ -71,7 +71,12 @@ green "OK: cargo tree with contrib-delta correctly pulls comet-contrib-delta + d
 
 hdr "Maven: default profile excludes io.delta:* dependencies"
 cd "$ROOT"
-DEPS_DEFAULT="$("$MVNW" -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
+# `-am` (also-make) is required: in a fresh CI checkout with an empty local
+# repo, `-pl spark dependency:list` alone can't resolve spark's sibling reactor
+# modules (comet-common, the shims) and mvn exits non-zero with no output, which
+# would trip the anti-vacuous guard below. The matching test job uses `-pl spark
+# -am`; mirror it here.
+DEPS_DEFAULT="$("$MVNW" -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark -am dependency:list 2>/dev/null || true)"
 # Guard against a vacuous pass: if mvn failed entirely (network/profile/OOM) the
 # capture is empty, the io.delta grep below finds nothing, and the gate would
 # "pass" without having proven anything. Assert a dependency we KNOW is always
@@ -88,7 +93,7 @@ if echo "$DEPS_DEFAULT" | grep -qE 'io\.delta:'; then
 fi
 green "OK: default Maven build has zero io.delta dependencies"
 
-DEPS_CONTRIB="$("$MVNW" -Pspark-4.1,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
+DEPS_CONTRIB="$("$MVNW" -Pspark-4.1,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark -am dependency:list 2>/dev/null || true)"
 DELTA_DEP_HITS="$(printf '%s\n' "$DEPS_CONTRIB" | grep -cE 'io\.delta:delta-spark.*:4\.' || true)"
 if [[ "$DELTA_DEP_HITS" -lt 1 ]]; then
   red "FAIL: -Pcontrib-delta + spark-4.1 missing delta-spark:4.x"
@@ -97,7 +102,7 @@ fi
 green "OK: -Pcontrib-delta + spark-4.1 correctly pulls delta-spark:4.x"
 
 # Per-Spark Delta version pinning: spark-3.5 + contrib-delta must pull delta-spark:3.x
-DEPS_CONTRIB_35="$("$MVNW" -Pspark-3.5,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
+DEPS_CONTRIB_35="$("$MVNW" -Pspark-3.5,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark -am dependency:list 2>/dev/null || true)"
 DELTA35_HITS="$(printf '%s\n' "$DEPS_CONTRIB_35" | grep -cE 'io\.delta:delta-spark.*:3\.' || true)"
 if [[ "$DELTA35_HITS" -lt 1 ]]; then
   red "FAIL: -Pcontrib-delta + spark-3.5 missing delta-spark:3.x"
@@ -113,7 +118,7 @@ green "OK: -Pcontrib-delta + spark-3.5 correctly pulls delta-spark:3.x"
 # spark-4.0 + contrib-delta must pull delta-spark:4.0.x specifically (Delta 4.1
 # requires Spark 4.1 internals and tripping NoSuchMethodError on
 # ParserInterface.$init$ at runtime).
-DEPS_CONTRIB_40="$("$MVNW" -Pspark-4.0,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark dependency:list 2>/dev/null || true)"
+DEPS_CONTRIB_40="$("$MVNW" -Pspark-4.0,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -pl spark -am dependency:list 2>/dev/null || true)"
 DELTA40_HITS="$(printf '%s\n' "$DEPS_CONTRIB_40" | grep -cE 'io\.delta:delta-spark.*:4\.0\.' || true)"
 if [[ "$DELTA40_HITS" -lt 1 ]]; then
   red "FAIL: -Pcontrib-delta + spark-4.0 missing delta-spark:4.0.x"
