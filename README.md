@@ -60,9 +60,7 @@ See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contribut
 
 ## What Comet Accelerates
 
-Comet replaces Spark operators and expressions with implementations that consume and produce Apache Arrow
-batches. Most run as native Rust code on top of Apache DataFusion; some run as JVM code over Arrow batches.
-Either way, query execution stays in the Comet pipeline without falling back to Spark's row-based engine.
+Comet accelerates Spark workloads by replacing Spark operators and expressions with high-performance implementations that process Apache Arrow columnar data directly. Most operators are powered by native Rust execution built on Apache DataFusion, while others run efficiently in the JVM on Arrow batches. This unified columnar execution model keeps processing within the Comet engine end-to-end, reducing overhead and delivering faster, more efficient query execution without reverting to Spark's traditional row-based engine.
 
 - **Parquet scans**: native Parquet reader integrated with Spark's query planner
 - **Apache Iceberg**: accelerated Parquet scans when reading Iceberg tables from Spark
