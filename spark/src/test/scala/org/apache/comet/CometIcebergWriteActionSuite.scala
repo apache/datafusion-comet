@@ -193,6 +193,94 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("ReplaceData (CoW DELETE) on a row predicate goes through two-op") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "cow_delete",
+        partitionSpec = "",
+        properties = Some("'write.delete.mode'='copy-on-write'"))
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert(
+          "cow_delete",
+          Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0), (4, "us-east", 40.0)))
+      }
+
+      val snapshot = captureWrite("cow_delete") {
+        spark.sql("DELETE FROM cat.db.cow_delete WHERE id = 2")
+      }
+      assertExactlyOneCommit(snapshot)
+      assertRows("cow_delete", expectedIds = Seq(1, 3, 4))
+    }
+  }
+
+  test("ReplaceData (CoW UPDATE) routes through two-op") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "cow_update",
+        partitionSpec = "",
+        properties = Some("'write.update.mode'='copy-on-write'"))
+      coalesceInsert(
+        "cow_update",
+        Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0)))
+
+      val snapshot = captureWrite("cow_update") {
+        spark.sql("UPDATE cat.db.cow_update SET amount = amount * 2 WHERE id = 2")
+      }
+      assertExactlyOneCommit(snapshot)
+      val r = spark
+        .sql("SELECT id, amount FROM cat.db.cow_update WHERE id = 2")
+        .collect()
+      assert(r.length == 1 && r(0).getDouble(1) == 40.0, s"got ${r.toSeq}")
+    }
+  }
+
+  test("ReplaceData (CoW MERGE) with matched and unmatched legs routes through two-op") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "cow_merge",
+        partitionSpec = "",
+        properties = Some("'write.merge.mode'='copy-on-write'"))
+      coalesceInsert("cow_merge", Seq((1, "us-east", 10.0), (2, "us-west", 20.0)))
+
+      val snapshot = captureWrite("cow_merge") {
+        spark.sql("""
+          |MERGE INTO cat.db.cow_merge t
+          |USING (SELECT 2 AS id, 'us-west' AS region, 200.0 AS amount UNION ALL
+          |       SELECT 3 AS id, 'eu' AS region, 30.0 AS amount) s
+          |ON t.id = s.id
+          |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
+          |WHEN NOT MATCHED THEN INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
+          |""".stripMargin)
+      }
+      assertExactlyOneCommit(snapshot)
+      assertRows("cow_merge", expectedIds = Seq(1, 2, 3))
+    }
+  }
+
+  test("sanity check: Spark's default DELETE path works against a Hadoop catalog") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        createTable(
+          warehouseDir,
+          "spark_cow_delete",
+          partitionSpec = "",
+          properties = Some("'write.delete.mode'='copy-on-write'"))
+        coalesceInsert(
+          "spark_cow_delete",
+          Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0), (4, "us-east", 40.0)))
+        spark.sql("DELETE FROM cat.db.spark_cow_delete WHERE id = 2")
+        assertRows("spark_cow_delete", expectedIds = Seq(1, 3, 4))
+      }
+    }
+  }
+
   test("disabled config falls through to Spark's V2ExistingTableWriteExec") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { warehouseDir =>
@@ -265,6 +353,16 @@ class CometIcebergWriteActionSuite
       $partitionSpec
       $props
     """)
+  }
+
+  private def coalesceInsert(tableName: String, rows: Seq[(Int, String, Double)]): Unit = {
+    val session = spark
+    import session.implicits._
+    rows
+      .toDF("id", "region", "amount")
+      .coalesce(1)
+      .writeTo(s"$catalog.$ns.$tableName")
+      .append()
   }
 
   private def captureWrite(tableName: String)(action: => Unit): WriteSnapshot = {
