@@ -52,11 +52,9 @@ Comet focuses acceleration on mainstream relational, string, datetime, math, and
 expressions. The following function families are **not currently planned** for native acceleration (they are not on the 1.0 roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:
 
 - **Probabilistic sketches and approximate top-k** (`kll_sketch_*`, `hll_*`, `theta_*`, `count_min_sketch`, `bitmap_*`, `approx_top_k*`): specialized data structures with exact-correctness traps.
-- **XML / XPath** (`from_xml`, `to_xml`, `schema_of_xml`, `xpath*`): legacy text format, rare in accelerated workloads.
 - **Geospatial** (`st_*`): brand-new Spark 4.1 functionality, specialized.
 - **Avro / Protobuf codecs** (`from_avro`, `to_avro`, `from_protobuf`, `to_protobuf`, `schema_of_avro`): format conversion belongs at the IO layer, not expression evaluation.
 - **JVM reflection** (`java_method`, `reflect`): niche, and they invoke arbitrary JVM methods (a security concern).
-- **CSV functions** (`from_csv`, `to_csv`, `schema_of_csv`): row-level CSV parsing and formatting in expressions is niche and better handled at the data source layer.
 - **UTF-8 validation** (`is_valid_utf8`, `make_valid_utf8`, `validate_utf8`, `try_validate_utf8`): niche Spark 4.x string-validation helpers.
 - **File metadata** (`input_file_name`, `input_file_block_start`, `input_file_block_length`): require scan-internal per-row file information, outside the expression layer.
 - **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`): low-value or specialized functions with little benefit from native acceleration.
@@ -220,6 +218,16 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 ---
 
+## csv_funcs
+
+| Function | Status | Notes |
+| --- | --- | --- |
+| `from_csv` | ✅ |  |
+| `schema_of_csv` | ✅ |  |
+| `to_csv` | ✅ |  |
+
+---
+
 ## datetime_funcs
 
 | Function | Status | Notes |
@@ -339,9 +347,9 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `from_json` | ✅ | Falls back by default; opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json)) |
 | `get_json_object` | ✅ | Some inputs need allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
 | `json_array_length` | ✅ | Single-quoted/trailing JSON needs allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#json_array_length)) |
-| `json_object_keys` | 🔜 | [#3161](https://github.com/apache/datafusion-comet/issues/3161) |
+| `json_object_keys` | ✅ |  |
 | `json_tuple` | 🔜 | [#3160](https://github.com/apache/datafusion-comet/issues/3160) |
-| `schema_of_json` | 🔜 | [#3163](https://github.com/apache/datafusion-comet/issues/3163) |
+| `schema_of_json` | ✅ |  |
 | `to_json` | ✅ | Options and map/array inputs fall back ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json)) |
 
 ---
@@ -636,6 +644,25 @@ fall back to Spark.
 | `percent_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
 | `rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
 | `row_number` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+
+---
+
+## xml_funcs
+
+| Function | Status | Notes |
+| --- | --- | --- |
+| `from_xml` | ✅ | Spark 4.0+ |
+| `schema_of_xml` | ✅ | Spark 4.0+ |
+| `to_xml` | ✅ | Spark 4.0+ |
+| `xpath` | ✅ |  |
+| `xpath_boolean` | ✅ |  |
+| `xpath_double` | ✅ |  |
+| `xpath_float` | ✅ |  |
+| `xpath_int` | ✅ |  |
+| `xpath_long` | ✅ |  |
+| `xpath_number` | ✅ | Alias of `xpath_double` |
+| `xpath_short` | ✅ |  |
+| `xpath_string` | ✅ |  |
 
 ---
 

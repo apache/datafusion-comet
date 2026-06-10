@@ -59,6 +59,13 @@ trait CometExprShim extends CommonStringExprs with CometExprShim4x {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
+      // RuntimeReplaceable structured-text functions (schema_of_csv/json, json_object_keys,
+      // xpath_*, schema_of_xml) and from_xml/to_xml route through the codegen dispatcher; see
+      // CometExprShim4x.convertStructuredText. Guarded so non-structured-text Invoke/StaticInvoke
+      // nodes still reach their existing handlers below.
+      case e if isStructuredTextDispatch(e) =>
+        convertStructuredText(e, inputs, binding)
+
       case knc: KnownNotContainsNull =>
         // On Spark 4.0, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
         // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact.
