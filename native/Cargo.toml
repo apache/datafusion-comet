@@ -58,8 +58,8 @@ object_store = { version = "0.13.1", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.18"
 aws-credential-types = "1.2.13"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "83b4595" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "83b4595", features = ["opendal-all"] }
+iceberg = { git = "https://github.com/mbutrovich/iceberg-rust", branch = "filescantask_midpoint" }
+iceberg-storage-opendal = { git = "https://github.com/mbutrovich/iceberg-rust", branch = "filescantask_midpoint", features = ["opendal-all"] }
 reqsign-core = "3"
 
 [profile.release]
