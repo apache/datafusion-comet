@@ -236,7 +236,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("ArrayInsertUnsupportedArgs") {
     // This test checks that the else branch in ArrayInsert
     // mapping to the comet is valid and fallback to spark is working fine.
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
+    // Disable UDF codegen dispatch so the UDF-derived position remains
+    // non-convertible and forces the ArrayInsert fallback path.
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+      CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 10000)
@@ -1000,6 +1004,24 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
         SQLConf.ANSI_ENABLED.key -> "false") {
         checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/4560
+  test("array_size returns null for null input") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(col array<int>) using parquet")
+      sql(s"insert into $table values(array(1, 2, 3)), (array()), (null)")
+      // array_size lowers to Size(child, legacySizeOfNull = false), so it must return null
+      // for a null input regardless of the legacySizeOfNull conf.
+      Seq("false", "true").foreach { legacy =>
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> legacy,
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select array_size(col) from $table"))
+        }
       }
     }
   }

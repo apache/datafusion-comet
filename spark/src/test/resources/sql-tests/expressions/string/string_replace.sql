@@ -19,14 +19,27 @@ statement
 CREATE TABLE test_str_replace(s string, search string, replace string) USING parquet
 
 statement
-INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', 'a', 'bb'), ('hello', 'xyz', 'abc'), ('', 'a', 'b'), (NULL, 'a', 'b')
+INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', 'a', 'bb'), ('hello', 'xyz', 'abc'), ('', 'a', 'b'), (NULL, 'a', 'b'), ('hello', '', 'x')
 
 query
 SELECT replace(s, search, replace) FROM test_str_replace
 
--- Comet returns 'xhxexlxlxox' where Spark returns 'hello' (short-circuits on empty search).
-query expect_fallback(Empty `search`)
+-- Empty literal search: DataFusion's replace diverges from Spark
+-- (Spark short-circuits and returns the source unchanged). The custom
+-- CometStringReplace serde routes through the codegen dispatcher so
+-- Spark's own doGenCode handles this case.
+-- https://github.com/apache/datafusion-comet/issues/4497
+query
 SELECT replace('hello', '', 'x')
+
+query
+SELECT replace('', '', 'x')
+
+query
+SELECT replace(NULL, '', 'x')
+
+query
+SELECT replace('hello', '', NULL)
 
 -- column + literal + literal
 query

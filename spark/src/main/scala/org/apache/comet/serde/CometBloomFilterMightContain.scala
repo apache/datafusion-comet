@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BloomFilterMightContain}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 object CometBloomFilterMightContain extends CometExpressionSerde[BloomFilterMightContain] {
@@ -45,7 +45,7 @@ object CometBloomFilterMightContain extends CometExpressionSerde[BloomFilterMigh
           .setBloomFilterMightContain(builder)
           .build())
     } else {
-      withInfo(expr, bloomFilter, value)
+      withFallbackReason(expr, bloomFilter, value)
       None
     }
   }
