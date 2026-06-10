@@ -267,10 +267,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
       withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (expr.evalMode == EvalMode.TRY) {
-      withFallbackReason(expr, s"Eval mode ${expr.evalMode} is not supported")
-      return None
-    }
 
     createMathExpression(
       expr,
