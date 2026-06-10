@@ -64,24 +64,31 @@ object CometRegExpExtractBenchmark extends CometBenchmarkBase {
     RegExpExtractPattern("alternation", "(abc|def|ghi)", 1))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    runBenchmarkWithTable("regexp_extract modes", 1024) { v =>
+    runBenchmarkWithTable("regexp_extract modes", 1024 * 1024) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
+          // Build a realistic alphanumeric subject so the patterns actually match. The
+          // underlying `tbl` view holds Long values (some negative, some positive); we
+          // sandwich them between two short letter runs so every pattern in `patterns`
+          // (single digit group, `[a-z]+[0-9]+` whole match, alternation against `abc`,
+          // etc.) finds a match.
           prepareTable(
             dir,
-            spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1 FROM $tbl"))
+            spark.sql(s"SELECT CONCAT('abc', CAST(ABS(value) AS STRING), 'def') AS c1 FROM $tbl"))
 
           patterns.foreach { p =>
+            val extractName = s"regexp_extract / ${p.name}"
             val extractQuery =
               s"select regexp_extract(c1, '${p.pattern}', ${p.idx}) from parquetV1Table"
-            runBenchmark(s"regexp_extract / ${p.name}") {
-              runModes("RegExpExtract", p.name, v, extractQuery)
+            runBenchmark(extractName) {
+              runModes("RegExpExtract", extractName, v, extractQuery)
             }
 
+            val extractAllName = s"regexp_extract_all / ${p.name}"
             val extractAllQuery =
               s"select regexp_extract_all(c1, '${p.pattern}', ${p.idx}) from parquetV1Table"
-            runBenchmark(s"regexp_extract_all / ${p.name}") {
-              runModes("RegExpExtractAll", p.name, v, extractAllQuery)
+            runBenchmark(extractAllName) {
+              runModes("RegExpExtractAll", extractAllName, v, extractAllQuery)
             }
           }
         }
