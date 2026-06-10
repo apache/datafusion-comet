@@ -30,7 +30,8 @@ case class IcebergWriteLogical(
     child: LogicalPlan,
     // Driver-side only: AQE re-planning is driver-local and write commands aren't cached.
     @transient batchWrite: BatchWrite,
-    @transient write: Write)
+    @transient write: Write,
+    replaceDataDispatch: Option[ReplaceDataDispatchInfo] = None)
     extends UnaryNode {
 
   // Owns the commit-message attribute so the physical writer keeps the same exprId across

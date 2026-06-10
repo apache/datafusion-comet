@@ -83,7 +83,7 @@ case class IcebergCommitExec(
 
     try {
       messages.foreach(batchWrite.onDataWriterCommit)
-      batchWrite.commit(messages)
+      IcebergWriteSummaryShim.commit(batchWrite, messages, child)
       logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
     } catch {
       case cause: Throwable =>
