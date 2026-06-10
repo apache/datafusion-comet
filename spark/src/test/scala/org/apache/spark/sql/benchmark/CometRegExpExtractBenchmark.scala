@@ -19,7 +19,10 @@
 
 package org.apache.spark.sql.benchmark
 
+import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 
@@ -51,6 +54,34 @@ case class RegExpExtractPattern(name: String, pattern: String, idx: Int)
  * Results land in `spark/benchmarks/CometRegExpExtractBenchmark-**results.txt`.
  */
 object CometRegExpExtractBenchmark extends CometBenchmarkBase {
+
+  // CometBenchmarkBase wires `CometSparkSessionExtensions` via `withExtensions`, but that call
+  // is silently dropped when `SparkSession.builder.getOrCreate()` returns an existing session
+  // (the `SqlBasedBenchmark.spark` field can construct one before the override runs). Setting
+  // `spark.sql.extensions` on the SparkConf forces extension registration regardless. The
+  // off-heap and shuffle-manager configs match what CometTestBase sets so Comet's planning
+  // rules don't bail out early.
+  override def getSparkSession: SparkSession = {
+    val conf = new SparkConf()
+      .setAppName("CometRegExpExtractBenchmark")
+      .set("spark.master", "local[1]")
+      .setIfMissing("spark.driver.memory", "3g")
+      .setIfMissing("spark.executor.memory", "3g")
+      .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "2g")
+      .set(
+        "spark.shuffle.manager",
+        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+
+    val sparkSession = SparkSession.builder.config(conf).getOrCreate()
+    sparkSession.conf.set(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key, "true")
+    sparkSession.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
+    sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
+    sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
+    sparkSession.conf.set(SQLConf.ANSI_ENABLED.key, "false")
+    sparkSession
+  }
 
   // Patterns chosen to span common shapes that both engines accept. Avoid Java-only constructs
   // (backreferences, lookaround, possessive quantifiers, embedded flags) so the native (Rust)
