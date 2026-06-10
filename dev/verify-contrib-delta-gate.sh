@@ -24,7 +24,7 @@
 #      doesn't pull `delta_kernel` into the dependency tree.
 #   2. Maven: default `mvn ... package` doesn't compile any
 #      `org/apache/comet/contrib/` classes and doesn't pull `io.delta:*` deps.
-#   3. Symbol/size: the resulting `libcomet.dylib` from the default build is
+#   3. Symbol/size: the resulting `libcomet` (`.so` on Linux, `.dylib` on macOS) from the default build is
 #      meaningfully smaller than the contrib-enabled build, and carries no
 #      `comet_contrib_delta`/`delta_kernel`/etc. external symbols.
 #
@@ -164,27 +164,40 @@ green "OK: only the always-present DeltaIntegration reflection bridge in default
 
 # ---- libcomet symbol/size gate -------------------------------------------
 
-hdr "libcomet.dylib: default build is smaller and has no Delta external symbols"
+hdr "libcomet: default build is smaller and has no Delta symbols"
 cd "$NATIVE_DIR"
+# The cdylib extension is platform-specific: `libcomet.so` on Linux (CI), `libcomet.dylib` on
+# macOS. Find whichever the build produced; `stat`/`nm` flags also differ across the two.
+comet_lib() { ls target/debug/libcomet.so target/debug/libcomet.dylib 2>/dev/null | head -1; }
+lib_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
+# Plain `nm` on the (unstripped debug) lib lists the full symbol table on both platforms, so a
+# name grep finds the Delta symbols whether they're exported or internal.
+delta_syms() {
+  nm "$1" 2>/dev/null | grep -ciE 'comet_contrib_delta|delta_kernel|deltadvfilter|deltasynthetic' || true
+}
+
 cargo clean -p comet-contrib-delta -p datafusion-comet >/dev/null 2>&1 || true
 cargo build -j 4 -p datafusion-comet >/dev/null 2>&1
-SIZE_DEFAULT="$(stat -f%z target/debug/libcomet.dylib 2>/dev/null \
-  || stat -c%s target/debug/libcomet.dylib)"
+LIB_DEFAULT="$(comet_lib)"
+if [[ -z "$LIB_DEFAULT" ]]; then
+  red "FAIL: default build produced no libcomet.{so,dylib} under $NATIVE_DIR/target/debug"
+  exit 1
+fi
+SIZE_DEFAULT="$(lib_size "$LIB_DEFAULT")"
 if command -v nm >/dev/null 2>&1; then
-  EXT_SYMS="$(nm -gU target/debug/libcomet.dylib 2>/dev/null \
-    | grep -ciE 'comet_contrib_delta|delta_kernel|deltadvfilter|deltasynthetic' || true)"
+  EXT_SYMS="$(delta_syms "$LIB_DEFAULT")"
 else
   EXT_SYMS=0
 fi
 if [[ "$EXT_SYMS" -ne 0 ]]; then
-  red "FAIL: default libcomet.dylib contains $EXT_SYMS Delta-related external symbols"
+  red "FAIL: default libcomet contains $EXT_SYMS Delta-related symbols"
   exit 1
 fi
-green "OK: default libcomet.dylib has 0 Delta external symbols (size=$SIZE_DEFAULT bytes)"
+green "OK: default libcomet has 0 Delta symbols (size=$SIZE_DEFAULT bytes)"
 
 cargo build -j 4 -p datafusion-comet --features contrib-delta >/dev/null 2>&1
-SIZE_CONTRIB="$(stat -f%z target/debug/libcomet.dylib 2>/dev/null \
-  || stat -c%s target/debug/libcomet.dylib)"
+LIB_CONTRIB="$(comet_lib)"
+SIZE_CONTRIB="$(lib_size "$LIB_CONTRIB")"
 if [[ "$SIZE_CONTRIB" -le "$SIZE_DEFAULT" ]]; then
   red "FAIL: contrib-enabled libcomet (size=$SIZE_CONTRIB) is not larger than default (size=$SIZE_DEFAULT)"
   red "       (would indicate contrib was being linked into default build too)"
@@ -196,8 +209,7 @@ fi
 # while still passing -- the gate would lie about being enforced. Asserting both
 # "default has 0" AND "contrib has >0" catches grep-pattern drift.
 if command -v nm >/dev/null 2>&1; then
-  CONTRIB_SYMS="$(nm -gU target/debug/libcomet.dylib 2>/dev/null \
-    | grep -ciE 'comet_contrib_delta|delta_kernel|deltadvfilter|deltasynthetic' || true)"
+  CONTRIB_SYMS="$(delta_syms "$LIB_CONTRIB")"
   if [[ "$CONTRIB_SYMS" -lt 1 ]]; then
     red "FAIL: contrib-enabled libcomet has 0 Delta-related symbols matching our grep pattern."
     red "      This means the symbol-name pattern in this script has drifted from what"
