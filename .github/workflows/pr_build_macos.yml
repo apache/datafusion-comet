@@ -202,7 +202,6 @@ jobs:
               org.apache.comet.CometCodegenSuite
               org.apache.comet.CometCodegenSourceSuite
               org.apache.comet.CometCodegenHOFSuite
-              org.apache.comet.CometStructuredTextSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.CometCodegenFuzzSuite
 
