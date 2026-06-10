@@ -71,71 +71,60 @@ green "OK: cargo tree with contrib-delta correctly pulls comet-contrib-delta + d
 
 hdr "Maven: default profile excludes io.delta:* dependencies"
 cd "$ROOT"
-# `-am` (also-make) is required: in a fresh CI checkout with an empty local
-# repo, `-pl spark dependency:list` alone can't resolve spark's sibling reactor
-# modules (comet-common, the shims) and mvn exits non-zero with no output, which
-# would trip the anti-vacuous guard below. The matching test job uses `-pl spark
-# -am`; mirror it here.
-# Capture stderr so a failed mvnw run can be SHOWN (not swallowed) on the anti-vacuous path below.
-MVN_ERR="$(mktemp)"
-DEPS_DEFAULT="$("$MVNW" -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -Dmaven.gitcommitid.skip -pl spark -am dependency:list 2>"$MVN_ERR" || true)"
-# Guard against a vacuous pass: if mvn failed entirely (network/profile/OOM) the
-# capture is empty, the io.delta grep below finds nothing, and the gate would
-# "pass" without having proven anything. Assert a dependency we KNOW is always
-# present so a broken mvn run errors instead of silently passing.
-if ! echo "$DEPS_DEFAULT" | grep -qE 'org\.apache\.(spark|arrow):'; then
-  red "FAIL: default Maven dependency:list produced no org.apache.spark/arrow deps"
-  red "      (mvn likely failed; refusing to conclude 'zero io.delta' vacuously)"
-  red "      --- mvnw invocation: $MVNW (java=${JAVA_HOME:-unset}) ---"
-  red "      --- mvnw stderr (last 50 lines) ---"
-  tail -50 "$MVN_ERR" >&2 || true
+# `dependency:list` can't run in a fresh CI checkout: it needs the sibling reactor JARs
+# (comet-common, the shims) which aren't built, so it fails with a resolution error and no
+# output. `help:effective-pom` only merges POM models (no artifact resolution), so it works
+# without a build. We extract the ACTIVE top-level <dependencies> -- after </dependencyManagement>,
+# before the <profiles> listing -- which is exactly what dependency:list would have shown for the
+# active profiles (and excludes the inactive contrib-delta profile's own io.delta declaration).
+delta_active_deps() { # args: -P / -D flags
+  local epom
+  epom="$(mktemp)"
+  "$MVNW" -q help:effective-pom -Djava.version=17 -Dmaven.gitcommitid.skip -pl spark \
+    -Doutput="$epom" "$@" >/dev/null 2>&1 || true
+  awk '/<\/dependencyManagement>/{f=1} /<profiles>/{f=0} f' "$epom"
+  rm -f "$epom"
+}
+# Resolved delta-spark version from the active deps (empty if absent).
+delta_spark_version() { # args: -P flags
+  delta_active_deps "$@" |
+    grep -A2 'artifactId>delta-spark' |
+    grep -oE '<version>[^<]+' | head -1 | sed 's/<version>//'
+}
+
+DEPS_DEFAULT="$(delta_active_deps -Pspark-4.1)"
+# Anti-vacuous: a broken mvn run yields empty output; assert a dep we KNOW is always present so a
+# broken run fails loudly instead of "passing" the io.delta check by finding nothing.
+if ! echo "$DEPS_DEFAULT" | grep -q '<groupId>org.apache.spark</groupId>'; then
+  red "FAIL: default effective-pom produced no org.apache.spark deps (mvn likely failed;"
+  red "      refusing to conclude 'zero io.delta' vacuously)"
   exit 1
 fi
-rm -f "$MVN_ERR"
-if echo "$DEPS_DEFAULT" | grep -qE 'io\.delta:'; then
+if echo "$DEPS_DEFAULT" | grep -q '<groupId>io.delta</groupId>'; then
   red "FAIL: default Maven build pulls io.delta dependencies:"
-  echo "$DEPS_DEFAULT" | grep -E 'io\.delta:'
+  echo "$DEPS_DEFAULT" | grep -A2 '<groupId>io.delta</groupId>'
   exit 1
 fi
 green "OK: default Maven build has zero io.delta dependencies"
 
-DEPS_CONTRIB="$("$MVNW" -Pspark-4.1,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -Dmaven.gitcommitid.skip -pl spark -am dependency:list 2>/dev/null || true)"
-DELTA_DEP_HITS="$(printf '%s\n' "$DEPS_CONTRIB" | grep -cE 'io\.delta:delta-spark.*:4\.' || true)"
-if [[ "$DELTA_DEP_HITS" -lt 1 ]]; then
-  red "FAIL: -Pcontrib-delta + spark-4.1 missing delta-spark:4.x"
-  exit 1
-fi
-green "OK: -Pcontrib-delta + spark-4.1 correctly pulls delta-spark:4.x"
-
-# Per-Spark Delta version pinning: spark-3.5 + contrib-delta must pull delta-spark:3.x
-DEPS_CONTRIB_35="$("$MVNW" -Pspark-3.5,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -Dmaven.gitcommitid.skip -pl spark -am dependency:list 2>/dev/null || true)"
-DELTA35_HITS="$(printf '%s\n' "$DEPS_CONTRIB_35" | grep -cE 'io\.delta:delta-spark.*:3\.' || true)"
-if [[ "$DELTA35_HITS" -lt 1 ]]; then
-  red "FAIL: -Pcontrib-delta + spark-3.5 missing delta-spark:3.x"
-  exit 1
-fi
-DELTA35_WRONG="$(printf '%s\n' "$DEPS_CONTRIB_35" | grep -cE 'io\.delta:delta-spark.*:4\.' || true)"
-if [[ "$DELTA35_WRONG" -gt 0 ]]; then
-  red "FAIL: -Pcontrib-delta + spark-3.5 incorrectly pulls delta-spark:4.x (should be 3.x)"
-  exit 1
-fi
-green "OK: -Pcontrib-delta + spark-3.5 correctly pulls delta-spark:3.x"
-
-# spark-4.0 + contrib-delta must pull delta-spark:4.0.x specifically (Delta 4.1
-# requires Spark 4.1 internals and tripping NoSuchMethodError on
-# ParserInterface.$init$ at runtime).
-DEPS_CONTRIB_40="$("$MVNW" -Pspark-4.0,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -Dmaven.gitcommitid.skip -pl spark -am dependency:list 2>/dev/null || true)"
-DELTA40_HITS="$(printf '%s\n' "$DEPS_CONTRIB_40" | grep -cE 'io\.delta:delta-spark.*:4\.0\.' || true)"
-if [[ "$DELTA40_HITS" -lt 1 ]]; then
-  red "FAIL: -Pcontrib-delta + spark-4.0 missing delta-spark:4.0.x"
-  exit 1
-fi
-DELTA40_WRONG="$(printf '%s\n' "$DEPS_CONTRIB_40" | grep -cE 'io\.delta:delta-spark.*:4\.1\.' || true)"
-if [[ "$DELTA40_WRONG" -gt 0 ]]; then
-  red "FAIL: -Pcontrib-delta + spark-4.0 incorrectly pulls delta-spark:4.1.x (should be 4.0.x)"
-  exit 1
-fi
-green "OK: -Pcontrib-delta + spark-4.0 correctly pulls delta-spark:4.0.x"
+# Per-Spark Delta version pinning: spark-4.1 -> delta-spark 4.1.x, spark-3.5 -> 3.x, spark-4.0 ->
+# 4.0.x (Delta 4.1 needs Spark 4.1 internals; 4.0 must stay on 4.0.x to avoid a runtime
+# NoSuchMethodError on ParserInterface.$init$).
+V41="$(delta_spark_version -Pspark-4.1,contrib-delta)"
+case "$V41" in
+  4.1.*) green "OK: -Pcontrib-delta + spark-4.1 correctly pulls delta-spark $V41" ;;
+  *) red "FAIL: -Pcontrib-delta + spark-4.1 expected delta-spark 4.1.x, got '${V41:-<none>}'"; exit 1 ;;
+esac
+V35="$(delta_spark_version -Pspark-3.5,contrib-delta)"
+case "$V35" in
+  3.*) green "OK: -Pcontrib-delta + spark-3.5 correctly pulls delta-spark $V35" ;;
+  *) red "FAIL: -Pcontrib-delta + spark-3.5 expected delta-spark 3.x, got '${V35:-<none>}'"; exit 1 ;;
+esac
+V40="$(delta_spark_version -Pspark-4.0,contrib-delta)"
+case "$V40" in
+  4.0.*) green "OK: -Pcontrib-delta + spark-4.0 correctly pulls delta-spark $V40" ;;
+  *) red "FAIL: -Pcontrib-delta + spark-4.0 expected delta-spark 4.0.x, got '${V40:-<none>}'"; exit 1 ;;
+esac
 
 # ---- Compiled-class gate --------------------------------------------------
 
