@@ -16,16 +16,17 @@
 // under the License.
 
 use arrow::array::{
-    Array, ArrayRef, GenericStringArray, GenericStringBuilder, OffsetSizeTrait, StringArray,
+    Array, ArrayRef, GenericStringArray, OffsetSizeTrait, StringArray, StringBuilder,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{
-    cast::as_generic_string_array, exec_err, DataFusionError, Result as DataFusionResult,
-    ScalarValue,
+    cast::as_generic_string_array, exec_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion::logical_expr::ColumnarValue;
 use regex::Regex;
 use std::sync::Arc;
+
+use super::regexp_extract_common::{parse_args, ParsedArgs};
 
 /// Spark-compatible `regexp_extract(subject, pattern, idx)`.
 ///
@@ -37,65 +38,26 @@ use std::sync::Arc;
 /// Note: this uses the Rust `regex` crate, whose syntax differs from Java's regex engine in
 /// some ways. The expression is therefore reported as Incompatible.
 pub fn spark_regexp_extract(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
-    if args.len() < 2 || args.len() > 3 {
-        return exec_err!(
-            "regexp_extract expects 2 or 3 arguments (subject, pattern, [idx]), got {}",
-            args.len()
-        );
-    }
-
-    let idx: i32 = if args.len() == 3 {
-        match &args[2] {
-            ColumnarValue::Scalar(ScalarValue::Int32(Some(i))) => *i,
-            ColumnarValue::Scalar(ScalarValue::Int32(None)) => {
-                return Ok(null_result(subject_len(&args[0])));
-            }
-            _ => {
-                return exec_err!("regexp_extract idx must be an Int32 scalar");
-            }
-        }
-    } else {
-        1
+    let (regex, group_idx, subject) = match parse_args("regexp_extract", args)? {
+        ParsedArgs::Parsed {
+            regex,
+            group_idx,
+            subject,
+        } => (regex, group_idx, subject),
+        ParsedArgs::NullResult { len } => return Ok(null_result(len)),
     };
 
-    let pattern: &str = match &args[1] {
-        ColumnarValue::Scalar(ScalarValue::Utf8(Some(p)))
-        | ColumnarValue::Scalar(ScalarValue::LargeUtf8(Some(p))) => p,
-        ColumnarValue::Scalar(ScalarValue::Utf8(None))
-        | ColumnarValue::Scalar(ScalarValue::LargeUtf8(None)) => {
-            return Ok(null_result(subject_len(&args[0])));
-        }
-        _ => {
-            return exec_err!("regexp_extract pattern must be a scalar string");
-        }
-    };
-
-    let regex = Regex::new(pattern).map_err(|e| {
-        DataFusionError::Execution(format!(
-            "The value of parameter `regexp` in `regexp_extract` is invalid: '{pattern}' ({e})"
-        ))
-    })?;
-
-    let group_count = regex.captures_len() as i32 - 1;
-    if idx < 0 || idx > group_count {
-        return Err(DataFusionError::Execution(format!(
-            "The value of parameter `idx` in `regexp_extract` is invalid: \
-             Expects group index between 0 and {group_count}, but got {idx}."
-        )));
-    }
-    let group_idx = idx as usize;
-
-    match &args[0] {
+    match subject {
         ColumnarValue::Array(array) => match array.data_type() {
             DataType::Utf8 => {
                 let strings = as_generic_string_array::<i32>(array.as_ref())?;
-                Ok(ColumnarValue::Array(extract_array::<i32>(
+                Ok(ColumnarValue::Array(extract_array(
                     strings, &regex, group_idx,
                 )))
             }
             DataType::LargeUtf8 => {
                 let strings = as_generic_string_array::<i64>(array.as_ref())?;
-                Ok(ColumnarValue::Array(extract_array::<i64>(
+                Ok(ColumnarValue::Array(extract_array(
                     strings, &regex, group_idx,
                 )))
             }
@@ -115,13 +77,16 @@ pub fn spark_regexp_extract(args: &[ColumnarValue]) -> DataFusionResult<Columnar
     }
 }
 
+/// Always produces a `StringArray` (i32 offsets) regardless of the input offset width:
+/// Spark's `RegExpExtract.dataType` is `StringType` and the Comet serde serializes that as
+/// the protobuf return type, so handing back a `LargeStringArray` would be a type mismatch.
+/// `&str` slices are width-agnostic, so it is safe to copy them into a 32-bit-offset builder.
 fn extract_array<O: OffsetSizeTrait>(
     array: &GenericStringArray<O>,
     regex: &Regex,
     group_idx: usize,
 ) -> ArrayRef {
-    let mut builder =
-        GenericStringBuilder::<O>::with_capacity(array.len(), array.value_data().len());
+    let mut builder = StringBuilder::with_capacity(array.len(), array.value_data().len());
     for i in 0..array.len() {
         if array.is_null(i) {
             builder.append_null();
@@ -146,13 +111,6 @@ fn extract_one(input: &str, regex: &Regex, group_idx: usize) -> String {
     }
 }
 
-fn subject_len(value: &ColumnarValue) -> Option<usize> {
-    match value {
-        ColumnarValue::Array(a) => Some(a.len()),
-        ColumnarValue::Scalar(_) => None,
-    }
-}
-
 fn null_result(len: Option<usize>) -> ColumnarValue {
     match len {
         Some(n) => ColumnarValue::Array(Arc::new(StringArray::new_null(n))),
@@ -163,7 +121,8 @@ fn null_result(len: Option<usize>) -> ColumnarValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use arrow::array::{LargeStringArray, StringArray};
+    use datafusion::common::DataFusionError;
 
     fn run(args: Vec<ColumnarValue>) -> DataFusionResult<Vec<Option<String>>> {
         let result = spark_regexp_extract(&args)?;
@@ -171,8 +130,8 @@ mod tests {
             ColumnarValue::Array(arr) => {
                 let s = arr
                     .as_any()
-                    .downcast_ref::<GenericStringArray<i32>>()
-                    .expect("expected Utf8 array");
+                    .downcast_ref::<StringArray>()
+                    .expect("expected Utf8 array (regexp_extract must always return StringArray)");
                 Ok((0..s.len())
                     .map(|i| {
                         if s.is_null(i) {
@@ -297,5 +256,33 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.to_string().contains("`regexp`"));
+    }
+
+    /// `LargeUtf8` subject must still produce a `StringArray` (i32 offsets) so the result type
+    /// matches Spark's `RegExpExtract.dataType` = `StringType`. Regression for the bug where
+    /// `extract_array::<i64>` used to build a `LargeStringArray` and trip a type mismatch.
+    #[test]
+    fn large_utf8_subject_returns_utf8_array() {
+        let array = ColumnarValue::Array(Arc::new(LargeStringArray::from(vec![
+            Some("100-200"),
+            None,
+            Some("foo-bar"),
+        ])));
+        let result = spark_regexp_extract(&[array, pattern(r"(\d+)-(\d+)"), idx(1)]).unwrap();
+        match result {
+            ColumnarValue::Array(arr) => {
+                arr.as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| {
+                        DataFusionError::Internal(format!(
+                            "expected StringArray, got {:?}",
+                            arr.data_type()
+                        ))
+                    })
+                    .unwrap();
+                assert_eq!(arr.len(), 3);
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
     }
 }

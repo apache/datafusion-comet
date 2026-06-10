@@ -19,6 +19,7 @@ mod contains;
 mod get_json_object;
 mod regexp_extract;
 mod regexp_extract_all;
+mod regexp_extract_common;
 mod split;
 mod substring;
 
