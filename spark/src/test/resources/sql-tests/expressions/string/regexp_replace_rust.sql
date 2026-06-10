@@ -15,14 +15,22 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_regexp_replace(s string) USING parquet
+-- Test regexp_replace() with Rust regexp engine
+-- Opt in to the native (rust) regexp engine. Without this, it runs through the codegen dispatcher.
+-- Config: spark.comet.expression.RegExpReplace.allowIncompatible=true
 
 statement
-INSERT INTO test_regexp_replace VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
+CREATE TABLE test_regexp_replace_enabled(s string) USING parquet
 
-query expect_fallback(Regexp pattern)
-SELECT regexp_replace(s, '(\\d+)', 'X') FROM test_regexp_replace
+statement
+INSERT INTO test_regexp_replace_enabled VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
 
-query expect_fallback(Regexp pattern)
-SELECT regexp_replace(s, '(\\d+)', 'X', 1) FROM test_regexp_replace
+query
+SELECT regexp_replace(s, '(\d+)', 'X') FROM test_regexp_replace_enabled
+
+query
+SELECT regexp_replace(s, '(\d+)', 'X', 1) FROM test_regexp_replace_enabled
+
+-- literal + literal + literal
+query
+SELECT regexp_replace('100-200', '(\d+)', 'X'), regexp_replace('abc', '(\d+)', 'X'), regexp_replace(NULL, '(\d+)', 'X')
