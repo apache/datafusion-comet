@@ -389,7 +389,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `%` | ✅ | try_mod (TRY mode) falls back |
+| `%` | ✅ |  |
 | `*` | ✅ | Interval multiplication falls back |
 | `+` | ✅ |  |
 | `-` | ✅ |  |
@@ -453,7 +453,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `tanh` | ✅ |  |
 | `try_add` | ✅ | Datetime/interval form falls back |
 | `try_divide` | ✅ |  |
-| `try_mod` | 🔜 | Lowers to `Remainder` with TRY eval mode, which falls back ([#4484](https://github.com/apache/datafusion-comet/issues/4484)) |
+| `try_mod` | ✅ |  |
 | `try_multiply` | ✅ |  |
 | `try_subtract` | ✅ |  |
 | `unhex` | ✅ |  |
