@@ -59,7 +59,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup coursier
-        uses: coursier/setup-action@v1
+        uses: coursier/setup-action@v3
         with:
           jvm: temurin:21
 
@@ -377,6 +377,7 @@ jobs:
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.CometJsonExpressionSuite
+              org.apache.comet.CometJsonJvmSuite
               org.apache.comet.SparkErrorConverterSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
