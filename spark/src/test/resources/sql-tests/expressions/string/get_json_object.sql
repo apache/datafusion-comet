@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Opt in to the native (rust) get_json_object path. Without this, get_json_object runs through the
+-- codegen dispatcher (Spark's own implementation) instead.
 -- Config: spark.comet.expression.GetJsonObject.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
