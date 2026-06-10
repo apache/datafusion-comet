@@ -20,8 +20,12 @@
 package org.apache.comet
 
 import java.io.File
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import scala.collection.mutable
+import scala.concurrent.{Await, Future}
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration.DurationInt
 
 import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.sql.CometTestBase
@@ -313,6 +317,115 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("ReplaceData (CoW DELETE) on a row predicate goes through two-op") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "cow_delete",
+        partitionSpec = "",
+        properties = Some("'write.delete.mode'='copy-on-write'"))
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert(
+          "cow_delete",
+          Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0), (4, "us-east", 40.0)))
+      }
+
+      val snapshot = captureWrite("cow_delete") {
+        spark.sql("DELETE FROM cat.db.cow_delete WHERE id = 2")
+      }
+      assertExactlyOneCommit(snapshot)
+      assertRows("cow_delete", expectedIds = Seq(1, 3, 4))
+    }
+  }
+
+  test("ReplaceData (CoW UPDATE) routes through two-op") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "cow_update",
+        partitionSpec = "",
+        properties = Some("'write.update.mode'='copy-on-write'"))
+      coalesceInsert(
+        "cow_update",
+        Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0)))
+
+      val snapshot = captureWrite("cow_update") {
+        spark.sql("UPDATE cat.db.cow_update SET amount = amount * 2 WHERE id = 2")
+      }
+      assertExactlyOneCommit(snapshot)
+      val r = spark
+        .sql("SELECT id, amount FROM cat.db.cow_update WHERE id = 2")
+        .collect()
+      assert(r.length == 1 && r(0).getDouble(1) == 40.0, s"got ${r.toSeq}")
+    }
+  }
+
+  test("ReplaceData (CoW MERGE) with matched and unmatched legs routes through two-op") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "cow_merge",
+        partitionSpec = "",
+        properties = Some("'write.merge.mode'='copy-on-write'"))
+      coalesceInsert("cow_merge", Seq((1, "us-east", 10.0), (2, "us-west", 20.0)))
+
+      val snapshot = captureWrite("cow_merge") {
+        spark.sql("""
+          |MERGE INTO cat.db.cow_merge t
+          |USING (SELECT 2 AS id, 'us-west' AS region, 200.0 AS amount UNION ALL
+          |       SELECT 3 AS id, 'eu' AS region, 30.0 AS amount) s
+          |ON t.id = s.id
+          |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
+          |WHEN NOT MATCHED THEN INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
+          |""".stripMargin)
+      }
+      assertExactlyOneCommit(snapshot)
+      assertRows("cow_merge", expectedIds = Seq(1, 2, 3))
+    }
+  }
+
+  // Spark 4.1 hands MERGE metrics to `BatchWrite.commit(messages, summary)` and Iceberg 1.11+
+  // records them in the snapshot summary.
+  test("CoW MERGE records merge metrics in the snapshot summary on Spark 4.1+") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(isSpark41Plus, "MERGE write summaries need Spark 4.1+")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "merge_summary",
+        partitionSpec = "",
+        properties = Some("'write.merge.mode'='copy-on-write'"))
+      coalesceInsert("merge_summary", Seq((1, "us-east", 10.0), (2, "us-west", 20.0)))
+
+      spark.sql(s"""
+        |MERGE INTO $catalog.$ns.merge_summary t
+        |USING (SELECT 2 AS id, 'us-west' AS region, 200.0 AS amount UNION ALL
+        |       SELECT 3 AS id, 'eu' AS region, 30.0 AS amount) s
+        |ON t.id = s.id
+        |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
+        |WHEN NOT MATCHED THEN INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
+        |""".stripMargin)
+
+      val summary = spark
+        .sql(s"SELECT summary FROM $catalog.$ns.merge_summary.snapshots " +
+          "ORDER BY committed_at DESC LIMIT 1")
+        .collect()(0)
+        .getMap[String, String](0)
+      val expected = Map(
+        "spark.merge-into.num-target-rows-copied" -> "1",
+        "spark.merge-into.num-target-rows-updated" -> "1",
+        "spark.merge-into.num-target-rows-inserted" -> "1")
+      expected.foreach { case (key, value) =>
+        assert(
+          summary.get(key).contains(value),
+          s"expected $key=$value in snapshot summary, got $summary")
+      }
+    }
+  }
+
   test("failed write job aborts and leaves the table unchanged") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { warehouseDir =>
@@ -346,6 +459,60 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("commit-time validation still sees a conflicting concurrent append") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "conflict",
+        partitionSpec = "",
+        properties = Some(
+          "'write.delete.mode'='copy-on-write','write.delete.isolation-level'='serializable'"))
+      coalesceInsert("conflict", Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0)))
+
+      ConflictGate.reset()
+      spark.udf.register(
+        "conflict_gate",
+        (id: Int) => {
+          ConflictGate.enter()
+          id
+        })
+
+      val before = countSnapshots("conflict")
+      // The gate UDF blocks the DELETE's tasks after its scan snapshot is pinned, so the
+      // append below is guaranteed to land between the scan and the commit. Runtime group
+      // filtering is disabled so the conflict is detected by Iceberg's commit-time
+      // validation rather than aborted earlier by the runtime file filter.
+      withSQLConf("spark.sql.optimizer.runtime.rowLevelOperationGroupFilter.enabled" -> "false") {
+        val delete = Future {
+          spark.sql(s"DELETE FROM $catalog.$ns.conflict WHERE conflict_gate(id) = 2")
+        }
+        assert(
+          ConflictGate.awaitScanStarted(2, TimeUnit.MINUTES),
+          "DELETE never started scanning; gate UDF was not invoked")
+        spark.sql(s"INSERT INTO $catalog.$ns.conflict VALUES (2, 'us-west', 99.0)")
+        ConflictGate.releaseWrite()
+
+        val e = intercept[Exception] {
+          Await.result(delete, 2.minutes)
+        }
+        assert(
+          exceptionChain(e).exists(t =>
+            Option(t.getMessage).exists(_.toLowerCase.contains("conflict"))),
+          s"expected Iceberg commit-time validation to fail the DELETE, got $e")
+      }
+      assert(
+        countSnapshots("conflict") == before + 1,
+        "only the concurrent append may commit; the DELETE must not")
+      val ids = spark
+        .sql(s"SELECT id FROM $catalog.$ns.conflict ORDER BY id")
+        .collect()
+        .map(_.getInt(0))
+        .toSeq
+      assert(ids == Seq(1, 2, 2, 3), s"expected (1,2,2,3), got $ids")
+    }
+  }
+
   test("non-Iceberg V2 write plans through Spark unchanged with the config on") {
     withSQLConf(
       "spark.sql.catalog.testcat" -> classOf[InMemoryTableCatalog].getName,
@@ -363,6 +530,24 @@ class CometIcebergWriteActionSuite
         assert(ids == Seq(1), s"expected (1), got $ids")
       } finally {
         spark.sql("DROP TABLE IF EXISTS testcat.tbl")
+      }
+    }
+  }
+
+  test("sanity check: Spark's default DELETE path works against a Hadoop catalog") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        createTable(
+          warehouseDir,
+          "spark_cow_delete",
+          partitionSpec = "",
+          properties = Some("'write.delete.mode'='copy-on-write'"))
+        coalesceInsert(
+          "spark_cow_delete",
+          Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0), (4, "us-east", 40.0)))
+        spark.sql("DELETE FROM cat.db.spark_cow_delete WHERE id = 2")
+        assertRows("spark_cow_delete", expectedIds = Seq(1, 3, 4))
       }
     }
   }
@@ -533,4 +718,29 @@ class CometIcebergWriteActionSuite
     chain.toSeq
   }
 
+}
+
+/**
+ * Blocks the DELETE's write job between its scan-snapshot pin and its commit so the test can
+ * inject a conflicting commit. Top-level so the UDF closure doesn't capture the suite.
+ */
+private object ConflictGate {
+  @volatile private var scanStarted = new CountDownLatch(1)
+  @volatile private var writeReleased = new CountDownLatch(1)
+
+  def reset(): Unit = {
+    scanStarted = new CountDownLatch(1)
+    writeReleased = new CountDownLatch(1)
+  }
+
+  def enter(): Unit = {
+    scanStarted.countDown()
+    if (!writeReleased.await(2, TimeUnit.MINUTES)) {
+      throw new IllegalStateException("ConflictGate was never released")
+    }
+  }
+
+  def awaitScanStarted(timeout: Long, unit: TimeUnit): Boolean = scanStarted.await(timeout, unit)
+
+  def releaseWrite(): Unit = writeReleased.countDown()
 }
