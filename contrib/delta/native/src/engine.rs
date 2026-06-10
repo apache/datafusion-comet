@@ -369,10 +369,7 @@ mod tests {
         };
         let a = engine_key(&url("s3://bucket/p"), &cfg_a);
         let b = engine_key(&url("s3://bucket/p"), &cfg_b);
-        assert_ne!(
-            a, b,
-            "different credentials must NOT share a cached engine"
-        );
+        assert_ne!(a, b, "different credentials must NOT share a cached engine");
     }
 
     #[test]

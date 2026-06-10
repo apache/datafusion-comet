@@ -53,10 +53,10 @@ use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use futures::StreamExt;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
+use futures::StreamExt;
 
 use datafusion::common::ScalarValue;
 
@@ -403,8 +403,13 @@ impl DeltaKernelScanExec {
                 let n = self.file_row_count(engine.as_ref(), &table_root_url, file)?;
                 let live = match (&file.dv, self.apply_dv) {
                     (Some(desc), true) => {
-                        let deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config, &self.dv_file_name_prefix)
-                            .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
+                        let deleted = read_dv_indexes(
+                            desc,
+                            &table_root_url,
+                            &self.storage_config,
+                            &self.dv_file_name_prefix,
+                        )
+                        .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                         n - deleted.iter().filter(|&&i| (i as usize) < n).count()
                     }
                     _ => n,
@@ -448,8 +453,13 @@ impl DeltaKernelScanExec {
             // rows pass through and a wrapping DeltaSyntheticColumnsExec drops/flags them.
             let selection_vector = match (&file.dv, self.apply_dv) {
                 (Some(desc), true) => {
-                    let deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config, &self.dv_file_name_prefix)
-                        .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
+                    let deleted = read_dv_indexes(
+                        desc,
+                        &table_root_url,
+                        &self.storage_config,
+                        &self.dv_file_name_prefix,
+                    )
+                    .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                     let n = file.record_count.ok_or_else(|| {
                         DataFusionError::Execution(format!(
                             "kernel scan: file {} has a deletion vector but no record_count to size the mask",
@@ -591,8 +601,12 @@ impl DeltaKernelScanExec {
         let num_rows = kernel_batch.num_rows();
         let kernel_schema = kernel_batch.schema();
         let parsed_tz = SessionTimezone::parse(&self.session_timezone);
-        let is_partition =
-            |name: &str| self.partition_schema.fields().iter().any(|f| f.name() == name);
+        let is_partition = |name: &str| {
+            self.partition_schema
+                .fields()
+                .iter()
+                .any(|f| f.name() == name)
+        };
 
         let mut columns: Vec<arrow::array::ArrayRef> =
             Vec::with_capacity(self.output_schema.fields().len());
@@ -688,8 +702,13 @@ impl DeltaKernelScanExec {
                 let n = self.file_row_count(engine.as_ref(), &table_root_url, file)?;
                 let mut deleted: Vec<u64> = Vec::new();
                 if let Some(desc) = &file.dv {
-                    deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config, &self.dv_file_name_prefix)
-                        .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
+                    deleted = read_dv_indexes(
+                        desc,
+                        &table_root_url,
+                        &self.storage_config,
+                        &self.dv_file_name_prefix,
+                    )
+                    .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                 }
                 let (rows, is_deleted): (usize, Option<Int8Array>) = if emit_is_row_deleted {
                     let dset: std::collections::HashSet<usize> =
@@ -722,8 +741,13 @@ impl DeltaKernelScanExec {
             // Decode the DV once per file (sorted physical row indexes), only when we flag or drop.
             let mut deleted: Vec<u64> = Vec::new();
             if let Some(desc) = &file.dv {
-                deleted = read_dv_indexes(desc, &table_root_url, &self.storage_config, &self.dv_file_name_prefix)
-                    .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
+                deleted = read_dv_indexes(
+                    desc,
+                    &table_root_url,
+                    &self.storage_config,
+                    &self.dv_file_name_prefix,
+                )
+                .map_err(|e| map_dv_error_to_datafusion(e, desc))?;
                 deleted.sort_unstable();
             }
             let has_dv = !deleted.is_empty();
@@ -797,8 +821,11 @@ impl DeltaKernelScanExec {
                         Some(a) => (0..len).map(|i| a.value(i) == 0).collect(),
                         None => vec![true; len],
                     };
-                    arrow::compute::filter_record_batch(&assembled, &arrow::array::BooleanArray::from(keep))
-                        .map_err(DataFusionError::from)?
+                    arrow::compute::filter_record_batch(
+                        &assembled,
+                        &arrow::array::BooleanArray::from(keep),
+                    )
+                    .map_err(DataFusionError::from)?
                 } else {
                     assembled
                 };
@@ -869,9 +896,11 @@ impl DeltaKernelScanExec {
                     Arc::new(StringArray::from(vec![base; num_rows]))
                 }
                 META_FILE_SIZE => Arc::new(Int64Array::from(vec![file.size; num_rows])),
-                META_FILE_BLOCK_START => {
-                    Arc::new(Int64Array::from(vec![file.byte_range_start.unwrap_or(0); num_rows]))
-                }
+                META_FILE_BLOCK_START => Arc::new(Int64Array::from(vec![
+                    file.byte_range_start
+                        .unwrap_or(0);
+                    num_rows
+                ])),
                 META_FILE_BLOCK_LENGTH => {
                     let v = match (file.byte_range_start, file.byte_range_end) {
                         (Some(s), Some(e)) => e - s,
@@ -882,12 +911,14 @@ impl DeltaKernelScanExec {
                 META_FILE_MODIFICATION_TIME => {
                     let micros = file.modification_time.saturating_mul(1000);
                     Arc::new(
-                        TimestampMicrosecondArray::from(vec![micros; num_rows]).with_timezone("UTC"),
+                        TimestampMicrosecondArray::from(vec![micros; num_rows])
+                            .with_timezone("UTC"),
                     )
                 }
-                META_BASE_ROW_ID => {
-                    Arc::new(Int64Array::from(vec![file.base_row_id.unwrap_or(0); num_rows]))
-                }
+                META_BASE_ROW_ID => Arc::new(Int64Array::from(vec![
+                    file.base_row_id.unwrap_or(0);
+                    num_rows
+                ])),
                 other
                     if other.starts_with("_row-id-col-")
                         || other.starts_with("_row-commit-version-col-") =>
@@ -896,7 +927,12 @@ impl DeltaKernelScanExec {
                     // RowId metadata column already surfaced a present one as a data column above).
                     Arc::new(Int64Array::from(vec![None as Option<i64>; num_rows]))
                 }
-                _ if self.partition_schema.fields().iter().any(|f| f.name() == name) => {
+                _ if self
+                    .partition_schema
+                    .fields()
+                    .iter()
+                    .any(|f| f.name() == name) =>
+                {
                     // Partition column the transform didn't inject -> constant from the Add action.
                     let raw = file
                         .partition_values
@@ -1474,7 +1510,10 @@ mod tests {
         // Round-trip the transform through serde JSON exactly as driver -> executor does.
         let json = serde_json::to_vec(transform.as_ref()).unwrap();
         let restored: Expression = serde_json::from_slice(&json).unwrap();
-        assert_eq!(&*transform, &restored, "transform survives serde round-trip");
+        assert_eq!(
+            &*transform, &restored,
+            "transform survives serde round-trip"
+        );
 
         let batches = read_file_via_kernel(
             engine.as_ref(),

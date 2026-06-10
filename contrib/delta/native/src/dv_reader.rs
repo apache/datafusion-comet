@@ -42,9 +42,7 @@ use url::Url;
 
 use datafusion::common::DataFusionError;
 use datafusion_comet_common::SparkError;
-use delta_kernel::actions::deletion_vector::{
-    DeletionVectorDescriptor, DeletionVectorStorageType,
-};
+use delta_kernel::actions::deletion_vector::{DeletionVectorDescriptor, DeletionVectorStorageType};
 use delta_kernel::Engine;
 
 use crate::engine::{get_or_create_engine, DeltaStorageConfig};
@@ -128,10 +126,7 @@ fn splice_dv_file_name_prefix(resolved: &Url, prefix: &str) -> Option<String> {
 /// (signed `Option<i32>` on kernel) so we narrow back through `i32::try_from`.
 fn proto_to_kernel_descriptor(p: &DeltaDvDescriptor) -> DeltaResult<DeletionVectorDescriptor> {
     let storage_type = DeletionVectorStorageType::from_str(&p.storage_type).map_err(|e| {
-        DeltaError::Internal(format!(
-            "invalid DV storage_type {:?}: {e}",
-            p.storage_type
-        ))
+        DeltaError::Internal(format!("invalid DV storage_type {:?}: {e}", p.storage_type))
     })?;
     // size_in_bytes is i32 in kernel; protect against overflow rather than panic in `as`.
     let size_in_bytes = i32::try_from(p.size_in_bytes).map_err(|_| {
@@ -141,9 +136,10 @@ fn proto_to_kernel_descriptor(p: &DeltaDvDescriptor) -> DeltaResult<DeletionVect
         ))
     })?;
     let offset = match p.offset {
-        Some(o) => Some(i32::try_from(o).map_err(|_| {
-            DeltaError::Internal(format!("DV offset {o} doesn't fit in i32"))
-        })?),
+        Some(o) => Some(
+            i32::try_from(o)
+                .map_err(|_| DeltaError::Internal(format!("DV offset {o} doesn't fit in i32")))?,
+        ),
         None => None,
     };
     Ok(DeletionVectorDescriptor {
@@ -366,7 +362,10 @@ mod tests {
             DataFusionError::External(e) => match e.downcast_ref::<SparkError>() {
                 Some(SparkError::CannotReadFile { file_path, message }) => {
                     assert_eq!(file_path, "file:///t/part-0.parquet");
-                    assert!(message.contains("footer metadata"), "kept the underlying cause");
+                    assert!(
+                        message.contains("footer metadata"),
+                        "kept the underlying cause"
+                    );
                 }
                 other => panic!("expected CannotReadFile, got {other:?}"),
             },

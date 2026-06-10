@@ -177,7 +177,9 @@ fn catalyst_literal_to_scalar(expr: &Expr) -> Option<Scalar> {
                     Some(Scalar::Date(*v))
                 }
                 Some(literal::Value::IntVal(v)) => Some(Scalar::Integer(*v)),
-                Some(literal::Value::LongVal(v)) if type_id == Some(DataTypeId::Timestamp as i32) => {
+                Some(literal::Value::LongVal(v))
+                    if type_id == Some(DataTypeId::Timestamp as i32) =>
+                {
                     Some(Scalar::Timestamp(*v))
                 }
                 Some(literal::Value::LongVal(v))
@@ -307,11 +309,7 @@ mod tests {
         }))
     }
 
-    fn binary(
-        struct_fn: impl FnOnce(Box<BinaryExpr>) -> ExprStruct,
-        l: Expr,
-        r: Expr,
-    ) -> Expr {
+    fn binary(struct_fn: impl FnOnce(Box<BinaryExpr>) -> ExprStruct, l: Expr, r: Expr) -> Expr {
         let be = BinaryExpr {
             left: Some(Box::new(l)),
             right: Some(Box::new(r)),
@@ -319,10 +317,7 @@ mod tests {
         mk_expr(struct_fn(Box::new(be)))
     }
 
-    fn unary(
-        struct_fn: impl FnOnce(Box<UnaryExpr>) -> ExprStruct,
-        child: Expr,
-    ) -> Expr {
+    fn unary(struct_fn: impl FnOnce(Box<UnaryExpr>) -> ExprStruct, child: Expr) -> Expr {
         let ue = UnaryExpr {
             child: Some(Box::new(child)),
         };
@@ -487,10 +482,7 @@ mod tests {
         let l = binary(ExprStruct::Eq, bound_ref(0), lit_int(1));
         let r = binary(ExprStruct::Eq, bound_ref(1), lit_int(2));
         let expr = binary(ExprStruct::And, l, r);
-        let p = catalyst_to_kernel_predicate_with_names(
-            &expr,
-            &["a".to_string(), "b".to_string()],
-        );
+        let p = catalyst_to_kernel_predicate_with_names(&expr, &["a".to_string(), "b".to_string()]);
         let s = pred_str(&p);
         assert!(s.contains("a") && s.contains("b"), "{s}");
     }
@@ -629,8 +621,7 @@ mod tests {
             ..Default::default()
         };
         let expr = mk_expr(ExprStruct::Cast(Box::new(cast)));
-        let kernel_expr =
-            catalyst_to_kernel_expression_with_names(&expr, &["x".to_string()]);
+        let kernel_expr = catalyst_to_kernel_expression_with_names(&expr, &["x".to_string()]);
         // After unwrap: should resolve to column "x"
         assert!(format!("{kernel_expr:?}").contains("x"));
     }

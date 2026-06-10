@@ -93,7 +93,6 @@ fn parse_fixed_offset(s: &str) -> Option<chrono::FixedOffset> {
     chrono::FixedOffset::east_opt(sign * secs)
 }
 
-
 /// Parse a Delta partition value string into a `ScalarValue`. Honours session TZ for
 /// TIMESTAMP columns. Delta writes TIMESTAMP partition values in the JVM default TZ
 /// (`yyyy-MM-dd HH:mm:ss[.S]`); DataFusion's default parser interprets them as UTC
@@ -116,11 +115,10 @@ pub fn parse_delta_partition_scalar(
                 let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
                     .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
                     .or_else(|_| {
-                        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                            .map(|d| {
-                                d.and_hms_opt(0, 0, 0)
-                                    .expect("midnight (0,0,0) is always a valid time")
-                            })
+                        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map(|d| {
+                            d.and_hms_opt(0, 0, 0)
+                                .expect("midnight (0,0,0) is always a valid time")
+                        })
                     })
                     .map_err(|e| format!("cannot parse TIMESTAMP_NTZ '{s}': {e}"))?;
                 let micros = chrono::Utc.from_utc_datetime(&naive).timestamp_micros();
@@ -141,20 +139,18 @@ pub fn parse_delta_partition_scalar(
             }
             let micros = if let Ok(dt_with_tz) = DateTime::parse_from_rfc3339(s) {
                 dt_with_tz.timestamp_micros()
-            } else if let Ok(dt_with_tz) =
-                DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f %z")
-                    .or_else(|_| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S %z"))
+            } else if let Ok(dt_with_tz) = DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f %z")
+                .or_else(|_| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S %z"))
             {
                 dt_with_tz.timestamp_micros()
             } else {
                 let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
                     .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
                     .or_else(|_| {
-                        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                            .map(|d| {
-                                d.and_hms_opt(0, 0, 0)
-                                    .expect("midnight (0,0,0) is always a valid time")
-                            })
+                        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map(|d| {
+                            d.and_hms_opt(0, 0, 0)
+                                .expect("midnight (0,0,0) is always a valid time")
+                        })
                     })
                     .map_err(|e| format!("cannot parse timestamp '{s}': {e}"))?;
                 use chrono::LocalResult;
@@ -182,12 +178,16 @@ pub fn parse_delta_partition_scalar(
                 datafusion::arrow::datatypes::TimeUnit::Millisecond => Ok(
                     ScalarValue::TimestampMillisecond(Some(micros / 1000), tz_opt.clone()),
                 ),
-                datafusion::arrow::datatypes::TimeUnit::Nanosecond => Ok(
-                    ScalarValue::TimestampNanosecond(Some(micros.saturating_mul(1000)), tz_opt.clone()),
-                ),
-                datafusion::arrow::datatypes::TimeUnit::Second => Ok(
-                    ScalarValue::TimestampSecond(Some(micros / 1_000_000), tz_opt.clone()),
-                ),
+                datafusion::arrow::datatypes::TimeUnit::Nanosecond => {
+                    Ok(ScalarValue::TimestampNanosecond(
+                        Some(micros.saturating_mul(1000)),
+                        tz_opt.clone(),
+                    ))
+                }
+                datafusion::arrow::datatypes::TimeUnit::Second => Ok(ScalarValue::TimestampSecond(
+                    Some(micros / 1_000_000),
+                    tz_opt.clone(),
+                )),
             }
         }
         _ => ScalarValue::try_from_string(s.to_string(), dt).map_err(|e| format!("{e}")),
@@ -215,20 +215,38 @@ mod tests {
 
     #[test]
     fn fixed_offset_signed_hh_mm() {
-        assert_eq!(parse_fixed_offset("+05:30").unwrap().local_minus_utc(), 5 * 3600 + 30 * 60);
-        assert_eq!(parse_fixed_offset("-08:00").unwrap().local_minus_utc(), -8 * 3600);
+        assert_eq!(
+            parse_fixed_offset("+05:30").unwrap().local_minus_utc(),
+            5 * 3600 + 30 * 60
+        );
+        assert_eq!(
+            parse_fixed_offset("-08:00").unwrap().local_minus_utc(),
+            -8 * 3600
+        );
     }
 
     #[test]
     fn fixed_offset_hhmm_no_colon() {
-        assert_eq!(parse_fixed_offset("+0530").unwrap().local_minus_utc(), 5 * 3600 + 30 * 60);
-        assert_eq!(parse_fixed_offset("-0800").unwrap().local_minus_utc(), -8 * 3600);
+        assert_eq!(
+            parse_fixed_offset("+0530").unwrap().local_minus_utc(),
+            5 * 3600 + 30 * 60
+        );
+        assert_eq!(
+            parse_fixed_offset("-0800").unwrap().local_minus_utc(),
+            -8 * 3600
+        );
     }
 
     #[test]
     fn fixed_offset_hour_only() {
-        assert_eq!(parse_fixed_offset("+5").unwrap().local_minus_utc(), 5 * 3600);
-        assert_eq!(parse_fixed_offset("-3").unwrap().local_minus_utc(), -3 * 3600);
+        assert_eq!(
+            parse_fixed_offset("+5").unwrap().local_minus_utc(),
+            5 * 3600
+        );
+        assert_eq!(
+            parse_fixed_offset("-3").unwrap().local_minus_utc(),
+            -3 * 3600
+        );
     }
 
     #[test]
@@ -237,7 +255,10 @@ mod tests {
             parse_fixed_offset("GMT+05:30").unwrap().local_minus_utc(),
             5 * 3600 + 30 * 60
         );
-        assert_eq!(parse_fixed_offset("UTC-3").unwrap().local_minus_utc(), -3 * 3600);
+        assert_eq!(
+            parse_fixed_offset("UTC-3").unwrap().local_minus_utc(),
+            -3 * 3600
+        );
     }
 
     #[test]
@@ -269,7 +290,10 @@ mod tests {
 
     #[test]
     fn session_tz_invalid() {
-        assert!(matches!(SessionTimezone::parse("nonsense"), SessionTimezone::Invalid));
+        assert!(matches!(
+            SessionTimezone::parse("nonsense"),
+            SessionTimezone::Invalid
+        ));
     }
 
     // ---- parse_delta_partition_scalar: every primitive type ----
@@ -286,8 +310,8 @@ mod tests {
 
     #[test]
     fn partition_scalar_int64() {
-        let s = parse_delta_partition_scalar("9999999999", &DataType::Int64, &tz_utc(), "UTC")
-            .unwrap();
+        let s =
+            parse_delta_partition_scalar("9999999999", &DataType::Int64, &tz_utc(), "UTC").unwrap();
         assert_eq!(s, ScalarValue::Int64(Some(9999999999)));
     }
 
@@ -369,7 +393,6 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
     }
-
 }
 
 /// Plan a Delta `DeltaScan` proto into its native `ExecutionPlan` (the kernel-read path).

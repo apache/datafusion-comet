@@ -564,7 +564,10 @@ fn throw_generic_exception(
                 JNIString::new(exception.class),
                 JNIString::new(to_stacktrace_string(exception.msg, backtrace_string).unwrap()),
             ),
-            _ => env.throw_new(JNIString::new(exception.class), JNIString::new(exception.msg)),
+            _ => env.throw_new(
+                JNIString::new(exception.class),
+                JNIString::new(exception.msg),
+            ),
         }
     }
 }

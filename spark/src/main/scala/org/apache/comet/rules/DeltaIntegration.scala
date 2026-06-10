@@ -154,8 +154,8 @@ object DeltaIntegration extends org.apache.spark.internal.Logging {
         // silently fall back to vanilla and the user would never know Comet declined.
         case e: java.lang.reflect.InvocationTargetException =>
           logWarning(
-            s"CometDeltaNativeScan.transformV1IfDelta threw, declining to vanilla Delta " +
-              s"for this scan",
+            "CometDeltaNativeScan.transformV1IfDelta threw, declining to vanilla Delta " +
+              "for this scan",
             Option(e.getCause).getOrElse(e))
           None
       }

@@ -415,8 +415,10 @@ pub fn plan_delta_scan_with_predicate(
                         Ok(bytes) => bytes,
                         Err(e) => {
                             if acc.transform_err.is_none() {
-                                acc.transform_err =
-                                    Some(format!("serialize kernel transform for {}: {e}", scan_file.path));
+                                acc.transform_err = Some(format!(
+                                    "serialize kernel transform for {}: {e}",
+                                    scan_file.path
+                                ));
                             }
                             Vec::new()
                         }
