@@ -33,6 +33,12 @@
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Known incompatibility: Spark accepts single-quoted JSON and unescaped control characters; Comet's native parser (built on `serde_json`) rejects both, so those inputs require `spark.comet.expression.GetJsonObject.allowIncompatible=true` and may still produce different results. Non-default Spark 4.0 string collations are not propagated (https://github.com/apache/datafusion-comet/issues/2190).
 
+## json_array_length
+
+- `LengthOfJsonArray`: `UnaryExpression with ExpectsInputTypes with CodegenFallback`; `inputTypes = Seq(StringType) -> IntegerType`. Returns NULL for NULL input, invalid JSON, or non-array JSON; otherwise the number of top-level array elements.
+- Runs through the codegen dispatcher by default for byte-exact Spark compatibility.
+- Known incompatibility: the native path (built on `serde_json`) requires strict JSON, so single-quoted JSON, unescaped control characters, and trailing content require `spark.comet.expression.LengthOfJsonArray.allowIncompatible=true` and may still produce different results.
+
 ## to_json
 
 - Partial native support; options and map/array inputs fall back.

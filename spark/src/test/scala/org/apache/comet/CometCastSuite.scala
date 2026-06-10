@@ -787,11 +787,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
     withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
       assert(
-        CometCast.isSupported(
-          negScaleType,
-          DataTypes.StringType,
-          None,
-          CometEvalMode.LEGACY) == Incompatible())
+        CometCast.isSupported(negScaleType, DataTypes.StringType, None, CometEvalMode.LEGACY) ==
+          Incompatible(Some(CometCast.negativeScaleDecimalToStringReason)))
     }
   }
 

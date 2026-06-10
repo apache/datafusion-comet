@@ -15,21 +15,25 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test regexp_replace() with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.expression.regexp.allowIncompatible=true
+-- Test split with Rust regexp engine
+-- Opt in to the native (rust) regexp engine. Without this, it runs through the codegen dispatcher.
+-- Config: spark.comet.expression.StringSplit.allowIncompatible=true
 
 statement
-CREATE TABLE test_regexp_replace_enabled(s string) USING parquet
+CREATE TABLE test_split_rust_enabled(s string) USING parquet
 
 statement
-INSERT INTO test_regexp_replace_enabled VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
+INSERT INTO test_split_rust_enabled VALUES ('one,two,three'), ('hello'), (''), (NULL), ('a::b::c')
 
 query
-SELECT regexp_replace(s, '(\d+)', 'X') FROM test_regexp_replace_enabled
+SELECT split(s, ',', -1) FROM test_split_rust_enabled
 
 query
-SELECT regexp_replace(s, '(\d+)', 'X', 1) FROM test_regexp_replace_enabled
+SELECT split(s, ',', 2) FROM test_split_rust_enabled
 
--- literal + literal + literal
 query
-SELECT regexp_replace('100-200', '(\d+)', 'X'), regexp_replace('abc', '(\d+)', 'X'), regexp_replace(NULL, '(\d+)', 'X')
+SELECT split(s, '::', -1) FROM test_split_rust_enabled
+
+-- literal arguments
+query
+SELECT split('a,b,c', ',', -1), split('hello', ',', -1), split(NULL, ',', -1)
