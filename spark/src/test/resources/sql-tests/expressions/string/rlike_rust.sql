@@ -15,17 +15,25 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_rlike(s string) USING parquet
+-- Test RLIKE with Rust regexp engine
+-- Opt in to the native (rust) regexp engine. Without this, it runs through the codegen dispatcher.
+-- Config: spark.comet.expression.RLike.allowIncompatible=true
 
 statement
-INSERT INTO test_rlike VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
+CREATE TABLE test_rlike_enabled(s string) USING parquet
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[0-9]+$' FROM test_rlike
+statement
+INSERT INTO test_rlike_enabled VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[a-z]+$' FROM test_rlike
+query
+SELECT s RLIKE '^[0-9]+$' FROM test_rlike_enabled
 
-query spark_answer_only
-SELECT s RLIKE '' FROM test_rlike
+query
+SELECT s RLIKE '^[a-z]+$' FROM test_rlike_enabled
+
+query
+SELECT s RLIKE '' FROM test_rlike_enabled
+
+-- literal arguments
+query
+SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^[a-z]+$', '' RLIKE '', NULL RLIKE 'a'

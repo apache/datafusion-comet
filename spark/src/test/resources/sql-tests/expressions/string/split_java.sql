@@ -15,24 +15,38 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test RLIKE with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.expression.regexp.allowIncompatible=true
+-- Test split via JVM regex engine
 
 statement
-CREATE TABLE test_rlike_enabled(s string) USING parquet
+CREATE TABLE test_split_java(s string) USING parquet
 
 statement
-INSERT INTO test_rlike_enabled VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
+INSERT INTO test_split_java VALUES ('one,two,three'), ('hello'), (''), (NULL), ('a::b::c'), ('aXbXc')
 
+-- basic split on comma
 query
-SELECT s RLIKE '^[0-9]+$' FROM test_rlike_enabled
+SELECT split(s, ',', -1) FROM test_split_java
 
+-- split with limit
 query
-SELECT s RLIKE '^[a-z]+$' FROM test_rlike_enabled
+SELECT split(s, ',', 2) FROM test_split_java
 
+-- split on regex pattern
 query
-SELECT s RLIKE '' FROM test_rlike_enabled
+SELECT split(s, '[,:]', -1) FROM test_split_java
+
+-- split on multi-char separator
+query
+SELECT split(s, '::', -1) FROM test_split_java
+
+-- lookahead in pattern (Java-only)
+query
+SELECT split(s, '(?=X)', -1) FROM test_split_java
+
+-- embedded flags (Java-only)
+query
+SELECT split(s, '(?i)x', -1) FROM test_split_java
 
 -- literal arguments
 query
-SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^[a-z]+$', '' RLIKE '', NULL RLIKE 'a'
+SELECT split('a,b,c', ',', -1), split('hello', ',', -1), split(NULL, ',', -1)
