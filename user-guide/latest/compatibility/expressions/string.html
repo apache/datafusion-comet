@@ -556,24 +556,6 @@ under the License.
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> input is not supported</p></li>
 </ul>
 </section>
-<section id="rlike">
-<h2>RLike<a class="headerlink" href="#rlike" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">RLike</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RLike.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Uses Rust regexp engine, which has different behavior to Java regexp engine</p></li>
-</ul>
-</section>
-<section id="regexpreplace">
-<h2>RegExpReplace<a class="headerlink" href="#regexpreplace" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">RegExpReplace</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpReplace.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Regexp pattern may not be compatible with Spark</p></li>
-</ul>
-<p>The following cases are not supported by Comet:</p>
-<ul class="simple">
-<li><p>Only supports <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code> with an offset of 1 (no offset)</p></li>
-</ul>
-</section>
 <section id="reverse">
 <h2>Reverse<a class="headerlink" href="#reverse" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Reverse</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Reverse.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
@@ -608,13 +590,6 @@ under the License.
 <p>The following differences from Spark are always present and do not require any additional configuration:</p>
 <ul class="simple">
 <li><p>A negative argument for the number of times to repeat throws an exception instead of returning an empty string as Spark does</p></li>
-</ul>
-</section>
-<section id="stringsplit">
-<h2>StringSplit<a class="headerlink" href="#stringsplit" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StringSplit</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringSplit.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Regex engine differences between Java and Rust</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
 </section>

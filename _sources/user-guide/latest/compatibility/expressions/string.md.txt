@@ -44,22 +44,6 @@ The following cases are not supported by Comet:
 
 - `BinaryType` input is not supported
 
-## RLike
-
-The following incompatibilities cause `RLike` to fall back to Spark by default. Set `spark.comet.expression.RLike.allowIncompatible=true` to enable Comet acceleration despite these differences.
-
-- Uses Rust regexp engine, which has different behavior to Java regexp engine
-
-## RegExpReplace
-
-The following incompatibilities cause `RegExpReplace` to fall back to Spark by default. Set `spark.comet.expression.RegExpReplace.allowIncompatible=true` to enable Comet acceleration despite these differences.
-
-- Regexp pattern may not be compatible with Spark
-
-The following cases are not supported by Comet:
-
-- Only supports `regexp_replace` with an offset of 1 (no offset)
-
 ## Reverse
 
 The following incompatibilities cause `Reverse` to fall back to Spark by default. Set `spark.comet.expression.Reverse.allowIncompatible=true` to enable Comet acceleration despite these differences.
@@ -90,10 +74,4 @@ The following cases are not supported by Comet:
 The following differences from Spark are always present and do not require any additional configuration:
 
 - A negative argument for the number of times to repeat throws an exception instead of returning an empty string as Spark does
-
-## StringSplit
-
-The following incompatibilities cause `StringSplit` to fall back to Spark by default. Set `spark.comet.expression.StringSplit.allowIncompatible=true` to enable Comet acceleration despite these differences.
-
-- Regex engine differences between Java and Rust
 <!--END:EXPR_COMPAT-->

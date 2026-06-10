@@ -526,9 +526,173 @@ under the License.
 -->
 <section id="regular-expressions">
 <h1>Regular Expressions<a class="headerlink" href="#regular-expressions" title="Link to this heading">#</a></h1>
-<p>Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java’s
-regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
-this can be overridden by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.regexp.allowIncompatible=true</span></code>.</p>
+<p>Comet evaluates Spark regular-expression expressions (<code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, <code class="docutils literal notranslate"><span class="pre">split</span></code>,
+<code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code>) two ways:</p>
+<ul class="simple">
+<li><p><strong>Codegen dispatcher (default)</strong> — Spark’s own <code class="docutils literal notranslate"><span class="pre">doGenCode</span></code> for the expression runs inside Comet’s
+Arrow-direct codegen dispatcher (the same dispatcher used by Comet’s <code class="docutils literal notranslate"><span class="pre">ScalaUDF</span></code> codegen path).
+This is 100% compatible with Spark, at the cost of one JNI round-trip per batch. It is enabled by
+default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=true</span></code>); if the dispatcher is disabled, regex
+expressions fall back to Spark.</p></li>
+<li><p><strong>Native (rust) engine</strong> — the Rust <a class="reference external" href="https://docs.rs/regex/latest/regex/"><code class="docutils literal notranslate"><span class="pre">regex</span></code></a> crate, run natively with no JNI overhead. It is
+faster but has different semantics from Java regex (see below), so it is <strong>opt-in per expression</strong>
+via that expression’s <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> flag. <code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, and <code class="docutils literal notranslate"><span class="pre">split</span></code> have a
+native implementation; <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code>, and <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code> do not and
+always run through the codegen dispatcher.</p></li>
+</ul>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>SQL</p></th>
+<th class="head"><p>Native (rust) opt-in config</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rlike</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RLike.allowIncompatible</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpReplace.allowIncompatible</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">split</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringSplit.allowIncompatible</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>When the native path is opted in but a case has no native implementation (for example a non-scalar
+<code class="docutils literal notranslate"><span class="pre">rlike</span></code> pattern, or <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code> with a non-1 offset), Comet routes that case through the
+codegen dispatcher.</p>
+<section id="disabling-comet-for-individual-regex-expressions">
+<h2>Disabling Comet for individual regex expressions<a class="headerlink" href="#disabling-comet-for-individual-regex-expressions" title="Link to this heading">#</a></h2>
+<p>Each regex expression has a per-class <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;ClassName&gt;.enabled</span></code> flag (default
+<code class="docutils literal notranslate"><span class="pre">true</span></code>) that disables Comet’s serde for that expression and forces a Spark fallback. This is
+useful for narrowing a regression or comparing performance on a single operator without changing
+the engine selector:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Config</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rlike</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RLike.enabled=false</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpExtract.enabled=false</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpExtractAll.enabled=false</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpInStr.enabled=false</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpReplace.enabled=false</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">split</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringSplit.enabled=false</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="choosing-an-engine">
+<h2>Choosing an engine<a class="headerlink" href="#choosing-an-engine" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>Rust engine</p></th>
+<th class="head"><p>Codegen dispatcher (default)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Compatibility</strong></p></td>
+<td><p>Differs from Java regex (see below)</p></td>
+<td><p>100% compatible with Spark</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Feature coverage</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, <code class="docutils literal notranslate"><span class="pre">split</span></code> natively; <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code> via fallthrough</p></td>
+<td><p>All regexp expressions (<code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, <code class="docutils literal notranslate"><span class="pre">split</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Performance</strong></p></td>
+<td><p>Fully native, no JNI overhead</p></td>
+<td><p>One JNI round-trip per batch (Arrow vectors stay columnar)</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Pattern support</strong></p></td>
+<td><p>Linear-time subset only</p></td>
+<td><p>All Java regex features (backreferences, lookaround, etc.)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The <strong>Rust engine</strong> is faster but cannot match Java regex semantics for every pattern. Opting in per
+expression (for example <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RLike.allowIncompatible=true</span></code>) declares acceptance
+of those differences.</p>
+<p>The <strong>codegen dispatcher</strong> is the default and is enabled by <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code>,
+so it can be disabled globally to fall back to Spark for the regex family.</p>
+</section>
+<section id="why-the-engines-differ">
+<h2>Why the engines differ<a class="headerlink" href="#why-the-engines-differ" title="Link to this heading">#</a></h2>
+<p>Java’s <code class="docutils literal notranslate"><span class="pre">java.util.regex</span></code> is a backtracking engine in the Perl/PCRE family. It supports the full range of
+features that style of engine provides, including some whose worst-case running time grows exponentially with
+the input.</p>
+<p>Rust’s <a class="reference external" href="https://docs.rs/regex/latest/regex/"><code class="docutils literal notranslate"><span class="pre">regex</span></code></a> crate is a finite-automaton engine in the <a class="reference external" href="https://github.com/google/re2/wiki/Syntax">RE2</a> family. It deliberately omits features that
+cannot be implemented with a guarantee of linear-time matching. In exchange, every pattern it does accept runs
+in time linear in the size of the input. This is the same trade-off RE2, Go’s <code class="docutils literal notranslate"><span class="pre">regexp</span></code>, and several other
+engines make.</p>
+<p>The practical consequence is that Java accepts a strictly larger set of patterns than the Rust engine, and
+several constructs that look the same in source have different semantics on the two sides.</p>
+</section>
+<section id="features-supported-by-java-but-not-by-the-rust-engine">
+<h2>Features supported by Java but not by the Rust engine<a class="headerlink" href="#features-supported-by-java-but-not-by-the-rust-engine" title="Link to this heading">#</a></h2>
+<p>Patterns that use any of the following will not compile in Comet’s Rust engine and must run on Spark (or use
+the Java engine):</p>
+<ul class="simple">
+<li><p><strong>Backreferences</strong> such as <code class="docutils literal notranslate"><span class="pre">\1</span></code>, <code class="docutils literal notranslate"><span class="pre">\2</span></code>, or <code class="docutils literal notranslate"><span class="pre">\k&lt;name&gt;</span></code>. The Rust engine has no backtracking and cannot match
+a previously captured group.</p></li>
+<li><p><strong>Lookaround</strong>, including lookahead (<code class="docutils literal notranslate"><span class="pre">(?=...)</span></code>, <code class="docutils literal notranslate"><span class="pre">(?!...)</span></code>) and lookbehind (<code class="docutils literal notranslate"><span class="pre">(?&lt;=...)</span></code>, <code class="docutils literal notranslate"><span class="pre">(?&lt;!...)</span></code>).</p></li>
+<li><p><strong>Atomic groups</strong> (<code class="docutils literal notranslate"><span class="pre">(?&gt;...)</span></code>).</p></li>
+<li><p><strong>Possessive quantifiers</strong> (<code class="docutils literal notranslate"><span class="pre">*+</span></code>, <code class="docutils literal notranslate"><span class="pre">++</span></code>, <code class="docutils literal notranslate"><span class="pre">?+</span></code>, <code class="docutils literal notranslate"><span class="pre">{n,m}+</span></code>). Rust supports greedy and lazy quantifiers but not
+possessive.</p></li>
+<li><p><strong>Embedded code, conditionals, and recursion</strong> such as <code class="docutils literal notranslate"><span class="pre">(?(cond)yes|no)</span></code> or <code class="docutils literal notranslate"><span class="pre">(?R)</span></code>. Rust accepts none of
+these.</p></li>
+</ul>
+</section>
+<section id="features-that-exist-on-both-sides-but-behave-differently">
+<h2>Features that exist on both sides but behave differently<a class="headerlink" href="#features-that-exist-on-both-sides-but-behave-differently" title="Link to this heading">#</a></h2>
+<p>Even where both engines accept a construct, the matching behavior is not always the same.</p>
+<ul class="simple">
+<li><p><strong>Unicode-aware character classes.</strong> In the Rust engine, <code class="docutils literal notranslate"><span class="pre">\d</span></code>, <code class="docutils literal notranslate"><span class="pre">\w</span></code>, <code class="docutils literal notranslate"><span class="pre">\s</span></code>, and <code class="docutils literal notranslate"><span class="pre">.</span></code> are Unicode-aware by
+default, so <code class="docutils literal notranslate"><span class="pre">\d</span></code> matches every digit codepoint defined by Unicode rather than only <code class="docutils literal notranslate"><span class="pre">0</span></code>-<code class="docutils literal notranslate"><span class="pre">9</span></code>. Java’s defaults
+match ASCII only and require the <code class="docutils literal notranslate"><span class="pre">UNICODE_CHARACTER_CLASS</span></code> flag (or <code class="docutils literal notranslate"><span class="pre">(?U)</span></code> inline) to switch to Unicode
+semantics. The same pattern can therefore match a different set of characters on each side.</p></li>
+<li><p><strong>Line terminators.</strong> In multiline mode, Java treats <code class="docutils literal notranslate"><span class="pre">\r</span></code>, <code class="docutils literal notranslate"><span class="pre">\n</span></code>, <code class="docutils literal notranslate"><span class="pre">\r\n</span></code>, and a few additional Unicode line
+separators as line boundaries by default. The Rust engine treats only <code class="docutils literal notranslate"><span class="pre">\n</span></code> as a line boundary unless CRLF
+mode is enabled. <code class="docutils literal notranslate"><span class="pre">^</span></code>, <code class="docutils literal notranslate"><span class="pre">$</span></code>, and <code class="docutils literal notranslate"><span class="pre">.</span></code> (with <code class="docutils literal notranslate"><span class="pre">(?s)</span></code> off) all depend on this definition.</p></li>
+<li><p><strong>Case-insensitive matching.</strong> Both engines support <code class="docutils literal notranslate"><span class="pre">(?i)</span></code>, but Java’s default is ASCII case folding while
+the Rust engine uses full Unicode simple case folding when Unicode mode is on. Patterns that match characters
+outside ASCII can produce different results.</p></li>
+<li><p><strong>POSIX character classes.</strong> The Rust engine supports <code class="docutils literal notranslate"><span class="pre">[[:alpha:]]</span></code> style POSIX classes inside bracket
+expressions but not Java’s <code class="docutils literal notranslate"><span class="pre">\p{Alpha}</span></code> shorthand. Java accepts both. Unicode property escapes (<code class="docutils literal notranslate"><span class="pre">\p{L}</span></code>,
+<code class="docutils literal notranslate"><span class="pre">\p{Greek}</span></code>, etc.) are supported by both engines but cover slightly different sets of properties.</p></li>
+<li><p><strong>Octal and Unicode escapes.</strong> Java accepts <code class="docutils literal notranslate"><span class="pre">\0nnn</span></code> for octal and <code class="docutils literal notranslate"><span class="pre">\uXXXX</span></code> for a BMP codepoint. Rust uses
+<code class="docutils literal notranslate"><span class="pre">\x{...}</span></code> for arbitrary codepoints and does not accept Java’s bare <code class="docutils literal notranslate"><span class="pre">\uXXXX</span></code> form.</p></li>
+<li><p><strong>Empty matches in <code class="docutils literal notranslate"><span class="pre">split</span></code>.</strong> Spark’s <code class="docutils literal notranslate"><span class="pre">StringSplit</span></code>, which is built on Java’s regex, includes leading empty
+strings produced by zero-width matches at the start of the input. The Rust engine’s <code class="docutils literal notranslate"><span class="pre">split</span></code> follows different
+rules, so split results can differ in edge cases involving empty matches even when the pattern itself is
+identical on both sides.</p></li>
+</ul>
+</section>
+<section id="when-the-rust-engine-is-safe">
+<h2>When the Rust engine is safe<a class="headerlink" href="#when-the-rust-engine-is-safe" title="Link to this heading">#</a></h2>
+<p>For most ASCII-only, non-anchored patterns that use only literal characters, simple character classes, and
+ordinary quantifiers, the two engines produce the same results. If you are confident your patterns fit this
+shape and want to avoid the JNI overhead of the Java engine, switching to the Rust engine with
+<code class="docutils literal notranslate"><span class="pre">allowIncompatible=true</span></code> is generally safe.</p>
+<p>For anything that uses backreferences, lookaround, or relies on Java’s specific Unicode or line-handling
+defaults, use the Java engine.</p>
+</section>
 </section>
 
 
