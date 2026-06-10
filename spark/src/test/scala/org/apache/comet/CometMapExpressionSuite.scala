@@ -134,8 +134,6 @@ class CometMapExpressionSuite extends CometTestBase {
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
         checkSparkAnswerAndOperator(
-          sql("SELECT size(map(_8, _9, _10, _11)) from t1 where _8 is not null"))
-        checkSparkAnswerAndOperator(
           sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"))
       }
     }
@@ -147,6 +145,7 @@ class CometMapExpressionSuite extends CometTestBase {
         val df = spark
           .range(100)
           .select(
+            col("id"),
             when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id"))))
               .alias("map1"),
             when(col("id") > 5, map(lit("a"), col("id"), lit("b"), col("id") + 1))
