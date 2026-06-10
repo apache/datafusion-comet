@@ -37,6 +37,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NATIVE_DIR="$ROOT/native"
 SPARK_DIR="$ROOT/spark"
 
+# CI containers check out the repo as a different user than the job runs as, so git refuses to
+# operate on it ("detected dubious ownership") -- which can make Maven plugins that read git
+# metadata fail fast with no useful output. Mark the tree safe up front (best-effort).
+git config --global --add safe.directory "$ROOT" 2>/dev/null || true
+git config --global --add safe.directory '*' 2>/dev/null || true
+
 # Use the repo's Maven wrapper, not a bare `mvn`. The CI gate job runs in a bare
 # `amd64/rust` container that has no system Maven on PATH, so `mvn` would fail to
 # launch, produce no dependency output, and trip the anti-vacuous guard below.
@@ -77,11 +83,14 @@ cd "$ROOT"
 # without a build. We extract the ACTIVE top-level <dependencies> -- after </dependencyManagement>,
 # before the <profiles> listing -- which is exactly what dependency:list would have shown for the
 # active profiles (and excludes the inactive contrib-delta profile's own io.delta declaration).
+# Last effective-pom invocation's combined output, kept so the anti-vacuous guard can SHOW why
+# mvn failed instead of swallowing it.
+EPOM_LOG="$(mktemp)"
 delta_active_deps() { # args: -P / -D flags
   local epom
   epom="$(mktemp)"
-  "$MVNW" -q help:effective-pom -Djava.version=17 -Dmaven.gitcommitid.skip -pl spark \
-    -Doutput="$epom" "$@" >/dev/null 2>&1 || true
+  "$MVNW" help:effective-pom -Djava.version=17 -Dmaven.gitcommitid.skip -pl spark \
+    -Doutput="$epom" "$@" >"$EPOM_LOG" 2>&1 || true
   awk '/<\/dependencyManagement>/{f=1} /<profiles>/{f=0} f' "$epom"
   rm -f "$epom"
 }
@@ -98,6 +107,9 @@ DEPS_DEFAULT="$(delta_active_deps -Pspark-4.1)"
 if ! echo "$DEPS_DEFAULT" | grep -q '<groupId>org.apache.spark</groupId>'; then
   red "FAIL: default effective-pom produced no org.apache.spark deps (mvn likely failed;"
   red "      refusing to conclude 'zero io.delta' vacuously)"
+  red "      --- mvnw: $MVNW (java=${JAVA_HOME:-unset}) ---"
+  red "      --- effective-pom output (last 60 lines) ---"
+  tail -60 "$EPOM_LOG" >&2 || true
   exit 1
 fi
 if echo "$DEPS_DEFAULT" | grep -q '<groupId>io.delta</groupId>'; then
