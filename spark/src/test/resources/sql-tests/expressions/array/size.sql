@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- ConfigMatrix: spark.sql.legacy.sizeOfNull=true,false
+
 statement
 CREATE TABLE test_size(arr array<int>, m map<string, int>) USING parquet
 
