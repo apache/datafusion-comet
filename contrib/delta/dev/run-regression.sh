@@ -251,12 +251,24 @@ fi
 LOG="$LOG_DIR/regression-${DELTA_VERSION}-${TEST_FILTER}${LOG_SUFFIX}-$(date +%Y%m%d-%H%M%S)-$$.log"
 echo "==> logging to $LOG"
 
+# Force SBT to resolve from `build/sbt-config/repositories` -- where each diff adds the `local-comet`
+# entry pointing at the isolated dir holding our just-published Comet artifacts ([1.5/4] above). The
+# install lands in the script step's $HOME/.m2, but SBT runs with a different HOME (e.g. /root/.m2 in
+# the CI container), so SBT's `mavenLocal` resolver can't see Comet -- only `local-comet` bridges it.
+# Delta 4.x's build/sbt already honours the repositories file (4.0/4.1 smoke resolve comet fine);
+# Delta 3.3.2's older launcher does NOT unless the override is passed explicitly. Scope it to 3.3.2
+# so the already-working 4.x cells are left untouched.
+SBT_REPO_OVERRIDE=()
+if [[ "$DELTA_VERSION" == "3.3.2" ]]; then
+  SBT_REPO_OVERRIDE=(-Dsbt.override.build.repos=true -Dsbt.repository.config=build/sbt-config/repositories)
+fi
+
 case "$TEST_FILTER" in
   smoke)
-    build/sbt "$SBT_MODULE/testOnly org.apache.spark.sql.delta.CometSmokeTest" 2>&1 | tee "$LOG"
+    build/sbt "${SBT_REPO_OVERRIDE[@]}" "$SBT_MODULE/testOnly org.apache.spark.sql.delta.CometSmokeTest" 2>&1 | tee "$LOG"
     ;;
   full)
-    build/sbt "$SBT_MODULE/test" 2>&1 | tee "$LOG"
+    build/sbt "${SBT_REPO_OVERRIDE[@]}" "$SBT_MODULE/test" 2>&1 | tee "$LOG"
     ;;
   lite)
     # `lite` is `full` minus Delta-3.3.2-only clone families (Id/Name column-mapping,
@@ -267,10 +279,10 @@ case "$TEST_FILTER" in
     # column-mapping subset is excluded unconditionally (see diff comment) and the rest
     # only when DELTA_LITE is set. No-op on 4.0/4.1 (their diffs don't add the filter).
     export DELTA_LITE=1
-    build/sbt "$SBT_MODULE/test" 2>&1 | tee "$LOG"
+    build/sbt "${SBT_REPO_OVERRIDE[@]}" "$SBT_MODULE/test" 2>&1 | tee "$LOG"
     ;;
   *)
-    build/sbt "$SBT_MODULE/testOnly $TEST_FILTER" 2>&1 | tee "$LOG"
+    build/sbt "${SBT_REPO_OVERRIDE[@]}" "$SBT_MODULE/testOnly $TEST_FILTER" 2>&1 | tee "$LOG"
     ;;
 esac
 
