@@ -83,7 +83,7 @@ impl PartitionWriter {
         write_buffer_size: usize,
         batch_size: usize,
     ) -> datafusion::common::Result<usize> {
-        if let Some(batch) = iter.next() {
+        if let Some(batch) = iter.next(&metrics.interleave_time) {
             self.ensure_spill_file_created(runtime)?;
 
             let total_bytes_written = {
@@ -95,7 +95,7 @@ impl PartitionWriter {
                 );
                 let mut bytes_written =
                     buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
-                for batch in iter {
+                while let Some(batch) = iter.next(&metrics.interleave_time) {
                     let batch = batch?;
                     bytes_written += buf_batch_writer.write(
                         &batch,

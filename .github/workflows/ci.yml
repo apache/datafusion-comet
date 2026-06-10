@@ -21,8 +21,13 @@
 
 name: CI
 
+# A `labeled` event (e.g. the run-spark-*-tests gates, or dependabot's automatic
+# `dependencies` label added ~1s after open) fires at the same commit as the
+# opened/synchronize run. Keying the group on the label name keeps labeled runs
+# in their own subgroup so they never cancel the real commit run; opened and
+# synchronize both map to `commit` so a new push still supersedes its predecessor.
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || 'commit' }}
   cancel-in-progress: true
 
 on:
@@ -44,6 +49,14 @@ jobs:
   preflight:
     name: Preflight
     runs-on: ubuntu-slim
+    # On a `labeled` event, only proceed for the gating labels. Any other label
+    # (e.g. dependabot's `dependencies`) skips the whole pipeline rather than
+    # spawning a redundant run alongside the opened/synchronize one.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'run-spark-3.4-tests' ||
+      github.event.label.name == 'run-spark-4.1-tests'
     steps:
       - uses: actions/checkout@v6
 
