@@ -382,6 +382,33 @@ object CometExec {
 }
 
 /**
+ * Per-partition execution context for a native subtree rooted at a [[CometNativeExec]] boundary.
+ * Built once on the driver from the SparkPlan tree, then consumed by either
+ * [[CometNativeExec.executeColumnarWithContext]] (to build a [[CometExecRDD]]) or the
+ * native-shuffle path (to drive [[CometNativeShuffleWriter]]). Captures broadcast partition
+ * alignment, plan-data, subqueries, and encryption options so each consumer doesn't re-walk the
+ * tree.
+ */
+private[comet] case class NativeExecContext(
+    inputs: Seq[RDD[ColumnarBatch]],
+    numPartitions: Int,
+    subqueries: Seq[ScalarSubquery],
+    broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
+    encryptedFilePaths: Seq[String],
+    commonByKey: Map[String, Array[Byte]],
+    perPartitionByKey: Map[String, Array[Array[Byte]]],
+    shuffleScanIndices: Set[Int],
+    hasScanInput: Boolean) {
+  // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
+  // filtering) at construction so consumers don't trip ArrayIndexOutOfBoundsException at
+  // partition idx access time.
+  require(
+    perPartitionByKey.values.forall(_.length == numPartitions),
+    s"All per-partition arrays must have length $numPartitions, but found: " +
+      perPartitionByKey.map { case (key, arr) => s"$key -> ${arr.length}" }.mkString(", "))
+}
+
+/**
  * A Comet native physical operator.
  */
 abstract class CometNativeExec extends CometExec {
@@ -419,171 +446,165 @@ abstract class CometNativeExec extends CometExec {
     runningSubqueries.clear()
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    serializedPlanOpt.plan match {
-      case None =>
-        // This is in the middle of a native execution, it should not be executed directly.
-        throw new CometRuntimeException(
-          s"CometNativeExec should not be executed directly without a serialized plan: $this")
-      case Some(serializedPlan) =>
-        val serializedPlanCopy = serializedPlan
-        // TODO: support native metrics for all operators.
-        val nativeMetrics = CometMetricNode.fromCometPlan(this)
+  override def doExecuteColumnar(): RDD[ColumnarBatch] =
+    executeColumnarWithContext(buildNativeContext())
 
-        // Go over all the native scans, in order to see if they need encryption options.
-        // For each relation in a CometNativeScan generate a hadoopConf,
-        // for each file path in a relation associate with hadoopConf
-        // This is done per native plan, so only count scans until a comet input is reached.
-        val encryptionOptions =
-          mutable.ArrayBuffer.empty[(Broadcast[SerializableConfiguration], Seq[String])]
-        foreachUntilCometInput(this) {
-          case scan: CometNativeScanExec =>
-            // This creates a hadoopConf that brings in any SQLConf "spark.hadoop.*" configs and
-            // per-relation configs since different tables might have different decryption
-            // properties.
-            val hadoopConf = scan.relation.sparkSession.sessionState
-              .newHadoopConfWithOptions(scan.relation.options)
-            val encryptionEnabled = CometParquetUtils.encryptionEnabled(hadoopConf)
-            if (encryptionEnabled) {
-              // hadoopConf isn't serializable, so we have to do a broadcasted config.
-              val broadcastedConf =
-                scan.relation.sparkSession.sparkContext
-                  .broadcast(new SerializableConfiguration(hadoopConf))
+  /**
+   * Build a [[CometExecRDD]] from a precomputed [[NativeExecContext]]. Public so the native
+   * shuffle path can sample (RangePartitioning) without re-walking the SparkPlan tree and
+   * re-broadcasting the encryption Hadoop conf.
+   */
+  private[comet] def executeColumnarWithContext(ctx: NativeExecContext): RDD[ColumnarBatch] = {
+    val serializedPlan = serializedPlanOpt.plan.getOrElse(
+      throw new CometRuntimeException(
+        s"CometNativeExec should not be executed directly without a serialized plan: $this"))
+    val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
-              val optsTuple: (Broadcast[SerializableConfiguration], Seq[String]) =
-                (broadcastedConf, scan.relation.inputFiles.toSeq)
-              encryptionOptions += optsTuple
-            }
-          case _ => // no-op
+    new CometExecRDD(
+      sparkContext,
+      ctx.inputs,
+      ctx.commonByKey,
+      ctx.perPartitionByKey,
+      serializedPlan,
+      ctx.numPartitions,
+      output.length,
+      nativeMetrics,
+      ctx.subqueries,
+      ctx.broadcastedHadoopConfForEncryption,
+      ctx.encryptedFilePaths,
+      ctx.shuffleScanIndices) {
+      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+        val res = super.compute(split, context)
+        if (ctx.hasScanInput) {
+          Option(context).foreach(nativeMetrics.reportScanInputMetrics)
         }
-        assert(
-          encryptionOptions.size <= 1,
-          "We expect one native scan that requires encryption reading in a Comet plan," +
-            " since we will broadcast one hadoopConf.")
-        // If this assumption changes in the future, you can look at the commit history of #2447
-        // to see how there used to be a map of relations to broadcasted confs in case multiple
-        // relations in a single plan. The example that came up was UNION. See discussion at:
-        // https://github.com/apache/datafusion-comet/pull/2447#discussion_r2406118264
-        val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
-          encryptionOptions.headOption match {
-            case Some((conf, paths)) => (Some(conf), paths)
-            case None => (None, Seq.empty)
-          }
-
-        // Find planning data within this stage (stops at shuffle boundaries).
-        val (commonByKey, perPartitionByKey) = findAllPlanData(this)
-
-        // Collect the input ColumnarBatches from the child operators and create a CometExecIterator
-        // to execute the native plan.
-        val sparkPlans = ArrayBuffer.empty[SparkPlan]
-        val inputs = ArrayBuffer.empty[RDD[ColumnarBatch]]
-
-        foreachUntilCometInput(this)(sparkPlans += _)
-
-        // Find the first non broadcast plan
-        val firstNonBroadcastPlan = sparkPlans.zipWithIndex.find {
-          case (_: CometBroadcastExchangeExec, _) => false
-          case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
-          case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
-          case (ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) => false
-          case _ => true
-        }
-
-        val containsBroadcastInput = sparkPlans.exists {
-          case _: CometBroadcastExchangeExec => true
-          case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
-          case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
-          case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
-          case _ => false
-        }
-
-        // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
-        // This is not expected, so throw an exception.
-        if (containsBroadcastInput && firstNonBroadcastPlan.isEmpty) {
-          throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
-        }
-
-        // If the first non broadcast plan is found, we need to adjust the partition number of
-        // the broadcast plans to make sure they have the same partition number as the first non
-        // broadcast plan.
-        val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
-          firstNonBroadcastPlan.get._1 match {
-            case plan: CometNativeExec =>
-              (null, plan.outputPartitioning.numPartitions)
-            case plan =>
-              val rdd = plan.executeColumnar()
-              (rdd, rdd.getNumPartitions)
-          }
-
-        // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
-        // same partition number. But for Comet, we need to zip them so we need to adjust the
-        // partition number of Broadcast RDDs to make sure they have the same partition number.
-        sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
-          plan match {
-            case c: CometBroadcastExchangeExec =>
-              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-            case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
-              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-            case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
-              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-            case BroadcastQueryStageExec(
-                  _,
-                  ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
-                  _) =>
-              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-            case _: CometNativeExec =>
-            // no-op
-            case _ if idx == firstNonBroadcastPlan.get._2 =>
-              inputs += firstNonBroadcastPlanRDD
-            case _ =>
-              val rdd = plan.executeColumnar()
-              if (rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions) {
-                throw new CometRuntimeException(
-                  s"Partition number mismatch: ${rdd.getNumPartitions} != " +
-                    s"$firstNonBroadcastPlanNumPartitions")
-              } else {
-                inputs += rdd
-              }
-          }
-        }
-
-        if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
-          throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
-        }
-
-        // Detect ShuffleScan indices for direct read in CometExecRDD
-        val shuffleScanIndices = findShuffleScanIndices(serializedPlanCopy)
-
-        // Unified RDD creation - CometExecRDD handles all cases
-        val subqueries = collectSubqueries(this)
-        val hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec])
-        new CometExecRDD(
-          sparkContext,
-          inputs.toSeq,
-          commonByKey,
-          perPartitionByKey,
-          serializedPlanCopy,
-          firstNonBroadcastPlanNumPartitions,
-          output.length,
-          nativeMetrics,
-          subqueries,
-          broadcastedHadoopConfForEncryption,
-          encryptedFilePaths,
-          shuffleScanIndices) {
-          override def compute(
-              split: Partition,
-              context: TaskContext): Iterator[ColumnarBatch] = {
-            val res = super.compute(split, context)
-
-            // Report scan input metrics only when the native plan contains a scan.
-            if (hasScanInput) {
-              Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-            }
-
-            res
-          }
-        }
+        res
+      }
     }
+  }
+
+  /**
+   * Walk this CometNativeExec subtree once and gather everything needed to launch native
+   * execution. See [[NativeExecContext]] for the field set.
+   */
+  private[comet] def buildNativeContext(): NativeExecContext = {
+    // Find native scans that need encryption: build a hadoopConf per relation, broadcast it once
+    // so executors can decrypt on read. Capped at one because we only broadcast one conf per
+    // CometExecIterator (see #2447 for history of the per-relation map approach).
+    val encryptionOptions =
+      mutable.ArrayBuffer.empty[(Broadcast[SerializableConfiguration], Seq[String])]
+    foreachUntilCometInput(this) {
+      case scan: CometNativeScanExec =>
+        val hadoopConf = scan.relation.sparkSession.sessionState
+          .newHadoopConfWithOptions(scan.relation.options)
+        if (CometParquetUtils.encryptionEnabled(hadoopConf)) {
+          val broadcastedConf = scan.relation.sparkSession.sparkContext
+            .broadcast(new SerializableConfiguration(hadoopConf))
+          encryptionOptions += ((broadcastedConf, scan.relation.inputFiles.toSeq))
+        }
+      case _ =>
+    }
+    assert(
+      encryptionOptions.size <= 1,
+      "We expect one native scan that requires encryption reading in a Comet plan," +
+        " since we will broadcast one hadoopConf.")
+    val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
+      encryptionOptions.headOption match {
+        case Some((conf, paths)) => (Some(conf), paths)
+        case None => (None, Seq.empty)
+      }
+
+    // Find planning data within this stage (stops at shuffle boundaries).
+    val (commonByKey, perPartitionByKey) = findAllPlanData(this)
+
+    // Collect the input ColumnarBatches from the child operators and create a CometExecIterator
+    // to execute the native plan.
+    val sparkPlans = ArrayBuffer.empty[SparkPlan]
+    val inputs = ArrayBuffer.empty[RDD[ColumnarBatch]]
+
+    foreachUntilCometInput(this)(sparkPlans += _)
+
+    // Find the first non broadcast plan
+    val firstNonBroadcastPlan = sparkPlans.zipWithIndex.find {
+      case (_: CometBroadcastExchangeExec, _) => false
+      case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
+      case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
+      case (ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) => false
+      case _ => true
+    }
+
+    val containsBroadcastInput = sparkPlans.exists {
+      case _: CometBroadcastExchangeExec => true
+      case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+      case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+      case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
+      case _ => false
+    }
+
+    // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
+    // This is not expected, so throw an exception.
+    if (containsBroadcastInput && firstNonBroadcastPlan.isEmpty) {
+      throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
+    }
+
+    // If the first non broadcast plan is found, we need to adjust the partition number of
+    // the broadcast plans to make sure they have the same partition number as the first non
+    // broadcast plan.
+    val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
+      firstNonBroadcastPlan.get._1 match {
+        case plan: CometNativeExec =>
+          (null, plan.outputPartitioning.numPartitions)
+        case plan =>
+          val rdd = plan.executeColumnar()
+          (rdd, rdd.getNumPartitions)
+      }
+
+    // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
+    // same partition number. But for Comet, we need to zip them so we need to adjust the
+    // partition number of Broadcast RDDs to make sure they have the same partition number.
+    sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
+      plan match {
+        case c: CometBroadcastExchangeExec =>
+          inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
+        case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
+          inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
+        case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
+          inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
+        case BroadcastQueryStageExec(
+              _,
+              ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
+              _) =>
+          inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
+        case _: CometNativeExec =>
+        // no-op
+        case _ if idx == firstNonBroadcastPlan.get._2 =>
+          inputs += firstNonBroadcastPlanRDD
+        case _ =>
+          val rdd = plan.executeColumnar()
+          if (rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions) {
+            throw new CometRuntimeException(
+              s"Partition number mismatch: ${rdd.getNumPartitions} != " +
+                s"$firstNonBroadcastPlanNumPartitions")
+          } else {
+            inputs += rdd
+          }
+      }
+    }
+
+    if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
+      throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
+    }
+
+    NativeExecContext(
+      inputs = inputs.toSeq,
+      numPartitions = firstNonBroadcastPlanNumPartitions,
+      subqueries = collectSubqueries(this),
+      broadcastedHadoopConfForEncryption = broadcastedHadoopConfForEncryption,
+      encryptedFilePaths = encryptedFilePaths,
+      commonByKey = commonByKey,
+      perPartitionByKey = perPartitionByKey,
+      shuffleScanIndices = findShuffleScanIndices(nativeOp),
+      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
   }
 
   /**
@@ -623,11 +644,10 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
-   * Walk the serialized protobuf plan depth-first to find which input indices correspond to
+   * Walk the protobuf operator tree depth-first to find which input indices correspond to
    * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
    */
-  private def findShuffleScanIndices(planBytes: Array[Byte]): Set[Int] = {
-    val plan = OperatorOuterClass.Operator.parseFrom(planBytes)
+  private def findShuffleScanIndices(plan: OperatorOuterClass.Operator): Set[Int] = {
     var scanIndex = 0
     val indices = mutable.Set.empty[Int]
     def walk(op: OperatorOuterClass.Operator): Unit = {
@@ -1502,17 +1522,12 @@ trait CometBaseAggregate {
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
-      val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
-      val resultExprs = resultExpressions.map(exprToProto(_, attributes))
-      if (resultExprs.exists(_.isEmpty)) {
-        withFallbackReason(
-          aggregate,
-          s"Unsupported result expressions found in: $resultExpressions",
-          resultExpressions: _*)
-        return None
-      }
-      hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
-      Some(builder.setHashAgg(hashAggBuilder).build())
+      buildAggOp(
+        builder,
+        hashAggBuilder,
+        groupingExpressions.map(_.toAttribute),
+        resultExpressions,
+        aggregate)
     } else {
       // Validate mode combinations. We support:
       // - All Partial
@@ -1583,18 +1598,6 @@ trait CometBaseAggregate {
         val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
         hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
         hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
-        if (mode == CometAggregateMode.Final) {
-          val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
-          val resultExprs = resultExpressions.map(exprToProto(_, attributes))
-          if (resultExprs.exists(_.isEmpty)) {
-            withFallbackReason(
-              aggregate,
-              s"Unsupported result expressions found in: $resultExpressions",
-              resultExpressions: _*)
-            return None
-          }
-          hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
-        }
         hashAggBuilder.setModeValue(mode.getNumber)
 
         // Send per-expression modes and buffer offset for PartialMerge handling
@@ -1613,7 +1616,19 @@ trait CometBaseAggregate {
           hashAggBuilder.setInitialInputBufferOffset(aggregate.initialInputBufferOffset)
         }
 
-        Some(builder.setHashAgg(hashAggBuilder).build())
+        // Final aggregations may carry a result projection (e.g. `COUNT(col) + 1`) that
+        // catalyst encodes via `resultExpressions`. Partial / PartialMerge aggregates emit
+        // raw state buffers and never need it.
+        if (mode == CometAggregateMode.Final) {
+          buildAggOp(
+            builder,
+            hashAggBuilder,
+            groupingExpressions.map(_.toAttribute) ++ aggregateAttributes,
+            resultExpressions,
+            aggregate)
+        } else {
+          Some(builder.setHashAgg(hashAggBuilder).build())
+        }
       } else {
         val allChildren: Seq[Expression] =
           groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
@@ -1622,6 +1637,51 @@ trait CometBaseAggregate {
       }
     }
 
+  }
+
+  /**
+   * Serialize a HashAggregate, wrapping it in an explicit `Projection` op when Spark's declared
+   * output (`resultExpressions`) differs from the aggregate's natural output. DataFusion's hash
+   * aggregate emits only its natural shape (group keys + agg results), so any reshape catalyst
+   * declared - alias renames, `COUNT(col) + 1`, or empty output for catalyst-pruned EXISTS /
+   * row-existence-only subqueries - is expressed as a separate Projection above the HashAgg. Both
+   * ops share the caller's `plan_id` so the aggregate's native metrics roll up under the same
+   * Spark operator.
+   */
+  private def buildAggOp(
+      builder: Operator.Builder,
+      hashAggBuilder: OperatorOuterClass.HashAggregate.Builder,
+      naturalOutput: Seq[Attribute],
+      resultExpressions: Seq[NamedExpression],
+      aggregate: BaseAggregateExec): Option[Operator] = {
+    if (resultExpressions.map(_.toAttribute) == naturalOutput) {
+      return Some(builder.setHashAgg(hashAggBuilder).build())
+    }
+    val resultExprs = resultExpressions.map(exprToProto(_, naturalOutput))
+    if (resultExprs.exists(_.isEmpty)) {
+      withFallbackReason(
+        aggregate,
+        s"Unsupported result expressions found in: $resultExpressions",
+        resultExpressions: _*)
+      return None
+    }
+    val planId = builder.getPlanId
+    val hashAggOp = OperatorOuterClass.Operator
+      .newBuilder()
+      .setPlanId(planId)
+      .addAllChildren(builder.getChildrenList)
+      .setHashAgg(hashAggBuilder)
+      .build()
+    val projection = OperatorOuterClass.Projection
+      .newBuilder()
+      .addAllProjectList(resultExprs.map(_.get).asJava)
+    Some(
+      OperatorOuterClass.Operator
+        .newBuilder()
+        .setPlanId(planId)
+        .addChildren(hashAggOp)
+        .setProjection(projection)
+        .build())
   }
 
   /**
