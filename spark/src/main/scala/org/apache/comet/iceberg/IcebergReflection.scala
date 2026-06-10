@@ -52,6 +52,7 @@ object IcebergReflection extends Logging {
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
+    val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
   }
 
   /**
@@ -94,6 +95,17 @@ object IcebergReflection extends Logging {
   object TypeNames {
     val UNKNOWN = "unknown"
   }
+
+  /** Loads a class, returning `None` when it's absent (e.g. Iceberg not on the classpath). */
+  private def tryLoadClass(name: String): Option[Class[_]] =
+    try Some(loadClass(name))
+    catch { case _: ClassNotFoundException => None }
+
+  private lazy val sparkWriteClassOpt: Option[Class[_]] = tryLoadClass(ClassNames.SPARK_WRITE)
+
+  /** Whether `write` is an Iceberg `SparkWrite` (false if Iceberg isn't on the classpath). */
+  def isIcebergSparkWrite(write: Any): Boolean =
+    sparkWriteClassOpt.exists(_.isInstance(write))
 
   /**
    * Loads a class using the thread context classloader first, then falls back to the system

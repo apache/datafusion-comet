@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
+import org.apache.comet.iceberg.IcebergWriteStrategy
 import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
@@ -99,6 +100,7 @@ class CometSparkSessionExtensions
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
+    extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
