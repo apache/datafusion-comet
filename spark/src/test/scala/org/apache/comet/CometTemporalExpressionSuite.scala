@@ -156,6 +156,24 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  test("date_trunc - non-UTC timezone takes native path when allowIncompatible is enabled") {
+    createTimestampTestData.createOrReplaceTempView("tbl")
+
+    val nonUtcTimezones = Seq("America/New_York", "Europe/London", "Asia/Tokyo")
+    for (tz <- nonUtcTimezones) {
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+        "spark.comet.expression.TruncTimestamp.allowIncompatible" -> "true") {
+        // Native date_trunc results may diverge from Spark for non-UTC timezones (#2649, the
+        // reason the codegen dispatcher is the default), so we only check that execution stays
+        // inside Comet. ORDER BY is omitted to keep the plan free of AQEShuffleRead.
+        val df = sql("SELECT c0, date_trunc('HOUR', c0) from tbl")
+        df.collect()
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+      }
+    }
+  }
+
   test("unix_timestamp - timestamp input") {
     createTimestampTestData.createOrReplaceTempView("tbl")
     for (timezone <- Seq("UTC", "America/Los_Angeles")) {
@@ -207,6 +225,41 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         checkSparkAnswerAndOperator(
           "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) from ntz_tbl order by ts_ntz")
+      }
+    }
+  }
+
+  test("hour/minute/second - timestamp_ntz falls back when codegen dispatcher disabled") {
+    // The native path is Incompatible for TimestampNTZ inputs (#3180). With the dispatcher
+    // disabled there is no native path, so the expression falls back to Spark.
+    val r = new Random(42)
+    val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
+    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
+    ntzDF.createOrReplaceTempView("ntz_tbl")
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT ts_ntz, hour(ts_ntz) from ntz_tbl order by ts_ntz",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key)
+    }
+  }
+
+  test("hour/minute/second - timestamp_ntz takes native path when allowIncompatible is enabled") {
+    val r = new Random(42)
+    val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
+    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
+    ntzDF.createOrReplaceTempView("ntz_tbl")
+    for (tz <- crossTimezones) {
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+        "spark.comet.expression.Hour.allowIncompatible" -> "true",
+        "spark.comet.expression.Minute.allowIncompatible" -> "true",
+        "spark.comet.expression.Second.allowIncompatible" -> "true") {
+        // Native results may diverge from Spark for TimestampNTZ inputs (#3180, the reason the
+        // codegen dispatcher is the default), so we only check that execution stays inside Comet.
+        // ORDER BY is omitted to keep the plan free of AQEShuffleRead.
+        val df = sql("SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) from ntz_tbl")
+        df.collect()
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
       }
     }
   }
