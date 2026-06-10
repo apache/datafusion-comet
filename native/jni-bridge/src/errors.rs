@@ -604,6 +604,16 @@ fn throw_spark_error_as_json(env: &mut Env, spark_error: &SparkError) -> jni::er
 fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
     use datafusion::common::DataFusionError as DFE;
     match error {
+        // A pushed-down filter predicate that throws while the scan is reading (e.g. an ANSI
+        // divide-by-zero in a `WHERE`, now reachable by default since Scala UDF codegen dispatch
+        // landed) is an EXPRESSION failure, not a file-read failure, and must not be relabelled
+        // FAILED_READ_FILE. DataFusion's row filter returns such a failure as `ArrowError`
+        // (`ComputeError`), which the parquet reader then wraps as `ParquetError::External(<arrow>)`.
+        // Genuine corrupt/truncated/missing-file errors are `ParquetError::General`/`EOF`/
+        // `External(io|object_store)` and never wrap an `ArrowError`, so this TYPED check (not the
+        // error-message text, which DataFusion produces via `{:?}`) tells the two apart. Bail so the
+        // underlying error surfaces through the normal native-exception path.
+        DFE::ParquetError(pe) if parquet_external_wraps_arrow_error(pe) => None,
         // A genuinely-missing file (object_store NotFound) is distinct from a corrupt/truncated
         // one: Spark surfaces it as `readCurrentFileNotFoundError` ("It is possible the underlying
         // files have been updated."), not `cannotReadFilesError`. The NotFound may arrive directly
@@ -649,6 +659,18 @@ fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
         DFE::Shared(inner) => try_classify_file_read_error(inner),
         _ => None,
     }
+}
+
+/// True if `pe` is a `ParquetError::External` wrapping an `ArrowError`. DataFusion's parquet row
+/// filter returns a pushed-down predicate's evaluation failure as an `ArrowError` (e.g.
+/// `ComputeError` for an ANSI divide-by-zero), which the parquet reader then surfaces as
+/// `ParquetError::External(<arrow error>)`. That is an expression failure that merely happened
+/// during the scan, not a corrupt/truncated/missing file -- genuine read failures are
+/// `ParquetError::General`/`EOF`/`External(io|object_store)` and never wrap an `ArrowError`. Matching
+/// on the wrapped type (rather than the message text DataFusion builds with `{:?}`) keeps the
+/// distinction robust to upstream message changes.
+fn parquet_external_wraps_arrow_error(pe: &ParquetError) -> bool {
+    matches!(pe, ParquetError::External(inner) if inner.downcast_ref::<ArrowError>().is_some())
 }
 
 /// True if `err` or any error in its `source()` chain is an `object_store` `NotFound` -- i.e. a
@@ -1301,6 +1323,46 @@ mod tests {
         match try_classify_file_read_error(&e) {
             Some(SparkError::CannotReadFile { .. }) => {}
             other => panic!("expected CannotReadFile for a corrupt parquet error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_pushed_filter_predicate_error_is_not_file_read() {
+        // A pushed-down WHERE predicate that hits an ANSI divide-by-zero while the parquet scan is
+        // reading is surfaced by DataFusion's row filter as an ArrowError (ComputeError), which the
+        // parquet reader wraps as ParquetError::External(<arrow>). That is an expression failure,
+        // NOT a file read, so it must NOT classify as CannotReadFile/FAILED_READ_FILE -- it must
+        // fall through (None) so the underlying error surfaces verbatim.
+        let predicate_err = ArrowError::ComputeError(
+            "Error evaluating filter predicate: External(SparkErrorWithContext { \
+             error: DivideByZero, context: Some(..) })"
+                .to_string(),
+        );
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::External(
+            Box::new(predicate_err),
+        )));
+        assert!(
+            try_classify_file_read_error(&e).is_none(),
+            "a pushed-down filter-predicate eval error must not be classified as a file read; got {:?}",
+            try_classify_file_read_error(&e)
+        );
+    }
+
+    #[test]
+    fn classify_external_io_parquet_error_stays_cannot_read_file() {
+        // The structural carve-out above must be narrow: a ParquetError::External wrapping a genuine
+        // IO error (a real read failure, not an ArrowError) must STILL classify as CannotReadFile.
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::External(
+            Box::new(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "early eof reading footer",
+            )),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::CannotReadFile { .. }) => {}
+            other => {
+                panic!("expected CannotReadFile for an External(io) parquet error, got {other:?}")
+            }
         }
     }
 
