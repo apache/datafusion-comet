@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.types.BooleanType
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
 
@@ -69,10 +69,16 @@ object CometAnd extends CometExpressionSerde[And] {
       expr: And,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createBinaryExpr(
+    // Rebalance the (associative) AND chain so deep `a AND b AND ...` predicates produce a
+    // shallow proto instead of a left-deep one that overflows protobuf's recursion limit when
+    // the plan is re-parsed (see createBalancedBinaryExpr).
+    val operands = flattenAssociative(
       expr,
-      expr.left,
-      expr.right,
+      { case _: And => true; case _ => false },
+      { case a: And => (a.left, a.right) })
+    createBalancedBinaryExpr(
+      expr,
+      operands,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setAnd(binaryExpr))
@@ -84,10 +90,13 @@ object CometOr extends CometExpressionSerde[Or] {
       expr: Or,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createBinaryExpr(
+    val operands = flattenAssociative(
       expr,
-      expr.left,
-      expr.right,
+      { case _: Or => true; case _ => false },
+      { case o: Or => (o.left, o.right) })
+    createBalancedBinaryExpr(
+      expr,
+      operands,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setOr(binaryExpr))
@@ -220,7 +229,7 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, false, childExpr)
 
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -271,7 +280,7 @@ object ComparisonUtils {
           .build())
     } else {
       val allExprs = list ++ Seq(value)
-      withInfo(expr, allExprs: _*)
+      withFallbackReason(expr, allExprs: _*)
       None
     }
   }

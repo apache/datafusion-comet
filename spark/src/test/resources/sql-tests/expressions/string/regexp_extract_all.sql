@@ -15,34 +15,38 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test regexp_extract_all default behaviour: Comet marks the expression Incompatible
--- (Rust regex engine differs from Java) and should fall back to Spark unless the user
--- opts in via spark.comet.expression.RegExpExtractAll.allowIncompatible=true.
+-- Test regexp_extract_all via JVM regex engine
 
 statement
 CREATE TABLE test_regexp_extract_all(s string) USING parquet
 
 statement
-INSERT INTO test_regexp_extract_all VALUES ('100-200, 300-400'), ('abc'), (''), (NULL), ('phone 123-456-7890')
+INSERT INTO test_regexp_extract_all VALUES ('abc123def456'), ('no match'), (NULL), ('100-200-300'), ('hello world')
 
-query expect_fallback(Rust regexp engine)
-SELECT regexp_extract_all(s, '(\\d+)-(\\d+)', 1) FROM test_regexp_extract_all
+-- group 0: all entire matches
+query
+SELECT regexp_extract_all(s, '\d+', 0) FROM test_regexp_extract_all
 
-query expect_fallback(Rust regexp engine)
-SELECT regexp_extract_all(s, '(\\d+)-(\\d+)', 2) FROM test_regexp_extract_all
+-- group 1: first capturing group from each match
+query
+SELECT regexp_extract_all(s, '([a-z]+)(\d+)', 1) FROM test_regexp_extract_all
 
-query expect_fallback(Rust regexp engine)
-SELECT regexp_extract_all(s, '(\\d+)-(\\d+)') FROM test_regexp_extract_all
+-- group 2: second capturing group from each match
+query
+SELECT regexp_extract_all(s, '([a-z]+)(\d+)', 2) FROM test_regexp_extract_all
 
--- Non-literal pattern: Comet falls back regardless of the allowIncompatible flag.
-statement
-CREATE TABLE test_regexp_extract_all_nonliteral(s string, p string, i int) USING parquet
+-- no match returns empty array
+query
+SELECT regexp_extract_all(s, 'NOMATCH', 0) FROM test_regexp_extract_all
 
-statement
-INSERT INTO test_regexp_extract_all_nonliteral VALUES ('abc', '(a)(b)', 1), ('xyz', '(x)', 1)
+-- backreference pattern (Java-only)
+query
+SELECT regexp_extract_all(s, '(\d)\1', 0) FROM test_regexp_extract_all
 
-query expect_fallback(Only scalar regexp patterns)
-SELECT regexp_extract_all(s, p, 1) FROM test_regexp_extract_all_nonliteral
+-- embedded flags (Java-only)
+query
+SELECT regexp_extract_all(s, '(?i)[A-Z]+', 0) FROM test_regexp_extract_all
 
-query expect_fallback(idx must be an integer literal)
-SELECT regexp_extract_all(s, '(\\w+)', i) FROM test_regexp_extract_all_nonliteral
+-- literal arguments
+query
+SELECT regexp_extract_all('abc123def456', '(\d+)', 1), regexp_extract_all('no digits', '(\d+)', 1), regexp_extract_all(NULL, '(\d+)', 1)

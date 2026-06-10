@@ -49,6 +49,7 @@ Arrow FFI <ffi>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
 ANSI Error Propagation <sql_error_propagation>
+S3 Credential Provider Design <s3-credential-provider-design>
 ```
 
 ```{toctree}
@@ -87,7 +88,7 @@ Tracing <tracing>
 :caption: Reference
 :hidden:
 
-Supported Spark Expressions <spark_expressions_support>
+Expression Audits <expression-audits/index>
 Supported Spark Configurations <spark_configs_support>
 ```
 

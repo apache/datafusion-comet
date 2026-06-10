@@ -62,6 +62,7 @@ to read more.
    compatibility/regex
    compatibility/operators
    compatibility/expressions/index
+   compatibility/json
    compatibility/spark-versions
 
 .. toctree::
@@ -79,6 +80,7 @@ to read more.
    :hidden:
 
    Iceberg Guide <iceberg>
+   S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 
 .. toctree::
