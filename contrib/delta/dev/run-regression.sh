@@ -100,6 +100,13 @@ JAVA_OVERRIDE=(
   -Dmaven.compiler.source=17
   -Dmaven.compiler.target=17
 )
+# Pin the Maven local repository so the [1.5/4] artifact copy below reads from EXACTLY where the
+# install wrote. CI containers can default Maven's localRepository to a path other than
+# $HOME/.m2/repository (a different `user.home`, a settings.xml override, ...), which left the
+# copy's source dir missing and failed the whole smoke run. Forcing both to $M2_REPO keeps them
+# in lockstep regardless of the container default.
+M2_REPO="${M2_REPO:-$HOME/.m2/repository}"
+JAVA_OVERRIDE+=(-Dmaven.repo.local="$M2_REPO")
 if [[ -n "${FAST:-}" ]]; then
   echo "  FAST=1: skipping spotless/RAT/javadoc/source-jar plugins"
   # Override `jni.dir` -> `native/target/release` because Comet's parent pom defaults it
@@ -141,8 +148,13 @@ mkdir -p "$COMET_PUBLISH_DIR/org/apache/datafusion"
 # `cp -a`, not `rsync`: the CI smoke container (bare amd64/rust) has no rsync on
 # PATH, so `rsync` exited 127 and failed the whole smoke run. `cp -a src/. dst/`
 # copies the contents of src into dst with attributes preserved (the same effect
-# as `rsync -a src/ dst/`) using only coreutils, which are always present.
-cp -a "$HOME/.m2/repository/org/apache/datafusion/." "$COMET_PUBLISH_DIR/org/apache/datafusion/"
+# as `rsync -a src/ dst/`) using only coreutils, which are always present. Read from
+# $M2_REPO -- the same repo the install above wrote to (see the pin near JAVA_OVERRIDE).
+if [[ ! -d "$M2_REPO/org/apache/datafusion" ]]; then
+  echo "Error: no Comet artifacts under $M2_REPO/org/apache/datafusion after install" >&2
+  exit 1
+fi
+cp -a "$M2_REPO/org/apache/datafusion/." "$COMET_PUBLISH_DIR/org/apache/datafusion/"
 echo "  Published: $(ls -1 "$COMET_PUBLISH_DIR/org/apache/datafusion/" | wc -l | tr -d ' ') Comet modules"
 
 # Step 2: clone Delta (or reuse existing checkout).
