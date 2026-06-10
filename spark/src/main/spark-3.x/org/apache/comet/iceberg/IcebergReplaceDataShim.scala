@@ -19,20 +19,8 @@
 
 package org.apache.comet.iceberg
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, UnaryNode}
-import org.apache.spark.sql.connector.write.BatchWrite
+import org.apache.spark.sql.catalyst.plans.logical.ReplaceData
 
-/** Logical anchor for the writer. See `IcebergWriteStrategy` for the rationale. */
-case class IcebergWriteLogical(
-    child: LogicalPlan,
-    // Driver-side only: AQE re-planning is driver-local and write commands aren't cached.
-    @transient batchWrite: BatchWrite,
-    replaceDataDispatch: Option[ReplaceDataDispatchInfo] = None)
-    extends UnaryNode {
-
-  override def output: Seq[Attribute] = Nil
-
-  override protected def withNewChildInternal(newChild: LogicalPlan): IcebergWriteLogical =
-    copy(child = newChild)
+private[iceberg] object IcebergReplaceDataShim {
+  def extractProjections(rd: ReplaceData): Option[ReplaceDataDispatchInfo] = None
 }

@@ -19,20 +19,13 @@
 
 package org.apache.comet.iceberg
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, UnaryNode}
-import org.apache.spark.sql.connector.write.BatchWrite
+import org.apache.spark.sql.catalyst.ProjectingInternalRow
 
-/** Logical anchor for the writer. See `IcebergWriteStrategy` for the rationale. */
-case class IcebergWriteLogical(
-    child: LogicalPlan,
-    // Driver-side only: AQE re-planning is driver-local and write commands aren't cached.
-    @transient batchWrite: BatchWrite,
-    replaceDataDispatch: Option[ReplaceDataDispatchInfo] = None)
-    extends UnaryNode {
-
-  override def output: Seq[Attribute] = Nil
-
-  override protected def withNewChildInternal(newChild: LogicalPlan): IcebergWriteLogical =
-    copy(child = newChild)
-}
+/**
+ * Mirror of Spark 4.x's `ReplaceDataProjections`, defined here so we can compile against Spark
+ * 3.4 / 3.5 source trees (where the class doesn't exist). Populated by `IcebergReplaceDataShim`
+ * on 4.x and left `None` on 3.x; consumed by `IcebergWriteExec`.
+ */
+case class ReplaceDataDispatchInfo(
+    rowProjection: ProjectingInternalRow,
+    metadataProjection: Option[ProjectingInternalRow])

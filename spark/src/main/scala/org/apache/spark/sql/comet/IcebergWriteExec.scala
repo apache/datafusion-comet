@@ -33,13 +33,16 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{BinaryType, StructField, StructType}
 import org.apache.spark.util.Utils
 
+import org.apache.comet.iceberg.ReplaceDataDispatchInfo
+
 /**
  * Executor-side file writer for Comet's split-operator Iceberg V2 write.
  */
 case class IcebergWriteExec(
     // `batchWrite` only stored driver side, only the writer factory is shipped to executors.
     @transient batchWrite: BatchWrite,
-    child: SparkPlan)
+    child: SparkPlan,
+    replaceDataDispatch: Option[ReplaceDataDispatchInfo] = None)
     extends UnaryExecNode {
 
   override def output: Seq[Attribute] = Seq(
@@ -61,12 +64,18 @@ case class IcebergWriteExec(
 
     val rowsMetric = longMetric("numOutputRows")
     val schemaTypes = output.map(_.dataType).toArray
+    val capturedReplaceDataDispatch = replaceDataDispatch
     rdd.mapPartitionsInternal { iter =>
       val partId = TaskContext.getPartitionId()
       val taskId = TaskContext.get().taskAttemptId()
       val writer = factory.createWriter(partId, taskId)
       val projection = UnsafeProjection.create(schemaTypes)
-      IcebergWriteExec.runWriter(writer, iter, rowsMetric, projection)
+      IcebergWriteExec.runWriter(
+        writer,
+        iter,
+        rowsMetric,
+        projection,
+        capturedReplaceDataDispatch)
     }
   }
 
@@ -88,11 +97,16 @@ object IcebergWriteExec {
       writer: DataWriter[InternalRow],
       iter: Iterator[InternalRow],
       rowsMetric: SQLMetric,
-      projection: UnsafeProjection): Iterator[InternalRow] = {
+      projection: UnsafeProjection,
+      replaceDataDispatch: Option[ReplaceDataDispatchInfo]): Iterator[InternalRow] = {
     val message = Utils.tryWithSafeFinallyAndFailureCallbacks(block = {
-      while (iter.hasNext) {
-        writer.write(iter.next())
-        rowsMetric.add(1L)
+      if (replaceDataDispatch.isDefined) {
+        runReplaceDataWriter(writer, iter, replaceDataDispatch.get, rowsMetric)
+      } else {
+        while (iter.hasNext) {
+          writer.write(iter.next())
+          rowsMetric.add(1L)
+        }
       }
       writer.commit()
     })(
@@ -105,6 +119,16 @@ object IcebergWriteExec {
 
     Iterator.single(projection(InternalRow(serializeMessage(message))).copy())
   }
+
+  // Mirrors Spark RowDeltaUtils, which is private and changes location across versions.
+  private val WRITE_OPERATION = 5
+  private val WRITE_WITH_METADATA_OPERATION = 6
+
+  // Spark has different `DataWriter#write` methods across versions.
+  @transient private lazy val dataWriterWriteWithMetadataMethod
+      : Option[java.lang.reflect.Method] =
+    try Some(classOf[DataWriter[_]].getMethod("write", classOf[Object], classOf[Object]))
+    catch { case _: NoSuchMethodException => None }
 
   def serializeMessage(message: WriterCommitMessage): Array[Byte] = {
     val bos = new ByteArrayOutputStream()
@@ -119,5 +143,35 @@ object IcebergWriteExec {
     val ois = new ObjectInputStream(bis)
     try ois.readObject().asInstanceOf[WriterCommitMessage]
     finally ois.close()
+  }
+
+  private def runReplaceDataWriter(
+      writer: DataWriter[InternalRow],
+      iter: Iterator[InternalRow],
+      dispatch: ReplaceDataDispatchInfo,
+      rowsMetric: SQLMetric): Unit = {
+    val rowProjection = dispatch.rowProjection
+    val metadataProjection = dispatch.metadataProjection.orNull
+    while (iter.hasNext) {
+      val row = iter.next()
+      rowsMetric.add(1L)
+      row.getInt(0) match {
+        case WRITE_OPERATION =>
+          rowProjection.project(row)
+          writer.write(rowProjection)
+        case WRITE_WITH_METADATA_OPERATION =>
+          rowProjection.project(row)
+          if (metadataProjection != null) metadataProjection.project(row)
+          val writeWithMetadata = dataWriterWriteWithMetadataMethod.getOrElse(
+            throw new UnsupportedOperationException(
+              "DataWriter.write(metadata, row) is not available in this Spark version but the " +
+                s"analyzer emitted operation code $WRITE_WITH_METADATA_OPERATION"))
+          writeWithMetadata.invoke(writer, metadataProjection, rowProjection)
+        case other =>
+          throw new IllegalArgumentException(
+            s"Unexpected ReplaceData operation code $other; supported: " +
+              s"$WRITE_OPERATION (WRITE), $WRITE_WITH_METADATA_OPERATION (WRITE_WITH_METADATA)")
+      }
+    }
   }
 }

@@ -20,7 +20,7 @@
 package org.apache.comet.iceberg
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.plans.logical.{AppendData, LogicalPlan, OverwriteByExpression, OverwritePartitionsDynamic}
+import org.apache.spark.sql.catalyst.plans.logical.{AppendData, LogicalPlan, OverwriteByExpression, OverwritePartitionsDynamic, ReplaceData}
 import org.apache.spark.sql.comet.{IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.connector.write.Write
 import org.apache.spark.sql.execution.{SparkPlan, SparkStrategy}
@@ -41,14 +41,31 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
 
     plan match {
       case ad: AppendData =>
-        matchedSparkWrite(ad.table, ad.write, ad.query).toList
+        matchedSparkWrite(ad.table, ad.write, ad.query, replaceDataDispatch = None).toList
       case obe: OverwriteByExpression =>
-        matchedSparkWrite(obe.table, obe.write, obe.query).toList
+        matchedSparkWrite(obe.table, obe.write, obe.query, replaceDataDispatch = None).toList
       case opd: OverwritePartitionsDynamic =>
-        matchedSparkWrite(opd.table, opd.write, opd.query).toList
+        matchedSparkWrite(opd.table, opd.write, opd.query, replaceDataDispatch = None).toList
+      case rd: ReplaceData =>
+        matchedSparkWrite(
+          rd.originalTable,
+          rd.write,
+          rd.query,
+          replaceDataDispatch = IcebergReplaceDataShim.extractProjections(rd)).toList
+      case plan if IcebergReflection.isReplaceIcebergData(plan) =>
+        IcebergReflection
+          .extractReplaceIcebergDataFields(plan)
+          .flatMap { case (_, query, originalTable, write) =>
+            matchedSparkWrite(
+              originalTable.asInstanceOf[org.apache.spark.sql.catalyst.analysis.NamedRelation],
+              write.asInstanceOf[Option[Write]],
+              query.asInstanceOf[LogicalPlan],
+              replaceDataDispatch = None)
+          }
+          .toList
       // Hit by AQE.
-      case IcebergWriteLogical(child, batchWrite) =>
-        Seq(IcebergWriteExec(batchWrite, planLater(child)))
+      case IcebergWriteLogical(child, batchWrite, replaceDataDispatch) =>
+        Seq(IcebergWriteExec(batchWrite, planLater(child), replaceDataDispatch))
       case _ => Nil
     }
   }
@@ -56,12 +73,13 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
   private def matchedSparkWrite(
       table: org.apache.spark.sql.catalyst.analysis.NamedRelation,
       write: Option[Write],
-      query: LogicalPlan): Option[SparkPlan] = {
+      query: LogicalPlan,
+      replaceDataDispatch: Option[ReplaceDataDispatchInfo]): Option[SparkPlan] = {
     table match {
       case rel: DataSourceV2Relation =>
         write.flatMap { w =>
           if (IcebergReflection.isIcebergSparkWrite(w)) {
-            buildTwoOp(w, rel, query)
+            buildTwoOp(w, rel, query, replaceDataDispatch)
           } else {
             None
           }
@@ -83,13 +101,20 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
   private def buildTwoOp(
       write: Write,
       rel: DataSourceV2Relation,
-      query: LogicalPlan): Option[SparkPlan] = {
+      query: LogicalPlan,
+      replaceDataDispatch: Option[ReplaceDataDispatchInfo]): Option[SparkPlan] = {
     val batchWrite = write.toBatch
     if (batchWrite.useCommitCoordinator()) {
       return None
     }
+    // To mirror Spark ReplaceData semantics we invalidate our cache of the state of
+    // `originalTable`.
     val refresh: () => Unit = () => IcebergRefreshCacheShim.recacheByPlan(rel)
     Some(
-      IcebergCommitExec(batchWrite, refresh, planLater(IcebergWriteLogical(query, batchWrite))))
+      IcebergCommitExec(
+        batchWrite,
+        refresh,
+        // `replaceDataDispatch` may project the data into the format the writer expects.
+        planLater(IcebergWriteLogical(query, batchWrite, replaceDataDispatch))))
   }
 }
