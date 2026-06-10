@@ -36,7 +36,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
-import org.apache.comet.serde.{Compatible, Incompatible}
+import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -1509,11 +1509,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           .range(5)
           // Spark does not allow null as a key but does allow null as a
           // value, and the entire map can be null
-          .select(
-            when(
-              col("id") > 1,
+          .select(when(col("id") === 4, map().cast(MapType(IntegerType, IntegerType)))
+            .otherwise(
               map(col("id").cast(IntegerType), when(col("id") > 2, col("id").cast(IntegerType))))
-              .alias("map1"))
+            .alias("map1"))
+          // Add an empty-map row to exercise empty/null handling in the native cast path
+          .unionByName(
+            spark.range(1).select(map().cast(MapType(IntegerType, IntegerType)).alias("map1")))
         df.write.parquet(dir.toString())
       }
 
@@ -1525,6 +1527,24 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           df.select(col("map1").cast(MapType(LongType, StringType)).alias("casted")))
       }
     }
+  }
+
+  test("cast MapType(Integer, Float) to MapType(Integer, Decimal) is incompatible") {
+    val fromType = MapType(IntegerType, FloatType)
+    val toType = MapType(IntegerType, DecimalType(10, 2))
+    assert(
+      CometCast
+        .isSupported(fromType, toType, None, CometEvalMode.LEGACY)
+        .isInstanceOf[Incompatible])
+  }
+
+  test("cast nested MapType to MapType with unsupported inner cast falls back") {
+    val fromType = MapType(IntegerType, MapType(IntegerType, IntegerType))
+    val toType = MapType(IntegerType, StringType)
+    assert(
+      CometCast
+        .isSupported(fromType, toType, None, CometEvalMode.LEGACY)
+        .isInstanceOf[Unsupported])
   }
 
   test("cast between decimals with different precision and scale") {
