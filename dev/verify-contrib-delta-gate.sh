@@ -168,7 +168,19 @@ hdr "libcomet: default build is smaller and has no Delta symbols"
 cd "$NATIVE_DIR"
 # The cdylib extension is platform-specific: `libcomet.so` on Linux (CI), `libcomet.dylib` on
 # macOS. Find whichever the build produced; `stat`/`nm` flags also differ across the two.
-comet_lib() { ls target/debug/libcomet.so target/debug/libcomet.dylib 2>/dev/null | head -1; }
+# Echo whichever lib exists (empty if neither). MUST return 0: `ls a b` exits non-zero when one of
+# the two paths is absent (the normal case -- only one extension exists per platform), and under
+# `set -euo pipefail` that would kill the script at `LIB=$(comet_lib)` even though it found the lib.
+comet_lib() {
+  local f
+  for f in target/debug/libcomet.so target/debug/libcomet.dylib; do
+    if [[ -f "$f" ]]; then
+      echo "$f"
+      return 0
+    fi
+  done
+  return 0
+}
 lib_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 # Plain `nm` on the (unstripped debug) lib lists the full symbol table on both platforms, so a
 # name grep finds the Delta symbols whether they're exported or internal.
