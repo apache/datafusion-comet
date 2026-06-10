@@ -974,6 +974,63 @@ impl PhysicalPlanner {
         }
     }
 
+    /// DataFusion's nested comparison kernel (`apply_cmp_for_nested`) requires both operands to
+    /// have identical data types, including nested field nullability, whereas Spark comparisons
+    /// ignore nullability. When a comparison's operands are nested types that differ only in
+    /// nullability (e.g. a higher-order `transform` produces `List(non-null Struct)` while the
+    /// other side is `List(nullable Struct)`), cast both to their nullability-union type so the
+    /// kernel accepts them. Non-comparison ops and non-nested or already-matching types are left
+    /// untouched.
+    pub fn reconcile_nested_comparison_types(
+        left: Arc<dyn PhysicalExpr>,
+        right: Arc<dyn PhysicalExpr>,
+        op: &DataFusionOperator,
+        input_schema: &SchemaRef,
+    ) -> (Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>) {
+        use DataFusionOperator::*;
+        let is_cmp = matches!(
+            op,
+            Eq | NotEq | Lt | LtEq | Gt | GtEq | IsDistinctFrom | IsNotDistinctFrom
+        );
+        if !is_cmp {
+            return (left, right);
+        }
+        let (lt, rt) = match (left.data_type(input_schema), right.data_type(input_schema)) {
+            (Ok(lt), Ok(rt)) => (lt, rt),
+            _ => return (left, right),
+        };
+        // Only nested types route through `apply_cmp_for_nested`; primitives coerce fine.
+        let nested = matches!(
+            lt,
+            DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::FixedSizeList(_, _)
+                | DataType::Struct(_)
+                | DataType::Map(_, _)
+        );
+        if !nested || lt.equals_datatype(&rt) {
+            return (left, right);
+        }
+        // `Field::try_merge` unions nullability recursively while preserving structure (and the
+        // Map/list invariants). Bail out unchanged if the structures are genuinely incompatible.
+        let mut merged = Field::new("c", lt.clone(), true);
+        if merged
+            .try_merge(&Field::new("c", rt.clone(), true))
+            .is_err()
+        {
+            return (left, right);
+        }
+        let target = merged.data_type().clone();
+        let cast_to_target = |e: Arc<dyn PhysicalExpr>, dt: &DataType| -> Arc<dyn PhysicalExpr> {
+            if dt.equals_datatype(&target) {
+                e
+            } else {
+                Arc::new(CastExpr::new(e, target.clone(), None))
+            }
+        };
+        (cast_to_target(left, &lt), cast_to_target(right, &rt))
+    }
+
     /// Create a DataFusion physical plan from Spark physical plan. There is a level of
     /// abstraction where a tree of SparkPlan nodes is returned. There is a 1:1 mapping from a
     /// protobuf Operator (that represents a Spark operator) to a native SparkPlan struct. We
