@@ -52,11 +52,9 @@ Comet focuses acceleration on mainstream relational, string, datetime, math, and
 expressions. The following function families are **not currently planned** for native acceleration (they are not on the 1.0 roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:
 
 - **Probabilistic sketches and approximate top-k** (`kll_sketch_*`, `hll_*`, `theta_*`, `count_min_sketch`, `bitmap_*`, `approx_top_k*`): specialized data structures with exact-correctness traps.
-- **XML / XPath** (`from_xml`, `to_xml`, `schema_of_xml`, `xpath*`): legacy text format, rare in accelerated workloads.
 - **Geospatial** (`st_*`): brand-new Spark 4.1 functionality, specialized.
 - **Avro / Protobuf codecs** (`from_avro`, `to_avro`, `from_protobuf`, `to_protobuf`, `schema_of_avro`): format conversion belongs at the IO layer, not expression evaluation.
 - **JVM reflection** (`java_method`, `reflect`): niche, and they invoke arbitrary JVM methods (a security concern).
-- **CSV functions** (`from_csv`, `to_csv`, `schema_of_csv`): row-level CSV parsing and formatting in expressions is niche and better handled at the data source layer.
 - **UTF-8 validation** (`is_valid_utf8`, `make_valid_utf8`, `validate_utf8`, `try_validate_utf8`): niche Spark 4.x string-validation helpers.
 - **File metadata** (`input_file_name`, `input_file_block_start`, `input_file_block_length`): require scan-internal per-row file information, outside the expression layer.
 - **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`): low-value or specialized functions with little benefit from native acceleration.
@@ -155,7 +153,7 @@ The tables below list every Spark built-in expression with its current status.
 | `element_at` | ✅ | MapType input falls back |
 | `flatten` | ✅ | Binary/struct/map elements fall back |
 | `get` | ✅ |  |
-| `sequence` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `sequence` | ✅ |  |
 | `shuffle` | 🔜 | Random array shuffle |
 | `slice` | ✅ | Native ([#4149](https://github.com/apache/datafusion-comet/issues/4149)) |
 | `sort_array` | ✅ | Nested struct/null arrays fall back |
@@ -200,7 +198,7 @@ The tables below list every Spark built-in expression with its current status.
 | `coalesce` | ✅ |  |
 | `if` | ✅ |  |
 | `ifnull` | ✅ |  |
-| `nanvl` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `nanvl` | ✅ |  |
 | `nullif` | ✅ |  |
 | `nullifzero` | ✅ | Lowers to `if`/`=` (Spark 4.0+) |
 | `nvl` | ✅ |  |
@@ -217,6 +215,16 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | Function | Status | Notes |
 | --- | --- | --- |
 | `cast` | ✅ | Some casts fall back; float-to-decimal is opt-in ([details](compatibility/expressions/cast.md)) |
+
+---
+
+## csv_funcs
+
+| Function | Status | Notes |
+| --- | --- | --- |
+| `from_csv` | ✅ |  |
+| `schema_of_csv` | ✅ |  |
+| `to_csv` | ✅ |  |
 
 ---
 
@@ -339,9 +347,9 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `from_json` | ✅ | Falls back by default; opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json)) |
 | `get_json_object` | ✅ | Some inputs need allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
 | `json_array_length` | ✅ | Single-quoted/trailing JSON needs allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#json_array_length)) |
-| `json_object_keys` | 🔜 | [#3161](https://github.com/apache/datafusion-comet/issues/3161) |
+| `json_object_keys` | ✅ |  |
 | `json_tuple` | 🔜 | [#3160](https://github.com/apache/datafusion-comet/issues/3160) |
-| `schema_of_json` | 🔜 | [#3163](https://github.com/apache/datafusion-comet/issues/3163) |
+| `schema_of_json` | ✅ |  |
 | `to_json` | ✅ | Options and map/array inputs fall back ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json)) |
 
 ---
@@ -373,7 +381,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | --- | --- | --- |
 | `element_at` | ✅ | MapType input falls back |
 | `map` | 🔜 | Constructs a map |
-| `map_concat` | 🔜 | Concatenates maps |
+| `map_concat` | ✅ |  |
 | `map_contains_key` | ✅ |  |
 | `map_entries` | ✅ |  |
 | `map_from_arrays` | ✅ |  |
@@ -389,7 +397,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `%` | ✅ | try_mod (TRY mode) falls back |
+| `%` | ✅ |  |
 | `*` | ✅ | Interval multiplication falls back |
 | `+` | ✅ |  |
 | `-` | ✅ |  |
@@ -403,11 +411,11 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `atan2` | ✅ |  |
 | `atanh` | ✅ |  |
 | `bin` | ✅ |  |
-| `bround` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `bround` | ✅ |  |
 | `cbrt` | ✅ |  |
 | `ceil` | ✅ | Two-arg form falls back |
 | `ceiling` | ✅ |  |
-| `conv` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `conv` | ✅ |  |
 | `cos` | ✅ |  |
 | `cosh` | ✅ |  |
 | `cot` | ✅ |  |
@@ -421,17 +429,17 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `floor` | ✅ | Two-arg form falls back |
 | `greatest` | ✅ |  |
 | `hex` | ✅ |  |
-| `hypot` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `hypot` | ✅ |  |
 | `least` | ✅ |  |
 | `ln` | ✅ |  |
 | `log` | ✅ |  |
 | `log10` | ✅ |  |
-| `log1p` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `log1p` | ✅ |  |
 | `log2` | ✅ |  |
 | `mod` | ✅ |  |
 | `negative` | ✅ |  |
 | `pi` | ✅ |  |
-| `pmod` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `pmod` | ✅ |  |
 | `positive` | ✅ |  |
 | `pow` | ✅ |  |
 | `power` | ✅ |  |
@@ -453,7 +461,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `tanh` | ✅ |  |
 | `try_add` | ✅ | Datetime/interval form falls back |
 | `try_divide` | ✅ |  |
-| `try_mod` | 🔜 | Lowers to `Remainder` with TRY eval mode, which falls back ([#4484](https://github.com/apache/datafusion-comet/issues/4484)) |
+| `try_mod` | ✅ |  |
 | `try_multiply` | ✅ |  |
 | `try_subtract` | ✅ |  |
 | `unhex` | ✅ |  |
@@ -540,29 +548,29 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `concat_ws` | ✅ |  |
 | `contains` | ✅ |  |
 | `decode` | ✅ |  |
-| `elt` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `elt` | ✅ |  |
 | `encode` | 🔜 | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
 | `endswith` | ✅ |  |
-| `find_in_set` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
-| `format_number` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
-| `format_string` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `find_in_set` | ✅ |  |
+| `format_number` | ✅ |  |
+| `format_string` | ✅ |  |
 | `initcap` | ✅ |  |
 | `instr` | ✅ |  |
 | `lcase` | ✅ |  |
 | `left` | ✅ |  |
 | `len` | ✅ |  |
 | `length` | ✅ |  |
-| `levenshtein` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
-| `locate` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `levenshtein` | ✅ |  |
+| `locate` | ✅ |  |
 | `lower` | ✅ |  |
 | `lpad` | ✅ |  |
 | `ltrim` | ✅ |  |
 | `luhn_check` | ✅ | Native via `StaticInvoke` (tests: luhn_check.sql) |
 | `mask` | 🔜 | Data masking |
 | `octet_length` | ✅ |  |
-| `overlay` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
-| `position` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
-| `printf` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `overlay` | ✅ |  |
+| `position` | ✅ |  |
+| `printf` | ✅ |  |
 | `regexp_count` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `regexp_extract` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `regexp_extract_all` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
@@ -574,7 +582,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `right` | ✅ |  |
 | `rpad` | ✅ |  |
 | `rtrim` | ✅ |  |
-| `soundex` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `soundex` | ✅ |  |
 | `space` | ✅ |  |
 | `split` | ✅ |  |
 | `split_part` | 🔜 | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back ([#4561](https://github.com/apache/datafusion-comet/issues/4561)) |
@@ -583,15 +591,15 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `substring` | ✅ |  |
 | `substring_index` | ✅ |  |
 | `to_binary` | ✅ | Hex form accelerated; other formats fall back |
-| `to_char` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
-| `to_number` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
-| `to_varchar` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `to_char` | ✅ |  |
+| `to_number` | ✅ |  |
+| `to_varchar` | ✅ |  |
 | `translate` | ✅ |  |
 | `trim` | ✅ |  |
 | `try_to_binary` | 🔜 | Lowers to `TryEval(...)`, which falls back |
 | `try_to_number` | 🔜 | TRY variant of `to_number` |
 | `ucase` | ✅ |  |
-| `unbase64` | 🔜 | [#4538](https://github.com/apache/datafusion-comet/issues/4538) |
+| `unbase64` | ✅ |  |
 | `upper` | ✅ |  |
 
 ---
@@ -636,6 +644,25 @@ fall back to Spark.
 | `percent_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
 | `rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
 | `row_number` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+
+---
+
+## xml_funcs
+
+| Function | Status | Notes |
+| --- | --- | --- |
+| `from_xml` | ✅ | Spark 4.0+ |
+| `schema_of_xml` | ✅ | Spark 4.0+ |
+| `to_xml` | ✅ | Spark 4.0+ |
+| `xpath` | ✅ |  |
+| `xpath_boolean` | ✅ |  |
+| `xpath_double` | ✅ |  |
+| `xpath_float` | ✅ |  |
+| `xpath_int` | ✅ |  |
+| `xpath_long` | ✅ |  |
+| `xpath_number` | ✅ | Alias of `xpath_double` |
+| `xpath_short` | ✅ |  |
+| `xpath_string` | ✅ |  |
 
 ---
 

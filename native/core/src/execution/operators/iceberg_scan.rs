@@ -39,10 +39,12 @@ use datafusion::physical_plan::{
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
 use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
+use iceberg::Runtime as IcebergRuntime;
 use iceberg_storage_opendal::CustomAwsCredentialLoader;
 use iceberg_storage_opendal::OpenDalStorageFactory;
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
+use crate::execution::jni_api::get_runtime;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
@@ -174,12 +176,16 @@ impl IcebergScanExec {
 
         let task_stream = futures::stream::iter(tasks.into_iter().map(Ok)).boxed();
 
-        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
-            .with_batch_size(batch_size)
-            .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
-            .with_row_selection_enabled(true)
-            .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
-            .build();
+        // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime. execute() runs
+        // on the JVM-called thread outside any tokio context, so Runtime::current() would panic;
+        // build it from Comet's global runtime, which is where the stream is later polled.
+        let reader =
+            iceberg::arrow::ArrowReaderBuilder::new(file_io, IcebergRuntime::new(get_runtime()))
+                .with_batch_size(batch_size)
+                .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
+                .with_row_selection_enabled(true)
+                .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
+                .build();
 
         // Pass all tasks to iceberg-rust at once to utilize its flatten_unordered
         // parallelization, avoiding overhead of single-task streams

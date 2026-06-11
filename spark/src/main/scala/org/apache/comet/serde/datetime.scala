@@ -200,7 +200,7 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
   }
 }
 
-object CometHour extends CometExpressionSerde[Hour] {
+object CometHour extends CometExpressionSerde[Hour] with CodegenDispatchFallback {
 
   val incompatReason: String = "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
     " (https://github.com/apache/datafusion-comet/issues/3180)"
@@ -243,7 +243,7 @@ object CometHour extends CometExpressionSerde[Hour] {
   }
 }
 
-object CometMinute extends CometExpressionSerde[Minute] {
+object CometMinute extends CometExpressionSerde[Minute] with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
@@ -285,7 +285,7 @@ object CometMinute extends CometExpressionSerde[Minute] {
   }
 }
 
-object CometSecond extends CometExpressionSerde[Second] {
+object CometSecond extends CometExpressionSerde[Second] with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
@@ -530,7 +530,7 @@ object CometUnixDate extends CometExpressionSerde[UnixDate] {
   }
 }
 
-object CometTruncDate extends CometExpressionSerde[TruncDate] {
+object CometTruncDate extends CometExpressionSerde[TruncDate] with CodegenDispatchFallback {
 
   val supportedFormats: Seq[String] =
     Seq("year", "yyyy", "yy", "quarter", "mon", "month", "mm", "week")
@@ -572,7 +572,9 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
   }
 }
 
-object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
+object CometTruncTimestamp
+    extends CometExpressionSerde[TruncTimestamp]
+    with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Produces incorrect results when used with non-UTC timezones. Compatible when timezone is" +

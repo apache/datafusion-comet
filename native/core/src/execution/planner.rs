@@ -22,6 +22,7 @@ pub mod macros;
 pub mod operator_registry;
 
 use crate::execution::operators::init_csv_datasource_exec;
+use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
@@ -30,10 +31,12 @@ use crate::execution::{
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
-    shuffle::ShuffleWriterExec,
+    shuffle::{SchemaAlignExec, ShuffleWriterExec},
 };
+use crate::jvm_bridge::{jni_call, JVMClasses};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::ffi_stream::FFI_ArrowArrayStream;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -1156,45 +1159,12 @@ impl PhysicalPlanner {
                         Arc::clone(&schema),
                     )?,
                 );
-                let result_exprs: PhyExprResult = agg
-                    .result_exprs
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, expr)| {
-                        self.create_expr(expr, aggregate.schema())
-                            .map(|r| (r, format!("col_{idx}")))
-                    })
-                    .collect();
 
-                if agg.result_exprs.is_empty() {
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
-                    ))
-                } else {
-                    // For final aggregation, DF's hash aggregate exec doesn't support Spark's
-                    // aggregate result expressions like `COUNT(col) + 1`, but instead relying
-                    // on additional `ProjectionExec` to handle the case. Therefore, here we'll
-                    // add a projection node on top of the aggregate node.
-                    //
-                    // Note that `result_exprs` should only be set for final aggregation on the
-                    // Spark side.
-                    let projection = Arc::new(ProjectionExec::try_new(
-                        result_exprs?,
-                        Arc::clone(&aggregate),
-                    )?);
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            projection,
-                            vec![child],
-                            vec![aggregate],
-                        )),
-                    ))
-                }
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
+                ))
             }
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
@@ -1440,23 +1410,31 @@ impl PhysicalPlanner {
                     return Err(GeneralError("No input for scan".to_string()));
                 }
 
-                // Consumes the first input source for the scan
-                let input_source =
-                    if self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
-                        // For unit test, we will set input batch to scan directly by `set_input_batch`.
-                        None
-                    } else {
-                        Some(inputs.remove(0))
-                    };
+                // Consumes the first input source for the scan. The Java side passes an
+                // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
+                // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`.
+                let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
+                    && inputs.is_empty()
+                {
+                    // For unit test, we will set input batch to scan directly by `set_input_batch`.
+                    None
+                } else {
+                    let java_stream = inputs.remove(0);
+                    let address: i64 = JVMClasses::with_env(|env| unsafe {
+                        jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
+                    })?;
+                    let reader = unsafe {
+                        AlignedArrowStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
+                    }
+                    .map_err(|e| {
+                        GeneralError(format!("Failed to import ArrowArrayStream from JVM: {e}"))
+                    })?;
+                    Some(Arc::new(std::sync::Mutex::new(reader)))
+                };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(
-                    self.exec_context_id,
-                    input_source,
-                    &scan.source,
-                    data_types,
-                    scan.arrow_ffi_safe,
-                )?;
+                let scan =
+                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
 
                 Ok((
                     vec![scan.clone()],
@@ -1508,9 +1486,14 @@ impl PhysicalPlanner {
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
 
+                let writer_input = align_shuffle_writer_input(
+                    Arc::clone(&child.native_plan),
+                    &writer.expected_output_schema,
+                )?;
+
                 let partitioning = self.create_partitioning(
                     writer.partitioning.as_ref().unwrap(),
-                    child.native_plan.schema(),
+                    writer_input.schema(),
                 )?;
 
                 let codec = match writer.codec.try_into() {
@@ -1528,7 +1511,7 @@ impl PhysicalPlanner {
 
                 let write_buffer_size = writer.write_buffer_size as usize;
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Arc::clone(&child.native_plan),
+                    writer_input,
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -3111,6 +3094,20 @@ fn convert_spark_types_to_arrow_schema(
     arrow_schema
 }
 
+/// Wrap `child` in a `SchemaAlignExec` when its output drifts from what Spark catalyst
+/// declared. See <https://github.com/apache/datafusion-comet/issues/4515>.
+fn align_shuffle_writer_input(
+    child: Arc<dyn ExecutionPlan>,
+    expected_proto: &[spark_operator::SparkStructField],
+) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+    if expected_proto.is_empty() {
+        return Ok(child);
+    }
+    let expected = convert_spark_types_to_arrow_schema(expected_proto);
+    SchemaAlignExec::try_new_or_passthrough(child, &expected)
+        .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+}
+
 /// Converts a protobuf PartitionValue to an iceberg Literal.
 ///
 fn partition_value_to_literal(
@@ -3969,7 +3966,6 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4035,7 +4031,6 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4245,7 +4240,6 @@ mod tests {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         }
     }
@@ -4288,7 +4282,6 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4411,7 +4404,6 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4894,7 +4886,6 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 

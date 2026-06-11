@@ -15,17 +15,15 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_rlike(s string) USING parquet
+-- json_object_keys has no native (rust) implementation; it extends Spark's CodegenFallback and
+-- stays native via the codegen dispatcher.
 
 statement
-INSERT INTO test_rlike VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
+CREATE TABLE test_json_object_keys(s STRING) USING parquet
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[0-9]+$' FROM test_rlike
+statement
+INSERT INTO test_json_object_keys VALUES
+  ('{"a":1,"b":2}'), ('{"x":true}'), ('{}'), (NULL)
 
-query expect_fallback(Regexp pattern)
-SELECT s RLIKE '^[a-z]+$' FROM test_rlike
-
-query spark_answer_only
-SELECT s RLIKE '' FROM test_rlike
+query
+SELECT json_object_keys(s) FROM test_json_object_keys
