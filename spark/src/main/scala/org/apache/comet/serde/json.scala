@@ -43,6 +43,7 @@ object CometLengthOfJsonArray extends CometCodegenDispatch[LengthOfJsonArray] {
       val optExpr = scalarFunctionExprToProto("json_array_length", childExpr: _*)
       optExprWithFallbackReason(optExpr, expr, expr.children: _*)
     } else {
+      withNativeAvailableInfo(expr)
       super.convert(expr, inputs, binding)
     }
 }

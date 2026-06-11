@@ -3171,9 +3171,35 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val query = sql(s"select date_format(ts, 'yyyy-MM-dd') from $table")
         val (_, cometPlan) = checkSparkAnswerAndOperator(query)
         val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
-        assert(explain.contains("COMET-INFO"))
-        // Pin the exact config key the hint tells the user to set.
-        assert(explain.contains("DateFormatClass.allowIncompatible"))
+        // Pin the full generic message format produced by withNativeAvailableInfo.
+        assert(
+          explain.contains(
+            "[COMET-INFO: A native implementation of DateFormatClass is available but needs " +
+              "to be enabled with spark.comet.expression.DateFormatClass.allowIncompatible. " +
+              "See compatibility guide for more information.]"))
+      }
+    }
+  }
+
+  test("string_split JVM codegen path hints at faster native option") {
+    // Sanity-check that the generic withNativeAvailableInfo helper fires for a different
+    // expression than date_format, exercising the standard `allowIncompatible` config path.
+    val table = "string_split_hint"
+    withTable(table) {
+      sql(s"create table $table(s string) using parquet")
+      sql(s"insert into $table values('a,b,c')")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val query = sql(s"select split(s, ',') from $table")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(
+          explain.contains(
+            "[COMET-INFO: A native implementation of StringSplit is available but needs to " +
+              "be enabled with spark.comet.expression.StringSplit.allowIncompatible. " +
+              "See compatibility guide for more information.]"))
       }
     }
   }

@@ -66,6 +66,7 @@ class CometCaseConversionBase[T <: Expression](function: String)
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
       // Comet pipeline. This guarantees Spark-compatible behavior across 3.4 / 3.5 / 4.0.
       // Falls through to Spark when the dispatcher is disabled.
+      withNativeAvailableInfo(expr, CometConf.COMET_CASE_CONVERSION_ENABLED.key)
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
@@ -98,6 +99,7 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
       // Comet pipeline. This guarantees Spark-compatible behavior across 3.4 / 3.5 / 4.0.
       // Falls through to Spark when the dispatcher is disabled.
+      withNativeAvailableInfo(expr)
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
@@ -119,6 +121,7 @@ object CometStringReplace extends CometScalarFunction[StringReplace]("replace") 
     } else {
       // Run Spark's own generated code inside the Comet pipeline so the result matches Spark
       // exactly. Falls back to Spark when the codegen dispatcher is disabled.
+      withNativeAvailableInfo(expr)
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
@@ -342,6 +345,14 @@ object CometRLike extends CometExpressionSerde[RLike] {
         case _ =>
         // Non-scalar pattern: the native path cannot handle it, fall through to the dispatcher.
       }
+    } else {
+      // Native path is gated off; tell the user about the faster path. Only emit the hint when
+      // the pattern is a scalar literal -- a non-scalar pattern can never use native regardless
+      // of the config.
+      expr.right match {
+        case Literal(_, DataTypes.StringType) => withNativeAvailableInfo(expr)
+        case _ =>
+      }
     }
     // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the Comet
     // pipeline. Falls back to Spark when the dispatcher is disabled.
@@ -441,7 +452,10 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
-      // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
+      // Comet pipeline. Falls back to Spark when the dispatcher is disabled. Only emit the
+      // native-available hint when the native path would actually run (offset==1); otherwise
+      // flipping the config wouldn't enable native.
+      if (nativeSupported(expr)) withNativeAvailableInfo(expr)
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
@@ -479,6 +493,7 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
       // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
+      withNativeAvailableInfo(expr)
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
@@ -515,6 +530,7 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
         pathExpr)
       optExprWithFallbackReason(optExpr, expr, expr.json, expr.path)
     } else {
+      withNativeAvailableInfo(expr)
       super.convert(expr, inputs, binding)
     }
 }

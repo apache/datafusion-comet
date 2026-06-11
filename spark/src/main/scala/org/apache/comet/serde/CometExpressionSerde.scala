@@ -21,6 +21,8 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 
+import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+
 /**
  * Trait for providing serialization logic for expressions.
  */
@@ -95,6 +97,31 @@ trait CometExpressionSerde[T <: Expression] {
    *   could not be converted.
    */
   def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.Expr]
+
+  /**
+   * Tag the expression with an informational hint that a native implementation exists but is
+   * gated behind a config the user has not enabled, so a slower path (the JVM codegen dispatcher,
+   * or Spark fallback) is being used instead. The hint surfaces in verbose extended explain
+   * output as `[COMET-INFO: ...]` and does NOT cause fallback. Defaults to the standard
+   * per-expression `allowIncompatible` config key derived from `getExprConfigName`; use the
+   * two-arg overload when the gating config is something else.
+   */
+  def withNativeAvailableInfo(expr: T): T =
+    withNativeAvailableInfo(
+      expr,
+      CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))
+
+  /**
+   * Like the single-arg overload but takes the gating config key explicitly. Use when the native
+   * path is gated by a config other than the per-expression `allowIncompatible` flag.
+   */
+  def withNativeAvailableInfo(expr: T, configKey: String): T = {
+    CometSparkSessionExtensions.withInfo(
+      expr,
+      s"A native implementation of ${getExprConfigName(expr)} is available but needs to be " +
+        s"enabled with $configKey. See compatibility guide for more information.")
+    expr
+  }
 }
 
 /**

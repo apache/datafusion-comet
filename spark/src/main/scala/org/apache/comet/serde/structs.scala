@@ -151,6 +151,9 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
           None
       }
     } else {
+      // Only emit the native-available hint when the native path would actually run; flipping
+      // allowIncompatible alone won't enable native for unsupported types or options.
+      if (nativeSupported(expr)) withNativeAvailableInfo(expr)
       super.convert(expr, inputs, binding)
     }
 
@@ -191,6 +194,9 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
     if (!(CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr))) {
+      // Only emit the native-available hint when the native path would actually run; flipping
+      // allowIncompatible alone won't enable native for an unsupported schema.
+      if (nativeSupported(expr)) withNativeAvailableInfo(expr)
       return super.convert(expr, inputs, binding)
     }
 
