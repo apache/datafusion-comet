@@ -265,4 +265,9 @@ class CometScanRuleSuite extends CometTestBase {
 >>>>>>> 99fc16da9 (feat: scaffold contrib Lance native scan)
   }
 
+
+  test("Lance native scan config defaults to disabled") {
+    assert(!CometConf.COMET_LANCE_NATIVE_ENABLED.get())
+  }
+
 }
