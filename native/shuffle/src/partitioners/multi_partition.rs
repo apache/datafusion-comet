@@ -22,10 +22,10 @@ use crate::partitioners::partitioned_batch_iterator::{
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::{BufBatchWriter, PartitionWriter};
 use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
-use arrow::array::{ArrayRef, RecordBatch};
+use arrow::array::{Array, ArrayData, ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::utils::proxy::VecAllocExt;
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, HashSet};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::metrics::Time;
@@ -125,6 +125,55 @@ pub(crate) struct MultiPartitionShuffleRepartitioner {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// Start addresses (as `usize`, since raw pointers are not `Send`) of the backing buffers
+    /// currently pinned by `buffered_batches`, so the spill reservation charges each distinct
+    /// allocation once rather than once per slice that references it. Cleared whenever the
+    /// buffered batches drain (spill / shuffle_write). See `count_new_buffers`.
+    pinned_buffers: HashSet<usize>,
+}
+
+/// Sum of the capacities of the backing buffers reachable from `batch` whose start address is
+/// not already in `seen` (recursing through child data: dictionary values, list children, and so
+/// on). `seen` is kept across every buffered batch, so this returns the bytes a batch newly
+/// pins, which is the memory the shuffle writer holds resident by buffering it.
+///
+/// Cheaper measures do not match resident memory for the batches this writer sees. A partial
+/// `HashAggregate` emits one group-values buffer sliced into batch_size chunks, and every
+/// buffered chunk shares that one allocation:
+///
+///   * `RecordBatch::get_array_memory_size()` charges a buffer's capacity once per array that
+///     references it, counting the shared allocation once per chunk and overstating memory by the
+///     chunk count. Reserving against that figure trips the memory limit on nearly every batch
+///     and spills spuriously.
+///   * the sum of `ArrayData::get_slice_memory_size()` charges only the live rows of each slice,
+///     but holding a slice pins its whole backing allocation. The group-values `Vec` rounds
+///     capacity up to the next power of two, so that figure undercounts resident memory and lets
+///     the writer hold well past its limit before spilling.
+///
+/// Counting each distinct allocation once, keyed by start address, is the measure that tracks
+/// resident memory regardless of how arrays share or slice their buffers.
+fn count_new_buffers(batch: &RecordBatch, seen: &mut HashSet<usize>) -> usize {
+    fn visit(data: &ArrayData, seen: &mut HashSet<usize>, total: &mut usize) {
+        for buffer in data.buffers() {
+            if seen.insert(buffer.data_ptr().as_ptr() as usize) {
+                *total += buffer.capacity();
+            }
+        }
+        if let Some(nulls) = data.nulls() {
+            let inner = nulls.inner().inner();
+            if seen.insert(inner.data_ptr().as_ptr() as usize) {
+                *total += inner.capacity();
+            }
+        }
+        for child in data.child_data() {
+            visit(child, seen, total);
+        }
+    }
+    let mut total = 0;
+    for column in batch.columns() {
+        visit(&column.to_data(), seen, &mut total);
+    }
+    total
 }
 
 impl MultiPartitionShuffleRepartitioner {
@@ -190,6 +239,7 @@ impl MultiPartitionShuffleRepartitioner {
             reservation,
             tracing_enabled,
             write_buffer_size,
+            pinned_buffers: HashSet::new(),
         })
     }
 
@@ -209,9 +259,6 @@ impl MultiPartitionShuffleRepartitioner {
                     .to_string(),
             ));
         }
-
-        // Update data size metric
-        self.metrics.data_size.add(input.get_array_memory_size());
 
         // NOTE: in shuffle writer exec, the output_rows metrics represents the
         // number of rows those are written to output data file.
@@ -398,7 +445,11 @@ impl MultiPartitionShuffleRepartitioner {
         partition_row_indices: &[u32],
         partition_starts: &[u32],
     ) -> datafusion::common::Result<()> {
-        let mut mem_growth: usize = input.get_array_memory_size();
+        // Charge both the reservation and the data_size metric for the buffers this batch newly
+        // pins; `count_new_buffers` dedups buffers shared across already-buffered batches.
+        let new_buffer_bytes = count_new_buffers(&input, &mut self.pinned_buffers);
+        self.metrics.data_size.add(new_buffer_bytes);
+        let mut mem_growth: usize = new_buffer_bytes;
         let buffered_partition_idx = self.buffered_batches.len() as u32;
         self.buffered_batches.push(input);
 
@@ -434,10 +485,12 @@ impl MultiPartitionShuffleRepartitioner {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn shuffle_write_partition(
         partition_iter: &mut PartitionedBatchIterator,
         shuffle_block_writer: &mut ShuffleBlockWriter,
         output_data: &mut BufWriter<File>,
+        interleave_time: &Time,
         encode_time: &Time,
         write_time: &Time,
         write_buffer_size: usize,
@@ -449,7 +502,7 @@ impl MultiPartitionShuffleRepartitioner {
             write_buffer_size,
             batch_size,
         );
-        for batch in partition_iter {
+        while let Some(batch) = partition_iter.next(interleave_time) {
             let batch = batch?;
             buf_batch_writer.write(&batch, encode_time, write_time)?;
         }
@@ -517,6 +570,7 @@ impl MultiPartitionShuffleRepartitioner {
             }
 
             self.reservation.free();
+            self.pinned_buffers.clear();
             self.metrics.spill_count.add(1);
             self.metrics.spilled_bytes.add(spilled_bytes);
             Ok(())
@@ -560,6 +614,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             let start_time = Instant::now();
 
             let mut partitioned_batches = self.partitioned_batches();
+            self.pinned_buffers.clear();
             let num_output_partitions = self.partition_indices.len();
             let mut offsets = vec![0; num_output_partitions + 1];
 
@@ -573,7 +628,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 .open(data_file)
                 .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
 
-            let mut output_data = BufWriter::new(output_data);
+            let mut output_data = BufWriter::with_capacity(self.write_buffer_size, output_data);
 
             #[allow(clippy::needless_range_loop)]
             for i in 0..num_output_partitions {
@@ -596,6 +651,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                     &mut partition_iter,
                     &mut self.shuffle_block_writer,
                     &mut output_data,
+                    &self.metrics.interleave_time,
                     &self.metrics.encode_time,
                     &self.metrics.write_time,
                     self.write_buffer_size,

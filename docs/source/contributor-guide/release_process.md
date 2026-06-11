@@ -57,8 +57,9 @@ instructions on each step.
 Before starting the release process, review the user guide to ensure it accurately reflects the current state of the
 project:
 
-- Review the supported expressions and operators lists in the user guide. Verify that any expressions added since
-  the last release are included and that their support status is accurate.
+- Review the [Spark Expression Support](../user-guide/latest/expressions.md) page and the supported operators list
+  in the user guide. The expression page is the source of truth for expression support status, so verify that any
+  expressions added or changed since the last release appear there with an accurate status (✅ / ⚠️ / 🔜 / 💤).
 - Spot-check the support status of individual expressions by running tests or queries to confirm they work as
   documented.
 - Look for any expressions that may have regressed or changed behavior since the last release and update the

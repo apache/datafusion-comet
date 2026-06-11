@@ -15,16 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-on:
-  push:
-    branches:
-      - main
-    paths:
-      - .asf.yaml
-      - .github/workflows/docs.yaml
-      - docs/**
-
 name: Deploy DataFusion Comet site
+
+# Reusable: invoked by ci.yml. Triggering and path filters live in the
+# umbrella workflow.
+on:
+  workflow_call:
 
 jobs:
   build-docs:
