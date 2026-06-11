@@ -48,6 +48,7 @@ import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
+import org.apache.comet.lance.LanceIntegration
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
@@ -336,6 +337,9 @@ case class CometScanRule(session: SparkSession)
         } else {
           withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
+
+      case _ if LanceIntegration.isLanceScan(scanExec.scan) =>
+        LanceIntegration.tryCreateNativeScan(scanExec).getOrElse(scanExec)
 
       // Iceberg scan - detected by class name. SparkStagedScan covers reads issued by
       // RewriteDataFiles (and similar maintenance actions) where the planner has already

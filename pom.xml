@@ -754,6 +754,13 @@ under the License.
     </profile>
 
     <profile>
+      <id>contrib-lance</id>
+      <properties>
+        <comet.contrib.lance.enabled>true</comet.contrib.lance.enabled>
+      </properties>
+    </profile>
+
+    <profile>
       <id>scala-2.12</id>
       <properties>
         <scala.version>2.12.18</scala.version>

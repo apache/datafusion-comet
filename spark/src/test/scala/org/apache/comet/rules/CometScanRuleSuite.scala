@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.lance.LanceIntegration
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -132,6 +133,35 @@ class CometScanRuleSuite extends CometTestBase {
         }
       }
     }
+  }
+
+  test("Lance native scan config defaults to disabled") {
+    assert(!CometConf.COMET_LANCE_NATIVE_ENABLED.get())
+  }
+
+  test("LanceIntegration nativeScanPlan reflection handles fallback paths") {
+    class WithNativeScanPlan {
+      def nativeScanPlan(): String = "native-plan"
+    }
+    class WithoutNativeScanPlan
+    class ThrowingNativeScanPlan {
+      def nativeScanPlan(): String = throw new IllegalStateException("boom")
+    }
+
+    val cases = Seq(
+      ("present method", new WithNativeScanPlan, Some("native-plan")),
+      ("missing method", new WithoutNativeScanPlan, None),
+      ("throwing method", new ThrowingNativeScanPlan, None))
+
+    cases.foreach { case (name, scan, expected) =>
+      assert(
+        LanceIntegration.invokeNativeScanPlan(scan).map(_.toString) == expected,
+        s"unexpected reflection result for $name")
+    }
+
+    val nonLanceScan = new WithNativeScanPlan
+    assert(!LanceIntegration.isLanceScan(nonLanceScan))
+    assert(LanceIntegration.nativeScanPlan(nonLanceScan).isEmpty)
   }
 
 }

@@ -1601,6 +1601,9 @@ impl PhysicalPlanner {
                     )),
                 ))
             }
+            OpStruct::LanceScan(_) => Err(GeneralError(
+                "Native Lance scan execution is not implemented yet".to_string(),
+            )),
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
