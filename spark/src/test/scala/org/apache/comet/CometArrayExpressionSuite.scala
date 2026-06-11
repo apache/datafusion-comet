@@ -1106,4 +1106,20 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
     }
   }
+
+  // https://issues.apache.org/jira/browse/SPARK-55747
+  test("(ansi) GetArrayItem on null array from split()") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("test_split_null") {
+        sql("CREATE TABLE test_split_null(s STRING) USING parquet")
+        sql("INSERT INTO test_split_null VALUES ('a,b,c'), (NULL)")
+        // split(NULL, ...) yields a null array; arr[0] on a null array must return NULL
+        // rather than failing the non-nullable schema validation in native execution.
+        checkSparkAnswerAndOperator(sql("SELECT split(s, ',')[0] FROM test_split_null"))
+      }
+    }
+  }
 }
