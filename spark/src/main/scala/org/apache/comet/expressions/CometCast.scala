@@ -21,7 +21,7 @@ package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
@@ -200,6 +200,14 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           }
         }
         Compatible()
+      case (from_map: MapType, to_map: MapType) =>
+        // Native cast_map_to_map recursively casts keys and values, so support is
+        // determined by whether both inner casts are individually supported.
+        isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
+          case Compatible(_) =>
+            isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
+          case other => other
+        }
       case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
       case _ => unsupported(fromType, toType)
     }

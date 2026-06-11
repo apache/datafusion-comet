@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, Substring, SubstringIndex, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Elt, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, If, InitCap, IsNull, Left, Length, Levenshtein, Like, Literal, Lower, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, Substring, SubstringIndex, ToCharacter, ToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -546,3 +546,27 @@ trait CommonStringExprs {
     }
   }
 }
+
+// Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
+// doGenCode runs inside the Comet pipeline, matching Spark exactly.
+object CometLevenshtein extends CometCodegenDispatch[Levenshtein]
+
+object CometElt extends CometCodegenDispatch[Elt]
+
+object CometFindInSet extends CometCodegenDispatch[FindInSet]
+
+object CometFormatNumber extends CometCodegenDispatch[FormatNumber]
+
+object CometFormatString extends CometCodegenDispatch[FormatString]
+
+object CometOverlay extends CometCodegenDispatch[Overlay]
+
+object CometSoundEx extends CometCodegenDispatch[SoundEx]
+
+object CometStringLocate extends CometCodegenDispatch[StringLocate]
+
+object CometUnBase64 extends CometCodegenDispatch[UnBase64]
+
+object CometToCharacter extends CometCodegenDispatch[ToCharacter]
+
+object CometToNumber extends CometCodegenDispatch[ToNumber]
