@@ -193,12 +193,15 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.AddMonths.enabled` | Enable Comet acceleration for `AddMonths` | true |
 | `spark.comet.expression.Alias.enabled` | Enable Comet acceleration for `Alias` | true |
 | `spark.comet.expression.And.enabled` | Enable Comet acceleration for `And` | true |
+| `spark.comet.expression.ArrayAggregate.enabled` | Enable Comet acceleration for `ArrayAggregate` | true |
 | `spark.comet.expression.ArrayAppend.enabled` | Enable Comet acceleration for `ArrayAppend` | true |
 | `spark.comet.expression.ArrayCompact.enabled` | Enable Comet acceleration for `ArrayCompact` | true |
 | `spark.comet.expression.ArrayContains.enabled` | Enable Comet acceleration for `ArrayContains` | true |
 | `spark.comet.expression.ArrayDistinct.enabled` | Enable Comet acceleration for `ArrayDistinct` | true |
 | `spark.comet.expression.ArrayExcept.enabled` | Enable Comet acceleration for `ArrayExcept` | true |
+| `spark.comet.expression.ArrayExists.enabled` | Enable Comet acceleration for `ArrayExists` | true |
 | `spark.comet.expression.ArrayFilter.enabled` | Enable Comet acceleration for `ArrayFilter` | true |
+| `spark.comet.expression.ArrayForAll.enabled` | Enable Comet acceleration for `ArrayForAll` | true |
 | `spark.comet.expression.ArrayInsert.enabled` | Enable Comet acceleration for `ArrayInsert` | true |
 | `spark.comet.expression.ArrayIntersect.enabled` | Enable Comet acceleration for `ArrayIntersect` | true |
 | `spark.comet.expression.ArrayJoin.enabled` | Enable Comet acceleration for `ArrayJoin` | true |
@@ -207,6 +210,8 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ArrayPosition.enabled` | Enable Comet acceleration for `ArrayPosition` | true |
 | `spark.comet.expression.ArrayRemove.enabled` | Enable Comet acceleration for `ArrayRemove` | true |
 | `spark.comet.expression.ArrayRepeat.enabled` | Enable Comet acceleration for `ArrayRepeat` | true |
+| `spark.comet.expression.ArraySort.enabled` | Enable Comet acceleration for `ArraySort` | true |
+| `spark.comet.expression.ArrayTransform.enabled` | Enable Comet acceleration for `ArrayTransform` | true |
 | `spark.comet.expression.ArrayUnion.enabled` | Enable Comet acceleration for `ArrayUnion` | true |
 | `spark.comet.expression.ArraysOverlap.enabled` | Enable Comet acceleration for `ArraysOverlap` | true |
 | `spark.comet.expression.ArraysZip.enabled` | Enable Comet acceleration for `ArraysZip` | true |
@@ -318,11 +323,13 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.MapConcat.enabled` | Enable Comet acceleration for `MapConcat` | true |
 | `spark.comet.expression.MapContainsKey.enabled` | Enable Comet acceleration for `MapContainsKey` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
+| `spark.comet.expression.MapFilter.enabled` | Enable Comet acceleration for `MapFilter` | true |
 | `spark.comet.expression.MapFromArrays.enabled` | Enable Comet acceleration for `MapFromArrays` | true |
 | `spark.comet.expression.MapFromEntries.enabled` | Enable Comet acceleration for `MapFromEntries` | true |
 | `spark.comet.expression.MapKeys.enabled` | Enable Comet acceleration for `MapKeys` | true |
 | `spark.comet.expression.MapSort.enabled` | Enable Comet acceleration for `MapSort` | true |
 | `spark.comet.expression.MapValues.enabled` | Enable Comet acceleration for `MapValues` | true |
+| `spark.comet.expression.MapZipWith.enabled` | Enable Comet acceleration for `MapZipWith` | true |
 | `spark.comet.expression.Md5.enabled` | Enable Comet acceleration for `Md5` | true |
 | `spark.comet.expression.MicrosToTimestamp.enabled` | Enable Comet acceleration for `MicrosToTimestamp` | true |
 | `spark.comet.expression.MillisToTimestamp.enabled` | Enable Comet acceleration for `MillisToTimestamp` | true |
@@ -407,6 +414,8 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ToRadians.enabled` | Enable Comet acceleration for `ToRadians` | true |
 | `spark.comet.expression.ToUTCTimestamp.enabled` | Enable Comet acceleration for `ToUTCTimestamp` | true |
 | `spark.comet.expression.ToUnixTimestamp.enabled` | Enable Comet acceleration for `ToUnixTimestamp` | true |
+| `spark.comet.expression.TransformKeys.enabled` | Enable Comet acceleration for `TransformKeys` | true |
+| `spark.comet.expression.TransformValues.enabled` | Enable Comet acceleration for `TransformValues` | true |
 | `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.TryEval.enabled` | Enable Comet acceleration for `TryEval` | true |
@@ -434,6 +443,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.XPathString.enabled` | Enable Comet acceleration for `XPathString` | true |
 | `spark.comet.expression.XxHash64.enabled` | Enable Comet acceleration for `XxHash64` | true |
 | `spark.comet.expression.Year.enabled` | Enable Comet acceleration for `Year` | true |
+| `spark.comet.expression.ZipWith.enabled` | Enable Comet acceleration for `ZipWith` | true |
 <!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 

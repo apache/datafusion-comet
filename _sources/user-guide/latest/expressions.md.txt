@@ -353,22 +353,20 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 ## lambda_funcs
 
-All higher-order functions are planned via [#4224](https://github.com/apache/datafusion-comet/issues/4224).
-
 | Function | Status | Notes |
 | --- | --- | --- |
-| `aggregate` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `array_sort` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `exists` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `filter` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `forall` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `map_filter` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `map_zip_with` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `reduce` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `transform` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `transform_keys` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `transform_values` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `zip_with` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `aggregate` | ✅ |  |
+| `array_sort` | ✅ |  |
+| `exists` | ✅ |  |
+| `filter` | 🔜 | General lambda not yet wired; the `array_compact` form is supported ([#4224](https://github.com/apache/datafusion-comet/issues/4224)) |
+| `forall` | ✅ |  |
+| `map_filter` | ✅ |  |
+| `map_zip_with` | ✅ |  |
+| `reduce` | ✅ |  |
+| `transform` | ✅ |  |
+| `transform_keys` | ✅ |  |
+| `transform_values` | ✅ |  |
+| `zip_with` | ✅ |  |
 
 ---
 
