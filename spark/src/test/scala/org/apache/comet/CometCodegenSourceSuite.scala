@@ -166,13 +166,16 @@ class CometCodegenSourceSuite extends AnyFunSuite {
         s"got:\n$src")
   }
 
-  test("canHandle rejects CodegenFallback expressions") {
+  test("canHandle accepts CodegenFallback expressions (delegates to eval(row))") {
+    // CodegenFallback.doGenCode emits ((Expression) references[N]).eval(row) which is the same
+    // mechanism that backs HigherOrderFunction support: the eval reads through the kernel's typed
+    // Arrow getters via the row alias. Other CodegenFallback expressions (JsonToStructs,
+    // StructsToJson, ...) ride the same path.
     val expr = FakeCodegenFallback(BoundReference(0, StringType, nullable = true))
     val reason = CometBatchKernelCodegen.canHandle(expr)
-    assert(reason.isDefined, "expected canHandle to reject CodegenFallback")
     assert(
-      reason.get.contains("FakeCodegenFallback"),
-      s"expected reason to name the rejected expression class; got: ${reason.get}")
+      reason.isEmpty,
+      s"expected canHandle to accept CodegenFallback; got rejection: ${reason.getOrElse("")}")
   }
 
   test("canHandle accepts Nondeterministic expressions (per-partition kernel handles state)") {
@@ -391,6 +394,46 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       result.body.contains("output.setNull(i);"),
       "expected setNull branch for a nullable root expression; got:\n" +
         CodeFormatter.format(result.code))
+  }
+
+  test("nullable NullIntolerant root keeps post-eval isNull guard inside short-circuit (#4554)") {
+    // `NullIntolerant` only constrains "null in -> null out". An expression can still set
+    // `ev.isNull = true` from non-null inputs — `MakeTimestamp(failOnError = false)` does this in
+    // its `doGenCode` catch block when year/month/day/hour/min/sec components are out of range
+    // (issue #4554). The dispatcher previously assumed NullIntolerant + non-null inputs implied a
+    // non-null output and dropped the post-eval guard; that wrote stale `ev.value` bytes for
+    // every invalid row. The short-circuit on input nulls must coexist with a post-eval
+    // `if (ev.isNull) setNull` check whenever the expression itself is nullable.
+    val expr = MakeTimestamp(
+      BoundReference(0, IntegerType, nullable = true),
+      BoundReference(1, IntegerType, nullable = true),
+      BoundReference(2, IntegerType, nullable = true),
+      BoundReference(3, IntegerType, nullable = true),
+      BoundReference(4, IntegerType, nullable = true),
+      BoundReference(5, DecimalType(8, 6), nullable = true),
+      timezone = None,
+      timeZoneId = Some("UTC"),
+      failOnError = false)
+    assert(expr.nullable, "MakeTimestamp(failOnError=false) must be nullable for this test")
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val decCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector"),
+      nullable = true)
+    val result = CometBatchKernelCodegen.generateSource(
+      expr,
+      IndexedSeq(intCol, intCol, intCol, intCol, intCol, decCol))
+    val src = result.body
+    val formatted = CodeFormatter.format(result.code)
+    // Two distinct setNull sites must exist: the input-null short-circuit before `ev.code` runs,
+    // and the post-eval guard that propagates `ev.isNull = true` set by MakeTimestamp's catch
+    // block on invalid components. Pre-fix there was only one (the input short-circuit).
+    val setNullOccurrences = "output\\.setNull\\(i\\);".r.findAllIn(src).length
+    assert(
+      setNullOccurrences >= 2,
+      "expected at least two setNull sites (input short-circuit + post-eval ev.isNull guard); " +
+        s"found $setNullOccurrences. Source:\n$formatted")
   }
 
   test("ArrayType(StringType) output emits ListVector startNewValue/endValue recursion") {
@@ -655,6 +698,50 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       src.contains("public int getInt(int i)"),
       s"expected innermost scalar getter for IntegerType element; got:\n$src")
+  }
+
+  test("nested input classes emit copy() that deep-materializes off the Arrow buffers") {
+    // Higher-order functions (e.g. ArrayTransform) evaluate Spark's interpreted lambda, which
+    // calls InternalRow.copyValue on complex elements. The nested input views read straight off
+    // the per-batch Arrow buffers, so copy() must materialize into on-heap Spark structures:
+    // GenericArrayData for arrays, GenericInternalRow for structs, ArrayBasedMapData for maps.
+    // Strings clone (they alias off-heap memory) and nested complex elements recurse via copy().
+    val stringChild = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("VarCharVector"),
+      nullable = true)
+    val innerStruct = StructColumnSpec(
+      nullable = true,
+      fields = Seq(StructFieldSpec("s", StringType, nullable = true, stringChild)))
+    // Array<Map<String, Struct<s: String>>>: exercises array, map, and struct copy() together.
+    val mapSpec = MapColumnSpec(
+      nullable = true,
+      keySparkType = StringType,
+      valueSparkType = StructType(Seq(StructField("s", StringType))),
+      key = stringChild,
+      value = innerStruct)
+    val outerArray = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = MapType(StringType, StructType(Seq(StructField("s", StringType)))),
+      element = mapSpec)
+    val mapType = MapType(StringType, StructType(Seq(StructField("s", StringType))))
+    val expr = Size(BoundReference(0, ArrayType(mapType), nullable = true))
+    val src = generate(expr, IndexedSeq(outerArray))
+
+    assert(
+      src.contains("public org.apache.spark.sql.catalyst.util.ArrayData copy()"),
+      s"expected array copy() override; got:\n$src")
+    assert(
+      src.contains("new org.apache.spark.sql.catalyst.util.GenericArrayData("),
+      s"expected array copy() to materialize a GenericArrayData; got:\n$src")
+    assert(
+      src.contains("new org.apache.spark.sql.catalyst.util.ArrayBasedMapData("),
+      s"expected map copy() to materialize an ArrayBasedMapData; got:\n$src")
+    assert(
+      src.contains("new org.apache.spark.sql.catalyst.expressions.GenericInternalRow("),
+      s"expected struct copy() to materialize a GenericInternalRow; got:\n$src")
+    assert(
+      src.contains(".clone()"),
+      s"expected string elements to clone off the Arrow buffer in copy(); got:\n$src")
   }
 
   test("Array<Struct<a: Int>> emits array class allocating fresh InputStruct_col0_e") {

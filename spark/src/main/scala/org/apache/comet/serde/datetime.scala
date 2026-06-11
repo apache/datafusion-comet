@@ -179,7 +179,7 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
   }
 }
 
-object CometHour extends CometExpressionSerde[Hour] {
+object CometHour extends CometExpressionSerde[Hour] with CodegenDispatchFallback {
 
   val incompatReason: String = "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
     " (https://github.com/apache/datafusion-comet/issues/3180)"
@@ -222,7 +222,7 @@ object CometHour extends CometExpressionSerde[Hour] {
   }
 }
 
-object CometMinute extends CometExpressionSerde[Minute] {
+object CometMinute extends CometExpressionSerde[Minute] with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
@@ -264,7 +264,7 @@ object CometMinute extends CometExpressionSerde[Minute] {
   }
 }
 
-object CometSecond extends CometExpressionSerde[Second] {
+object CometSecond extends CometExpressionSerde[Second] with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
@@ -431,9 +431,41 @@ object CometConvertTimezone extends CometExpressionSerde[ConvertTimezone] {
   }
 }
 
-object CometNextDay extends CometScalarFunction[NextDay]("next_day")
+object CometNextDay extends CometExpressionSerde[NextDay] {
 
-object CometMakeDate extends CometScalarFunction[MakeDate]("make_date")
+  /**
+   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on a malformed
+   * `dayOfWeek` rather than returning NULL. The resolved flag is passed to native via the
+   * `ScalarFunc.fail_on_error` field.
+   */
+  override def convert(expr: NextDay, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "next_day",
+      DateType,
+      expr.failOnError,
+      childExpr: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometMakeDate extends CometExpressionSerde[MakeDate] {
+
+  /**
+   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on an invalid
+   * `(year, month, day)` triple rather than returning NULL. The resolved flag is passed to native
+   * via the `ScalarFunc.fail_on_error` field.
+   */
+  override def convert(expr: MakeDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "make_date",
+      DateType,
+      expr.failOnError,
+      childExpr: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+  }
+}
 
 object CometSecondsToTimestamp
     extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
@@ -477,7 +509,7 @@ object CometUnixDate extends CometExpressionSerde[UnixDate] {
   }
 }
 
-object CometTruncDate extends CometExpressionSerde[TruncDate] {
+object CometTruncDate extends CometExpressionSerde[TruncDate] with CodegenDispatchFallback {
 
   val supportedFormats: Seq[String] =
     Seq("year", "yyyy", "yy", "quarter", "mon", "month", "mm", "week")
@@ -519,7 +551,9 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
   }
 }
 
-object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
+object CometTruncTimestamp
+    extends CometExpressionSerde[TruncTimestamp]
+    with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Produces incorrect results when used with non-UTC timezones. Compatible when timezone is" +
