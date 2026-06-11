@@ -571,11 +571,9 @@ expression class name, for example <code class="docutils literal notranslate"><s
 expressions. The following function families are <strong>not currently planned</strong> for native acceleration (they are not on the 1.0 roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:</p>
 <ul class="simple">
 <li><p><strong>Probabilistic sketches and approximate top-k</strong> (<code class="docutils literal notranslate"><span class="pre">kll_sketch_*</span></code>, <code class="docutils literal notranslate"><span class="pre">hll_*</span></code>, <code class="docutils literal notranslate"><span class="pre">theta_*</span></code>, <code class="docutils literal notranslate"><span class="pre">count_min_sketch</span></code>, <code class="docutils literal notranslate"><span class="pre">bitmap_*</span></code>, <code class="docutils literal notranslate"><span class="pre">approx_top_k*</span></code>): specialized data structures with exact-correctness traps.</p></li>
-<li><p><strong>XML / XPath</strong> (<code class="docutils literal notranslate"><span class="pre">from_xml</span></code>, <code class="docutils literal notranslate"><span class="pre">to_xml</span></code>, <code class="docutils literal notranslate"><span class="pre">schema_of_xml</span></code>, <code class="docutils literal notranslate"><span class="pre">xpath*</span></code>): legacy text format, rare in accelerated workloads.</p></li>
 <li><p><strong>Geospatial</strong> (<code class="docutils literal notranslate"><span class="pre">st_*</span></code>): brand-new Spark 4.1 functionality, specialized.</p></li>
 <li><p><strong>Avro / Protobuf codecs</strong> (<code class="docutils literal notranslate"><span class="pre">from_avro</span></code>, <code class="docutils literal notranslate"><span class="pre">to_avro</span></code>, <code class="docutils literal notranslate"><span class="pre">from_protobuf</span></code>, <code class="docutils literal notranslate"><span class="pre">to_protobuf</span></code>, <code class="docutils literal notranslate"><span class="pre">schema_of_avro</span></code>): format conversion belongs at the IO layer, not expression evaluation.</p></li>
 <li><p><strong>JVM reflection</strong> (<code class="docutils literal notranslate"><span class="pre">java_method</span></code>, <code class="docutils literal notranslate"><span class="pre">reflect</span></code>): niche, and they invoke arbitrary JVM methods (a security concern).</p></li>
-<li><p><strong>CSV functions</strong> (<code class="docutils literal notranslate"><span class="pre">from_csv</span></code>, <code class="docutils literal notranslate"><span class="pre">to_csv</span></code>, <code class="docutils literal notranslate"><span class="pre">schema_of_csv</span></code>): row-level CSV parsing and formatting in expressions is niche and better handled at the data source layer.</p></li>
 <li><p><strong>UTF-8 validation</strong> (<code class="docutils literal notranslate"><span class="pre">is_valid_utf8</span></code>, <code class="docutils literal notranslate"><span class="pre">make_valid_utf8</span></code>, <code class="docutils literal notranslate"><span class="pre">validate_utf8</span></code>, <code class="docutils literal notranslate"><span class="pre">try_validate_utf8</span></code>): niche Spark 4.x string-validation helpers.</p></li>
 <li><p><strong>File metadata</strong> (<code class="docutils literal notranslate"><span class="pre">input_file_name</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_length</span></code>): require scan-internal per-row file information, outside the expression layer.</p></li>
 <li><p><strong>Miscellaneous niche</strong> (<code class="docutils literal notranslate"><span class="pre">histogram_numeric</span></code>, <code class="docutils literal notranslate"><span class="pre">version</span></code>, <code class="docutils literal notranslate"><span class="pre">sentences</span></code>, <code class="docutils literal notranslate"><span class="pre">quote</span></code>): low-value or specialized functions with little benefit from native acceleration.</p></li>
@@ -925,8 +923,8 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sequence</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shuffle</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1066,8 +1064,8 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nanvl</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nullif</span></code></p></td>
 <td><p>✅</p></td>
@@ -1112,6 +1110,33 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cast</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Some casts fall back; float-to-decimal is opt-in (<a class="reference internal" href="compatibility/expressions/cast.html"><span class="std std-doc">details</span></a>)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<hr class="docutils" />
+<section id="csv-funcs">
+<h2>csv_funcs<a class="headerlink" href="#csv-funcs" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Function</p></th>
+<th class="head"><p>Status</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">from_csv</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_csv</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_csv</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 </tbody>
 </table>
@@ -1537,16 +1562,16 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p>Single-quoted/trailing JSON needs allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#json-array-length"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">json_object_keys</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3161">#3161</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">json_tuple</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3160">#3160</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_json</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3163">#3163</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_json</span></code></p></td>
 <td><p>✅</p></td>
@@ -1640,8 +1665,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p>Constructs a map</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">map_concat</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Concatenates maps</p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map_contains_key</span></code></p></td>
 <td><p>✅</p></td>
@@ -1747,8 +1772,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bround</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cbrt</span></code></p></td>
 <td><p>✅</p></td>
@@ -1763,8 +1788,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">conv</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cos</span></code></p></td>
 <td><p>✅</p></td>
@@ -1819,8 +1844,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">hypot</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">least</span></code></p></td>
 <td><p>✅</p></td>
@@ -1839,8 +1864,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">log1p</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">log2</span></code></p></td>
 <td><p>✅</p></td>
@@ -1859,8 +1884,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pmod</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">positive</span></code></p></td>
 <td><p>✅</p></td>
@@ -2256,8 +2281,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">elt</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">encode</span></code></p></td>
 <td><p>🔜</p></td>
@@ -2268,16 +2293,16 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">find_in_set</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">format_number</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">format_string</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">initcap</span></code></p></td>
 <td><p>✅</p></td>
@@ -2304,12 +2329,12 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">levenshtein</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">locate</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lower</span></code></p></td>
 <td><p>✅</p></td>
@@ -2336,16 +2361,16 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">overlay</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">position</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">printf</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_count</span></code></p></td>
 <td><p>🔜</p></td>
@@ -2392,8 +2417,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">soundex</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">space</span></code></p></td>
 <td><p>✅</p></td>
@@ -2428,16 +2453,16 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p>Hex form accelerated; other formats fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_char</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_number</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_varchar</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">translate</span></code></p></td>
 <td><p>✅</p></td>
@@ -2460,8 +2485,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unbase64</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4538">#4538</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">upper</span></code></p></td>
 <td><p>✅</p></td>
@@ -2577,6 +2602,69 @@ fall back to Spark.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">row_number</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p>Window function; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<hr class="docutils" />
+<section id="xml-funcs">
+<h2>xml_funcs<a class="headerlink" href="#xml-funcs" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Function</p></th>
+<th class="head"><p>Status</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">from_xml</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Spark 4.0+</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_xml</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Spark 4.0+</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_xml</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Spark 4.0+</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_boolean</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_double</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_float</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_int</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_long</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_number</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Alias of <code class="docutils literal notranslate"><span class="pre">xpath_double</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_short</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_string</span></code></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 </tbody>
 </table>
