@@ -15,23 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes from_unixtime through the codegen dispatcher so it stays native and matches Spark.
+-- Routes pmod through the codegen dispatcher so behavior matches Spark exactly.
 
 statement
-CREATE TABLE test_from_unix_time(t long) USING parquet
+CREATE TABLE test_pmod(a int, b int) USING parquet
 
 statement
-INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483647)
+INSERT INTO test_pmod VALUES (7, 3), (-7, 3), (7, -3), (0, 5), (5, NULL), (NULL, 5)
 
 query
-SELECT from_unixtime(t) FROM test_from_unix_time
+SELECT a, b, pmod(a, b) FROM test_pmod
 
+-- literal arguments including doubles
 query
-SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
-
--- literal arguments
-query
-SELECT from_unixtime(0)
-
-query
-SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
+SELECT pmod(-7, 3), pmod(10.5, 3.0), pmod(7, -3)

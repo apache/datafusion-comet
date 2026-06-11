@@ -15,23 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes from_unixtime through the codegen dispatcher so it stays native and matches Spark.
+-- Routes levenshtein through the codegen dispatcher so behavior matches Spark exactly.
 
 statement
-CREATE TABLE test_from_unix_time(t long) USING parquet
+CREATE TABLE test_levenshtein(a string, b string) USING parquet
 
 statement
-INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483647)
+INSERT INTO test_levenshtein VALUES ('kitten', 'sitting'), ('', 'abc'), ('abc', 'abc'), ('flaw', 'lawn'), (NULL, 'x'), ('x', NULL), (NULL, NULL)
 
 query
-SELECT from_unixtime(t) FROM test_from_unix_time
-
-query
-SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
+SELECT a, b, levenshtein(a, b) FROM test_levenshtein
 
 -- literal arguments
 query
-SELECT from_unixtime(0)
-
-query
-SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
+SELECT levenshtein('kitten', 'sitting'), levenshtein('', ''), levenshtein(NULL, 'x')

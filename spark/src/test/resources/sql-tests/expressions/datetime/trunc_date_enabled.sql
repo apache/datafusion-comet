@@ -15,23 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes from_unixtime through the codegen dispatcher so it stays native and matches Spark.
+-- Companion to trunc_date.sql exercising the native (Rust) date_trunc implementation with a
+-- non-literal format. A non-literal format is Incompatible by default because the native impl
+-- throws on an invalid format string instead of returning NULL like Spark, so it is routed
+-- through the codegen dispatcher. With allowIncompatible enabled the native UDF runs instead. As
+-- long as every format value is valid, the native results match Spark.
+
+-- Config: spark.comet.expression.TruncDate.allowIncompatible=true
 
 statement
-CREATE TABLE test_from_unix_time(t long) USING parquet
+CREATE TABLE test_trunc_date_fmt(d date, fmt string) USING parquet
 
 statement
-INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483647)
+INSERT INTO test_trunc_date_fmt VALUES (date('2024-06-15'), 'year'), (date('2024-06-15'), 'month'), (date('2024-06-15'), 'quarter'), (date('2024-06-15'), 'week'), (NULL, 'year')
 
 query
-SELECT from_unixtime(t) FROM test_from_unix_time
-
-query
-SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
-
--- literal arguments
-query
-SELECT from_unixtime(0)
-
-query
-SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
+SELECT trunc(d, fmt) FROM test_trunc_date_fmt

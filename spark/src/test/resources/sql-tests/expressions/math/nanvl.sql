@@ -15,23 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes from_unixtime through the codegen dispatcher so it stays native and matches Spark.
+-- Routes nanvl through the codegen dispatcher so behavior matches Spark exactly.
 
 statement
-CREATE TABLE test_from_unix_time(t long) USING parquet
+CREATE TABLE test_nanvl(a double, b double) USING parquet
 
 statement
-INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483647)
+INSERT INTO test_nanvl VALUES (1.0, 2.0), (CAST('NaN' AS DOUBLE), 2.0), (CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE)), (NULL, 3.0), (4.0, NULL)
 
 query
-SELECT from_unixtime(t) FROM test_from_unix_time
-
-query
-SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
+SELECT a, b, nanvl(a, b) FROM test_nanvl
 
 -- literal arguments
 query
-SELECT from_unixtime(0)
-
-query
-SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
+SELECT nanvl(1.0, 2.0), nanvl(CAST('NaN' AS DOUBLE), 2.0), nanvl(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE))

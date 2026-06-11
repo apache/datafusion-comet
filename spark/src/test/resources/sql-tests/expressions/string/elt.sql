@@ -15,23 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes from_unixtime through the codegen dispatcher so it stays native and matches Spark.
+-- Routes elt through the codegen dispatcher so behavior matches Spark exactly.
 
 statement
-CREATE TABLE test_from_unix_time(t long) USING parquet
+CREATE TABLE test_elt(n int) USING parquet
 
 statement
-INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483647)
+INSERT INTO test_elt VALUES (1), (2), (3), (NULL)
 
 query
-SELECT from_unixtime(t) FROM test_from_unix_time
-
-query
-SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
+SELECT n, elt(n, 'a', 'b') FROM test_elt
 
 -- literal arguments
 query
-SELECT from_unixtime(0)
-
-query
-SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
+SELECT elt(1, 'scala', 'java'), elt(2, 'scala', 'java'), elt(2, 'a', 'b', 'c')

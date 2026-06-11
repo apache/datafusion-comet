@@ -15,23 +15,21 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes from_unixtime through the codegen dispatcher so it stays native and matches Spark.
+-- Routes hypot through the codegen dispatcher so behavior matches Spark exactly.
 
 statement
-CREATE TABLE test_from_unix_time(t long) USING parquet
+CREATE TABLE test_hypot(a double, b double) USING parquet
 
 statement
-INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483647)
+INSERT INTO test_hypot VALUES (3.0, 4.0), (0.0, 0.0), (-3.0, 4.0), (1.5, 2.5), (NULL, 1.0), (1.0, NULL), (NULL, NULL)
 
 query
-SELECT from_unixtime(t) FROM test_from_unix_time
-
-query
-SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
+SELECT a, b, hypot(a, b) FROM test_hypot
 
 -- literal arguments
 query
-SELECT from_unixtime(0)
+SELECT hypot(3.0, 4.0), hypot(0.0, 0.0), hypot(NULL, 1.0)
 
+-- integer arguments (implicit cast to double)
 query
-SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
+SELECT hypot(5, 12)

@@ -15,23 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes from_unixtime through the codegen dispatcher so it stays native and matches Spark.
+-- Routes to_char through the codegen dispatcher so behavior matches Spark exactly.
+
+-- MinSparkVersion: 3.5
 
 statement
-CREATE TABLE test_from_unix_time(t long) USING parquet
+CREATE TABLE test_to_char(v decimal(10,2)) USING parquet
 
 statement
-INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483647)
+INSERT INTO test_to_char VALUES (454.00), (78.12), (0.00), (NULL)
 
 query
-SELECT from_unixtime(t) FROM test_from_unix_time
-
-query
-SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
+SELECT v, to_char(v, '0000.00') FROM test_to_char
 
 -- literal arguments
 query
-SELECT from_unixtime(0)
-
-query
-SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
+SELECT to_char(454, '999'), to_char(78.12, '99.99')

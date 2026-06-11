@@ -15,23 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes from_unixtime through the codegen dispatcher so it stays native and matches Spark.
+-- Routes conv through the codegen dispatcher so behavior matches Spark exactly.
 
 statement
-CREATE TABLE test_from_unix_time(t long) USING parquet
+CREATE TABLE test_conv(s string) USING parquet
 
 statement
-INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483647)
+INSERT INTO test_conv VALUES ('100'), ('FF'), ('0'), (NULL)
 
 query
-SELECT from_unixtime(t) FROM test_from_unix_time
+SELECT s, conv(s, 16, 10) FROM test_conv
 
+-- literal arguments across bases
 query
-SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
-
--- literal arguments
-query
-SELECT from_unixtime(0)
-
-query
-SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
+SELECT conv('100', 2, 10), conv('FF', 16, 10), conv(15, 10, 2), conv('-10', 16, -10)

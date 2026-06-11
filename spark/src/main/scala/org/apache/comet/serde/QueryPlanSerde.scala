@@ -74,7 +74,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Flatten] -> CometFlatten,
     classOf[GetArrayItem] -> CometGetArrayItem,
     classOf[Size] -> CometSize,
-    classOf[ArraysZip] -> CometArraysZip)
+    classOf[ArraysZip] -> CometArraysZip,
+    classOf[Sequence] -> CometSequence)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -144,7 +145,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[UnaryMinus] -> CometUnaryMinus,
     classOf[Unhex] -> CometUnhex,
     classOf[Abs] -> CometAbs,
-    classOf[Bin] -> CometScalarFunction("bin"))
+    classOf[Bin] -> CometScalarFunction("bin"),
+    classOf[Hypot] -> CometHypot,
+    classOf[NaNvl] -> CometNaNvl,
+    classOf[BRound] -> CometBRound,
+    classOf[Conv] -> CometConv,
+    classOf[Log1p] -> CometLog1p,
+    classOf[Pmod] -> CometPmod,
+    classOf[WidthBucket] -> CometWidthBucket,
+    classOf[UnaryPositive] -> CometUnaryPositive)
 
   private[comet] val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[GetMapValue] -> CometMapExtract,
@@ -154,6 +163,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[MapContainsKey] -> CometMapContainsKey,
     classOf[MapFromEntries] -> CometMapFromEntries,
+    classOf[MapConcat] -> CometMapConcat,
     classOf[StringToMap] -> CometStrToMap)
 
   private[comet] val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
@@ -185,6 +195,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[GetJsonObject] -> CometGetJsonObject,
       classOf[InitCap] -> CometInitCap,
       classOf[Length] -> CometLength,
+      classOf[Levenshtein] -> CometLevenshtein,
       classOf[Like] -> CometLike,
       classOf[Lower] -> CometLower,
       classOf[OctetLength] -> CometScalarFunction("octet_length"),
@@ -211,7 +222,17 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Right] -> CometRight,
       classOf[Substring] -> CometSubstring,
       classOf[SubstringIndex] -> CometSubstringIndex,
-      classOf[Upper] -> CometUpper)
+      classOf[Upper] -> CometUpper,
+      classOf[Elt] -> CometElt,
+      classOf[FindInSet] -> CometFindInSet,
+      classOf[FormatNumber] -> CometFormatNumber,
+      classOf[FormatString] -> CometFormatString,
+      classOf[Overlay] -> CometOverlay,
+      classOf[SoundEx] -> CometSoundEx,
+      classOf[StringLocate] -> CometStringLocate,
+      classOf[UnBase64] -> CometUnBase64,
+      classOf[ToCharacter] -> CometToCharacter,
+      classOf[ToNumber] -> CometToNumber)
 
   private val bitwiseExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[BitwiseAnd] -> CometBitwiseAnd,
@@ -742,13 +763,25 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             }
             handler.convert(expr, inputs, binding)
           } else {
-            val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
-            withFallbackReason(
-              expr,
-              s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
-                s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
-                s"${CometConf.COMPAT_GUIDE}.")
-            None
+            // Expressions that opt in via `CodegenDispatchFallback` route their `Incompatible`
+            // result through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet
+            // pipeline) so the projection stays native while still matching Spark. Everything else
+            // falls back to Spark. Falling back is also the result when the dispatcher cannot
+            // handle the expression.
+            val dispatched = handler match {
+              case _: CodegenDispatchFallback =>
+                CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+              case _ => None
+            }
+            dispatched.orElse {
+              val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+              withFallbackReason(
+                expr,
+                s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
+                  s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
+                  s"${CometConf.COMPAT_GUIDE}.")
+              None
+            }
           }
         case Compatible(notes) =>
           if (notes.isDefined) {
