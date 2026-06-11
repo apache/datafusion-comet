@@ -42,15 +42,16 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
+use datafusion_spark::function::bitwise::bit_shift::SparkBitShift;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::datetime::from_utc_timestamp::SparkFromUtcTimestamp;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
-use datafusion_spark::function::datetime::next_day::SparkNextDay;
 use datafusion_spark::function::datetime::to_utc_timestamp::SparkToUtcTimestamp;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
@@ -68,8 +69,6 @@ use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
-use datafusion_spark::function::url::parse_url::ParseUrl as SparkParseUrl;
-use datafusion_spark::function::url::try_parse_url::TryParseUrl as SparkTryParseUrl;
 use datafusion_spark::function::url::try_url_decode::TryUrlDecode as SparkTryUrlDecode;
 use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
 use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
@@ -583,7 +582,6 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFromUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkNextDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkToUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
@@ -602,11 +600,12 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryUrlDecode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCsc::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkParseUrl::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryParseUrl::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(CometParseUrl::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(CometTryParseUrl::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFactorial::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSec::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkRint::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
 }
 
 /// Prepares arrow arrays for output.

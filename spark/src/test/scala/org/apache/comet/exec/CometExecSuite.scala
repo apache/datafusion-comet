@@ -3925,6 +3925,60 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("CometLocalTableScanExec handles NullType column") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = spark.sql("SELECT * FROM VALUES ('a', null), ('b', null) AS t(x, y)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("CometLocalTableScanExec handles NullType nested in struct/array/map") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT named_struct('a', 1, 'b', null) AS s, array(null, null) AS a, " +
+          "map('k', null) AS m FROM VALUES (1), (2) AS t(id)"))
+    }
+  }
+
+  test("CometLocalTableScanExec falls back when schema contains TimeType") {
+    assume(
+      org.apache.comet.CometSparkSessionExtensions.isSpark41Plus,
+      "TimeType requires Spark 4.1+")
+    // spark.sql.timeType.enabled defaults to Utils.isTesting; enable explicitly so the
+    // row encoder accepts TIME (matches Spark's own TimeFunctionsSuiteBase setup).
+    withSQLConf(
+      "spark.sql.timeType.enabled" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      // VALUES folds to a LocalRelation, exercising the CometLocalTableScanExec convert
+      // path; the TimeType column should drive the schema-level fallback.
+      val df = spark.sql("SELECT * FROM VALUES (TIME '12:34:56'), (TIME '01:02:03') AS t(c)")
+      checkSparkAnswer(df)
+    }
+  }
+
+  test("CometLocalTableScanExec does not leak Arrow buffers (project consumer)") {
+    // Forces a CometNativeExec consumer over an ArrowArrayStream input. The producer must not
+    // leak the Arrow buffers it allocates per batch; if it does, the BaseAllocator
+    // leak detector fires inside the task completion listener.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val session = spark
+      import session.implicits._
+      val df = Seq((1, 2), (2, 2), (3, 4)).toDF("a", "b")
+      checkSparkAnswer(df.select($"a" + 1))
+    }
+  }
+
+  test("CometLocalTableScanExec does not leak Arrow buffers (collect_list)") {
+    // Mirrors DataFrameAggregateSuite "collect functions" which is the test that
+    // surfaced the leak in CI.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val session = spark
+      import session.implicits._
+      val df = Seq((1, 2), (2, 2), (3, 4)).toDF("a", "b")
+      checkSparkAnswer(df.select(collect_list($"a"), collect_list($"b")))
+    }
+  }
+
   test("Native_datafusion reports correct files and bytes scanned") {
     val inputFiles = 2
 

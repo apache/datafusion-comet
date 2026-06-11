@@ -404,8 +404,10 @@ private[codegen] object CometBatchKernelCodegenInput {
   /**
    * Java method name for the per-column null check. Primitive scalars wrapped in
    * [[CometPlainVector]] expose `isNullAt`; Arrow typed fields expose `isNull`. Same semantics.
+   * Used both by `emitTypedGetters` (for the kernel's `isNullAt` switch) and by
+   * `CometBatchKernelCodegen.defaultBody` (for the `NullIntolerant` short-circuit).
    */
-  private def nullCheckMethod(spec: ArrowColumnSpec): String = spec match {
+  def nullCheckMethod(spec: ArrowColumnSpec): String = spec match {
     case sc: ScalarColumnSpec if wrapsInCometPlainVector(sc.vectorClass) => "isNullAt"
     case _ => "isNull"
   }
@@ -524,6 +526,7 @@ private[codegen] object CometBatchKernelCodegenInput {
          |        return $elemPath.${nullCheckMethod(spec.element)}(startIndex + i);
          |      }""".stripMargin
     val elementGetter = emitArrayElementGetter(path, spec)
+    val copy = emitArrayCopyMethod(spec)
     s"""  private final class InputArray_$path extends $baseClassName {
        |    private final int startIndex;
        |    private final int length;
@@ -541,8 +544,75 @@ private[codegen] object CometBatchKernelCodegenInput {
        |$isNullAt
        |
        |$elementGetter
+       |
+       |$copy
        |  }
        |""".stripMargin
+  }
+
+  /**
+   * Emit `copy()` for an `InputArray_${path}`. These views read straight off the off-heap Arrow
+   * buffers, which are only valid for the current batch, so Spark's `InternalRow.copyValue`
+   * (invoked by e.g. `ArrayTransform.nullSafeEval` when a lambda passes a complex element
+   * through) must deep-materialize into on-heap `GenericArrayData`. Scalars autobox, strings
+   * clone off the Arrow buffer, and nested array/struct/map elements recurse through their own
+   * `copy()`.
+   */
+  private def emitArrayCopyMethod(spec: ArrayColumnSpec): String = {
+    val getter = elementGetterCall(spec.elementSparkType, "__i")
+    val copyExpr = copyValueExpr(getter, spec.elementSparkType)
+    val assign =
+      if (spec.element.nullable) {
+        s"""        if (isNullAt(__i)) {
+           |          __vals[__i] = null;
+           |        } else {
+           |          __vals[__i] = $copyExpr;
+           |        }""".stripMargin
+      } else {
+        s"        __vals[__i] = $copyExpr;"
+      }
+    s"""      @Override
+       |      public org.apache.spark.sql.catalyst.util.ArrayData copy() {
+       |        int __n = numElements();
+       |        Object[] __vals = new Object[__n];
+       |        for (int __i = 0; __i < __n; __i++) {
+       |$assign
+       |        }
+       |        return new org.apache.spark.sql.catalyst.util.GenericArrayData(__vals);
+       |      }""".stripMargin
+  }
+
+  /**
+   * The typed getter call (`getX(idx)`) used to read a value of `dt` out of a nested array
+   * element or struct field. `idx` is the index/ordinal token (e.g. `"__i"` or `"3"`).
+   */
+  private def elementGetterCall(dt: DataType, idx: String): String = dt match {
+    case BooleanType => s"getBoolean($idx)"
+    case ByteType => s"getByte($idx)"
+    case ShortType => s"getShort($idx)"
+    case IntegerType | DateType => s"getInt($idx)"
+    case LongType | TimestampType | TimestampNTZType => s"getLong($idx)"
+    case FloatType => s"getFloat($idx)"
+    case DoubleType => s"getDouble($idx)"
+    case d: DecimalType => s"getDecimal($idx, ${d.precision}, ${d.scale})"
+    case _: StringType => s"getUTF8String($idx)"
+    case BinaryType => s"getBinary($idx)"
+    case _: ArrayType => s"getArray($idx)"
+    case _: StructType => s"getStruct($idx, ${dt.asInstanceOf[StructType].fields.length})"
+    case _: MapType => s"getMap($idx)"
+    case other =>
+      throw new UnsupportedOperationException(s"nested copy: unsupported type $other")
+  }
+
+  /**
+   * Wrap a non-null getter expression so the produced value is detached from the Arrow buffers:
+   * primitives/decimals/binary are already by-value, strings clone, and nested complex values
+   * recurse through their own `copy()`.
+   */
+  private def copyValueExpr(getter: String, dt: DataType): String = dt match {
+    case _: StringType => s"$getter.clone()"
+    case _: ArrayType | _: StructType | _: MapType => s"$getter.copy()"
+    case _ => getter
   }
 
   /**
@@ -688,6 +758,7 @@ private[codegen] object CometBatchKernelCodegenInput {
     }
     val scalarGetters = emitStructScalarGetters(path, spec)
     val complexGetters = emitStructComplexGetters(path, spec)
+    val copy = emitStructCopyMethod(spec)
     s"""  private final class InputStruct_$path extends $baseClassName {
        |    private final int rowIdx;
        |
@@ -711,8 +782,38 @@ private[codegen] object CometBatchKernelCodegenInput {
        |
        |$scalarGetters
        |$complexGetters
+       |
+       |$copy
        |  }
        |""".stripMargin
+  }
+
+  /**
+   * Emit `copy()` for an `InputStruct_${path}`. Deep-materializes into an on-heap
+   * `GenericInternalRow` so Spark's `InternalRow.copyValue` (e.g. a lambda passing a struct
+   * element through) detaches it from the per-batch Arrow buffers. Mirrors
+   * [[emitArrayCopyMethod]].
+   */
+  private def emitStructCopyMethod(spec: StructColumnSpec): String = {
+    val assigns = spec.fields.zipWithIndex.map { case (f, fi) =>
+      val getter = elementGetterCall(f.sparkType, fi.toString)
+      val copyExpr = copyValueExpr(getter, f.sparkType)
+      if (f.nullable) {
+        s"""        if (isNullAt($fi)) {
+           |          __vals[$fi] = null;
+           |        } else {
+           |          __vals[$fi] = $copyExpr;
+           |        }""".stripMargin
+      } else {
+        s"        __vals[$fi] = $copyExpr;"
+      }
+    }
+    s"""      @Override
+       |      public org.apache.spark.sql.catalyst.InternalRow copy() {
+       |        Object[] __vals = new Object[${spec.fields.length}];
+       |${assigns.mkString("\n")}
+       |        return new org.apache.spark.sql.catalyst.expressions.GenericInternalRow(__vals);
+       |      }""".stripMargin
   }
 
   // Scalar-read body templates parameterized on row-index expression (`idx`), cached buffer
@@ -938,6 +1039,12 @@ private[codegen] object CometBatchKernelCodegenInput {
        |    @Override
        |    public org.apache.spark.sql.catalyst.util.ArrayData valueArray() {
        |      return new InputArray_$valPath(this.startIndex, this.length);
+       |    }
+       |
+       |    @Override
+       |    public org.apache.spark.sql.catalyst.util.MapData copy() {
+       |      return new org.apache.spark.sql.catalyst.util.ArrayBasedMapData(
+       |          keyArray().copy(), valueArray().copy());
        |    }
        |  }
        |""".stripMargin
