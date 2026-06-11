@@ -24,10 +24,12 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Alias, ToPrettyString}
 import org.apache.spark.sql.catalyst.plans.logical.Project
 import org.apache.spark.sql.classic.Dataset
+import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.BinaryOutputStyle
 import org.apache.spark.sql.types.DataTypes
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometFuzzTestBase
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.Compatible
@@ -65,4 +67,33 @@ class CometToPrettyStringSuite extends CometFuzzTestBase {
         }
       })
   }
+
+  test("ToPrettyString honors spark.comet.expression.ToPrettyString.enabled") {
+    def countSparkProjectExec(plan: SparkPlan): Int =
+      plan.collect { case _: ProjectExec => true }.length
+
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    val table = spark.sessionState.catalog.lookupRelation(TableIdentifier("t1"))
+
+    // Pick a column whose cast to string is Compatible, so the baseline executes natively.
+    val col = df.schema.fields
+      .find(_.dataType == DataTypes.IntegerType)
+      .map(_.name)
+      .getOrElse(df.schema.fields.head.name)
+    val prettyExpr = Alias(ToPrettyString(UnresolvedAttribute(col)), s"pretty_$col")()
+    val plan = Project(Seq(prettyExpr), table)
+    val analyzed = spark.sessionState.analyzer.execute(plan)
+
+    // Baseline: ToPrettyString converts natively, no Spark ProjectExec.
+    val baselinePlan = Dataset.ofRows(spark, analyzed).queryExecution.executedPlan
+    assert(countSparkProjectExec(baselinePlan) == 0)
+
+    // With per-expression config disabled, expression falls back to Spark.
+    withSQLConf(CometConf.getExprEnabledConfigKey("ToPrettyString") -> "false") {
+      val disabledPlan = Dataset.ofRows(spark, analyzed).queryExecution.executedPlan
+      assert(countSparkProjectExec(disabledPlan) >= 1)
+    }
+  }
+
 }

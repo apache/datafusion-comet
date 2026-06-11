@@ -349,18 +349,22 @@ object CometRLike extends CometExpressionSerde[RLike] {
   }
 }
 
+private object PadReasons {
+  val literalStrReason = "Scalar values are not supported for the `str` argument."
+  val nonLiteralPadReason = "Only scalar values are supported for the `pad` argument."
+}
+
 object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Scalar values are not supported for the `str` argument." +
-      " Only scalar values are supported for the `pad` argument.")
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
 
   override def getSupportLevel(expr: StringRPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
-      return Unsupported(Some("Scalar values are not supported for the str argument"))
+      return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {
-      return Unsupported(Some("Only scalar values are supported for the pad argument"))
+      return Unsupported(Some(PadReasons.nonLiteralPadReason))
     }
     Compatible()
   }
@@ -380,16 +384,15 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
 object CometStringLPad extends CometExpressionSerde[StringLPad] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Scalar values are not supported for the `str` argument." +
-      " Only scalar values are supported for the `pad` argument.")
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
 
   override def getSupportLevel(expr: StringLPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
-      return Unsupported(Some("Scalar values are not supported for the str argument"))
+      return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {
-      return Unsupported(Some("Only scalar values are supported for the pad argument"))
+      return Unsupported(Some(PadReasons.nonLiteralPadReason))
     }
     Compatible()
   }
