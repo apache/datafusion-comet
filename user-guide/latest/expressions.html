@@ -572,9 +572,7 @@ under the License.
 expression. Comet accelerates expressions either with a native (Rust) implementation or by
 dispatching to a Spark-compatible codegen path. When an expression is not supported, Comet
 transparently falls back to Spark for that part of the plan; results are unaffected.</p>
-<p>Expressions marked ✅ Supported are enabled by default and produce Spark-compatible results.
-Expressions marked ⚠️ Incorrect by default run natively by default but can return results that
-differ from Spark on some inputs; see the linked detail on each affected row.</p>
+<p>Expressions marked ✅ Supported are enabled by default and produce Spark-compatible results.</p>
 <p>Some ✅ Supported expressions have specific incompatible cases that fall back to Spark by
 default. Those cases must be opted into per expression with
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code> (where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark
@@ -594,14 +592,8 @@ expression class name, for example <code class="docutils literal notranslate"><s
 <tr class="row-even"><td><p>✅ Supported</p></td>
 <td><p>Comet produces Spark-compatible results by default. Some inputs or forms may fall back to Spark, and any incompatible behavior is opt-in (off by default).</p></td>
 </tr>
-<tr class="row-odd"><td><p>⚠️ Incorrect by default</p></td>
-<td><p>Comet runs natively by default but can return results that differ from Spark (a wrong value, or a native error on valid input). See the linked detail on each row.</p></td>
-</tr>
-<tr class="row-even"><td><p>🔜 Planned</p></td>
+<tr class="row-odd"><td><p>🔜 Planned</p></td>
 <td><p>Intended; tracked by an open issue or pull request.</p></td>
-</tr>
-<tr class="row-odd"><td><p>💤 Not currently planned</p></td>
-<td><p>Not on the current roadmap; falls back to Spark and may be reconsidered later.</p></td>
 </tr>
 </tbody>
 </table>
@@ -617,9 +609,9 @@ expressions. The following function families are <strong>not currently planned</
 <li><p><strong>Avro / Protobuf codecs</strong> (<code class="docutils literal notranslate"><span class="pre">from_avro</span></code>, <code class="docutils literal notranslate"><span class="pre">to_avro</span></code>, <code class="docutils literal notranslate"><span class="pre">from_protobuf</span></code>, <code class="docutils literal notranslate"><span class="pre">to_protobuf</span></code>, <code class="docutils literal notranslate"><span class="pre">schema_of_avro</span></code>): format conversion belongs at the IO layer, not expression evaluation.</p></li>
 <li><p><strong>JVM reflection</strong> (<code class="docutils literal notranslate"><span class="pre">java_method</span></code>, <code class="docutils literal notranslate"><span class="pre">reflect</span></code>): niche, and they invoke arbitrary JVM methods (a security concern).</p></li>
 <li><p><strong>UTF-8 validation</strong> (<code class="docutils literal notranslate"><span class="pre">is_valid_utf8</span></code>, <code class="docutils literal notranslate"><span class="pre">make_valid_utf8</span></code>, <code class="docutils literal notranslate"><span class="pre">validate_utf8</span></code>, <code class="docutils literal notranslate"><span class="pre">try_validate_utf8</span></code>): niche Spark 4.x string-validation helpers.</p></li>
-<li><p><strong>File metadata</strong> (<code class="docutils literal notranslate"><span class="pre">input_file_name</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_length</span></code>): require scan-internal per-row file information, outside the expression layer.</p></li>
 <li><p><strong>Miscellaneous niche</strong> (<code class="docutils literal notranslate"><span class="pre">histogram_numeric</span></code>, <code class="docutils literal notranslate"><span class="pre">version</span></code>, <code class="docutils literal notranslate"><span class="pre">sentences</span></code>, <code class="docutils literal notranslate"><span class="pre">quote</span></code>): low-value or specialized functions with little benefit from native acceleration.</p></li>
 </ul>
+<p>The file-metadata functions <code class="docutils literal notranslate"><span class="pre">input_file_name</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start</span></code>, and <code class="docutils literal notranslate"><span class="pre">input_file_block_length</span></code> depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the <a class="reference internal" href="compatibility/scans.html"><span class="std std-doc">scan compatibility guide</span></a>.</p>
 <p>Note that <code class="docutils literal notranslate"><span class="pre">approx_count_distinct</span></code>, <code class="docutils literal notranslate"><span class="pre">median</span></code>, and <code class="docutils literal notranslate"><span class="pre">mode</span></code> are planned: they are mainstream (<code class="docutils literal notranslate"><span class="pre">median</span></code> and <code class="docutils literal notranslate"><span class="pre">mode</span></code> are exact aggregates). <code class="docutils literal notranslate"><span class="pre">approx_percentile</span></code> / <code class="docutils literal notranslate"><span class="pre">percentile_approx</span></code> are not currently planned because their approximate results cannot be made bit-identical to Spark.</p>
 <p>The tables below list every Spark built-in expression with its current status.</p>
 </section>
@@ -2728,7 +2720,7 @@ fall back to Spark.</p>
 <section id="see-also">
 <h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Comet Compatibility Guide</span></a> - known incompatibilities and edge cases for ⚠️ expressions.</p></li>
+<li><p><a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Comet Compatibility Guide</span></a> - known incompatibilities and edge cases for supported expressions.</p></li>
 <li><p><a class="reference internal" href="../../contributor-guide/expression-audits/index.html"><span class="std std-doc">Expression Audits (contributor guide)</span></a> - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for audited expressions.</p></li>
 </ul>
 </section>
