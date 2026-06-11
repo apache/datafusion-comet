@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, LengthOfJsonArray}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, JsonObjectKeys, LengthOfJsonArray, SchemaOfJson}
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -46,3 +46,7 @@ object CometLengthOfJsonArray extends CometCodegenDispatch[LengthOfJsonArray] {
       super.convert(expr, inputs, binding)
     }
 }
+
+object CometSchemaOfJson extends CometCodegenDispatch[SchemaOfJson]
+
+object CometJsonObjectKeys extends CometCodegenDispatch[JsonObjectKeys]

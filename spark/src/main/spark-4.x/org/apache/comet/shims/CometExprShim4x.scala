@@ -19,8 +19,13 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DayName, Expression, MonthName}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DayName, Expression, Literal, MonthName, StructsToXml, XmlToStructs}
+import org.apache.spark.sql.catalyst.expressions.csv.SchemaOfCsvEvaluator
+import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, SchemaOfJsonEvaluator}
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.xml.{XmlExpressionEvalUtils, XPathEvaluator}
 
+import org.apache.comet.serde.CometScalaUDF
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
@@ -56,4 +61,35 @@ trait CometExprShim4x {
       optExprWithFallbackReason(nameExpr, m, m.child)
     case _ => None
   }
+
+  // Spark 4.x lowers the RuntimeReplaceable structured-text functions to an evaluator-backed
+  // `Invoke` (`schema_of_csv`, `schema_of_json`, `xpath_*`) or `StaticInvoke`
+  // (`json_object_keys`, `schema_of_xml`) before Comet sees the plan, so the original expression
+  // class never reaches the serde map. `from_xml` / `to_xml` stay as plain expressions. None of
+  // these have a native (rust) implementation, so they route through the codegen dispatcher.
+  //
+  // [[isStructuredTextDispatch]] is a cheap structural predicate used as the shim match guard so
+  // the dispatch (which binds, runs `canHandle`, and closure-serializes) only happens once, in
+  // [[convertStructuredText]]. The single `XPathEvaluator` test covers all eight `xpath_*`
+  // functions, which lower to its subclasses.
+  protected def isStructuredTextDispatch(expr: Expression): Boolean = expr match {
+    case _: XmlToStructs | _: StructsToXml => true
+    case i: Invoke if i.functionName == "evaluate" =>
+      i.targetObject match {
+        case Literal(value, _) =>
+          value.isInstanceOf[SchemaOfCsvEvaluator] || value.isInstanceOf[SchemaOfJsonEvaluator] ||
+          value.isInstanceOf[XPathEvaluator]
+        case _ => false
+      }
+    case s: StaticInvoke =>
+      (s.staticObject == classOf[JsonExpressionUtils] && s.functionName == "jsonObjectKeys") ||
+      (s.staticObject == XmlExpressionEvalUtils.getClass && s.functionName == "schemaOfXml")
+    case _ => false
+  }
+
+  protected def convertStructuredText(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] =
+    CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
 }

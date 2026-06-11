@@ -28,6 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
@@ -273,7 +274,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Cast] -> CometCast)
 
   private val jsonExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[LengthOfJsonArray] -> CometLengthOfJsonArray)
+    classOf[LengthOfJsonArray] -> CometLengthOfJsonArray,
+    classOf[SchemaOfJson] -> CometSchemaOfJson,
+    classOf[JsonObjectKeys] -> CometJsonObjectKeys)
+
+  private val csvExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map(classOf[CsvToStructs] -> CometCsvToStructs, classOf[SchemaOfCsv] -> CometSchemaOfCsv)
+
+  private val xpathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[XPathBoolean] -> CometXPathBoolean,
+    classOf[XPathShort] -> CometXPathShort,
+    classOf[XPathInt] -> CometXPathInt,
+    classOf[XPathLong] -> CometXPathLong,
+    classOf[XPathFloat] -> CometXPathFloat,
+    classOf[XPathDouble] -> CometXPathDouble,
+    classOf[XPathString] -> CometXPathString,
+    classOf[XPathList] -> CometXPathList)
 
   private[comet] val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
@@ -301,7 +317,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     mathExpressions ++ hashExpressions ++ stringExpressions ++
       conditionalExpressions ++ mapExpressions ++ predicateExpressions ++
       structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++
-      temporalExpressions ++ conversionExpressions ++ urlExpressions ++ jsonExpressions
+      temporalExpressions ++ conversionExpressions ++ urlExpressions ++ jsonExpressions ++
+      csvExpressions ++ xpathExpressions
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
