@@ -21,28 +21,28 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
 
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometLanceNativeScan
+import org.apache.comet.serde.operator.CometLanceNativeScan.LanceNativeScanDescriptor
 
 case class CometLanceNativeScanExec(
     override val nativeOp: Operator,
     override val output: Seq[Attribute],
     runtimeFilters: Seq[Expression],
-    requiredSchema: StructType,
     @transient originalPlan: BatchScanExec,
     override val serializedPlanOpt: SerializedPlan,
     override val sourceKey: String,
-    nativeScanPlanClassName: String)
+    lanceDescriptor: LanceNativeScanDescriptor)
     extends CometLeafExec
     with CometLanceNativeScanLike {
 
@@ -51,7 +51,7 @@ case class CometLanceNativeScanExec(
   override val nodeName: String = "CometLanceNativeScan"
 
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) =
-    CometLanceNativeScan.serializePartitions(sourceKey, requiredSchema, nativeScanPlanClassName)
+    CometLanceNativeScan.serializePartitions(lanceDescriptor)
 
   override def commonData: Array[Byte] = serializedPartitionData._1
 
@@ -63,8 +63,24 @@ case class CometLanceNativeScanExec(
   override lazy val outputOrdering: Seq[SortOrder] = Nil
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    throw new UnsupportedOperationException(
-      "Native Lance scan execution is not implemented yet")
+    val nativeMetrics = CometMetricNode.fromCometPlan(this)
+    val serializedPlan = CometExec.serializeNativePlan(nativeOp)
+    new CometExecRDD(
+      sparkContext,
+      inputRDDs = Seq.empty,
+      commonByKey = Map(sourceKey -> commonData),
+      perPartitionByKey = Map(sourceKey -> perPartitionData),
+      serializedPlan = serializedPlan,
+      defaultNumPartitions = perPartitionData.length,
+      numOutputCols = output.length,
+      nativeMetrics = nativeMetrics,
+      subqueries = Seq.empty) {
+      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+        val res = super.compute(split, context)
+        Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+        res
+      }
+    }
   }
 
   override def convertBlock(): CometLanceNativeScanExec = {
@@ -78,11 +94,10 @@ case class CometLanceNativeScanExec(
       nativeOp,
       output,
       runtimeFilters,
-      requiredSchema,
       originalPlan,
       newSerializedPlan,
       sourceKey,
-      nativeScanPlanClassName)
+      lanceDescriptor)
   }
 
   override protected def doCanonicalize(): CometLanceNativeScanExec = {
@@ -92,15 +107,14 @@ case class CometLanceNativeScanExec(
       QueryPlan.normalizePredicates(
         CometScanUtils.filterUnusedDynamicPruningExpressions(runtimeFilters),
         output),
-      requiredSchema,
       null,
       SerializedPlan(None),
       sourceKey,
-      nativeScanPlanClassName)
+      lanceDescriptor)
   }
 
   override def stringArgs: Iterator[Any] =
-    Iterator(output, s"$sourceKey, nativeScanPlan=$nativeScanPlanClassName")
+    Iterator(output, s"$sourceKey, nativeScanPlan=${lanceDescriptor.nativeScanPlanClass}")
 
   override def equals(obj: Any): Boolean = obj match {
     case other: CometLanceNativeScanExec =>
