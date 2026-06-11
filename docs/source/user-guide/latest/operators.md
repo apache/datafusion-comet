@@ -31,11 +31,11 @@ all native execution can be turned off with `spark.comet.exec.enabled=false`. Se
 
 ## Status legend
 
-| Status                 | Meaning                                                                                                                                            |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ✅ Supported           | Native implementation; enabled by default.                                                                                                         |
-| ⚠️ Supported (caveats) | Works, but with limits: restricted to certain inputs, experimental, or disabled by default. See the [Compatibility Guide](compatibility/index.md). |
-| 🔜 Planned             | Intended; tracked by an open issue or pull request.                                                                                                |
+| Status                 | Meaning                                                                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| ✅ Supported           | Native implementation, enabled by default; works in the common case. Some inputs or forms may fall back to Spark.                 |
+| ⚠️ Supported (caveats) | Experimental or disabled by default, or accelerates only a limited subset. See the [Compatibility Guide](compatibility/index.md). |
+| 🔜 Planned             | Intended; tracked by an open issue or pull request.                                                                               |
 
 ## Not currently planned
 
@@ -88,7 +88,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | `BroadcastHashJoinExec`       | ✅     |                                                                                                                       |
 | `ShuffledHashJoinExec`        | ✅     |                                                                                                                       |
 | `SortMergeJoinExec`           | ✅     |                                                                                                                       |
-| `BroadcastNestedLoopJoinExec` | ⚠️     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) (#4429). |
+| `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) (#4429). |
 
 ## Exchanges
 
@@ -108,7 +108,7 @@ omitted from the tables below and may be reconsidered based on demand:
 
 | Operator       | Status | Notes                                                                                                                      |
 | -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `GenerateExec` | ⚠️     | Supports `explode` and `posexplode` over arrays. The `_outer` variants are incompatible, and `inline` / `stack` fall back. |
+| `GenerateExec` | ✅     | Supports `explode` and `posexplode` over arrays. The `_outer` variants are incompatible, and `inline` / `stack` fall back. |
 | `ExpandExec`   | ✅     |                                                                                                                            |
 | `UnionExec`    | ✅     |                                                                                                                            |
 | `CoalesceExec` | ✅     |                                                                                                                            |
