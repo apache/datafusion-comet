@@ -75,6 +75,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[GetArrayItem] -> CometGetArrayItem,
     classOf[Size] -> CometSize,
     classOf[ArraysZip] -> CometArraysZip,
+    classOf[ArrayTransform] -> CometArrayTransform,
+    classOf[ArrayExists] -> CometArrayExists,
+    classOf[ArrayForAll] -> CometArrayForAll,
+    classOf[ArrayAggregate] -> CometArrayAggregate,
+    classOf[ArraySort] -> CometArraySort,
+    classOf[ZipWith] -> CometZipWith,
     classOf[Sequence] -> CometSequence)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
@@ -172,7 +178,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MapContainsKey] -> CometMapContainsKey,
       classOf[MapFromEntries] -> CometMapFromEntries,
       classOf[MapConcat] -> CometMapConcat,
-      classOf[StringToMap] -> CometStrToMap)
+      classOf[StringToMap] -> CometStrToMap,
+      classOf[MapFilter] -> CometMapFilter,
+      classOf[TransformKeys] -> CometTransformKeys,
+      classOf[TransformValues] -> CometTransformValues,
+      classOf[MapZipWith] -> CometMapZipWith)
     base ++ sparkVersionSpecificMapExpressions
   }
 

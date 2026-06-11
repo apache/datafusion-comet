@@ -166,4 +166,12 @@ object CometMapFromEntries
 
 object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map")
 
+object CometMapFilter extends CometCodegenDispatch[MapFilter]
+
+object CometTransformKeys extends CometCodegenDispatch[TransformKeys]
+
+object CometTransformValues extends CometCodegenDispatch[TransformValues]
+
+object CometMapZipWith extends CometCodegenDispatch[MapZipWith]
+
 object CometMapConcat extends CometCodegenDispatch[MapConcat]
