@@ -1,0 +1,390 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.comet
+
+import java.time.LocalDateTime
+
+import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.comet.{CometCacheColumnStats, CometCachedBatch, CometCachedBatchSerializer, CometSparkToColumnarExec}
+import org.apache.spark.sql.types._
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.unsafe.types.UTF8String
+
+import org.apache.comet.CometConf
+
+class CometCachedBatchSerializerSuite extends CometTestBase {
+
+  import testImplicits._
+
+  // spark.sql.cache.serializer is a STATIC SQL config (cannot be set via withSQLConf at
+  // runtime), so it must be set at session creation. This makes the whole suite use the Comet
+  // cache serializer; the pure-unit tests construct a serializer directly and are unaffected.
+  override protected def sparkConf: org.apache.spark.SparkConf = {
+    super.sparkConf
+      .set("spark.sql.cache.serializer", "org.apache.spark.sql.comet.CometCachedBatchSerializer")
+  }
+
+  test("stats row has 5 fields per column in cachedAttributes order") {
+    val a = AttributeReference("a", IntegerType, nullable = true)()
+    val b = AttributeReference("b", StringType, nullable = true)()
+    val acc = new CometCacheColumnStats(Seq(a, b))
+    // column 0: values 5, null, 3 ; column 1: "y", "a", null
+    acc.update(0, IntegerType, isNull = false, 5)
+    acc.update(0, IntegerType, isNull = true, null)
+    acc.update(0, IntegerType, isNull = false, 3)
+    acc.update(1, StringType, isNull = false, UTF8String.fromString("y"))
+    acc.update(1, StringType, isNull = false, UTF8String.fromString("a"))
+    acc.update(1, StringType, isNull = true, null)
+    acc.setRowCount(3)
+    val stats = acc.toInternalRow
+
+    assert(stats.numFields == 10) // 5 fields * 2 columns
+    // column 0: [lower=3, upper=5, nullCount=1, count=3, sizeInBytes=0]
+    assert(stats.getInt(0) == 3)
+    assert(stats.getInt(1) == 5)
+    assert(stats.getInt(2) == 1)
+    assert(stats.getInt(3) == 3)
+    // column 1: [lower="a", upper="y", nullCount=1, count=3, sizeInBytes=0]
+    assert(stats.getUTF8String(5) == UTF8String.fromString("a"))
+    assert(stats.getUTF8String(6) == UTF8String.fromString("y"))
+    assert(stats.getInt(7) == 1)
+    assert(stats.getInt(8) == 3)
+    // sizeInBytes stat slots (positions 4 and 9) are 0L; they are not used by buildFilter
+    assert(stats.getLong(4) == 0L)
+    assert(stats.getLong(9) == 0L)
+    // CometCachedBatch.sizeInBytes reflects the IPC byte length
+    val cb = CometCachedBatch(numRows = 3, bytes = Array[Byte](1, 2, 3, 4, 5), stats = stats)
+    assert(cb.sizeInBytes == 5L)
+    assert(cb.numRows == 3)
+  }
+
+  test("supportsColumnarOutput: true for flat supported schema, delegated for nested") {
+    val ser = new CometCachedBatchSerializer
+    val flat = StructType(Seq(StructField("a", IntegerType), StructField("b", StringType)))
+    val nested = StructType(Seq(StructField("a", ArrayType(IntegerType))))
+    assert(ser.supportsColumnarOutput(flat))
+    // nested delegates to DefaultCachedBatchSerializer, which does not support columnar output
+    assert(!ser.supportsColumnarOutput(nested))
+  }
+
+  test("build path produces one CometCachedBatch per Arrow batch with stats") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "100") {
+      val ser = new CometCachedBatchSerializer
+      // coalesce(1) makes the batch chunking deterministic: 250 rows / 100 = 3 batches
+      val df = spark.range(250).coalesce(1).selectExpr("id", "cast(id as string) as s")
+      val attrs = df.queryExecution.analyzed.output
+      val rdd = df.queryExecution.toRdd
+      val cached = ser
+        .convertInternalRowToCachedBatch(
+          rdd,
+          attrs,
+          org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+          spark.sessionState.conf)
+        .collect()
+      assert(cached.length == 3)
+      assert(cached.forall(_.isInstanceOf[CometCachedBatch]))
+      assert(cached.map(_.numRows).sum == 250)
+      cached.foreach { b =>
+        assert(b.sizeInBytes > 0)
+        assert(b.asInstanceOf[CometCachedBatch].stats.numFields == attrs.length * 5)
+      }
+      // column 0 is the bigint id; verify real (non-null) stats were computed
+      val statRows = cached.map(_.asInstanceOf[CometCachedBatch].stats)
+      // lowerBound of col 0 lives at field 0 (LongType); min across batches must be 0
+      assert(statRows.map(_.getLong(0)).min == 0L)
+      // nullCount of col 0 lives at field 2; range() has no nulls
+      assert(statRows.forall(_.getInt(2) == 0))
+    }
+  }
+
+  test("round-trip: build then decode all columns matches input") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "64") {
+      val ser = new CometCachedBatchSerializer
+      val df = spark.range(200).coalesce(1).selectExpr("id", "cast(id * 2 as string) as s")
+      val attrs = df.queryExecution.analyzed.output
+      val cached = ser.convertInternalRowToCachedBatch(
+        df.queryExecution.toRdd,
+        attrs,
+        org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+        spark.sessionState.conf)
+      val decodedRows = ser
+        .convertCachedBatchToInternalRow(cached, attrs, attrs, spark.sessionState.conf)
+        .map(r => (r.getLong(0), r.getUTF8String(1).toString))
+        .collect()
+        .toSet
+      val expected = (0 until 200).map(i => (i.toLong, (i * 2).toString)).toSet
+      assert(decodedRows == expected)
+    }
+  }
+
+  test("read path prunes to selected columns") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "64") {
+      val ser = new CometCachedBatchSerializer
+      val df = spark.range(200).coalesce(1).selectExpr("id", "cast(id * 2 as string) as s")
+      val attrs = df.queryExecution.analyzed.output
+      val cached = ser.convertInternalRowToCachedBatch(
+        df.queryExecution.toRdd,
+        attrs,
+        org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+        spark.sessionState.conf)
+      // select only the string column (index 1)
+      val onlyS = Seq(attrs(1))
+      val pruned = ser
+        .convertCachedBatchToInternalRow(cached, attrs, onlyS, spark.sessionState.conf)
+        .map(_.getUTF8String(0).toString)
+        .collect()
+        .toSet
+      assert(pruned == (0 until 200).map(i => (i * 2).toString).toSet)
+    }
+  }
+
+  test("columnar read path: full and pruned projection") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "64") {
+      val ser = new CometCachedBatchSerializer
+      val df = spark.range(100).coalesce(1).selectExpr("id", "cast(id * 2 as string) as s")
+      val attrs = df.queryExecution.analyzed.output
+      val cached = ser.convertInternalRowToCachedBatch(
+        df.queryExecution.toRdd,
+        attrs,
+        org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+        spark.sessionState.conf)
+
+      // Full projection (identity passthrough): 2 columns, values match.
+      val fullColCounts =
+        ser
+          .convertCachedBatchToColumnarBatch(cached, attrs, attrs, spark.sessionState.conf)
+          .map(_.numCols())
+          .collect()
+      assert(fullColCounts.forall(_ == 2))
+      val fullVals =
+        ser
+          .convertCachedBatchToColumnarBatch(cached, attrs, attrs, spark.sessionState.conf)
+          .mapPartitions { batches =>
+            batches.flatMap { b =>
+              val rows = new scala.collection.mutable.ArrayBuffer[(Long, String)]
+              var i = 0
+              while (i < b.numRows()) {
+                rows += ((b.column(0).getLong(i), b.column(1).getUTF8String(i).toString))
+                i += 1
+              }
+              rows.iterator
+            }
+          }
+          .collect()
+          .toSet
+      assert(fullVals == (0 until 100).map(i => (i.toLong, (i * 2).toString)).toSet)
+
+      // Pruned projection: only the string column (index 1) -> 1 column, correct values.
+      val onlyS = Seq(attrs(1))
+      val prunedColCounts =
+        ser
+          .convertCachedBatchToColumnarBatch(cached, attrs, onlyS, spark.sessionState.conf)
+          .map(_.numCols())
+          .collect()
+      assert(prunedColCounts.forall(_ == 1))
+      val prunedVals =
+        ser
+          .convertCachedBatchToColumnarBatch(cached, attrs, onlyS, spark.sessionState.conf)
+          .mapPartitions { batches =>
+            batches.flatMap { b =>
+              val rows = new scala.collection.mutable.ArrayBuffer[String]
+              var i = 0
+              while (i < b.numRows()) {
+                rows += b.column(0).getUTF8String(i).toString
+                i += 1
+              }
+              rows.iterator
+            }
+          }
+          .collect()
+          .toSet
+      assert(prunedVals == (0 until 100).map(i => (i * 2).toString).toSet)
+    }
+  }
+
+  test("cached scan passes already-Arrow batches through CometSparkToColumnarExec") {
+    withSQLConf(
+      org.apache.spark.sql.internal.SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") { // jvm shuffle keeps a CometSparkToColumnarExec in the plan over the cached scan
+      spark
+        .range(1000)
+        .selectExpr("id as key", "id % 8 as value")
+        .createOrReplaceTempView("comet_cache_c1")
+      spark.catalog.cacheTable("comet_cache_c1")
+      try {
+        // groupBy forces a CometSparkToColumnarExec to appear above the cached InMemoryTableScan.
+        val df = spark.sql("SELECT value, count(*) FROM comet_cache_c1 GROUP BY value")
+        val rows = df.collect()
+        assert(rows.length == 8)
+        val s2c = collectFirst(df.queryExecution.executedPlan) {
+          case s: CometSparkToColumnarExec => s
+        }
+        // CometSparkToColumnarExec must appear above the cached scan and must have taken the
+        // passthrough fast-path (batches already Arrow, no re-copy needed).
+        assert(s2c.isDefined, "expected CometSparkToColumnarExec in plan over cached scan")
+        assert(s2c.get.metrics("numPassthroughBatches").value > 0L)
+      } finally {
+        spark.catalog.uncacheTable("comet_cache_c1")
+      }
+    }
+  }
+
+  test("cached query result matches uncached") {
+    val base = spark
+      .range(2000)
+      .selectExpr("id as k", "id % 10 as v", "cast(id as string) as s")
+    val expected =
+      base
+        .groupBy("v")
+        .count()
+        .orderBy("v")
+        .collect()
+        .toSeq
+        .map(r => (r.getLong(0), r.getLong(1)))
+    base.createOrReplaceTempView("comet_cache_t8")
+    spark.catalog.cacheTable("comet_cache_t8")
+    try {
+      val df = spark.sql("SELECT v, count(*) AS c FROM comet_cache_t8 GROUP BY v ORDER BY v")
+      checkSparkAnswer(df)
+      val actual = df.collect().toSeq.map(r => (r.getLong(0), r.getLong(1)))
+      assert(actual == expected)
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_t8")
+    }
+  }
+
+  test("filtered cached scan returns correct rows with stats pruning") {
+    spark.range(5000).selectExpr("id as k").createOrReplaceTempView("comet_cache_t8f")
+    spark.catalog.cacheTable("comet_cache_t8f")
+    try {
+      val df = spark.sql("SELECT k FROM comet_cache_t8f WHERE k >= 4990 ORDER BY k")
+      checkSparkAnswer(df)
+      val actual = df.collect().map(_.getLong(0)).toSeq
+      assert(actual == (4990L until 5000L).toSeq)
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_t8f")
+    }
+  }
+
+  test("cached table with MEMORY_AND_DISK round-trips") {
+    val cachedDf = spark
+      .range(3000)
+      .selectExpr("id as k", "cast(id as string) as s")
+      .persist(StorageLevel.MEMORY_AND_DISK)
+    try {
+      assert(cachedDf.count() == 3000)
+      checkSparkAnswer(cachedDf.filter("k % 2 = 0"))
+    } finally {
+      cachedDf.unpersist()
+    }
+  }
+
+  test("array-typed cached relation delegates to default serializer and is correct") {
+    val df0 = spark.range(100).selectExpr("id as k", "array(id, id + 1) as a")
+    df0.createOrReplaceTempView("comet_cache_t8a")
+    spark.catalog.cacheTable("comet_cache_t8a")
+    try {
+      val df = spark.sql("SELECT k, a FROM comet_cache_t8a WHERE k < 5 ORDER BY k")
+      checkSparkAnswer(df)
+      assert(df.count() == 5)
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_t8a")
+    }
+  }
+
+  test("string column stats survive encode (no buffer use-after-free)") {
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "100") {
+      val ser = new CometCachedBatchSerializer
+      // zero-padded so lexicographic order is well-defined and stable
+      val df = spark
+        .range(250)
+        .coalesce(1)
+        .selectExpr("id", "lpad(cast(id as string), 5, '0') as s")
+      val attrs = df.queryExecution.analyzed.output
+      val cached = ser
+        .convertInternalRowToCachedBatch(
+          df.queryExecution.toRdd,
+          attrs,
+          org.apache.spark.storage.StorageLevel.MEMORY_ONLY,
+          spark.sessionState.conf)
+        .collect()
+      assert(cached.length == 3)
+      // column 1 is the string column; its stats live at fields [5..9]:
+      // field 5 = lowerBound, field 6 = upperBound
+      cached.zipWithIndex.foreach { case (b, batchIdx) =>
+        val stats = b.asInstanceOf[CometCachedBatch].stats
+        val lo = stats.getUTF8String(5).toString
+        val hi = stats.getUTF8String(6).toString
+        val start = batchIdx * 100
+        val end = math.min(start + 100, 250) - 1
+        assert(
+          lo == f"$start%05d",
+          s"batch $batchIdx lowerBound was '$lo', expected ${f"$start%05d"}")
+        assert(
+          hi == f"$end%05d",
+          s"batch $batchIdx upperBound was '$hi', expected ${f"$end%05d"}")
+      }
+    }
+  }
+
+  test("filtered cached scan on a string column returns correct rows") {
+    spark
+      .range(2000)
+      .selectExpr("lpad(cast(id as string), 5, '0') as s")
+      .createOrReplaceTempView("comet_cache_str")
+    spark.catalog.cacheTable("comet_cache_str")
+    try {
+      val df = spark.sql("SELECT s FROM comet_cache_str WHERE s = '01999'")
+      checkSparkAnswer(df)
+      val rows = df.collect().map(_.getString(0)).toSeq
+      assert(rows == Seq("01999"))
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_str")
+    }
+  }
+
+  test("timestamp_ntz cached scan is correct") {
+    // A Seq[LocalDateTime] maps to TimestampNTZType, which the Comet serializer supports.
+    val data = (0 until 50).map(i => (i.toLong, LocalDateTime.of(2020, 1, 1, 0, 0, i % 60)))
+    val df0 = data.toDF("id", "ts")
+    // Expected values from the uncached DataFrame (before caching).
+    val expected = df0
+      .where("id < 10")
+      .orderBy("id")
+      .collect()
+      .map(r => (r.getLong(0), r.getAs[java.time.LocalDateTime](1)))
+      .toSeq
+    df0.createOrReplaceTempView("comet_cache_ntz")
+    spark.catalog.cacheTable("comet_cache_ntz")
+    try {
+      val df = spark.sql("SELECT id, ts FROM comet_cache_ntz WHERE id < 10 ORDER BY id")
+      checkSparkAnswer(df)
+      val actual = df
+        .collect()
+        .map(r => (r.getLong(0), r.getAs[java.time.LocalDateTime](1)))
+        .toSeq
+      assert(actual == expected)
+      assert(actual.size == 10)
+    } finally {
+      spark.catalog.uncacheTable("comet_cache_ntz")
+    }
+  }
+}

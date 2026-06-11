@@ -24,6 +24,8 @@ import java.io.File
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.internal.StaticSQLConf
 
+import org.apache.comet.CometConf
+
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -81,6 +83,41 @@ class CometPluginsSuite extends CometTestBase {
         "foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(
           StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
     }
+  }
+
+  test("setCacheSerializerIfEnabled installs Comet serializer when enabled and unset") {
+    val conf = new SparkConf().set(CometConf.COMET_CACHE_SERIALIZER_ENABLED.key, "true")
+    CometDriverPlugin.setCacheSerializerIfEnabled(conf)
+    assert(
+      conf.get(StaticSQLConf.SPARK_CACHE_SERIALIZER.key) ==
+        CometDriverPlugin.COMET_CACHE_SERIALIZER)
+  }
+
+  test("setCacheSerializerIfEnabled replaces the default serializer when enabled") {
+    val conf = new SparkConf()
+      .set(CometConf.COMET_CACHE_SERIALIZER_ENABLED.key, "true")
+      .set(
+        StaticSQLConf.SPARK_CACHE_SERIALIZER.key,
+        StaticSQLConf.SPARK_CACHE_SERIALIZER.defaultValueString)
+    CometDriverPlugin.setCacheSerializerIfEnabled(conf)
+    assert(
+      conf.get(StaticSQLConf.SPARK_CACHE_SERIALIZER.key) ==
+        CometDriverPlugin.COMET_CACHE_SERIALIZER)
+  }
+
+  test("setCacheSerializerIfEnabled respects a user-provided serializer") {
+    val conf = new SparkConf()
+      .set(CometConf.COMET_CACHE_SERIALIZER_ENABLED.key, "true")
+      .set(StaticSQLConf.SPARK_CACHE_SERIALIZER.key, "com.example.MyCachedBatchSerializer")
+    CometDriverPlugin.setCacheSerializerIfEnabled(conf)
+    assert(
+      conf.get(StaticSQLConf.SPARK_CACHE_SERIALIZER.key) == "com.example.MyCachedBatchSerializer")
+  }
+
+  test("setCacheSerializerIfEnabled does nothing when disabled") {
+    val conf = new SparkConf()
+    CometDriverPlugin.setCacheSerializerIfEnabled(conf)
+    assert(conf.getOption(StaticSQLConf.SPARK_CACHE_SERIALIZER.key).isEmpty)
   }
 
   test("CometSource metrics are recorded") {

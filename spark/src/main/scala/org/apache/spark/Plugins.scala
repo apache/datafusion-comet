@@ -28,7 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
+import org.apache.comet.CometConf.{COMET_CACHE_SERIALIZER_ENABLED, COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.CometSparkSessionExtensions
 
 /**
@@ -56,6 +56,9 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
+
+    // Install the Comet cache serializer if requested
+    CometDriverPlugin.setCacheSerializerIfEnabled(sc.conf)
 
     // Register Comet metrics
     CometDriverPlugin.registerCometMetrics(sc)
@@ -104,6 +107,26 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 }
 
 object CometDriverPlugin extends Logging {
+  private[spark] val COMET_CACHE_SERIALIZER =
+    "org.apache.spark.sql.comet.CometCachedBatchSerializer"
+
+  /**
+   * If the Comet cache serializer is enabled, install it as Spark's cache serializer. This is a
+   * static SQL config, so it must be set on the SparkConf before the session is created. A
+   * user-provided non-default serializer is respected and not overridden.
+   */
+  private[spark] def setCacheSerializerIfEnabled(conf: SparkConf): Unit = {
+    if (conf.getBoolean(COMET_CACHE_SERIALIZER_ENABLED.key, defaultValue = false)) {
+      val key = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
+      val default = StaticSQLConf.SPARK_CACHE_SERIALIZER.defaultValueString
+      val existing = conf.get(key, default)
+      if (existing == default) {
+        logInfo(s"Setting $key=$COMET_CACHE_SERIALIZER")
+        conf.set(key, COMET_CACHE_SERIALIZER)
+      }
+    }
+  }
+
   def registerCometMetrics(sc: SparkContext): Unit = {
     if (sc.getConf.getBoolean(
         COMET_METRICS_ENABLED.key,
