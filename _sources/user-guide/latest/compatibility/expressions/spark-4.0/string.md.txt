@@ -1,0 +1,79 @@
+<!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# String Expressions
+
+<!--BEGIN:EXPR_COMPAT[string]-->
+
+## Concat
+
+The following incompatibilities cause `Concat` to fall back to Spark by default. Set `spark.comet.expression.Concat.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- concat does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)
+
+The following cases are not supported by Comet:
+
+- CONCAT supports only string input parameters
+
+## Left
+
+The following cases are not supported by Comet:
+
+- Only supports `BinaryType` and `StringType` input
+- The length argument must be a literal value
+
+## Length
+
+The following cases are not supported by Comet:
+
+- `BinaryType` input is not supported
+
+## Reverse
+
+The following incompatibilities cause `Reverse` to fall back to Spark by default. Set `spark.comet.expression.Reverse.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- reverse on array containing binary is not supported
+- reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)
+
+## Right
+
+The following cases are not supported by Comet:
+
+- Only supports `StringType` input
+
+## StringLPad
+
+The following cases are not supported by Comet:
+
+- Scalar values are not supported for the `str` argument.
+- Only scalar values are supported for the `pad` argument.
+
+## StringRPad
+
+The following cases are not supported by Comet:
+
+- Scalar values are not supported for the `str` argument.
+- Only scalar values are supported for the `pad` argument.
+
+## StringRepeat
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- A negative argument for the number of times to repeat throws an exception instead of returning an empty string as Spark does
+<!--END:EXPR_COMPAT-->
