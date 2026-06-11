@@ -34,6 +34,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression,
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
@@ -311,13 +312,13 @@ object CometExec {
   }
 
   def getCometIterator(
-      inputs: Seq[Iterator[ColumnarBatch]],
+      inputObjects: Array[Object],
       numOutputCols: Int,
       nativePlan: Operator,
       numParts: Int,
       partitionIdx: Int): CometExecIterator = {
     getCometIterator(
-      inputs,
+      inputObjects,
       numOutputCols,
       nativePlan,
       CometMetricNode(Map.empty),
@@ -332,14 +333,14 @@ object CometExec {
    * executing the same plan across multiple partitions to avoid serializing the plan repeatedly.
    */
   def getCometIterator(
-      inputs: Seq[Iterator[ColumnarBatch]],
+      inputObjects: Array[Object],
       numOutputCols: Int,
       serializedPlan: Array[Byte],
       numParts: Int,
       partitionIdx: Int): CometExecIterator = {
     new CometExecIterator(
       newIterId,
-      inputs,
+      inputObjects,
       numOutputCols,
       serializedPlan,
       CometMetricNode(Map.empty),
@@ -350,7 +351,7 @@ object CometExec {
   }
 
   def getCometIterator(
-      inputs: Seq[Iterator[ColumnarBatch]],
+      inputObjects: Array[Object],
       numOutputCols: Int,
       nativePlan: Operator,
       nativeMetrics: CometMetricNode,
@@ -361,7 +362,7 @@ object CometExec {
     val bytes = serializeNativePlan(nativePlan)
     new CometExecIterator(
       newIterId,
-      inputs,
+      inputObjects,
       numOutputCols,
       bytes,
       nativeMetrics,
@@ -390,7 +391,7 @@ object CometExec {
  * tree.
  */
 private[comet] case class NativeExecContext(
-    inputs: Seq[RDD[ColumnarBatch]],
+    inputs: Seq[RDD[_]],
     numPartitions: Int,
     subqueries: Seq[ScalarSubquery],
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
@@ -495,9 +496,12 @@ abstract class CometNativeExec extends CometExec {
       mutable.ArrayBuffer.empty[(Broadcast[SerializableConfiguration], Seq[String])]
     foreachUntilCometInput(this) {
       case scan: CometNativeScanExec =>
+        // Bring in any SQLConf "spark.hadoop.*" configs and the per-relation options, since
+        // different tables may have different decryption properties.
         val hadoopConf = scan.relation.sparkSession.sessionState
           .newHadoopConfWithOptions(scan.relation.options)
         if (CometParquetUtils.encryptionEnabled(hadoopConf)) {
+          // hadoopConf isn't serializable, so ship it to executors via a broadcast.
           val broadcastedConf = scan.relation.sparkSession.sparkContext
             .broadcast(new SerializableConfiguration(hadoopConf))
           encryptionOptions += ((broadcastedConf, scan.relation.inputFiles.toSeq))
@@ -517,10 +521,11 @@ abstract class CometNativeExec extends CometExec {
     // Find planning data within this stage (stops at shuffle boundaries).
     val (commonByKey, perPartitionByKey) = findAllPlanData(this)
 
-    // Collect the input ColumnarBatches from the child operators and create a CometExecIterator
-    // to execute the native plan.
+    // Collect the input batches from the child operators. Non-shuffle inputs become
+    // RDD[ArrowArrayStream] (one stream per partition, exported via the C Stream Interface
+    // for native consumption); shuffle inputs stay as CometShuffledBatchRDD.
     val sparkPlans = ArrayBuffer.empty[SparkPlan]
-    val inputs = ArrayBuffer.empty[RDD[ColumnarBatch]]
+    val inputs = ArrayBuffer.empty[RDD[_]]
 
     foreachUntilCometInput(this)(sparkPlans += _)
 
@@ -547,6 +552,78 @@ abstract class CometNativeExec extends CometExec {
       throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
     }
 
+    def isShuffleScanInput(plan: SparkPlan): Boolean = plan match {
+      case _: CometShuffleExchangeExec | _: ShuffleQueryStageExec | _: AQEShuffleReadExec =>
+        true
+      case ReusedExchangeExec(_, _: CometShuffleExchangeExec) => true
+      case _ => false
+    }
+
+    // The protobuf is the source of truth for whether a slot is a ShuffleScan or a regular
+    // Scan: `CometExchangeSink.shouldUseShuffleScan` only fires for AQE wrappers
+    // (`ShuffleQueryStageExec`), so a bare non-AQE `CometShuffleExchangeExec` always serializes
+    // as a regular Scan regardless of `COMET_SHUFFLE_DIRECT_READ_ENABLED`. Driving the JVM
+    // dispatch from `shuffleScanIndices` instead of the conf keeps the two aligned.
+    val shuffleScanIndices = findShuffleScanIndices(nativeOp)
+
+    def isBroadcastInput(plan: SparkPlan): Boolean = plan match {
+      case _: CometBroadcastExchangeExec => true
+      case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+      case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+      case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
+      case _ => false
+    }
+
+    // Unwrap any number of AQE / reuse wrappers to find a CometBroadcastExchangeExec, if
+    // present. Returns the unwrapped exchange for input wiring -- broadcast partition counts
+    // are coerced to match firstNonBroadcastPlanNumPartitions, so we always read from the
+    // underlying exchange directly.
+    def asBroadcastExchange(plan: SparkPlan): Option[CometBroadcastExchangeExec] =
+      plan match {
+        case c: CometBroadcastExchangeExec => Some(c)
+        case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) => Some(c)
+        case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) => Some(c)
+        case BroadcastQueryStageExec(
+              _,
+              ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
+              _) =>
+          Some(c)
+        case _ => None
+      }
+
+    def asArrowStreamRDD(plan: SparkPlan, partitionCount: Int, scanSlot: Int): RDD[_] =
+      plan match {
+        case s: CometNativeArrowSource =>
+          s.doExecuteAsArrowStream()
+        case _ =>
+          asBroadcastExchange(plan) match {
+            case Some(c) =>
+              CometArrowStream.wrapColumnarBatchRDD(
+                c.executeColumnar(partitionCount),
+                c.schema,
+                CometArrowStream.NATIVE_TIMEZONE,
+                c.nodeName)
+            case None if isShuffleScanInput(plan) && shuffleScanIndices.contains(scanSlot) =>
+              // Direct-read shuffle: `CometShuffledBatchRDD` reaches native via
+              // CometShuffleBlockIterator. Other shuffle slots fall through and get wrapped.
+              plan.executeColumnar()
+            case None =>
+              CometArrowStream.wrapColumnarBatchRDD(
+                plan.executeColumnar(),
+                plan.schema,
+                CometArrowStream.NATIVE_TIMEZONE,
+                plan.nodeName)
+          }
+      }
+
+    // Walk-order: count how many non-CometNativeExec plans come before the firstNonBroadcast
+    // plan in `sparkPlans`. That's the slot index it will occupy in `inputs`, and therefore
+    // the protobuf scan-slot index whose Scan vs ShuffleScan classification governs whether
+    // it should be wrapped or direct-read.
+    val firstNonBroadcastSlot = sparkPlans
+      .take(firstNonBroadcastPlan.get._2)
+      .count(p => !p.isInstanceOf[CometNativeExec])
+
     // If the first non broadcast plan is found, we need to adjust the partition number of
     // the broadcast plans to make sure they have the same partition number as the first non
     // broadcast plan.
@@ -555,7 +632,7 @@ abstract class CometNativeExec extends CometExec {
         case plan: CometNativeExec =>
           (null, plan.outputPartitioning.numPartitions)
         case plan =>
-          val rdd = plan.executeColumnar()
+          val rdd = asArrowStreamRDD(plan, 0, firstNonBroadcastSlot)
           (rdd, rdd.getNumPartitions)
       }
 
@@ -564,24 +641,17 @@ abstract class CometNativeExec extends CometExec {
     // partition number of Broadcast RDDs to make sure they have the same partition number.
     sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
       plan match {
-        case c: CometBroadcastExchangeExec =>
-          inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-        case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
-          inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-        case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
-          inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-        case BroadcastQueryStageExec(
-              _,
-              ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
-              _) =>
-          inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
         case _: CometNativeExec =>
         // no-op
         case _ if idx == firstNonBroadcastPlan.get._2 =>
           inputs += firstNonBroadcastPlanRDD
         case _ =>
-          val rdd = plan.executeColumnar()
-          if (rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions) {
+          // Each plan we add to `inputs` corresponds to the next protobuf scan slot, in
+          // walk order. `inputs.size` is the slot index this plan will occupy.
+          val scanSlot = inputs.size
+          val rdd = asArrowStreamRDD(plan, firstNonBroadcastPlanNumPartitions, scanSlot)
+          if (!isBroadcastInput(plan) &&
+            rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions) {
             throw new CometRuntimeException(
               s"Partition number mismatch: ${rdd.getNumPartitions} != " +
                 s"$firstNonBroadcastPlanNumPartitions")
@@ -603,7 +673,7 @@ abstract class CometNativeExec extends CometExec {
       encryptedFilePaths = encryptedFilePaths,
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
-      shuffleScanIndices = findShuffleScanIndices(nativeOp),
+      shuffleScanIndices = shuffleScanIndices,
       hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
   }
 
