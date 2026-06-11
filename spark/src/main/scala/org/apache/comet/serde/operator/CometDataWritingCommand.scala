@@ -36,7 +36,6 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 /**
  * CometOperatorSerde implementation for DataWritingCommandExec that converts Parquet write
@@ -93,28 +92,12 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
     try {
       val cmd = op.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
 
-      val scanOp = OperatorOuterClass.Scan
-        .newBuilder()
-        .setSource(cmd.query.nodeName)
-        .setArrowFfiSafe(false)
-
-      // Add fields from the query output schema
-      val scanTypes = cmd.query.output.flatMap { attr =>
-        serializeDataType(attr.dataType)
+      val scanOperator = NativeWriteUtils.buildFfiScan(cmd.query, op.id, ffiSafe = false) match {
+        case Some(scan) => scan
+        case None =>
+          withFallbackReason(op, "Cannot serialize data types for native write")
+          return None
       }
-
-      if (scanTypes.length != cmd.query.output.length) {
-        withFallbackReason(op, "Cannot serialize data types for native write")
-        return None
-      }
-
-      scanTypes.foreach(scanOp.addFields)
-
-      val scanOperator = Operator
-        .newBuilder()
-        .setPlanId(op.id)
-        .setScan(scanOp.build())
-        .build()
 
       val outputPath = cmd.outputPath.toString
 

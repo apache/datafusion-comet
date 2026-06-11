@@ -235,6 +235,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::Window(_) => "Window",
         OpStruct::NativeScan(_) => "NativeScan",
         OpStruct::IcebergScan(_) => "IcebergScan",
+        OpStruct::IcebergWrite(_) => "IcebergWrite",
         OpStruct::ParquetWriter(_) => "ParquetWriter",
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",

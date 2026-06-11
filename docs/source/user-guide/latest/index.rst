@@ -80,6 +80,7 @@ to read more.
    :hidden:
 
    Iceberg Guide <iceberg>
+   Iceberg Writes <iceberg-writes>
    S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 

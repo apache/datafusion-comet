@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
+import org.apache.comet.iceberg.IcebergWriteStrategy
 import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
@@ -97,6 +98,9 @@ class CometSparkSessionExtensions
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
+    // Runs before Spark's DataSourceV2Strategy because `experimentalMethods.extraStrategies` is
+    // prepended to the planner's strategy list.
+    extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {

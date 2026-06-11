@@ -23,6 +23,7 @@ pub mod operator_registry;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::IcebergWriteExec;
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
@@ -1524,6 +1525,24 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         shuffle_writer,
+                        vec![Arc::clone(&child)],
+                    )),
+                ))
+            }
+            OpStruct::IcebergWrite(iceberg_write) => {
+                assert_eq!(children.len(), 1);
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let exec = Arc::new(IcebergWriteExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    iceberg_write.clone(),
+                )?);
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        exec,
                         vec![Arc::clone(&child)],
                     )),
                 ))

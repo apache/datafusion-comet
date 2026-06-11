@@ -95,10 +95,13 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   def reportNativeWriteOutputMetrics(ctx: TaskContext): Unit = {
     ctx.addTaskCompletionListener[Unit] { _ =>
-      metrics.get("bytes_written").foreach { m =>
+      // V1 parquet writes still use Comet's internal naming (`bytes_written` / `rows_written`);
+      // V2 Iceberg writes mirror Spark's stock V2 names (`numOutputBytes` / `numOutputRows`).
+      // Fall back to the V1 names so this helper covers both.
+      metrics.get("numOutputBytes").orElse(metrics.get("bytes_written")).foreach { m =>
         ctx.taskMetrics().outputMetrics.setBytesWritten(m.value)
       }
-      metrics.get("rows_written").foreach { m =>
+      metrics.get("numOutputRows").orElse(metrics.get("rows_written")).foreach { m =>
         ctx.taskMetrics().outputMetrics.setRecordsWritten(m.value)
       }
     }
@@ -321,10 +324,21 @@ object CometMetricNode {
 
   /**
    * Creates a [[CometMetricNode]] from a [[CometPlan]].
+   *
+   * Stops walking at non-Comet nodes: a JVM-side `AQEShuffleReadExec` (or any other Spark exec
+   * constructed off the planning thread) captures `SparkPlan.session` eagerly as a `@transient
+   * final val`, which can be `null` if `SparkSession.getActiveSession` returned `None` at the
+   * moment AQE's stage-finalisation rules built it. Forcing such a node's `metrics` lazy val NPEs
+   * in `SQLMetrics.createMetric(sparkContext, ...)`. We don't own those metrics anyway -- the
+   * native side only sources updates against operators it actually planned, and JVM-side
+   * AQE-stage nodes belong to a different stage that's already been materialised independently.
    */
-  def fromCometPlan(cometPlan: SparkPlan): CometMetricNode = {
-    val children = cometPlan.children.map(fromCometPlan)
-    CometMetricNode(cometPlan.metrics, children)
+  def fromCometPlan(cometPlan: SparkPlan): CometMetricNode = cometPlan match {
+    case _: CometPlan =>
+      val children = cometPlan.children.map(fromCometPlan)
+      CometMetricNode(cometPlan.metrics, children)
+    case _ =>
+      CometMetricNode(Map.empty, Nil)
   }
 
   /**
