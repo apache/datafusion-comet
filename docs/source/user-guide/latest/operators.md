@@ -31,20 +31,21 @@ all native execution can be turned off with `spark.comet.exec.enabled=false`. Se
 
 ## Status legend
 
-| Status                   | Meaning                                                                                                                                            |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ✅ Supported             | Native implementation; enabled by default.                                                                                                         |
-| ⚠️ Supported (caveats)   | Works, but with limits: restricted to certain inputs, experimental, or disabled by default. See the [Compatibility Guide](compatibility/index.md). |
-| 🔜 Planned               | Intended; tracked by an open issue or pull request.                                                                                                |
-| 💤 Not currently planned | Not on the current roadmap; falls back to Spark and may be reconsidered later.                                                                     |
+| Status                 | Meaning                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ✅ Supported           | Native implementation; enabled by default.                                                                                                         |
+| ⚠️ Supported (caveats) | Works, but with limits: restricted to certain inputs, experimental, or disabled by default. See the [Compatibility Guide](compatibility/index.md). |
+| 🔜 Planned             | Intended; tracked by an open issue or pull request.                                                                                                |
 
 ## Not currently planned
 
-The following operator families fall back to Spark and are not on the current roadmap:
+The following operator families fall back to Spark and are not on the current roadmap. They are
+omitted from the tables below and may be reconsidered based on demand:
 
 - **Structured Streaming operators** (`StateStoreSaveExec`, `StateStoreRestoreExec`, `StreamingSymmetricHashJoinExec`, and similar): Comet targets batch execution.
 - **Cartesian / cross joins** (`CartesianProductExec`): rare and expensive, with little acceleration benefit.
 - **Sampling and range generation** (`SampleExec`, `RangeExec`): niche leaf operators.
+- **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/issues/4234)).
 
 ## Scans
 
@@ -54,7 +55,6 @@ The following operator families fall back to Spark and are not on the current ro
 | `BatchScanExec`         | ✅     | Parquet, Apache Iceberg Parquet, and CSV (native) scans. See [Parquet Scan Compatibility](compatibility/scans.md) and the [Iceberg Guide](iceberg.md). |
 | `LocalTableScanExec`    | ⚠️     | Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config (#4393).   |
 | `InMemoryTableScanExec` | 🔜     | Cached / in-memory table scans fall back today.                                                                                                        |
-| `RangeExec`             | 💤     | See [Not currently planned](#not-currently-planned).                                                                                                   |
 
 ## Projection and filtering
 
@@ -83,13 +83,12 @@ The following operator families fall back to Spark and are not on the current ro
 
 ## Joins
 
-| Operator                      | Status | Notes                                                |
-| ----------------------------- | ------ | ---------------------------------------------------- |
-| `BroadcastHashJoinExec`       | ✅     |                                                      |
-| `ShuffledHashJoinExec`        | ✅     |                                                      |
-| `SortMergeJoinExec`           | ✅     |                                                      |
-| `BroadcastNestedLoopJoinExec` | 🔜     | In progress (#4429).                                 |
-| `CartesianProductExec`        | 💤     | See [Not currently planned](#not-currently-planned). |
+| Operator                      | Status | Notes                                                                                                                 |
+| ----------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------- |
+| `BroadcastHashJoinExec`       | ✅     |                                                                                                                       |
+| `ShuffledHashJoinExec`        | ✅     |                                                                                                                       |
+| `SortMergeJoinExec`           | ✅     |                                                                                                                       |
+| `BroadcastNestedLoopJoinExec` | ⚠️     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) (#4429). |
 
 ## Exchanges
 
@@ -125,7 +124,6 @@ The following operator families fall back to Spark and are not on the current ro
 | Operator                                                                                | Status | Notes                                                                |
 | --------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------- |
 | `ArrowEvalPythonExec`, `MapInArrowExec`, `MapInPandasExec`, `FlatMapGroupsInPandasExec` | 🔜     | Experimental accelerated PyArrow UDF support is in progress (#4234). |
-| `BatchEvalPythonExec`                                                                   | 💤     | Pickled (non-Arrow) Python UDFs.                                     |
 
 ## See also
 

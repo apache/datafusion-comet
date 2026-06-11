@@ -29,12 +29,18 @@ hash-aggregate group-key restrictions), see the [Compatibility Guide](compatibil
 
 ## Status legend
 
-| Status                   | Meaning                                                                                               |
-| ------------------------ | ----------------------------------------------------------------------------------------------------- |
-| ✅ Supported             | Native support; enabled by default.                                                                   |
-| ⚠️ Supported (caveats)   | Works, but with limits: certain values, contexts, or configurations fall back to Spark.               |
-| 🔜 Planned               | Intended; tracked by an open issue or pull request.                                                   |
-| 💤 Not currently planned | Not on the current roadmap; queries referencing this type fall back to Spark and may be reconsidered. |
+| Status                 | Meaning                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| ✅ Supported           | Native support; enabled by default.                                                     |
+| ⚠️ Supported (caveats) | Works, but with limits: certain values, contexts, or configurations fall back to Spark. |
+| 🔜 Planned             | Intended; tracked by an open issue or pull request.                                     |
+
+## Not currently planned
+
+The following types fall back to Spark and are not on the current roadmap. They are omitted from
+the tables below and may be reconsidered based on demand:
+
+- **`UserDefinedType`**: user-defined types are application-specific and outside the scope of native acceleration; queries referencing UDTs fall back to Spark.
 
 ## Numeric
 
@@ -99,10 +105,9 @@ Interval types fall back to Spark today. Native acceleration is tracked by
 
 ## Other
 
-| Type              | Status | Notes                                                                                                                                  |
-| ----------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `NullType`        | ✅     |                                                                                                                                        |
-| `UserDefinedType` | 💤     | User-defined types are application-specific and outside the scope of native acceleration; queries referencing UDTs fall back to Spark. |
+| Type       | Status | Notes |
+| ---------- | ------ | ----- |
+| `NullType` | ✅     |       |
 
 ## See also
 

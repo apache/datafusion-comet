@@ -21,7 +21,7 @@ package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
@@ -31,6 +31,10 @@ import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoIntern
 import org.apache.comet.shims.CometExprShim
 
 object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
+
+  // Shared with CometCastSuite so the asserted reason cannot drift from production.
+  private[comet] val negativeScaleDecimalToStringReason: String =
+    "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
   def supportedTypes: Seq[DataType] =
     Seq(
@@ -48,17 +52,17 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       DataTypes.TimestampType,
       DataTypes.TimestampNTZType)
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Some cast operations between specific type pairs may produce different results than Spark." +
-      " Refer to the compatibility guide for the full matrix of supported cast operations.")
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Not all cast type combinations are supported. Unsupported casts fall back to Spark.")
+  // Note: `getIncompatibleReasons` / `getUnsupportedReasons` are intentionally not
+  // overridden here. The per-pair `isSupported` matrix is the canonical source of cast
+  // reasons: `cast.md` is generated directly from it (see `GenerateDocs.writeCastMatrixForMode`)
+  // and EXPLAIN surfaces the per-pair reason via `getSupportLevel`. A single static sentence
+  // would only duplicate the matrix and risk drifting from it.
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
     if (cast.child.isInstanceOf[Literal]) {
-      // casting from literal is compatible because we delegate to Spark
-      // further data type checks will be performed by CometLiteral
+      // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
+      // (see `convert`), so the cast never executes natively and the result matches Spark by
+      // definition. `CometLiteral` then validates the resulting literal's data type.
       Compatible()
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
@@ -151,8 +155,6 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
           if toElementType != DataTypes.IntegerType && toElementType != DataTypes.StringType =>
         unsupported(fromType, toType)
-      case (dt: ArrayType, DataTypes.StringType) if dt.elementType == DataTypes.BinaryType =>
-        Incompatible()
       case (dt: ArrayType, DataTypes.StringType) =>
         isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode)
       case (dt: ArrayType, dt1: ArrayType) =>
@@ -198,6 +200,14 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           }
         }
         Compatible()
+      case (from_map: MapType, to_map: MapType) =>
+        // Native cast_map_to_map recursively casts keys and values, so support is
+        // determined by whether both inner casts are individually supported.
+        isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
+          case Compatible(_) =>
+            isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
+          case other => other
+        }
       case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
       case _ => unsupported(fromType, toType)
     }
@@ -245,9 +255,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible(
           Some(
-            "There can be differences in precision. " +
-              "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
-              "instead of 1.4E-45"))
+            "String formatting can differ for floating-point values near precision limits " +
+              "or when scientific notation is used"))
       case d: DecimalType if d.scale < 0 =>
         // Negative-scale decimals require spark.sql.legacy.allowNegativeScaleOfDecimal=true.
         // When that config is enabled, Spark formats them using Java BigDecimal.toString()
@@ -257,7 +266,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         val allowNegativeScale = SQLConf.get
           .getConfString("spark.sql.legacy.allowNegativeScaleOfDecimal", "false")
           .toBoolean
-        if (allowNegativeScale) Compatible() else Incompatible()
+        if (allowNegativeScale) Compatible()
+        else Incompatible(Some(negativeScaleDecimalToStringReason))
       case _: DecimalType =>
         // Compatible across all eval modes: LEGACY uses cast_decimal128_to_utf8 which
         // replicates Java BigDecimal.toString() (scientific notation when adj_exp < -6);
