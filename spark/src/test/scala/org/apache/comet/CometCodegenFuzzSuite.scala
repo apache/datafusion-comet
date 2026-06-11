@@ -27,12 +27,18 @@ import scala.util.Random
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.CatalystTypeConverters
+import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, Literal}
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.vector.CometVector
 
 /**
  * Randomized end-to-end tests for the Arrow-direct codegen dispatcher: schema-driven coverage of
@@ -405,5 +411,109 @@ class CometCodegenFuzzSuite
         }
       }
     }
+  }
+
+  /**
+   * Randomized output-writer coverage (#4539). Generates a random nested output type and a random
+   * catalyst value of that type, wraps it in a `Literal`, and drives it through the kernel output
+   * writer with [[runKernel]]. Reading the Arrow output back must reproduce the value.
+   *
+   * Random Array / Map sizes mean each collection's child vector fills at a cumulative index that
+   * `numRows` does not bound, so the writer must grow the child with `setSafe` (the #4539 fix). A
+   * multi-row batch additionally exercises the cumulative index across rows. The root is always a
+   * collection so the nested-write path always runs. The generated value is its own oracle:
+   * `CatalystTypeConverters.convertToScala` materializes both the value and the Arrow readback
+   * (both expose the catalyst ArrayData / MapData / InternalRow interface) and the two must
+   * compare equal.
+   */
+  private val outputLeafTypes: Seq[DataType] =
+    Seq(IntegerType, LongType, DoubleType, BooleanType, StringType, DecimalType(10, 2))
+
+  private def randomLeafType(r: Random): DataType =
+    outputLeafTypes(r.nextInt(outputLeafTypes.size))
+
+  /** Random nested type, biased toward leaves as depth runs out. Map keys are always leaves. */
+  private def randomOutputType(r: Random, depth: Int): DataType =
+    if (depth <= 0 || r.nextDouble() < 0.4) randomLeafType(r)
+    else
+      r.nextInt(3) match {
+        case 0 => ArrayType(randomOutputType(r, depth - 1), containsNull = true)
+        case 1 =>
+          MapType(randomLeafType(r), randomOutputType(r, depth - 1), valueContainsNull = true)
+        case _ =>
+          StructType((0 to r.nextInt(2)).map(i =>
+            StructField(s"f$i", randomOutputType(r, depth - 1), nullable = true)))
+      }
+
+  private def randomLeafValue(r: Random, dt: DataType): Any = dt match {
+    case IntegerType => r.nextInt()
+    case LongType => r.nextLong()
+    case DoubleType => r.nextDouble()
+    case BooleanType => r.nextBoolean()
+    case StringType => UTF8String.fromString(s"s${r.nextInt(1000000)}")
+    case d: DecimalType => Decimal((r.nextInt(2000000) - 1000000).toLong, d.precision, d.scale)
+    case other => throw new IllegalArgumentException(s"unexpected leaf type $other")
+  }
+
+  /** Random catalyst value of `dt`; `nullable` permits an occasional null element / field. */
+  private def randomOutputValue(r: Random, dt: DataType, nullable: Boolean): Any = {
+    if (nullable && r.nextDouble() < 0.2) null
+    else
+      dt match {
+        case ArrayType(e, containsNull) =>
+          val n = r.nextInt(40)
+          new GenericArrayData(
+            (0 until n).map(_ => randomOutputValue(r, e, containsNull)).toArray[Any])
+        case MapType(k, v, valueContainsNull) =>
+          // Dedup by materialized key so the map round-trips 1:1 (Spark map keys are distinct).
+          val entries = scala.collection.mutable.LinkedHashMap.empty[Any, Any]
+          (0 until r.nextInt(20)).foreach { _ =>
+            val key = randomOutputValue(r, k, nullable = false)
+            entries.getOrElseUpdate(key, randomOutputValue(r, v, valueContainsNull))
+          }
+          new ArrayBasedMapData(
+            new GenericArrayData(entries.keys.toArray[Any]),
+            new GenericArrayData(entries.values.toArray[Any]))
+        case st: StructType =>
+          new GenericInternalRow(
+            st.fields.map(f => randomOutputValue(r, f.dataType, f.nullable)).toArray[Any])
+        case leaf => randomLeafValue(r, leaf)
+      }
+  }
+
+  /** Reads the root collection value of `vec` at `row` as a catalyst ArrayData / MapData. */
+  private def readRoot(vec: CometVector, dt: DataType, row: Int): Any = dt match {
+    case _: ArrayType => vec.getArray(row)
+    case _: MapType => vec.getMap(row)
+    case other => throw new IllegalArgumentException(s"unexpected root type $other")
+  }
+
+  test("randomized dynamically-sized collection output round-trips through the writer (#4539)") {
+    val r = new Random(42)
+    val numRows = 4 // > 1 so the child's cumulative index accumulates across rows
+    // canHandle may reject a generated type (e.g. the maxFields gate on a wide nesting); count
+    // the ones we actually drove through the writer to guard against a vacuous run.
+    val exercised = (0 until 300).count { _ =>
+      // Root is always a collection so the nested-child write path runs every iteration.
+      val dt =
+        if (r.nextBoolean()) ArrayType(randomOutputType(r, 2), containsNull = true)
+        else MapType(randomLeafType(r), randomOutputType(r, 2), valueContainsNull = true)
+      val value = randomOutputValue(r, dt, nullable = false)
+      val expr = Literal(value, dt)
+      val handled = CometBatchKernelCodegen.canHandle(expr).isEmpty
+      if (handled) {
+        val expected = CatalystTypeConverters.convertToScala(value, dt)
+        runKernel(expr, numRows) { vec =>
+          (0 until numRows).foreach { row =>
+            val actual = CatalystTypeConverters.convertToScala(readRoot(vec, dt, row), dt)
+            assert(
+              actual === expected,
+              s"row $row mismatch for output type $dt\n expected=$expected\n actual=$actual")
+          }
+        }
+      }
+      handled
+    }
+    assert(exercised > 0, "every generated type was rejected by canHandle (of 300 generated)")
   }
 }

@@ -27,3 +27,14 @@ SELECT minute(ts) FROM test_minute
 -- literal arguments
 query ignore(https://github.com/apache/datafusion-comet/issues/3336)
 SELECT minute(timestamp('2024-01-15 10:00:00')), minute(timestamp('2024-01-15 10:30:00')), minute(timestamp('2024-01-15 10:59:59'))
+
+-- TimestampNTZ: the native impl is Incompatible for TimestampNTZType (#3180), so this is routed
+-- through the codegen dispatcher and stays native while matching Spark.
+statement
+CREATE TABLE test_minute_ntz(ts timestamp_ntz) USING parquet
+
+statement
+INSERT INTO test_minute_ntz VALUES (cast('2024-01-15 00:00:00' as timestamp_ntz)), (cast('2024-01-15 12:30:45' as timestamp_ntz)), (cast('2024-01-15 23:59:59' as timestamp_ntz)), (NULL)
+
+query
+SELECT minute(ts) FROM test_minute_ntz

@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 
 /**
  * Adapted from equivalent rule in Apache Gluten.
@@ -69,7 +69,7 @@ object RewriteJoin extends JoinSelectionHelper {
       getSmjBuildSide(smj) match {
         case Some(BuildRight) if smj.joinType == LeftSemi =>
           // LeftSemi https://github.com/apache/datafusion-comet/issues/2667
-          withInfo(
+          withFallbackReason(
             smj,
             "Cannot rewrite SortMergeJoin to HashJoin: " +
               s"BuildRight with ${smj.joinType} is not supported")

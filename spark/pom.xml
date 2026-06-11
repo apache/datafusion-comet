@@ -291,7 +291,7 @@ under the License.
           <version>1.10.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.1's jetty.version -->
+        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.2's jetty.version -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
@@ -469,14 +469,13 @@ under the License.
                   <pattern>org.apache.arrow</pattern>
                   <shadedPattern>${comet.shade.packageName}.arrow</shadedPattern>
                   <excludes>
-                    <!-- These classes are referenced from Arrow JNI native code and must stay
-                       at their original package paths. They have no extra dependencies so the
-                       exclusion is safe. -->
-                    <exclude>org/apache/arrow/c/jni/JniWrapper</exclude>
-                    <exclude>org/apache/arrow/c/jni/PrivateData</exclude>
-                    <exclude>org/apache/arrow/c/jni/CDataJniException</exclude>
-                    <!-- Also required by JNI per upstream Arrow C++ jni_wrapper.cc -->
-                    <exclude>org/apache/arrow/c/ArrayStreamExporter$ExportedArrayStreamPrivateData</exclude>
+                    <!-- Keep the entire C Data Interface unshaded. Spark does not ship
+                       arrow-c-data, so no classpath clash is possible. Shading a subset
+                       splits package-private access between the shaded and original
+                       packages (e.g. Data -> ArrayStreamExporter constructor) and breaks
+                       JNI lookups in jni_wrapper.cc that reference these classes by literal
+                       name. -->
+                    <exclude>org/apache/arrow/c/**</exclude>
                   </excludes>
                 </relocation>
                 <relocation>
