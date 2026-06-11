@@ -53,6 +53,7 @@ message Operator {
     Explode explode = 114;
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
+    BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
   }
 }
 
@@ -395,6 +396,12 @@ message SortMergeJoin {
   JoinType join_type = 3;
   repeated spark.spark_expression.Expr sort_options = 4;
   optional spark.spark_expression.Expr condition = 5;
+}
+
+message BroadcastNestedLoopJoin {
+  JoinType join_type = 1;
+  BuildSide build_side = 2;
+  optional spark.spark_expression.Expr condition = 3;
 }
 
 enum JoinType {

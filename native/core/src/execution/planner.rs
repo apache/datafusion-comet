@@ -109,6 +109,7 @@ use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion_comet_proto::spark_expression::ListLiteral;
@@ -1227,6 +1228,57 @@ impl PhysicalPlanner {
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
                 ))
+            }
+
+            OpStruct::BroadcastNestedLoopJoin(bnlj) => {
+                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
+                    inputs,
+                    children,
+                    &[],
+                    &[],
+                    bnlj.join_type,
+                    &bnlj.condition,
+                    partition_count,
+                )?;
+
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
+
+                let nested_loop_join = Arc::new(NestedLoopJoinExec::try_new(
+                    left,
+                    right,
+                    join_params.join_filter,
+                    &join_params.join_type,
+                    None,
+                )?);
+
+                if bnlj.build_side == BuildSide::BuildRight as i32 {
+                    let swapped_join = nested_loop_join.as_ref().swap_inputs()?;
+                    let mut additional_native_plans = vec![];
+                    if swapped_join.as_any().is::<ProjectionExec>() {
+                        additional_native_plans.push(Arc::clone(swapped_join.children()[0]));
+                    }
+                    Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            swapped_join,
+                            vec![join_params.left, join_params.right],
+                            additional_native_plans,
+                        )),
+                    ))
+                } else {
+                    Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            nested_loop_join,
+                            vec![join_params.left, join_params.right],
+                        )),
+                    ))
+                }
             }
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
