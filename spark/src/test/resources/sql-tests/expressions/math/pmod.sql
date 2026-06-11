@@ -15,14 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_regexp_replace(s string) USING parquet
+-- Routes pmod through the codegen dispatcher so behavior matches Spark exactly.
 
 statement
-INSERT INTO test_regexp_replace VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
+CREATE TABLE test_pmod(a int, b int) USING parquet
 
-query expect_fallback(Regexp pattern)
-SELECT regexp_replace(s, '(\\d+)', 'X') FROM test_regexp_replace
+statement
+INSERT INTO test_pmod VALUES (7, 3), (-7, 3), (7, -3), (0, 5), (5, NULL), (NULL, 5)
 
-query expect_fallback(Regexp pattern)
-SELECT regexp_replace(s, '(\\d+)', 'X', 1) FROM test_regexp_replace
+query
+SELECT a, b, pmod(a, b) FROM test_pmod
+
+-- literal arguments including doubles
+query
+SELECT pmod(-7, 3), pmod(10.5, 3.0), pmod(7, -3)

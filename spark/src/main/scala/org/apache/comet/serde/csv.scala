@@ -17,16 +17,10 @@
  * under the License.
  */
 
-package org.apache.comet.expressions
+package org.apache.comet.serde
 
-object RegExp {
+import org.apache.spark.sql.catalyst.expressions.{CsvToStructs, SchemaOfCsv}
 
-  /** Determine whether the regexp pattern is supported natively and compatible with Spark */
-  def isSupportedPattern(pattern: String): Boolean = {
-    // this is a placeholder for implementing logic to determine if the pattern
-    // is known to be compatible with Spark, so that we can enable regexp automatically
-    // for common cases and fallback to Spark for more complex cases
-    false
-  }
+object CometCsvToStructs extends CometCodegenDispatch[CsvToStructs]
 
-}
+object CometSchemaOfCsv extends CometCodegenDispatch[SchemaOfCsv]

@@ -21,7 +21,7 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
-import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
+import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
@@ -39,7 +39,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends CommonStringExprs with CometExprShim4x {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -59,6 +59,13 @@ trait CometExprShim extends CommonStringExprs {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
+      // RuntimeReplaceable structured-text functions (schema_of_csv/json, json_object_keys,
+      // xpath_*, schema_of_xml) and from_xml/to_xml route through the codegen dispatcher; see
+      // CometExprShim4x.convertStructuredText. Guarded so non-structured-text Invoke/StaticInvoke
+      // nodes still reach their existing handlers below.
+      case e if isStructuredTextDispatch(e) =>
+        convertStructuredText(e, inputs, binding)
+
       case knc: KnownNotContainsNull =>
         // On Spark 4.0, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
         // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact.
@@ -191,6 +198,20 @@ trait CometExprShim extends CommonStringExprs {
           case _ => None
         }
 
+      case s: StaticInvoke =>
+        (s.staticObject, s.functionName, s.arguments) match {
+          case (cls, "lengthOfJsonArray", Seq(child)) if cls == classOf[JsonExpressionUtils] =>
+            val lengthOfJsonArray = LengthOfJsonArray(child)
+            val exprProto = exprToProtoInternal(lengthOfJsonArray, inputs, binding)
+            if (exprProto.isEmpty) {
+              lengthOfJsonArray
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .foreach(reasons => s.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
+            }
+            exprProto
+          case _ => None
+        }
+
       case ms: MapSort =>
         val keyType = ms.dataType.asInstanceOf[MapType].keyType
         if (!supportedScalarSortElementType(keyType)) {
@@ -213,6 +234,11 @@ trait CometExprShim extends CommonStringExprs {
             childExpr)
           optExprWithFallbackReason(mapSortExpr, ms, ms.child)
         }
+
+      // dayname / monthname (Spark 4.0+) are shared across all 4.x minor versions; see
+      // CometExprShim4x.convertDayMonthName.
+      case _: DayName | _: MonthName =>
+        convertDayMonthName(expr, inputs, binding)
 
       case _ => None
     }

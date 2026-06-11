@@ -899,25 +899,18 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   // https://github.com/apache/datafusion-comet/issues/2612
-  test("array_reverse - fallback for binary array") {
-    val fallbackReason = CometArrayReverse.unsupportedReason
+  test("array_reverse - binary array") {
     withTable("t1") {
       sql("""create table t1 using parquet as
           select cast(null as array<binary>) c1, cast(array() as array<binary>) c2
           from range(10)
         """)
 
-      checkSparkAnswerAndFallbackReason(
-        "select reverse(array(c1, c2)) AS x FROM t1",
-        fallbackReason)
-
-      checkSparkAnswerAndFallbackReason(
-        "select reverse(array(c1, c1)) AS x FROM t1",
-        fallbackReason)
-
-      checkSparkAnswerAndFallbackReason(
-        "select reverse(array(array(c1), array(c2))) AS x FROM t1",
-        fallbackReason)
+      // The native path is Incompatible for arrays containing binary, so Comet routes these
+      // through the codegen dispatcher and still executes natively.
+      checkSparkAnswerAndOperator("select reverse(array(c1, c2)) AS x FROM t1")
+      checkSparkAnswerAndOperator("select reverse(array(c1, c1)) AS x FROM t1")
+      checkSparkAnswerAndOperator("select reverse(array(array(c1), array(c2))) AS x FROM t1")
     }
   }
 
@@ -1004,6 +997,24 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
         SQLConf.ANSI_ENABLED.key -> "false") {
         checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/4560
+  test("array_size returns null for null input") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(col array<int>) using parquet")
+      sql(s"insert into $table values(array(1, 2, 3)), (array()), (null)")
+      // array_size lowers to Size(child, legacySizeOfNull = false), so it must return null
+      // for a null input regardless of the legacySizeOfNull conf.
+      Seq("false", "true").foreach { legacy =>
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> legacy,
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select array_size(col) from $table"))
+        }
       }
     }
   }
