@@ -20,11 +20,11 @@
 package org.apache.comet.serde
 
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
@@ -61,31 +61,43 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    * Arrow-direct codegen dispatcher. The dispatcher will Janino-compile `expr.doGenCode` into a
    * batch kernel on first invocation per task.
    *
-   * Returns `None` (with `withInfo` tagging the reason) when the dispatcher is disabled via
-   * [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] or when [[CometBatchKernelCodegen.canHandle]]
-   * refuses the expression tree. Callers should treat `None` as a clean Spark-fallback signal.
+   * Returns `None` (with `withFallbackReason` tagging the reason) when the dispatcher is disabled
+   * via [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] or when
+   * [[CometBatchKernelCodegen.canHandle]] refuses the expression tree. Callers should treat
+   * `None` as a clean Spark-fallback signal.
    */
   def emitJvmCodegenDispatch(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
-      withInfo(
+      withFallbackReason(
         expr,
         s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false; expression has no native " +
           "path so the plan falls back to Spark")
       return None
     }
 
+    // `RuntimeReplaceable` expressions (e.g. Spark 4's `StructsToJson`) have a `doGenCode` that
+    // always throws "Cannot generate code for expression". Catalyst's `ReplaceExpressions` rule
+    // normally rewrites them to their `replacement` form before codegen runs. Comet's serde
+    // sometimes works with the pre-rewrite form (via shim reconstruction) for matching purposes,
+    // so unwrap to the replacement here before binding so the kernel compiles.
+    val target = expr match {
+      case rr: RuntimeReplaceable => rr.replacement
+      case other => other
+    }
+
     // Bind against only the AttributeReferences the tree actually reads, so ordinals align with
     // the data args we ship.
-    val attrs = expr.collect { case a: AttributeReference => a }.distinct
-    val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
+    val attrs = target.collect { case a: AttributeReference => a }.distinct
+    val boundExpr = BindReferences.bindReference(target, AttributeSeq(attrs))
 
-    // Gate at plan time. Surface the reason via withInfo rather than crashing Janino at execute.
+    // Gate at plan time. Surface the reason via withFallbackReason rather than crashing Janino
+    // at execute.
     CometBatchKernelCodegen.canHandle(boundExpr) match {
       case Some(reason) =>
-        withInfo(expr, reason)
+        withFallbackReason(expr, reason)
         return None
       case None =>
     }
@@ -133,7 +145,7 @@ class CometCodegenDispatch[T <: Expression] extends CometExpressionSerde[T] {
   // Intentionally no getCompatibleNotes override: the docs generator emits compat notes under
   // a heading that promises "no additional configuration required". The dispatcher flag is a
   // global concern documented elsewhere; tagging each expression here would contradict the
-  // heading. When the flag is off, `convert` returns None with a clear withInfo reason that
+  // heading. When the flag is off, `convert` returns None with a clear fallback reason that
   // shows up in EXPLAIN, which is the right place for that signal.
   override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
     CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)

@@ -36,6 +36,7 @@ import org.apache.arrow.vector.util.VectorSchemaRootAppender
 import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -148,6 +149,7 @@ object Utils extends CometTypeShim with Logging {
         }
       case TimestampNTZType =>
         new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)
+      case NullType => ArrowType.Null.INSTANCE
       case dt if isTimeType(dt) =>
         new ArrowType.Time(TimeUnit.NANOSECOND, 64)
       case _ =>
@@ -205,6 +207,14 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
+   * Build a `StructType` from a sequence of Spark `Attribute`s. Avoids
+   * `StructType.fromAttributes` (removed in Spark 4) and `DataTypeUtils.fromAttributes` (only on
+   * 4) so the same call works across supported Spark versions.
+   */
+  def fromAttributes(attributes: Seq[Attribute]): StructType =
+    StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
+
+  /**
    * Serializes a list of `ColumnarBatch` into an output stream. This method must be in `spark`
    * package because `ChunkedByteBufferOutputStream` is spark private class. As it uses Arrow
    * classes, it must be in `common` module.
@@ -224,6 +234,10 @@ object Utils extends CometTypeShim with Logging {
 
       val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
       val root = new VectorSchemaRoot(fieldVectors.asJava)
+      if (fieldVectors.isEmpty) {
+        // VSR cannot infer rowCount without field vectors
+        root.setRowCount(batch.numRows())
+      }
       val provider = batchProviderOpt.getOrElse(dictionaryProvider)
 
       val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
@@ -334,6 +348,11 @@ object Utils extends CometTypeShim with Logging {
 
         if (targetRoot == null) {
           return (Array.empty, 0L, 0L)
+        }
+
+        if (targetRoot.getSchema.getFields.isEmpty) {
+          // VSRAppender does not update rowCount with no columns
+          targetRoot.setRowCount(totalRows.toInt)
         }
 
         assert(

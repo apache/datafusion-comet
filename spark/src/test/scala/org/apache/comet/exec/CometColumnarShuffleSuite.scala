@@ -22,14 +22,13 @@ package org.apache.comet.exec
 import java.nio.file.{Files, Paths}
 
 import scala.reflect.runtime.universe._
-import scala.util.Random
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
-import org.apache.spark.sql.{CometTestBase, DataFrame, RandomDataGenerator, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -94,22 +93,16 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         """.stripMargin))
   }
 
-  test("Fallback to Spark for unsupported input besides ordering") {
-    val dataGenerator = RandomDataGenerator
-      .forType(
-        dataType = NullType,
-        nullable = true,
-        new Random(System.nanoTime()),
-        validJulianDatetime = false)
-      .get
+  test("columnar shuffle with NullType passthrough column") {
+    val df = sql("SELECT x, y FROM VALUES ('a', null), ('b', null), ('c', null) AS t(x, y)")
+    val shuffled = df.repartition(2, $"x")
+    checkShuffleAnswer(shuffled, 1)
+  }
 
-    val schema = new StructType()
-      .add("index", IntegerType, nullable = false)
-      .add("col", NullType, nullable = true)
-    val rdd =
-      spark.sparkContext.parallelize((1 to 20).map(i => Row(i, dataGenerator())))
-    val df = spark.createDataFrame(rdd, schema).orderBy("index").coalesce(1)
-    checkSparkAnswer(df)
+  test("columnar shuffle with Map[_, NullType] column") {
+    val df = sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
+    val shuffled = df.repartition(2, $"id")
+    checkShuffleAnswer(shuffled, 1)
   }
 
   test("columnar shuffle on nested struct including nulls") {
@@ -219,10 +212,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .sortWithinPartitions($"_2")
 
               // Spark 4.0 normalizes shuffle keys containing array<map> via
-              // transform(arr, x -> mapsort(x)), which Comet doesn't yet
-              // support, so the shuffle falls back to Spark.
-              val expectedShuffles = if (isSpark40Plus) 0 else 1
-              checkShuffleAnswer(df, expectedShuffles)
+              // transform(arr, x -> mapsort(x)). Comet routes the higher-order
+              // transform through the codegen dispatcher, so the partitioning
+              // expression stays native and the shuffle runs as Comet shuffle.
+              checkShuffleAnswer(df, 1)
             }
           }
         }
