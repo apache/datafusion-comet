@@ -1187,7 +1187,7 @@ index 5ba69c8f9d9..ac1256afe88 100644
      val session = classic.SparkSession.builder().sparkContext(sc).getOrCreate()
      import session.implicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
-index 0df7f806272..92390bd819f 100644
+index 0df7f806272..9cdfe8b8f46 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 @@ -17,6 +17,8 @@
@@ -1253,6 +1253,20 @@ index 0df7f806272..92390bd819f 100644
    }
  
    test("non-matching optional group") {
+@@ -1405,7 +1409,12 @@ class StringFunctionsSuite extends QueryTest with SharedSparkSession {
+             s"'$$3 $$1') FROM $tableName"
+           val df = sql(query)
+           val plan = df.queryExecution.executedPlan
+-          assert(plan.isInstanceOf[WholeStageCodegenExec] == (codegenMode == "CODEGEN_ONLY"))
++          // Comet routes regexp_replace through the codegen dispatcher, so the executed plan is a
++          // Comet operator rather than WholeStageCodegenExec. The exception assertions below still
++          // hold; only this Spark-internal plan-shape check is skipped under Comet.
++          if (!isCometEnabled) {
++            assert(plan.isInstanceOf[WholeStageCodegenExec] == (codegenMode == "CODEGEN_ONLY"))
++          }
+           val exception = intercept[SparkRuntimeException] {
+             df.collect()
+           }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 index 2e33f6505ab..fc1a2c8f964 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala

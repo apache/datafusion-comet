@@ -485,10 +485,12 @@ impl MultiPartitionShuffleRepartitioner {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn shuffle_write_partition(
         partition_iter: &mut PartitionedBatchIterator,
         shuffle_block_writer: &mut ShuffleBlockWriter,
         output_data: &mut BufWriter<File>,
+        interleave_time: &Time,
         encode_time: &Time,
         write_time: &Time,
         write_buffer_size: usize,
@@ -500,7 +502,7 @@ impl MultiPartitionShuffleRepartitioner {
             write_buffer_size,
             batch_size,
         );
-        for batch in partition_iter {
+        while let Some(batch) = partition_iter.next(interleave_time) {
             let batch = batch?;
             buf_batch_writer.write(&batch, encode_time, write_time)?;
         }
@@ -626,7 +628,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 .open(data_file)
                 .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
 
-            let mut output_data = BufWriter::new(output_data);
+            let mut output_data = BufWriter::with_capacity(self.write_buffer_size, output_data);
 
             #[allow(clippy::needless_range_loop)]
             for i in 0..num_output_partitions {
@@ -649,6 +651,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                     &mut partition_iter,
                     &mut self.shuffle_block_writer,
                     &mut output_data,
+                    &self.metrics.interleave_time,
                     &self.metrics.encode_time,
                     &self.metrics.write_time,
                     self.write_buffer_size,
