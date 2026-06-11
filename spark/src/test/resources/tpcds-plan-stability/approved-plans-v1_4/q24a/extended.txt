@@ -9,7 +9,7 @@ CometNativeColumnarToRow
    :                    +- CometExchange
    :                       +- CometHashAggregate
    :                          +- CometProject
-   :                             +- CometBroadcastHashJoin
+   :                             +-  CometBroadcastHashJoin [COMET-INFO: A native implementation of Upper is available but needs to be enabled with spark.comet.caseConversion.enabled. See compatibility guide for more information.]
    :                                :- CometProject
    :                                :  +- CometBroadcastHashJoin
    :                                :     :- CometProject
@@ -51,7 +51,7 @@ CometNativeColumnarToRow
                +- CometExchange
                   +- CometHashAggregate
                      +- CometProject
-                        +- CometBroadcastHashJoin
+                        +-  CometBroadcastHashJoin [COMET-INFO: A native implementation of Upper is available but needs to be enabled with spark.comet.caseConversion.enabled. See compatibility guide for more information.]
                            :- CometProject
                            :  +- CometBroadcastHashJoin
                            :     :- CometProject
