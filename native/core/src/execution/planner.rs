@@ -79,6 +79,8 @@ use datafusion_spark::function::aggregate::collect::SparkCollectSet;
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
+#[cfg(feature = "contrib-lance")]
+use crate::execution::operators::LanceScanExec;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
@@ -1601,9 +1603,62 @@ impl PhysicalPlanner {
                     )),
                 ))
             }
-            OpStruct::LanceScan(_) => Err(GeneralError(
-                "Native Lance scan execution is not implemented yet".to_string(),
-            )),
+            OpStruct::LanceScan(scan) => {
+                #[cfg(feature = "contrib-lance")]
+                {
+                    let common = scan
+                        .common
+                        .as_ref()
+                        .ok_or_else(|| GeneralError("LanceScan missing common data".into()))?;
+                    let partition = scan
+                        .partition
+                        .as_ref()
+                        .ok_or_else(|| GeneralError("LanceScan missing partition data".into()))?;
+
+                    let output_schema_fields = if common.projected_schema.is_empty() {
+                        common.required_schema.as_slice()
+                    } else {
+                        common.projected_schema.as_slice()
+                    };
+                    let output_schema = convert_spark_types_to_arrow_schema(output_schema_fields);
+                    let storage_options: HashMap<String, String> = common
+                        .storage_options
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+
+                    let lance_scan = LanceScanExec::try_new(
+                        common.dataset_uri.clone(),
+                        common.resolved_version,
+                        storage_options,
+                        output_schema,
+                        common.filter_sql.clone(),
+                        common.limit,
+                        common.offset,
+                        common.batch_size,
+                        partition.partition_index,
+                        partition.fragment_ids.clone(),
+                    )?;
+
+                    Ok((
+                        vec![],
+                        vec![],
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            Arc::new(lance_scan),
+                            vec![],
+                        )),
+                    ))
+                }
+                #[cfg(not(feature = "contrib-lance"))]
+                {
+                    let _ = scan;
+                    Err(GeneralError(
+                        "Native Lance scan requires a Comet native build with the contrib-lance feature"
+                            .to_string(),
+                    ))
+                }
+            }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
