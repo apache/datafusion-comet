@@ -183,6 +183,7 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
+<<<<<<< HEAD
   test("CometScanTypeChecker declines a schema that repeats a Parquet field id") {
     // Spark resolves a requested field to the one Parquet field carrying its id and raises
     // FOUND_DUPLICATE_FIELD_IN_FIELD_ID_LOOKUP_MODE when more than one answers, so Comet must not
@@ -258,6 +259,10 @@ class CometScanRuleSuite extends CometTestBase {
     // Only siblings are compared, so neither a parent and child nor cousins collide.
     val distinct = StructType(Seq(StructField("x", fields("X")), StructField("t", fields("x"))))
     assert(!DataTypeSupport.hasCaseInsensitiveDuplicateFieldNames(distinct))
+=======
+  test("Lance native scan config defaults to disabled") {
+    assert(!CometConf.COMET_LANCE_NATIVE_ENABLED.get())
+>>>>>>> 99fc16da9 (feat: scaffold contrib Lance native scan)
   }
 
 }
