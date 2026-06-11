@@ -25,8 +25,6 @@ dispatching to a Spark-compatible codegen path. When an expression is not suppor
 transparently falls back to Spark for that part of the plan; results are unaffected.
 
 Expressions marked ✅ Supported are enabled by default and produce Spark-compatible results.
-Expressions marked ⚠️ Incorrect by default run natively by default but can return results that
-differ from Spark on some inputs; see the linked detail on each affected row.
 
 Some ✅ Supported expressions have specific incompatible cases that fall back to Spark by
 default. Those cases must be opted into per expression with
@@ -42,9 +40,7 @@ Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enab
 | Status | Meaning |
 | --- | --- |
 | ✅ Supported | Comet produces Spark-compatible results by default. Some inputs or forms may fall back to Spark, and any incompatible behavior is opt-in (off by default). |
-| ⚠️ Incorrect by default | Comet runs natively by default but can return results that differ from Spark (a wrong value, or a native error on valid input). See the linked detail on each row. |
 | 🔜 Planned | Intended; tracked by an open issue or pull request. |
-| 💤 Not currently planned | Not on the current roadmap; falls back to Spark and may be reconsidered later. |
 
 ## Not currently planned
 
@@ -56,8 +52,9 @@ expressions. The following function families are **not currently planned** for n
 - **Avro / Protobuf codecs** (`from_avro`, `to_avro`, `from_protobuf`, `to_protobuf`, `schema_of_avro`): format conversion belongs at the IO layer, not expression evaluation.
 - **JVM reflection** (`java_method`, `reflect`): niche, and they invoke arbitrary JVM methods (a security concern).
 - **UTF-8 validation** (`is_valid_utf8`, `make_valid_utf8`, `validate_utf8`, `try_validate_utf8`): niche Spark 4.x string-validation helpers.
-- **File metadata** (`input_file_name`, `input_file_block_start`, `input_file_block_length`): require scan-internal per-row file information, outside the expression layer.
 - **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`): low-value or specialized functions with little benefit from native acceleration.
+
+The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [scan compatibility guide](compatibility/scans.md).
 
 Note that `approx_count_distinct`, `median`, and `mode` are planned: they are mainstream (`median` and `mode` are exact aggregates). `approx_percentile` / `percentile_approx` are not currently planned because their approximate results cannot be made bit-identical to Spark.
 
@@ -680,5 +677,5 @@ This list is illustrative, not exhaustive: the per-function tables are not the c
 
 ## See also
 
-- [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for ⚠️ expressions.
+- [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for supported expressions.
 - [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for audited expressions.
