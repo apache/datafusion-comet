@@ -99,6 +99,7 @@ datafusion-functions-nested = { version = "54.1.0" }
 [features]
 backtrace = ["datafusion/backtrace"]
 default = ["hdfs-opendal"]
+contrib-lance = []
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 # Delta Lake integration. When enabled, links the `comet-contrib-delta` crate
